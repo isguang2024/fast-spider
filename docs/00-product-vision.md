@@ -89,4 +89,4 @@ MVP 不实现实时远程桌面、音频、通用鼠标键盘远控、P2P 打洞
 
 ## 8. 产品阶段
 
-Phase 0 固定产品边界、协议、安全模型和技术选型；Phase 1–4 优先完成工作区、文件、Shell、Git、任务和事件能力；Phase 5–6 加入浏览器、截图、Local Bridge 和 Codex Adapter；Phase 7 只收敛简单运维、备份恢复和版本检查；Phase 8 完成安全强化、故障演练和正式发布。自动更新、安装包和托盘只有出现真实需求时再单独立项。
+Phase 0 固定产品边界、协议、安全模型和技术选型；Phase 1–4 优先完成工作区、文件、Shell、Git、任务和事件能力；Phase 5–6 加入浏览器、截图、Local Bridge 和 Codex Adapter；Phase 7 收敛简单运维、备份恢复和版本检查；Phase 8 把安全/故障回归与真实 E2E 收成可重复 Release Gate。自动更新、安装包、托盘、长 soak 和公开发布流水线只有出现真实需求时再单独立项。

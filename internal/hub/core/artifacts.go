@@ -18,13 +18,13 @@ import (
 )
 
 const (
-	MaxArtifactBytes        int64 = 100 << 20
-	MaxArtifactChunkBytes         = 1 << 20
-	MaxActiveArtifactUploads      = 4
-	MaxMachineArtifactBytes int64 = 512 << 20
-	MaxOwnerArtifactBytes   int64 = 2 << 30
-	artifactUploadTTL             = 30 * time.Minute
-	artifactRetention             = 30 * 24 * time.Hour
+	MaxArtifactBytes         int64 = 100 << 20
+	MaxArtifactChunkBytes          = 1 << 20
+	MaxActiveArtifactUploads       = 4
+	MaxMachineArtifactBytes  int64 = 512 << 20
+	MaxOwnerArtifactBytes    int64 = 2 << 30
+	artifactUploadTTL              = 30 * time.Minute
+	artifactRetention              = 30 * 24 * time.Hour
 )
 
 var artifactUploadMu sync.Mutex

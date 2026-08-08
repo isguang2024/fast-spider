@@ -460,56 +460,60 @@ Workspace 默认只读，可整体关闭 `file.system`/`code.search`。Node 保�
 
 升级前备份并校验。新版本失败时先停新版本；数据库未发生不兼容变化时切回旧二进制，发生不可逆 migration 时用升级前备份恢复到新 data-dir 后再启动旧版本。
 
-## 11. Phase 8：安全强化、故障演练和正式发布
+## 11. Phase 8：可重复 Release Gate 与安全/故障回归
 
 ### 目标
 
-完成威胁模型验证、长期稳定、容量、发布门禁和可重复运维。
+不再扩产品功能，把 Phase 1–7 已经真实跑通的能力收成一个每次发布前都能重复执行的门禁，并明确区分“已验证”和“当前环境无法验证”。
 
 ### 范围
 
-- 全量授权/路径/协议/供应链安全测试。
-- Fuzz、race、静态分析、SBOM 和依赖审计。
-- 24–72 小时 soak。
-- Hub/Node/网络/磁盘/DB/时间/Provider/Browser 故障演练。
-- 安全审计查询、告警、紧急锁定。
-- 文档、示例、安装和升级验收。
-- v1.0 发布检查。
+- `scripts/release-gate.sh` 的 core/full 两档门禁。
+- 全仓 gofmt、`git diff --check`、tracked secret pattern、`go mod verify/tidy -diff`、`go vet`。
+- 全量 tests 与当前/Windows/Linux amd64 builds。
+- 恢复后 Hub、Local Bridge、Browser、Codex 和 Local Bridge→Codex 真实 E2E。
+- Node 连续 3 轮回归，观察现有清理/并发路径是否出现 flake。
+- Ed25519 编码、Git ref/path、backup path 三个高收益 Fuzz target；普通 tests 永远运行 seeds。
+- Threat Model、测试策略、Roadmap 与实际实现收口。
 
 ### 非目标
 
-- 为压测而引入多实例和分布式组件。
-- 未有真实需求的大规模 SaaS。
+- 为 checklist 建设 GitHub Actions、商业 CI 或外部测试平台。
+- 自动联网安装 `govulncheck`、SBOM、secret scanner 等工具。
+- 24–72 小时固定 soak、50 Node 压测或大规模 SaaS 场景。
+- 为当前 Windows/386 工具链强行改代码以运行 race/random fuzz。
+- 发布签名、自动更新或安装器体系。
 
 ### 依赖
 
-- 所有前序 Phase。
-- 真实 Windows/Linux 测试机。
-- 发布密钥和恢复流程。
+- Phase 1–7 全部完成。
+- Full gate 需要本机真实 Chromium/Playwright Sidecar 与 Codex runtime。
+- Race/random fuzz 依赖支持它们的 Go/OS/arch 环境。
 
 ### 风险
 
-- 长期资源泄漏。
-- 平台边界遗漏。
-- 依赖/协议临近发布变化。
-- 安全门禁被进度压力绕过。
+- Release gate 自己与真实命令漂移。
+- 外部 runtime 变化导致 Browser/Codex E2E 失败。
+- 当前 386 工具链无法覆盖 race/random fuzz，造成验证盲区。
+- 历史文档继续描述已取消的企业级设计，诱导后续重新实现。
 
 ### 验收标准
 
-- 15 个关键 E2E 场景全部通过并保存证据。
-- 无未解决 P0/P1。
-- 无路径逃逸、重复写、虚假取消或恶意更新路径。
-- 资源稳定、清理回收有效、日志不过载。
-- 备份/恢复/升级/回滚/吊销演练通过。
-- Threat Model、ADR、Contract 和实现一致。
+- `bash scripts/release-gate.sh` 通过。
+- `bash scripts/release-gate.sh --full` 在当前真实 Browser/Codex 环境通过。
+- 当前 Windows/386 对 random fuzz/race 明确输出 `SKIP`，而不是伪报 PASS；Fuzz seeds 仍通过。
+- Windows amd64/Linux amd64 构建通过。
+- 无未解决 P0/P1；关键输入边界无 panic/路径静默改写。
+- 恢复、Local Bridge、Browser、Codex 和完整产品 smoke 继续通过。
+- 文档与当前个人模式实现一致，不把自动更新、Local Client Grant、desktop-owned 等未来能力写成当前事实。
 
 ### 可演示场景
 
-从全新 Hub/Node安装到 MCP 读写、测试、浏览器、Codex、断线、吊销、升级和恢复的完整演示。
+运行 `bash scripts/release-gate.sh --full`，一次完成静态检查、全量测试、双平台构建、恢复 Hub、Local Bridge、真实 Browser/Codex 与产品 smoke；最后输出 `PASS`，同时清楚列出当前环境跳过的 fuzz/race 门槛。
 
 ### 回滚
 
-发布候选失败则不替换当前稳定二进制；保留上一稳定版本和升级前已验证备份。安全问题优先禁用相关组件/能力并回退版本，不在当前阶段引入 minimumSafeVersion 自动更新状态机。
+Phase 8 只增加测试、门禁和文档收敛；若门禁本身误判，回滚对应测试/脚本即可，不改变 Phase 1–7 运行时数据或权限语义。
 
 ## 12. 分支与提交策略
 
@@ -517,7 +521,7 @@ Workspace 默认只读，可整体关闭 `file.system`/`code.search`。Node 保�
 - 每个任务使用短生命周期分支/worktree；合并后删除已合并临时分支。
 - Contract/Schema 变更与实现/测试/文档同提交或同一个可审查变更集。
 - 不长期保留 `legacy`/`v2-new` 双业务分支。
-- 每个 Phase 形成可回滚标记/tag；正式发布必须签名。
+- 每个 Phase 保持可回滚提交；当前自用发布不强制维护签名/tag 状态机，未来公开分发时再单独定义发布签名流程。
 - Codex/其他 AI 可协助测试、审查和平台验证，但主实现边界、权限与状态由 Fast Spider 文档和代码保持权威。
 
 ## 13. 决策门禁
@@ -533,7 +537,7 @@ Workspace 默认只读，可整体关闭 `file.system`/`code.search`。Node 保�
 
 - 文件写/Shell：Path Guard、idempotency、process tree 原型通过。
 - 浏览器/截图：SSRF/隐私/平台原型通过。
-- Local Bridge/Agent：本地身份、owner/phase、loop prevention 通过。
+- Local Bridge/Agent：当前 OS 用户边界、Workspace 复用、owner/phase、单 active Turn 通过。
 - 运维恢复：backup-verify、恢复到空目录、health/smoke 回退流程通过。
 
 ## 14. 路线变更规则

@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 它通过长期部署在公网服务器上的 Hub，将 GPT、Claude、Codex、Web Console、CLI 或其他自动化客户端的请求，安全路由到用户明确授权的 Windows、Linux，未来也包括 macOS 节点。Node 只主动建立 HTTPS/WSS 443 出站连接，不默认开放局域网或公网端口。
 
-> 当前状态：Phase 1–7 已形成完整可运行闭环。Node 本机入口使用当前用户数据目录下的 AF_UNIX socket，Windows/Linux 共用同一实现，不监听 TCP，也不维护本地 Client 注册/Token/Grant。Codex 直接使用本机 `codex app-server --stdio`。运维主线已收敛为版本检查和 `spiderctl backup / backup-verify / restore`，不建设安装器、托盘或自动更新服务。
+> 当前状态：Phase 1–8 已形成完整可运行闭环。Node 本机入口使用当前用户数据目录下的 AF_UNIX socket，Windows/Linux 共用同一实现，不监听 TCP，也不维护本地 Client 注册/Token/Grant。Codex 直接使用本机 `codex app-server --stdio`。运维主线已收敛为版本检查和 `spiderctl backup / backup-verify / restore`；发布前使用 `scripts/release-gate.sh` 复验，不建设安装器、托盘或自动更新服务。
 
 ## 核心定位
 
@@ -53,7 +53,7 @@ Fast Spider 不是远程桌面，也不是通用内网穿透软件：
 6. Job watch、事件游标、结果和 Artifact。
 7. 稳定的 MCP 工具面，以及独立的内部 Capability Request。
 
-浏览器、截图、Local Bridge、Codex Adapter 与简单备份恢复均已落地；下一阶段只做安全/故障回归和发布门禁，不再扩产品功能。
+浏览器、截图、Local Bridge、Codex Adapter、简单备份恢复和可重复 Release Gate 均已落地；当前不再为了路线图扩产品功能，后续只根据真实使用问题修复/优化。
 
 ## 文档导航
 
@@ -90,7 +90,7 @@ Fast Spider 不是远程桌面，也不是通用内网穿透软件：
 - MVP 不引入 Kubernetes、Redis、NATS、Kafka 或复杂消息队列。
 - 不做长期双协议、双写或兼容层堆叠；版本升级使用明确窗口与迁移规则。
 
-## Phase 1–6 本地运行
+## 本地运行
 
 要求 Go 1.26+。
 
@@ -181,16 +181,20 @@ go run ./cmd/spiderctl version
 
 本机 HTTP/WS 仅用于开发验证；生产仍按文档要求使用 HTTPS/WSS 443，并建议 Hub 只监听 loopback，由 TLS 反向代理暴露公网入口。Shell/Git 仍以 Node 普通 OS 用户权限运行，不是 chroot/container 沙箱。Git commit/pull/push/worktree 会显式检查 hooks/filter 风险；受管 worktree 创建在 Node 数据目录并注册成新的默认只读 Workspace，不在原仓库目录里嵌套。
 
-## 开发验证
+## 开发与发布验证
 
 ```bash
-go vet ./...
-go test ./... -count=1
-go build ./cmd/hub ./cmd/node ./cmd/spiderctl ./cmd/contractgen
+# 不依赖 Browser/Codex 外部 runtime 的基础门禁
+bash scripts/release-gate.sh
+
+# 发布前完整门禁：再跑重复 Node 回归、真实 Browser/Codex 和产品 smoke
+bash scripts/release-gate.sh --full
 ```
 
-当前验证链覆盖 Owner bootstrap → enrollment → Node 上线 → Workspace/文件/搜索/编辑 → Git/Build/Artifact → Shell/Job → 隔离 Chromium → 页面/桌面/窗口截图 Artifact → Local Bridge → `agent.control` → 本机 Codex Session/Turn。Phase 6 实机验证了真实 Codex `model/list` 与 Session/Turn；Phase 7 在此基础上补充 Hub data-dir 的备份、逐文件 SHA-256 校验和空目录恢复闭环。
+`core` 会检查 gofmt、Git whitespace、tracked secret pattern、`go mod verify/tidy -diff`、`go vet`、全量 tests、当前/Windows/Linux builds、恢复后 Hub 健康 E2E 和 Local Bridge E2E。`--full` 再运行 3 轮 Node、真实 Chromium、真实 Codex 和 Local Bridge→Codex 产品 smoke；支持的工具链还会跑短时 random fuzz 与 race。当前开发环境是 `windows/386 + CGO=0`，因此 random fuzz/race 会明确显示 `SKIP`，Fuzz seeds 仍随普通 `go test ./...` 执行。
+
+当前验证链覆盖 Owner bootstrap → enrollment → Node 上线 → Workspace/文件/搜索/编辑 → Git/Build/Artifact → Shell/Job → 隔离 Chromium → 页面/桌面/窗口截图 Artifact → Local Bridge → `agent.control` → 本机 Codex Session/Turn → Hub backup/verify/restore → 恢复后真实 Hub health。Phase 8 把这些真实链路收口到同一个 release gate，而不是再增加服务或权限层。
 
 ## 仓库状态
 
-Phase 0 文档保留为设计历史，但实现以当前代码和已更新 ADR 为准。Phase 1–7 已形成可运行闭环；仍保持单进程 Hub/Node，不引入复杂队列、微服务、第二套本地权限系统、安装器状态机、自动更新服务或通用远控能力。
+Phase 0 文档保留为设计历史，但实现以当前代码和已更新 ADR 为准。Phase 1–8 已形成可运行闭环；仍保持单进程 Hub/Node，不引入复杂队列、微服务、第二套本地权限系统、安装器状态机、自动更新服务或通用远控能力。

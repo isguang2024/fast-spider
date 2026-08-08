@@ -77,9 +77,9 @@ func New(service *core.Service, cfg Config) *Server {
 	return s
 }
 
-func (s *Server) Handler() http.Handler { return s.http.Handler }
+func (s *Server) Handler() http.Handler             { return s.http.Handler }
 func (s *Server) Serve(listener net.Listener) error { return s.http.Serve(listener) }
-func (s *Server) ListenAndServe() error { return s.http.ListenAndServe() }
+func (s *Server) ListenAndServe() error             { return s.http.ListenAndServe() }
 
 func (s *Server) Shutdown(ctx context.Context) error {
 	for _, conn := range s.service.Registry().List() {

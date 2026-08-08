@@ -49,13 +49,13 @@ func (s *Server) handleNodeConnect(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	serverSignature := ed25519.Sign(s.service.HubPrivateKey(), protocolv1.ServerChallengePayload(session.MachineID, challenge))
 	serverHello := protocolv1.ServerHello{
-		MessageType: protocolv1.MessageServerHello,
+		MessageType:      protocolv1.MessageServerHello,
 		ProtocolVersions: []string{protocolv1.ProtocolVersion},
-		Challenge: challenge,
-		HubPublicKey: s.service.HubPublicKey(),
-		HubFingerprint: s.service.HubFingerprint(),
-		ServerSignature: security.EncodeSignature(serverSignature),
-		Timestamp: protocolv1.Timestamp(now),
+		Challenge:        challenge,
+		HubPublicKey:     s.service.HubPublicKey(),
+		HubFingerprint:   s.service.HubFingerprint(),
+		ServerSignature:  security.EncodeSignature(serverSignature),
+		Timestamp:        protocolv1.Timestamp(now),
 	}
 	writeCtx, cancel := context.WithTimeout(wsCtx, 10*time.Second)
 	err = wsjson.Write(writeCtx, conn, serverHello)
@@ -102,12 +102,12 @@ func (s *Server) handleNodeConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := registered.WriteJSON(wsCtx, protocolv1.SessionEstablished{
-		MessageType: protocolv1.MessageSessionEstablished,
-		ConnectionId: connectionID,
-		Generation: generation,
-		ProtocolVersion: protocolv1.ProtocolVersion,
+		MessageType:      protocolv1.MessageSessionEstablished,
+		ConnectionId:     connectionID,
+		Generation:       generation,
+		ProtocolVersion:  protocolv1.ProtocolVersion,
 		HeartbeatSeconds: 30,
-		Timestamp: protocolv1.Timestamp(time.Now()),
+		Timestamp:        protocolv1.Timestamp(time.Now()),
 	}); err != nil {
 		return
 	}
@@ -182,9 +182,9 @@ func (s *Server) nodeReadLoop(ctx context.Context, conn *registry.Connection, he
 			}
 			if err := conn.WriteJSON(ctx, protocolv1.Heartbeat{
 				MessageType: protocolv1.MessageHeartbeatAck,
-				Sequence: heartbeat.Sequence,
-				Status: heartbeat.Status,
-				Timestamp: protocolv1.Timestamp(now),
+				Sequence:    heartbeat.Sequence,
+				Status:      heartbeat.Status,
+				Timestamp:   protocolv1.Timestamp(now),
 			}); err != nil {
 				return
 			}
@@ -212,9 +212,9 @@ func closeReplaced(conn *registry.Connection) {
 	defer cancel()
 	_ = conn.WriteJSON(ctx, protocolv1.ConnectionClose{
 		MessageType: protocolv1.MessageConnectionClose,
-		Code: "CONNECTION_REPLACED",
-		Reason: "a newer device connection became active",
-		Timestamp: protocolv1.Timestamp(time.Now()),
+		Code:        "CONNECTION_REPLACED",
+		Reason:      "a newer device connection became active",
+		Timestamp:   protocolv1.Timestamp(time.Now()),
 	})
 	_ = conn.Close(websocket.StatusNormalClosure, "connection replaced")
 }

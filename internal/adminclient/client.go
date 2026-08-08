@@ -55,8 +55,8 @@ func New(rawURL, token string, allowInsecure bool) (*Client, error) {
 	parsed.Path = strings.TrimRight(parsed.Path, "/")
 	return &Client{
 		baseURL: strings.TrimRight(parsed.String(), "/"),
-		token: token,
-		http: &http.Client{Timeout: 20 * time.Second},
+		token:   token,
+		http:    &http.Client{Timeout: 20 * time.Second},
 	}, nil
 }
 
@@ -64,7 +64,7 @@ func (c *Client) Bootstrap(ctx context.Context, bootstrapToken, displayName stri
 	var out BootstrapResponse
 	err := c.request(ctx, http.MethodPost, "/api/v1/bootstrap", map[string]any{
 		"bootstrapToken": bootstrapToken,
-		"displayName": displayName,
+		"displayName":    displayName,
 	}, &out, false)
 	return out, err
 }
@@ -73,7 +73,7 @@ func (c *Client) CreateEnrollment(ctx context.Context, expectedName, expectedOS 
 	var out EnrollmentResponse
 	err := c.request(ctx, http.MethodPost, "/api/v1/enrollment-tokens", map[string]any{
 		"expectedName": expectedName,
-		"expectedOs": expectedOS,
+		"expectedOs":   expectedOS,
 	}, &out, true)
 	return out, err
 }

@@ -41,20 +41,20 @@ type Store struct {
 }
 
 type MachineRecord struct {
-	ID                     string
-	OwnerID                string
-	DisplayName            string
-	Status                 string
-	OS                     string
-	Arch                   string
-	NodeVersion            string
-	CapabilityDigest       string
-	LastSeenAt             *time.Time
+	ID                       string
+	OwnerID                  string
+	DisplayName              string
+	Status                   string
+	OS                       string
+	Arch                     string
+	NodeVersion              string
+	CapabilityDigest         string
+	LastSeenAt               *time.Time
 	LastConnectionGeneration int64
-	RevokedAt              *time.Time
-	Revision               int64
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+	RevokedAt                *time.Time
+	Revision                 int64
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 }
 
 type DeviceIdentity struct {
@@ -76,18 +76,18 @@ type DeviceSession struct {
 }
 
 type EnrollmentInput struct {
-	TokenHash       string
-	IdempotencyKey  string
-	MachineID       string
-	CredentialID    string
-	OwnerID         string
-	DisplayName     string
-	OS              string
-	Arch            string
-	NodeVersion     string
-	PublicKey       string
-	Fingerprint     string
-	Now             time.Time
+	TokenHash      string
+	IdempotencyKey string
+	MachineID      string
+	CredentialID   string
+	OwnerID        string
+	DisplayName    string
+	OS             string
+	Arch           string
+	NodeVersion    string
+	PublicKey      string
+	Fingerprint    string
+	Now            time.Time
 }
 
 type EnrollmentResult struct {
@@ -111,20 +111,20 @@ type AuditEntry struct {
 }
 
 type ArtifactRecord struct {
-	ID          string    `json:"artifactId"`
-	OwnerID     string    `json:"-"`
-	MachineID   string    `json:"machineId"`
-	WorkspaceID string    `json:"workspaceId,omitempty"`
-	JobID       string    `json:"jobId,omitempty"`
-	LogicalName string    `json:"logicalName"`
-	ContentType string    `json:"contentType"`
-	SizeBytes   int64     `json:"sizeBytes"`
-	SHA256      string    `json:"sha256"`
-	StorageKey  string    `json:"-"`
-	Status      string    `json:"status"`
-	CreatedAt   time.Time `json:"createdAt"`
+	ID          string     `json:"artifactId"`
+	OwnerID     string     `json:"-"`
+	MachineID   string     `json:"machineId"`
+	WorkspaceID string     `json:"workspaceId,omitempty"`
+	JobID       string     `json:"jobId,omitempty"`
+	LogicalName string     `json:"logicalName"`
+	ContentType string     `json:"contentType"`
+	SizeBytes   int64      `json:"sizeBytes"`
+	SHA256      string     `json:"sha256"`
+	StorageKey  string     `json:"-"`
+	Status      string     `json:"status"`
+	CreatedAt   time.Time  `json:"createdAt"`
 	CompletedAt *time.Time `json:"completedAt,omitempty"`
-	ExpiresAt   time.Time `json:"expiresAt"`
+	ExpiresAt   time.Time  `json:"expiresAt"`
 }
 
 type ArtifactUploadRecord struct {

@@ -2,14 +2,14 @@
 
 ## 1. Node 的角色
 
-`fast-spider-node` 是真实机器执行面，也是本机权限的最终裁决者。Hub、MCP Client 或 Local Client 都不能要求 Node 越过本机已授权的 Workspace、Capability、Action 和风险策略。
+`fast-spider-node` 是真实机器执行面，也是本机权限的最终裁决者。Hub、MCP Client 或本机 Local Bridge 调用都不能要求 Node 越过本机已授权的 Workspace、Capability、Action 和风险策略。
 
 Node 默认：
 
 - 作为普通用户后台应用运行。
 - 只建立到 Hub 的 HTTPS/WSS 443 出站连接。
 - 不监听公网或局域网端口。
-- Local Bridge 默认关闭。
+- Local Bridge 默认随 Node 启用；明确不需要时可用本机开关关闭。
 - 不自动提权，不隐蔽运行。
 - 显示连接状态、授权目录和正在执行的高风险操作。
 
@@ -19,10 +19,9 @@ MVP 使用单 Node 进程。当前不提供 Windows 托盘 UI 或第二个后台
 
 ### Windows
 
-- 推荐每用户安装和每用户启动，不默认 Windows Service + SYSTEM。
-- 当前状态通过 CLI/Hub 查看；不为个人 MVP额外维护托盘状态同步层。
-- 需要开机启动时使用当前用户启动项或任务计划，明确展示。
-- 只有用户选择系统服务模式时才安装服务，并限定服务账号和可访问目录。
+- 当前只维护普通用户启动的单 Node 进程，不提供第二套 Windows Service/SYSTEM 模式。
+- 当前状态通过 CLI/Hub 查看；不为个人 MVP 维护托盘状态同步层。
+- 需要开机启动时使用当前用户启动项或任务计划运行同一个 `fast-spider-node run`，不改变权限语义。
 
 ### Linux
 
@@ -44,7 +43,6 @@ MVP 使用单 Node 进程。当前不提供 Windows 托盘 UI 或第二个后台
 | Platform Layer | Windows/Linux 路径、进程、截图、凭据和通知差异 |
 | Local Bridge | 当前用户 AF_UNIX/UDS Adapter，默认随 Node 启用，可显式关闭 |
 | Agent Adapters | Codex 等本地 Provider 的独立适配器 |
-| Update Manager | 签名检查、下载、切换、回滚 |
 | Local Audit | Hub 不可用时仍保留必要的本机安全记录 |
 
 ## 4. 本地状态
@@ -61,7 +59,6 @@ MVP 使用单 Node 进程。当前不提供 Windows 托盘 UI 或第二个后台
 ├─ logs/
 ├─ jobs/
 ├─ recovery-bin/
-├─ updates/
 └─ run/
 ```
 
@@ -73,7 +70,7 @@ MVP 使用单 Node 进程。当前不提供 Windows 托盘 UI 或第二个后台
 ~/.cache/fast-spider/
 ```
 
-服务模式遵循对应系统目录规范。
+当前没有第二套服务模式状态目录；Node 使用当前用户数据目录运行。未来若真正增加系统服务模式，再单独定义其目录与权限边界。
 
 本地状态存储：
 
@@ -298,15 +295,11 @@ sequenceDiagram
 
 ## 14. 本机可见性与紧急控制
 
-Node UI/CLI 必须提供：
+当前个人版只保留已经存在的简单控制面：
 
-- 暂停接收新任务。
-- 断开 Hub。
-- 查看和取消运行 Job。
-- 查看待确认请求。
-- 禁用/删除 Workspace。
-- 吊销 Local Client。
-- 清理本地事件、Artifact 和恢复区。
-- 显示版本、更新来源、签名状态和最近安全事件。
+- `status` 查看 Node 状态，`version` 查看版本。
+- `workspace-list/enable/disable/remove` 查看或收紧本机 Workspace 授权。
+- 运行中的 Job 通过现有 Hub/MCP `job_watch/job_cancel` 查看和取消。
+- 需要立即停止接收任务时，停止当前 Node 进程；重新启动后仍按本机 Workspace 权限工作。
 
-当前不提供托盘或隐藏持久化进程；Node 只以用户明确启动的当前用户进程运行。
+当前没有 Local Client 注册/吊销、Update Manager、更新签名状态、托盘或隐藏持久化进程；Node 只以用户明确启动的当前用户进程运行。

@@ -10,7 +10,7 @@
 - 取消只杀父进程或虚报成功。
 - Event 缺失、乱序、重复或无限堆积。
 - Windows/Linux 编码、路径、进程和权限差异。
-- Local Bridge、浏览器、截图和更新链路扩大攻击面。
+- Local Bridge、浏览器、截图和备份/恢复链路扩大攻击面。
 - 日志、Artifact、临时文件长期增长。
 
 Phase 0 只定义测试，不创建云资源或运行付费测试平台。
@@ -23,10 +23,10 @@ Phase 0 只定义测试，不创建云资源或运行付费测试平台。
 | Unit | 纯逻辑、状态、策略、解析 | 每次提交 |
 | Component | Hub/Node 模块 + 本地依赖 | 每次提交 |
 | Integration | Hub↔Node、SQLite、文件、进程、Git | 每次 PR/主线 |
-| E2E | 真实 Windows/Linux、MCP、断线、安装 | 里程碑/发布 |
-| Security/Fuzz | 协议、路径、授权、供应链 | 持续/夜间/发布 |
-| Performance/Soak | 容量、泄漏、清理、长期稳定 | 里程碑/发布 |
-| Recovery/Chaos | 崩溃、断网、磁盘、备份、回滚 | 发布前 |
+| E2E | Hub/Node、Browser、Local Bridge、Codex、恢复 | 里程碑/发布 |
+| Security/Fuzz | 密钥编码、Git 输入、备份路径等纯输入边界 | 每次提交运行 seeds；支持环境再做随机 fuzz |
+| Resource regression | 重复 Node 测试、清理、取消、临时文件回收 | full release gate |
+| Recovery/Fault | 断线、取消、Provider/Browser 故障、备份恢复 | 发布前/相关变更 |
 
 不追求虚高覆盖率数字；Critical 安全不变量和状态转换必须完整覆盖。
 
@@ -57,7 +57,7 @@ Phase 0 只定义测试，不创建云资源或运行付费测试平台。
 
 `contracts/schema` 是唯一源：
 
-- 每种 Request/Event/Error/Artifact/Approval/Capability Descriptor 有有效样例。
+- 每种 Request/Event/Error/Artifact/Capability Descriptor 有有效样例。
 - 生成 Go 类型与 Schema checksum 一致。
 - 缺失必需字段、未知必需枚举、超长字符串、深 JSON、巨大数组拒绝。
 - 可选新字段在旧 minor 接收端被安全忽略。
@@ -111,9 +111,9 @@ subjects × machines × workspaces × capabilities × actions × origins × risk
 - Client A 访问 Client B/其他组织资源。
 - machineId/workspaceId 替换和不可见 ID 枚举。
 - Hub allow + Node deny → 必须拒绝。
-- Workspace revision 更新使旧 Context/Lease/Session 失效。
-- Approval 参数 digest、subject、target、Action、次数、期限不匹配。
-- Local Client 不能继承远程 Owner 权限。
+- Workspace revision/启用状态变化后，后续请求与已有 Session 不能继续使用旧边界。
+- 写入、Shell、Git 网络/Hook、Build 等危险本机开关变化后立即按最新状态判断。
+- Local Bridge 与远程 MCP 进入同一 Workspace/Capability 校验，不形成第二套权限语义。
 - Artifact/job watch/cancel/result 的二次授权。
 - 提权、永久删除、真实浏览器 Profile 默认拒绝。
 
@@ -308,86 +308,80 @@ Provider 不可用时返回结构化状态，不阻塞文件/Shell能力。
 
 ## 19. 安全测试与 Fuzz
 
-Fuzz 目标：
+当前 Phase 8 只对已经证明高收益、且无需外部服务的纯输入边界做 Fuzz：
 
-- FSWP JSON envelope、每种 params Schema。
-- 二进制帧头、长度、offset、压缩。
-- Path Guard 和跨平台路径 parser。
-- Patch/unified diff parser。
-- Git/rg/命令参数映射。
-- MCP/API input 和 cursor。
-- Artifact manifest、Hub backup manifest。
+- `security`：Ed25519 public key/signature 编码解码，保证错误输入不 panic、成功长度严格。
+- `node`：Git ref/path 参数验证，保证接受后的路径仍不是绝对路径/父目录逃逸/NUL。
+- `opsbackup`：跨平台备份路径验证，保证接受值不被静默改写且再次验证稳定。
 
-安全工具：依赖/SBOM/secret scan、静态分析、Go race detector、平台安全 API review。高风险 native helper 需要内存安全/边界专项审查。
+普通 `go test ./...` 会始终运行这些 Fuzz seeds。`release-gate.sh --full` 在工具链支持时再各跑 2 秒随机 fuzz；当前 `windows/386` fuzz runtime 会因工具链/内存映射限制失败，因此明确跳过随机 fuzz，不伪报通过。
 
-## 20. 性能测试
+内建安全门禁还包括：
 
-### 负载模型
+- `go vet ./...`。
+- `go mod verify` 和 `go mod tidy -diff`。
+- tracked 文件的常见 private-key/token 模式扫描。
+- 当前平台 + Windows/Linux amd64 构建。
+- `git diff --check` 和全仓 Go `gofmt` 检查。
 
-- 50 registered/10 online Node。
-- 每 Node 心跳、轻量 read/watch。
-- 并发文件搜索/读取。
-- 2 exec + 1 write + 4 read 默认资源组。
-- 持续 stdout/stderr 与 Artifact 上传。
-- Hub 重启后的同时重连（带抖动）。
+Race detector 仅在 `amd64 + CGO_ENABLED=1` 时运行；当前 Windows/386 环境明确标记为外部门槛。`govulncheck`、SBOM、商业 secret scanner 等外部工具当前未安装，也不会由 release gate 自动联网安装；以后真正进入公开分发/外部贡献流程时再按需要加入。
 
-### 指标
+## 20. 资源回归
 
-- Hub/Node CPU、RSS、goroutine、文件句柄。
-- WSS 连接内存。
-- Job queue/dispatch/Event 延迟。
-- SQLite query、WAL、checkpoint、busy。
-- Event/Artifact 磁盘增长与清理回收。
-- 取消时间和进程残留。
+当前个人项目不为“规模指标”搭建专门压测集群。Full release gate 采用更贴近真实使用的轻量资源回归：
 
-性能优化不得移除安全校验或把队列改成无限。
+- `internal/node` 连续运行 3 轮，覆盖 Job、Browser、Artifact、Workspace、Git、截图等已有清理/并发测试。
+- Local Bridge E2E 验证取消后 socket 清理。
+- Browser E2E 验证 Sidecar/Chromium 生命周期和临时 Artifact。
+- Codex E2E 验证 app-server 启停、Turn 完成和 Session archive。
+- Hub 恢复 E2E 验证临时 Hub 二进制/目录退出后可清理。
 
-## 21. Soak 测试
+已有运行时仍必须保持有界 semaphore、事件窗口、日志/Artifact 保留和超时；发现 CPU、RSS、goroutine、句柄或磁盘持续增长时，再针对真实泄漏增加专门 soak，而不是预先维护 50 Node/72 小时固定场景。
 
-至少 24–72 小时：
+## 21. 长时间 Soak
 
-- Node 周期上下线。
-- 小 Job、长 Job、日志流、取消。
-- Event watch 断开恢复。
-- Artifact 创建/过期/清理。
-- Browser/Provider Session 创建关闭。
-- 定时清理、备份、checkpoint。
+24–72 小时 soak **不作为当前 Phase 8 的硬门槛**。单 Owner 当前规模下，长 soak 的成本高于日常收益，而且会把发布流程变成形式化等待。
 
-验收：内存/句柄/goroutine/磁盘无持续无界增长；日志不会因正常心跳和重试洪泛。
+只有以下情况出现时再启用定向 soak：
+
+- 实际发现疑似内存/句柄/goroutine 泄漏；
+- Node 长连接/断线恢复出现小时级问题；
+- Artifact/Event/日志清理出现持续增长；
+- Browser/Codex 连续创建关闭出现残留进程；
+- 实际 Node 数量或并发明显上升。
+
+届时 soak 应围绕已观察到的资源指标与失败模式设计，不固定成大厂式时长 KPI。
 
 ## 22. 故障与恢复演练
 
-注入：
+当前优先演练已经有真实执行链、且失败后用户会直接感知的故障：
 
-- Hub kill -9、Node kill、服务器重启。
-- WSS 半断开、延迟、包重复/乱序。
-- SQLite busy/corruption 副本、Artifact 不可写、磁盘满。
-- 系统时间跳变。
-- Provider/Browser/helper 崩溃。
-- 更新服务器不可用/签名错误。
-- 设备/Workspace/Client 在运行中吊销。
+- Hub/Node 进程退出与重连。
+- Shell timeout/cancel 与完整进程树回收。
+- Browser Sidecar/Chromium 关闭、超时和清理。
+- Codex app-server 不可用、Session active Turn 冲突、Turn materialization 短窗口。
+- Local Bridge 取消/退出后 endpoint 失效。
+- SQLite/WAL 备份、篡改备份、非空恢复目录和恢复后 Hub 健康检查。
+- Workspace/设备在运行中禁用或吊销。
 
-验证：安全降级、状态不虚报、无重复写、可恢复、告警不过载。
+网络乱序、磁盘满、系统时间跳变等只有相关模块出现真实故障或进入更高规模后再做定向注入。验收原则不变：安全降级、状态不虚报、无重复写、可恢复、错误有界。
 
-## 23. 关键 E2E 验收场景
+## 23. 当前关键 E2E 验收场景
 
-发布前必须演示并保存证据：
+当前不维护“为了凑数量”的 15 场景清单。Release gate 需要覆盖这些真实链路：
 
-1. 德国服务器单 Hub 部署。
-2. Windows Node 一次性配对，公网无监听端口。
-3. Node 本机授权代码 Workspace。
-4. MCP 列出机器/Workspace。
-5. 指定机器搜索、读取、编辑并返回 Diff。
-6. 查看 Git Diff。
-7. typecheck/test/build 持续日志和结果。
-8. 取消长命令并终止完整进程树。
-9. 受管浏览器访问本地开发页、点击/输入/截图。
-10. Node 调用本机 Codex Session。
-11. 另一 Local Client 访问同 Workspace 但受自己的权限限制。
-12. Node 断线重连不重复已完成写操作。
-13. Hub 吊销 Node 后不能继续接任务。
-14. Workspace 取消授权后旧 Session/ID不能继续访问。
-15. 备份、升级失败回滚和恢复演练。
+1. Hub/API/WS 的 bootstrap、enrollment、Node 会话和固定 MCP 工具测试随 `go test ./...` 通过。
+2. Workspace 搜索/读取/编辑、权限收紧和路径边界通过 Node 集成测试。
+3. Shell Job、watch/cancel、完整进程树和输出边界通过 Node 测试。
+4. Git/Build/Artifact 的权限、副作用和上传/清理测试通过。
+5. 真实 Chromium Browser E2E 完成 launch → 页面操作 → Artifact/close。
+6. Local Bridge AF_UNIX/UDS E2E 完成调用并验证取消后 endpoint 清理。
+7. 真实 Codex E2E 完成 model/list → Session/Turn → result/archive。
+8. 完整 Local Bridge → `agent.control` → Codex 产品 smoke 最终返回 `OK`。
+9. Hub data-dir 完成 backup → verify → restore，并用恢复目录启动真实 Hub，`/livez`、`/readyz` 返回 200。
+10. Windows/Linux amd64 均可构建；当前主机全量测试和静态分析通过。
+
+涉及真实 Browser/Codex 的场景只在 `--full` 中运行；core gate 不把缺少本机外部 runtime 误报为产品代码失败。
 
 ## 24. 测试数据与隔离
 
@@ -397,34 +391,39 @@ Fuzz 目标：
 - Artifact/截图可能包含测试数据，运行后自动清理。
 - E2E 机器有明确标签和所有者，禁止误连生产 Node。
 
-## 25. CI 门禁
+## 25. 当前 Release Gate
 
-每次 PR：
+仓库提供一个开发/发布前门禁，不作为生产启动脚本：
 
-- format/lint/typecheck/build。
-- unit/component/contract。
-- race-sensitive 核心测试（按耗时分组）。
-- dependency/license/secret scan。
-- Linux integration。
+```bash
+bash scripts/release-gate.sh
+bash scripts/release-gate.sh --full
+```
 
-主线/夜间：
+`core` 固定执行：
 
-- Windows integration。
-- fuzz corpus、长路径/进程测试。
-- MCP conformance。
-- migration/backup/restore。
-- 浏览器基础矩阵。
+- 全仓 Go `gofmt` 检查和 `git diff --check`。
+- tracked 文件常见私钥/Token 模式扫描。
+- `go mod verify`、`go mod tidy -diff`。
+- `go vet ./...`、`go test ./... -count=1`。
+- 当前平台、Windows amd64、Linux amd64 构建。
+- 恢复后真实 Hub `/livez`/`/readyz` E2E。
+- Local Bridge E2E。
 
-发布：
+`--full` 再增加：
 
-- 全平台 E2E、安装/升级/回滚。
-- security threat model gate。
-- performance/soak/recovery。
-- SBOM、签名和发布物重验。
+- Node 测试连续 3 轮。
+- 工具链支持时各 2 秒随机 Fuzz；不支持时明确 SKIP，seeds 仍随普通 tests 执行。
+- `amd64 + CGO_ENABLED=1` 时运行 race detector；当前 Windows/386 明确 SKIP。
+- 真实 Browser E2E。
+- 真实 Codex E2E。
+- Local Bridge → Codex 产品 smoke。
+
+当前没有强制建设 GitHub Actions/商业 CI。单人项目先让同一脚本在本机和未来 CI 复用；需要远程 CI 时直接调用它，不复制第二套命令清单。Release gate 不自动安装 `govulncheck`、SBOM 或 secret scanner，也不自动联网；这些只有公开分发/外部贡献带来真实需求时再加入。
 
 ## 26. 缺陷分级
 
-- P0：越权、路径逃逸、远程代码执行越界、恶意更新、秘密泄露、重复写。
+- P0：越权、路径逃逸、远程代码执行越界、秘密泄露、重复写或备份/恢复破坏原数据。
 - P1：取消不完整被误报、状态/结果丢失、备份不可恢复、严重资源泄漏。
 - P2：非关键兼容、性能、UI/诊断问题。
 

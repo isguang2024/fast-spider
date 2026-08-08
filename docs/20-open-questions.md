@@ -12,15 +12,11 @@
 
 ## 2. Phase 1 编码前必须决定
 
-### Q1. 项目许可证
+### Q1. 项目许可证 — 仍真正开放
 
-**问题**：Fast Spider 核心仓库采用 Apache-2.0、MIT、双许可证，还是暂时私有不开源？
+当前仓库没有已确认的 `LICENSE` 文件，因此不能把 Apache-2.0 写成既成事实。个人自用阶段先保持当前状态即可；只有准备公开仓库、接受外部贡献或对外分发源码时，再明确选择 Apache-2.0/MIT 等许可证并补 LICENSE/NOTICE。
 
-**推荐默认值**：核心代码使用 **Apache-2.0**；第三方 NOTICE、SBOM 和依赖许可证在发布流程中自动生成。名称、Logo 和商标另行保留，不由代码许可证自动授权。
-
-**原因**：Apache-2.0 包含明确专利授权，适合 Go 基础设施项目，并与候选 MCP SDK、Playwright、OpenTelemetry 等宽松许可组件兼容。
-
-**不决定的后果**：不能安全接受外部贡献，也无法最终确定发布包的 LICENSE/NOTICE；因此在第一行业务代码进入仓库前必须确认。
+SBOM/许可证报告也不进入当前本机 release gate，更不会自动联网安装生成工具。公开分发成为真实需求后，再把许可证确认、第三方 NOTICE/SBOM 作为该发布流程的前置门槛。
 
 ### Q2. Go 版本和首批平台基线
 
@@ -137,17 +133,15 @@ Migration 使用内置、版本化、带 checksum 的小型 runner；不引入�
 
 这些是安全起点，不是规模承诺。所有值必须可配置、有合理上下界，并进入清理/水位测试。
 
-### Q12. 仓库治理
+### Q12. 仓库治理 — 当前已收敛
 
-**推荐默认值**：
+- `main` 为唯一正式主线；Phase 使用短生命周期 feature branch，合并后删除。
+- Contract 变更同时更新实现、测试和文档。
+- 不提交秘密、运行数据、浏览器 Profile、Artifact、本地数据库或构建副产物。
+- 当前单人项目不强制建设 GitHub Actions/商业 CI；`scripts/release-gate.sh` 是唯一门禁命令，覆盖 format、secret pattern、module verify、vet、tests、Windows/Linux builds 和核心 E2E。
+- 未来需要远程 CI 时直接调用同一 release gate，不复制第二套检查清单。
 
-- `main` 为唯一正式主线。
-- 短生命周期 feature branch/worktree，合并后删除。
-- Contract 变更必须同时包含生成结果、兼容测试和文档。
-- 不提交秘密、运行数据、浏览器 Profile、Artifact 或本地数据库。
-- Phase 1 建立最小 CI：format、vet/lint、unit、contract、license、secret scan、Linux/Windows build。
-
-是否接受外部贡献取决于 Q1；在此之前不创建复杂 CLA/多维护者流程。
+是否接受外部贡献仍取决于 Q1；在此之前不创建 CLA/多维护者流程。
 
 ## 3. 进入 Phase 2 前必须决定
 
@@ -264,19 +258,17 @@ Phase 6 只实现 `bridge_owned`。desktop-owned、可信 Hook、handoff/recover
 - Rust 全量 Node；只有 Go 平台原型明确失败才重新开启 ADR。
 - 移动端、P2P、实时远程桌面、音频、通用输入和任意 TCP 转发仍属于非目标，不因“以后决定”自动进入范围。
 
-## 10. 推荐的一次性确认包
+## 10. 当前实际状态
 
-Owner 接受以下组合即可进入 Phase 1：
+Phase 1–8 已经完成实现与真实门禁，早期“一次性确认包”不再作为后续开发输入。当前代码事实以 README、ADR 和 [19-roadmap.md](19-roadmap.md) 为准：
 
-1. Apache-2.0 核心许可证。
-2. Hub/Node 都使用 Go。
-3. JSON Schema 2020-12 作为唯一 Contract。
-4. WSS 443 + JSON 控制消息 + 二进制分块。
-5. 单 Hub + SQLite WAL + 本地 Artifact。
-6. Ed25519 Node 身份 + 短期设备凭据，未来可选 mTLS。
-7. 内置 Owner bootstrap + 本地 Owner 账户；外部 OIDC 后续。
-8. `coder/websocket` 与 SQLite Driver 先做窄原型再锁版本。
-9. Hub/Node 普通用户权限、Node 只出站、Local Bridge 默认关闭。
-10. Phase 1 只实现配对、连接、心跳、机器/能力发现和最小 MCP，不提前加入文件执行。
+1. Hub/Node 使用 Go，Hub 为单进程模块化单体，SQLite WAL + 本地 Artifact。
+2. Node 只主动连接 Hub；远程能力必须落到明确 Machine/Workspace。
+3. Local Bridge 默认随 Node 启用，Windows/Linux 统一 AF_UNIX/UDS；当前 OS 用户是本地信任边界，不存在独立 Local Client Token/Grant/Approval。
+4. Browser/截图不再额外叠 Workspace 权限；私网 Browser Origin 只需本机持久白名单。
+5. Codex 使用本机 `app-server --stdio`，当前只实现 bridge-owned；`write + shell` 是 Session create/send 的现有危险操作边界。
+6. Hub 运维使用手工版本检查和 `backup / backup-verify / restore`，不建设自动更新/安装器状态机。
+7. `scripts/release-gate.sh` / `--full` 是当前统一发布前门禁；不为 checklist 自动安装外部扫描工具。
+8. 当前真正仍开放的主要是许可证/公开分发、macOS、多用户、自动更新等未来需求；它们不应反向改变个人自用主线。
 
-接受不代表跳过验证；它只是允许按 [19-roadmap.md](19-roadmap.md) 启动 Phase 1 编码与原型门禁。
+后续若真实使用需求改变，再按“先修改范围/ADR，再改代码”的方式推进，不重新启用历史 Phase 0 的企业级假设。
