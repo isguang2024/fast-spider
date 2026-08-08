@@ -78,7 +78,7 @@ Phase 5 默认选择：
 3. Node 使用 stdio、Named Pipe 或 UDS 管理 sidecar；sidecar 不监听公网，也不直接接受 MCP/Local Client。
 4. 公共 `browser.automation` 只暴露固定动作和结构化 locator，不透传任意 Playwright/CDP 请求。
 5. Browser Session、Context、Page、Download 都使用 opaque ID，不返回 CDP WebSocket URL、调试端口、OS 句柄或 Profile 路径。
-6. 页面截图和桌面/窗口截图是不同权限。
+6. 页面截图和桌面/窗口截图使用不同 Capability，但个人 MVP 不再要求额外 Workspace 权限；都受 Machine/Workspace、大小、资源和 Artifact 边界约束。
 
 模式 B 不是 MVP。未来加入时作为独立高风险 Capability：用户本机显式启用，限定浏览器/Profile/域名/期限，有明显可见状态，不返回 Cookie 原文，并可立即撤销。
 
@@ -97,10 +97,11 @@ Phase 5 默认选择：
 
 - 允许经过策略的 HTTP/HTTPS 公网目标。
 - 阻止 `file:`、`javascript:`、危险自定义 scheme。
-- 阻止云元数据、link-local、loopback、RFC1918 和 ULA。
-- DNS 解析后、每次重定向和连接目标重新检查。
+- 阻止云元数据、link-local、危险/特殊地址。
+- 公网 HTTP/HTTPS/WS/WSS 默认允许；loopback、RFC1918、ULA、CGNAT 等本地/私网目标必须在 Node 本机加入精确 Origin 白名单。
+- DNS 解析后、重定向和子请求重新检查，私网白名单固定解析 IP，防 DNS rebinding。
 
-本地开发站点通过明确例外授权：绑定 workspaceId、host、port、scheme 和 expiresAt。浏览器在 Node 本机访问；Fast Spider 不做端口转发，也不向 Client 暴露本地服务。
+本地开发站点白名单持久绑定 workspaceId + scheme + host + port；配置一次后一直生效，直到用户本机删除。浏览器在 Node 本机访问；Fast Spider 不做端口转发，也不向 Client 暴露本地服务。
 
 ## 页面数据
 

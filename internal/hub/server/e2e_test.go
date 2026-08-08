@@ -1,8 +1,14 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -130,7 +136,7 @@ func TestPhase1EndToEnd(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	wantNames := []string{"artifact_get", "build_control", "capability_list", "code_search", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "shell_run", "workspace_list"}
+	wantNames := []string{"artifact_get", "browser_control", "build_control", "capability_list", "code_search", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "screenshot_take", "shell_run", "workspace_list"}
 	if stringJSON(names) != stringJSON(wantNames) {
 		t.Fatalf("MCP tools=%v want=%v", names, wantNames)
 	}
@@ -224,6 +230,9 @@ func TestPhase1EndToEnd(t *testing.T) {
 
 	if err := workspaceStore.SetPermissions(workspace.WorkspaceID, []string{"read", "write", "shell", "git-write", "build"}); err != nil {
 		t.Fatal(err)
+	}
+	if os.Getenv("FAST_SPIDER_SCREENSHOT_E2E") == "1" {
+		runScreenshotTakeE2E(t, ctx, mcpSession, mcpHTTP, httpServer.URL, state.MachineID, workspace.WorkspaceID, nodeDataDir)
 	}
 	editResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "file_edit", Arguments: map[string]any{
 		"machineId": state.MachineID, "workspaceId": workspace.WorkspaceID, "path": "hello.txt",
@@ -541,6 +550,235 @@ func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatal("condition did not become true before timeout")
+}
+
+type mcpToolCaller interface {
+	CallTool(context.Context, *mcp.CallToolParams) (*mcp.CallToolResult, error)
+}
+
+func runScreenshotTakeE2E(t *testing.T, ctx context.Context, session mcpToolCaller, httpClient *http.Client, hubURL, machineID, workspaceID, nodeDataDir string) {
+	t.Helper()
+	call := func(name string, arguments map[string]any) (map[string]any, error) {
+		result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: arguments})
+		if err != nil {
+			return nil, err
+		}
+		if result.IsError {
+			content, _ := json.Marshal(result.Content)
+			structured, _ := json.Marshal(result.StructuredContent)
+			return nil, fmt.Errorf("MCP tool %s returned an error: content=%s structured=%s", name, content, structured)
+		}
+		raw, err := json.Marshal(result.StructuredContent)
+		if err != nil {
+			return nil, err
+		}
+		var output map[string]any
+		if err := json.Unmarshal(raw, &output); err != nil {
+			return nil, err
+		}
+		return output, nil
+	}
+
+	list, err := call("screenshot_take", map[string]any{"machineId": machineID, "workspaceId": workspaceID, "action": "listDisplays"})
+	if err != nil {
+		t.Skipf("desktop screenshot session unavailable: %v", err)
+	}
+	result, ok := list["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("listDisplays missing result: %+v", list)
+	}
+	displays, ok := result["displays"].([]any)
+	if !ok || len(displays) == 0 {
+		t.Skipf("desktop screenshot session returned no displays: %+v", list)
+	}
+	firstDisplay, ok := displays[0].(map[string]any)
+	if !ok {
+		t.Fatalf("invalid display summary: %+v", displays[0])
+	}
+	displayIndex, ok := firstDisplay["index"].(float64)
+	if !ok {
+		t.Fatalf("display summary has no numeric index: %+v", firstDisplay)
+	}
+
+	screenshot, err := call("screenshot_take", map[string]any{
+		"machineId": machineID, "workspaceId": workspaceID, "action": "display", "displayIndex": int(displayIndex), "format": "png",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shotResult, ok := screenshot["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("display screenshot missing result: %+v", screenshot)
+	}
+	artifactID, _ := shotResult["artifactId"].(string)
+	if artifactID == "" || shotResult["contentType"] != "image/png" {
+		t.Fatalf("display screenshot artifact metadata=%+v", shotResult)
+	}
+	if size, ok := shotResult["sizeBytes"].(float64); !ok || size <= 0 || size > float64(32<<20) {
+		t.Fatalf("display screenshot size metadata=%+v", shotResult)
+	}
+
+	metadata, err := call("artifact_get", map[string]any{"action": "get", "artifactId": artifactID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadataResult, ok := metadata["result"].(map[string]any)
+	if !ok || metadataResult["artifactId"] != artifactID || metadataResult["contentType"] != "image/png" {
+		t.Fatalf("artifact_get metadata=%+v", metadata)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, hubURL+"/api/v1/artifacts/"+artifactID+"/content", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := httpClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("artifact content status=%s", response.Status)
+	}
+	content, err := io.ReadAll(io.LimitReader(response.Body, 32<<20+1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(content) == 0 || len(content) > 32<<20 {
+		t.Fatalf("artifact content size=%d", len(content))
+	}
+	config, format, err := image.DecodeConfig(bytes.NewReader(content))
+	if err != nil || format != "png" || config.Width <= 0 || config.Height <= 0 {
+		t.Fatalf("artifact content is not a valid PNG: format=%q config=%+v err=%v", format, config, err)
+	}
+	matches, err := filepath.Glob(filepath.Join(nodeDataDir, "screenshots", "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("Node screenshot temporary files remain: %v", matches)
+	}
+
+	if runtime.GOOS != "windows" {
+		return
+	}
+	windowPath := filepath.Join(t.TempDir(), "fast-spider-window-e2e.txt")
+	if err := os.WriteFile(windowPath, []byte("Fast Spider controlled window\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	windowProcess := exec.Command("notepad.exe", windowPath)
+	if err := windowProcess.Start(); err != nil {
+		t.Skipf("cannot start controlled Notepad window: %v", err)
+	}
+	defer func() {
+		if windowProcess.Process != nil {
+			_ = windowProcess.Process.Kill()
+		}
+		_ = windowProcess.Wait()
+	}()
+
+	windowTitlePart := filepath.Base(windowPath)
+	var windowSummary map[string]any
+	windowListDeadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(windowListDeadline) && windowSummary == nil {
+		windowsResult, listErr := call("screenshot_take", map[string]any{"machineId": machineID, "workspaceId": workspaceID, "action": "listWindows"})
+		if listErr != nil {
+			t.Skipf("window screenshot listing unavailable: %v", listErr)
+		}
+		windowsEnvelope, ok := windowsResult["result"].(map[string]any)
+		if !ok {
+			t.Fatalf("listWindows missing result: %+v", windowsResult)
+		}
+		windows, ok := windowsEnvelope["windows"].([]any)
+		if !ok {
+			t.Fatalf("listWindows missing windows: %+v", windowsResult)
+		}
+		for _, rawWindow := range windows {
+			candidate, ok := rawWindow.(map[string]any)
+			if !ok {
+				continue
+			}
+			title, _ := candidate["title"].(string)
+			if strings.Contains(title, windowTitlePart) {
+				windowSummary = candidate
+				break
+			}
+		}
+		if windowSummary == nil {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	if windowSummary == nil {
+		t.Skipf("controlled Notepad window did not appear in listWindows")
+	}
+	windowID, _ := windowSummary["windowId"].(string)
+	if windowID == "" || filepath.IsAbs(windowID) || strings.Contains(windowID, windowTitlePart) || strings.Contains(windowID, nodeDataDir) {
+		t.Fatalf("windowId is not an opaque token: %+v", windowSummary)
+	}
+
+	windowScreenshot, err := call("screenshot_take", map[string]any{
+		"machineId": machineID, "workspaceId": workspaceID, "action": "window", "windowId": windowID, "format": "png",
+	})
+	if err != nil {
+		t.Fatalf("controlled window screenshot failed for title=%q: %v", windowSummary["title"], err)
+	}
+	windowJSON := stringJSON(windowScreenshot)
+	if strings.Contains(windowJSON, windowPath) || strings.Contains(windowJSON, nodeDataDir) {
+		t.Fatalf("window screenshot leaked a local path: %s", windowJSON)
+	}
+	windowResult, ok := windowScreenshot["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("window screenshot missing result: %+v", windowScreenshot)
+	}
+	windowArtifactID, _ := windowResult["artifactId"].(string)
+	if windowArtifactID == "" || windowResult["contentType"] != "image/png" {
+		t.Fatalf("window screenshot artifact metadata=%+v", windowResult)
+	}
+	if size, ok := windowResult["sizeBytes"].(float64); !ok || size <= 0 || size > float64(32<<20) {
+		t.Fatalf("window screenshot size metadata=%+v", windowResult)
+	}
+	windowMetadata, err := call("artifact_get", map[string]any{"action": "get", "artifactId": windowArtifactID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	windowMetadataResult, ok := windowMetadata["result"].(map[string]any)
+	if !ok || windowMetadataResult["artifactId"] != windowArtifactID || windowMetadataResult["contentType"] != "image/png" {
+		t.Fatalf("window artifact_get metadata=%+v", windowMetadata)
+	}
+	windowRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, hubURL+"/api/v1/artifacts/"+windowArtifactID+"/content", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	windowResponse, err := httpClient.Do(windowRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer windowResponse.Body.Close()
+	if windowResponse.StatusCode != http.StatusOK {
+		t.Fatalf("window artifact content status=%s", windowResponse.Status)
+	}
+	windowContent, err := io.ReadAll(io.LimitReader(windowResponse.Body, 32<<20+1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(windowContent) == 0 || len(windowContent) > 32<<20 {
+		t.Fatalf("window artifact content size=%d", len(windowContent))
+	}
+	windowConfig, windowFormat, err := image.DecodeConfig(bytes.NewReader(windowContent))
+	if err != nil || windowFormat != "png" || windowConfig.Width <= 0 || windowConfig.Height <= 0 {
+		t.Fatalf("window artifact is not a valid PNG: format=%q config=%+v err=%v", windowFormat, windowConfig, err)
+	}
+	matches, err = filepath.Glob(filepath.Join(nodeDataDir, "screenshots", "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("Node window screenshot temporary files remain: %v", matches)
+	}
+
+	if _, err := call("screenshot_take", map[string]any{
+		"machineId": machineID, "workspaceId": workspaceID, "action": "window", "windowId": windowID + "tampered", "format": "png",
+	}); err == nil {
+		t.Fatal("tampered windowId was accepted")
+	}
 }
 
 func runE2EGit(t *testing.T, cwd string, args ...string) {

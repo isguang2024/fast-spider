@@ -28,21 +28,25 @@ var ErrNotEnrolled = errors.New("node is not enrolled")
 const maxHTTPResponseBytes = 1 << 20
 
 type Config struct {
-	DataDir       string
-	Version       string
-	AllowInsecure bool
-	Logger        *slog.Logger
+	DataDir           string
+	Version           string
+	AllowInsecure     bool
+	BrowserSidecarDir string
+	Logger            *slog.Logger
 }
 
 type Client struct {
-	cfg        Config
-	http       *http.Client
-	publicKey  ed25519.PublicKey
-	privateKey ed25519.PrivateKey
-	statePath  string
-	writeMu    sync.Mutex
-	jobs       *JobManager
-	requestSem chan struct{}
+	cfg            Config
+	http           *http.Client
+	publicKey      ed25519.PublicKey
+	privateKey     ed25519.PrivateKey
+	windowTokenKey [32]byte
+	statePath      string
+	writeMu        sync.Mutex
+	jobs           *JobManager
+	browser        *BrowserManager
+	requestSem     chan struct{}
+	screenshotSem  chan struct{}
 }
 
 type enrollResponse struct {
@@ -79,18 +83,32 @@ func New(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{
-		cfg:        cfg,
-		http:       &http.Client{Timeout: 20 * time.Second},
-		publicKey:  pub,
-		privateKey: priv,
-		statePath:  filepath.Join(cfg.DataDir, "state.json"),
-		jobs:       NewJobManager(cfg.DataDir),
-		requestSem: make(chan struct{}, 8),
-	}, nil
+	client := &Client{
+		cfg:            cfg,
+		http:           &http.Client{Timeout: 20 * time.Second},
+		publicKey:      pub,
+		privateKey:     priv,
+		windowTokenKey: windowTokenKey(priv),
+		statePath:      filepath.Join(cfg.DataDir, "state.json"),
+		jobs:           NewJobManager(cfg.DataDir),
+		requestSem:     make(chan struct{}, 8),
+		screenshotSem:  make(chan struct{}, 1),
+	}
+	client.browser = NewBrowserManager(cfg.DataDir, cfg.BrowserSidecarDir, cfg.Logger)
+	return client, nil
 }
 
 func (c *Client) State() (State, error) { return LoadState(c.statePath) }
+
+func (c *Client) Capabilities() []protocolv1.CapabilityDescriptor {
+	out := make([]protocolv1.CapabilityDescriptor, len(protocolv1.NodeCapabilities), len(protocolv1.NodeCapabilities)+2)
+	copy(out, protocolv1.NodeCapabilities)
+	out = append(out, protocolv1.ScreenshotCapabilityForOS(runtime.GOOS))
+	if c.browser != nil && c.browser.Available() == nil {
+		out = append(out, protocolv1.BrowserCapability)
+	}
+	return out
+}
 
 func (c *Client) Enroll(ctx context.Context, hubURL, enrollmentToken, displayName string) (State, error) {
 	normalized, err := c.normalizeHubURL(hubURL)
@@ -104,12 +122,12 @@ func (c *Client) Enroll(ctx context.Context, hubURL, enrollmentToken, displayNam
 	idempotency := enrollmentIdempotency(enrollmentToken, security.EncodePublicKey(c.publicKey))
 	payload := map[string]any{
 		"enrollmentToken": enrollmentToken,
-		"idempotencyKey": idempotency,
-		"displayName": displayName,
-		"os": runtime.GOOS,
-		"arch": runtime.GOARCH,
-		"nodeVersion": c.cfg.Version,
-		"publicKey": security.EncodePublicKey(c.publicKey),
+		"idempotencyKey":  idempotency,
+		"displayName":     displayName,
+		"os":              runtime.GOOS,
+		"arch":            runtime.GOARCH,
+		"nodeVersion":     c.cfg.Version,
+		"publicKey":       security.EncodePublicKey(c.publicKey),
 	}
 	var response enrollResponse
 	if err := c.postJSON(ctx, normalized+"/api/v1/enroll", "", payload, &response); err != nil {
@@ -123,10 +141,10 @@ func (c *Client) Enroll(ctx context.Context, hubURL, enrollmentToken, displayNam
 		return State{}, fmt.Errorf("hub public key fingerprint mismatch")
 	}
 	state := State{
-		HubURL: normalized,
-		MachineID: response.MachineID,
-		CredentialID: response.CredentialID,
-		HubPublicKey: response.HubPublicKey,
+		HubURL:         normalized,
+		MachineID:      response.MachineID,
+		CredentialID:   response.CredentialID,
+		HubPublicKey:   response.HubPublicKey,
 		HubFingerprint: response.HubFingerprint,
 	}
 	if err := SaveState(c.statePath, state); err != nil {
@@ -144,7 +162,7 @@ func (c *Client) issueDeviceToken(ctx context.Context, state State) (deviceToken
 	signature := ed25519.Sign(c.privateKey, protocolv1.DeviceTokenPayload(state.MachineID, nonce, timestamp))
 	payload := map[string]any{
 		"machineId": state.MachineID,
-		"nonce": nonce,
+		"nonce":     nonce,
 		"timestamp": timestamp,
 		"signature": security.EncodeSignature(signature),
 	}

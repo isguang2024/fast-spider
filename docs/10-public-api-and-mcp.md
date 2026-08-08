@@ -170,11 +170,15 @@ MCP 工具不暴露“任意文件路径写入”；所有 path 都是 Workspace
 
 ### 5.15 `browser_control`
 
-使用固定 `action` 枚举，指向受管 browserSessionId/contextId/pageId；不接受任意 Playwright/CDP 原始消息。真实浏览器 Profile 的操作必须显式标记并审批。
+Phase 5 当前固定 action：`launch`、`close`、`page.open`、`page.navigate`、`page.close`、`pages.list`、`click`、`type`、`press`、`wait`、`snapshot`、`screenshot`、`events`。
+
+调用必须显式提供 machineId、workspaceId；除 `launch` 外使用 opaque browserSessionId，页面动作再使用 opaque pageId。Node 只在本机安装 Playwright Sidecar + 受管 Chromium 后宣告 `browser.automation`。Browser 不再额外要求独立 Workspace 权限：公网网页默认可访问，localhost/私网 Origin 由 Node 本机持久白名单控制，远程不能新增白名单。
+
+不接受任意 JavaScript、`evaluate`、Playwright API、CDP 消息或现有浏览器 Profile。`screenshot` 结果直接返回 Artifact 元数据，不返回 Node 临时路径。
 
 ### 5.16 `screenshot_take`
 
-输入：targetType（desktop/display/window/page）、targetId、格式、质量和尺寸。输出 Job/Artifact；桌面/窗口截图单独授权。
+当前固定 action：`listDisplays`、`desktop`、`display`、`listWindows`、`window`。调用提供 machineId、workspaceId；workspaceId 仅用于确认当前 Workspace 仍启用并归属截图 Artifact，不再要求额外 `screenshot` 权限。窗口截图先用 `listWindows` 取得短期 opaque `windowId`，不暴露 OS 句柄；结果只返回尺寸与 Artifact 元数据，不返回 Node 临时路径。
 
 ### 5.17 `ai_control`
 
@@ -254,7 +258,7 @@ Provider-neutral：`providers.list`、`models.list`、`projects.list`、`session
 | screenshot_take | `capture:read` | screenshot action |
 | ai_control | `agent:control` | agent action |
 
-Scope 只是 Hub 第一层；Node 本地 grant 和 Approval 仍需通过。
+Scope 是 Hub 第一层；Node 继续执行 Workspace、路径、进程和网络等实际安全边界。个人使用场景不要求每个 Capability 再叠一层独立 grant，只有真正有本机副作用的写入/Shell/Git 网络/Build 等操作保留独立本机权限。
 
 ## 10. REST API
 

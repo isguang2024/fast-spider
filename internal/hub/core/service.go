@@ -21,8 +21,8 @@ import (
 )
 
 const (
-	bootstrapTTL  = 30 * time.Minute
-	enrollmentTTL = 10 * time.Minute
+	bootstrapTTL   = 30 * time.Minute
+	enrollmentTTL  = 10 * time.Minute
 	deviceTokenTTL = 24 * time.Hour
 	maxClockSkew   = 5 * time.Minute
 )
@@ -33,18 +33,18 @@ type Config struct {
 }
 
 type Service struct {
-	store       *store.Store
-	registry    *registry.Registry
-	hubPublic   ed25519.PublicKey
-	hubPrivate  ed25519.PrivateKey
+	store          *store.Store
+	registry       *registry.Registry
+	hubPublic      ed25519.PublicKey
+	hubPrivate     ed25519.PrivateKey
 	hubFingerprint string
-	dataDir     string
-	version     string
-	now         func() time.Time
+	dataDir        string
+	version        string
+	now            func() time.Time
 }
 
 type BootstrapResult struct {
-	OwnerID   string `json:"ownerId"`
+	OwnerID    string `json:"ownerId"`
 	OwnerToken string `json:"ownerToken"`
 }
 
@@ -92,17 +92,17 @@ type CapabilityCallError struct {
 func (e *CapabilityCallError) Error() string { return e.Code + ": " + e.Message }
 
 type MachineView struct {
-	MachineID    string                           `json:"machineId"`
-	DisplayName  string                           `json:"displayName"`
-	Status       string                           `json:"status"`
-	Online       bool                             `json:"online"`
-	RuntimeStatus string                          `json:"runtimeStatus,omitempty"`
-	OS           string                           `json:"os"`
-	Arch         string                           `json:"arch"`
-	NodeVersion  string                           `json:"nodeVersion"`
-	Generation   int64                            `json:"generation"`
-	LastSeenAt   *time.Time                       `json:"lastSeenAt,omitempty"`
-	Capabilities []protocolv1.CapabilityDescriptor `json:"capabilities,omitempty"`
+	MachineID     string                            `json:"machineId"`
+	DisplayName   string                            `json:"displayName"`
+	Status        string                            `json:"status"`
+	Online        bool                              `json:"online"`
+	RuntimeStatus string                            `json:"runtimeStatus,omitempty"`
+	OS            string                            `json:"os"`
+	Arch          string                            `json:"arch"`
+	NodeVersion   string                            `json:"nodeVersion"`
+	Generation    int64                             `json:"generation"`
+	LastSeenAt    *time.Time                        `json:"lastSeenAt,omitempty"`
+	Capabilities  []protocolv1.CapabilityDescriptor `json:"capabilities,omitempty"`
 }
 
 func New(st *store.Store, reg *registry.Registry, cfg Config) (*Service, error) {
@@ -112,24 +112,24 @@ func New(st *store.Store, reg *registry.Registry, cfg Config) (*Service, error) 
 		return nil, err
 	}
 	return &Service{
-		store: st,
-		registry: reg,
-		hubPublic: pub,
-		hubPrivate: priv,
+		store:          st,
+		registry:       reg,
+		hubPublic:      pub,
+		hubPrivate:     priv,
 		hubFingerprint: security.Fingerprint(pub),
-		dataDir: cfg.DataDir,
-		version: cfg.Version,
-		now: time.Now,
+		dataDir:        cfg.DataDir,
+		version:        cfg.Version,
+		now:            time.Now,
 	}, nil
 }
 
-func (s *Service) HubPublicKey() string { return security.EncodePublicKey(s.hubPublic) }
-func (s *Service) HubFingerprint() string { return s.hubFingerprint }
+func (s *Service) HubPublicKey() string              { return security.EncodePublicKey(s.hubPublic) }
+func (s *Service) HubFingerprint() string            { return s.hubFingerprint }
 func (s *Service) HubPrivateKey() ed25519.PrivateKey { return s.hubPrivate }
-func (s *Service) Version() string { return s.version }
-func (s *Service) Registry() *registry.Registry { return s.registry }
-func (s *Service) Store() *store.Store { return s.store }
-func (s *Service) DataDir() string { return s.dataDir }
+func (s *Service) Version() string                   { return s.version }
+func (s *Service) Registry() *registry.Registry      { return s.registry }
+func (s *Service) Store() *store.Store               { return s.store }
+func (s *Service) DataDir() string                   { return s.dataDir }
 
 func (s *Service) EnsureBootstrap(ctx context.Context) (string, error) {
 	hasOwner, err := s.store.HasOwner(ctx)
@@ -361,8 +361,9 @@ func (s *Service) RevokeMachine(ctx context.Context, ownerID, machineID, remoteA
 }
 
 func (s *Service) CapabilityCatalog() []protocolv1.CapabilityDescriptor {
-	out := make([]protocolv1.CapabilityDescriptor, len(protocolv1.NodeCapabilities))
+	out := make([]protocolv1.CapabilityDescriptor, len(protocolv1.NodeCapabilities), len(protocolv1.NodeCapabilities)+2)
 	copy(out, protocolv1.NodeCapabilities)
+	out = append(out, protocolv1.ScreenshotCapability, protocolv1.BrowserCapability)
 	return out
 }
 
@@ -394,13 +395,13 @@ func (s *Service) CallCapability(ctx context.Context, ownerID, machineID, worksp
 	defer cancel()
 	response, err := s.registry.Call(callCtx, machineID, protocolv1.CapabilityRequest{
 		MessageType: protocolv1.MessageCapabilityRequest,
-		RequestId: requestID,
-		Capability: capability,
-		Action: action,
+		RequestId:   requestID,
+		Capability:  capability,
+		Action:      action,
 		WorkspaceId: workspaceID,
-		Params: normalized,
-		Deadline: protocolv1.Timestamp(deadline),
-		Timestamp: protocolv1.Timestamp(s.now()),
+		Params:      normalized,
+		Deadline:    protocolv1.Timestamp(deadline),
+		Timestamp:   protocolv1.Timestamp(s.now()),
 	})
 	if err != nil {
 		if errors.Is(err, registry.ErrMachineOffline) {
@@ -426,6 +427,10 @@ func capabilityCallTimeout(capability, action string) time.Duration {
 		return 10 * time.Minute
 	case "git.repository/diff", "git.repository/stagedDiff", "git.repository/show":
 		return 5 * time.Minute
+	case "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/wait", "browser.automation/snapshot", "browser.automation/screenshot":
+		return 2 * time.Minute
+	case "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/window":
+		return 2 * time.Minute
 	case "job.control/watch":
 		return 30 * time.Second
 	default:
@@ -435,7 +440,7 @@ func capabilityCallTimeout(capability, action string) time.Duration {
 
 func shouldAuditCapability(capability, action string) bool {
 	switch capability + "/" + action {
-	case "file.write/edit", "shell.exec/run", "job.control/cancel", "git.repository/add", "git.repository/commit", "git.repository/fetch", "git.repository/pull", "git.repository/push", "git.repository/createWorktree", "git.repository/deleteWorktree", "build.profile/run":
+	case "file.write/edit", "shell.exec/run", "job.control/cancel", "git.repository/add", "git.repository/commit", "git.repository/fetch", "git.repository/pull", "git.repository/push", "git.repository/createWorktree", "git.repository/deleteWorktree", "build.profile/run", "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/screenshot", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/window":
 		return true
 	default:
 		return false
@@ -536,14 +541,22 @@ func ErrorCode(err error) string {
 		return callErr.Code
 	}
 	switch {
-	case errors.Is(err, store.ErrUnauthorized): return "UNAUTHORIZED"
-	case errors.Is(err, store.ErrExpired): return "EXPIRED"
-	case errors.Is(err, store.ErrConsumed): return "TOKEN_CONSUMED"
-	case errors.Is(err, store.ErrRevoked): return "REVOKED"
-	case errors.Is(err, store.ErrReplay): return "REPLAY_DETECTED"
-	case errors.Is(err, store.ErrConflict): return "CONFLICT"
-	case errors.Is(err, store.ErrNotFound): return "NOT_FOUND"
-	default: return "INTERNAL"
+	case errors.Is(err, store.ErrUnauthorized):
+		return "UNAUTHORIZED"
+	case errors.Is(err, store.ErrExpired):
+		return "EXPIRED"
+	case errors.Is(err, store.ErrConsumed):
+		return "TOKEN_CONSUMED"
+	case errors.Is(err, store.ErrRevoked):
+		return "REVOKED"
+	case errors.Is(err, store.ErrReplay):
+		return "REPLAY_DETECTED"
+	case errors.Is(err, store.ErrConflict):
+		return "CONFLICT"
+	case errors.Is(err, store.ErrNotFound):
+		return "NOT_FOUND"
+	default:
+		return "INTERNAL"
 	}
 }
 
@@ -566,10 +579,14 @@ func ErrorStatus(err error) int {
 		}
 	}
 	switch {
-	case errors.Is(err, store.ErrUnauthorized): return 401
-	case errors.Is(err, store.ErrExpired), errors.Is(err, store.ErrConsumed), errors.Is(err, store.ErrRevoked), errors.Is(err, store.ErrReplay), errors.Is(err, store.ErrConflict): return 409
-	case errors.Is(err, store.ErrNotFound): return 404
-	default: return 500
+	case errors.Is(err, store.ErrUnauthorized):
+		return 401
+	case errors.Is(err, store.ErrExpired), errors.Is(err, store.ErrConsumed), errors.Is(err, store.ErrRevoked), errors.Is(err, store.ErrReplay), errors.Is(err, store.ErrConflict):
+		return 409
+	case errors.Is(err, store.ErrNotFound):
+		return 404
+	default:
+		return 500
 	}
 }
 

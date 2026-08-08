@@ -22,6 +22,26 @@ const (
 	MessageCapabilityResponse = "capability.response"
 )
 
+var BrowserCapability = CapabilityDescriptor{
+	CapabilityId: "browser.automation", Version: "1.0",
+	Actions: []string{"launch", "close", "page.open", "page.navigate", "page.close", "pages.list", "click", "type", "press", "wait", "snapshot", "screenshot", "events"},
+}
+
+var ScreenshotCapability = CapabilityDescriptor{
+	CapabilityId: "screenshot.capture", Version: "1.0",
+	Actions: []string{"listDisplays", "desktop", "display", "listWindows", "window"},
+}
+
+func ScreenshotCapabilityForOS(goos string) CapabilityDescriptor {
+	capability := ScreenshotCapability
+	if goos != "windows" {
+		capability.Actions = []string{"listDisplays", "desktop", "display"}
+	} else {
+		capability.Actions = append([]string(nil), ScreenshotCapability.Actions...)
+	}
+	return capability
+}
+
 var NodeCapabilities = []CapabilityDescriptor{
 	{CapabilityId: "machine.status", Version: "1.0", Actions: []string{"report"}},
 	{CapabilityId: "workspace.registry", Version: "1.0", Actions: []string{"list"}},

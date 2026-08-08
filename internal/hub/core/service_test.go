@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"sync"
@@ -129,4 +130,56 @@ func TestEnrollmentDeviceTokenAndRevocation(t *testing.T) {
 	if _, err := service.AuthenticateDevice(ctx, tokenResult.DeviceToken); !errors.Is(err, store.ErrRevoked) {
 		t.Fatalf("revoked device token error=%v, want ErrRevoked", err)
 	}
+}
+
+func TestCapabilityCatalogIncludesBrowser(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	st, err := store.Open(ctx, filepath.Join(dataDir, "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	service, err := New(st, registry.New(), Config{DataDir: dataDir, Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundBrowser := false
+	foundScreenshot := false
+	for _, capability := range service.CapabilityCatalog() {
+		if capability.CapabilityId == protocolv1.BrowserCapability.CapabilityId {
+			foundBrowser = true
+		}
+		if capability.CapabilityId == protocolv1.ScreenshotCapability.CapabilityId {
+			foundScreenshot = true
+			if stringJSON(capability.Actions) != stringJSON(protocolv1.ScreenshotCapability.Actions) {
+				t.Fatalf("Hub screenshot catalog actions=%v want=%v", capability.Actions, protocolv1.ScreenshotCapability.Actions)
+			}
+		}
+	}
+	if !foundBrowser {
+		t.Fatal("Hub capability catalog omitted browser.automation")
+	}
+	if !foundScreenshot {
+		t.Fatal("Hub capability catalog omitted screenshot.capture")
+	}
+}
+
+func TestScreenshotWindowCallDeadlineAndAuditPolicy(t *testing.T) {
+	if got := capabilityCallTimeout("screenshot.capture", "window"); got != 2*time.Minute {
+		t.Fatalf("screenshot window deadline=%s, want 2m", got)
+	}
+	for _, action := range []string{"desktop", "display", "window"} {
+		if !shouldAuditCapability("screenshot.capture", action) {
+			t.Fatalf("screenshot.capture/%s is not audited", action)
+		}
+	}
+	if shouldAuditCapability("screenshot.capture", "listWindows") {
+		t.Fatal("screenshot.capture/listWindows should not create a capture audit entry")
+	}
+}
+
+func stringJSON(value any) string {
+	raw, _ := json.Marshal(value)
+	return string(raw)
 }

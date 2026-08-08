@@ -22,7 +22,24 @@ Fast Spider 的浏览器能力用于开发页面验证、自动化测试、结�
 - 默认接管用户现有浏览器登录态。
 - 向 Client 暴露任意原始 CDP 命令。
 
-## 2. 浏览器控制模式
+## 2. Phase 5 当前实现状态
+
+当前已落地的 Browser MVP 边界：
+
+- Go `BrowserManager` + 私有 Playwright `1.62.0` Chromium Sidecar。
+- Sidecar 只通过 Node 子进程 stdio 通信，不监听 TCP/CDP 端口。
+- 每个 Node 当前最多一个受管 Browser Session、最多 8 个页面；Session 空闲 10 分钟自动关闭。
+- Browser 不再额外叠加 Workspace `browser` 权限；Workspace 本身启用即可使用。
+- 公网 HTTP/HTTPS/WS/WSS 默认可访问；localhost、RFC1918、ULA、CGNAT 等本地/私网目标需要在 Node 本机加入一次持久 Origin 白名单。
+- 当前固定动作：`launch/close/page.open/page.navigate/page.close/pages.list/click/type/press/wait/snapshot/screenshot/events`。
+- 不公开任意 JavaScript、`evaluate`、CDP、Playwright 原始 API、下载、Trace/HAR/视频。
+- 页面截图写入 Node 私有临时目录后立即上传 Hub Artifact；远程结果不返回绝对路径。
+- Browser Origin 白名单只在本机维护；普通 Workspace 权限变化不会无意义地中断正在运行的 Browser Session。
+- Sidecar/Playwright/受管 Chromium 任一缺失时，该 Node 不宣告 `browser.automation`，其余 Node 能力不受影响。
+
+一次性桌面、显示器和窗口截图已通过同一个 `screenshot_take` 开放并直接返回 Artifact；窗口目标通过 `listWindows` 返回的短期 opaque `windowId` 选择，不暴露 OS 句柄。
+
+## 3. 浏览器控制模式
 
 ### A. Node 管理隔离 Browser Profile
 
@@ -37,7 +54,7 @@ Fast Spider 的浏览器能力用于开发页面验证、自动化测试、结�
 - 需要扩展、远程调试端口或浏览器原生连接。
 - 隐私、权限、版本兼容和误操作风险更高。
 
-## 3. 决策
+## 4. 决策
 
 MVP 选择模式 A：**Node 管理的隔离 Profile**。模式 B 是后续独立高风险能力，必须：
 
@@ -49,7 +66,7 @@ MVP 选择模式 A：**Node 管理的隔离 Profile**。模式 B 是后续独立
 
 详见 [adr/0005-browser-control.md](adr/0005-browser-control.md)。
 
-## 4. 技术实现选项
+## 5. 技术实现选项
 
 ### Playwright Adapter
 
@@ -73,7 +90,7 @@ MVP 选择模式 A：**Node 管理的隔离 Profile**。模式 B 是后续独立
 
 只作为底层协议参考或实现少量诊断能力。不能直接公开给 MCP Client，否则会绕过 URL、下载、脚本和数据边界。
 
-## 5. Browser Manager
+## 6. Browser Manager
 
 Node 内部组件：
 
@@ -90,7 +107,7 @@ Node 内部组件：
 
 浏览器进程必须加入 Node Job/进程管理，取消或 Node 退出时可清理。
 
-## 6. 标识
+## 7. 标识
 
 对外只使用 opaque 标识：
 
@@ -106,7 +123,7 @@ artifactId
 
 不得把调试端口、OS 句柄、Profile 绝对路径或 CDP WebSocket URL返回给远程 Client。
 
-## 7. 浏览器 Session 生命周期
+## 8. 浏览器 Session 生命周期
 
 ```text
 created
@@ -125,7 +142,7 @@ lost
 - Node 断线时是否继续由 Job 策略决定；默认浏览器测试可以本机继续并缓冲结果。
 - Node 重启后 MVP 不尝试恢复旧浏览器进程，Session 标记 lost/closed 并清理。
 
-## 8. 固定动作
+## 9. 固定动作
 
 ### 生命周期
 
@@ -162,7 +179,7 @@ lost
 
 Locator 使用结构化形式：role、label、text、testId、CSS（受限）、XPath（默认不推荐）。Client 不传可执行回调。
 
-## 9. 受限页面脚本
+## 10. 受限页面脚本
 
 MVP 优先不公开任意 `evaluate`。必要场景使用：
 
@@ -173,7 +190,7 @@ MVP 优先不公开任意 `evaluate`。必要场景使用：
 
 后续 `evaluateRestricted` 必须使用独立 Action 权限，并记录脚本摘要/hash。
 
-## 10. 可访问性树与页面摘要
+## 11. 可访问性树与页面摘要
 
 默认给 AI 返回结构化、有限的页面快照，而不是整个 DOM：
 
@@ -193,38 +210,48 @@ optional bounded text excerpts
 - iframe 跨源边界明确标记。
 - 完整 HTML 只有独立授权并作为 Artifact 返回。
 
-## 11. 网络安全策略
+## 12. 网络安全策略
 
-### 11.1 默认阻止
+### 12.1 默认阻止
 
 - `file:`、`javascript:`、`data:`（导航场景）、自定义危险 scheme。
 - 云元数据地址和已知 link-local 管理地址。
-- 未授权的 loopback、RFC1918、ULA 和本机服务。
-- DNS 解析后落入被阻止网段的域名。
-- 重定向到被阻止地址。
+- 未授权的 loopback、RFC1918、ULA、CGNAT 和本机服务。
+- Link-local 和已知云元数据地址；即使用户尝试授权也拒绝已知危险元数据地址。
+- 重定向、页面子资源和 WebSocket 切换到未授权 Origin。
 
-### 11.2 本地开发页面
+### 12.2 本地开发页面与 Origin 授权
 
 Fast Spider 的核心场景需要测试本地开发服务，因此允许通过明确策略授权：
 
 ```text
 workspaceId
-allowedHosts: 127.0.0.1/localhost/specific dev hostname
-allowedPorts: 3000, 5173, ...
-allowedSchemes: http/https
-expiresAt
+origin: http://127.0.0.1:3000
+pinnedIPs: [127.0.0.1]
 ```
 
-授权仅应用于该 Node 的受管浏览器，不等于任意端口转发，也不让远程 Client直接连接本地端口。浏览器在 Node 本机访问，结果通过结构化事件/截图返回。
+规则：
 
-### 11.3 DNS Rebinding
+- 授权的是精确 canonical Origin（scheme + host + port），不是 host 通配符。
+- 只允许 `http/https` Origin；`ws/wss` 使用对应 `http/https` Origin 策略。
+- 白名单持久保存，直到用户本机删除；不再要求反复续期。
+- 同一 Workspace 最多保存 32 个本地/私网 Origin。
+- loopback/RFC1918/ULA 可用于本地开发，但必须显式本机授权；link-local 与已知元数据地址继续拒绝。
 
-- 每次连接前解析并校验 IP。
-- 重定向和新请求重新校验。
-- 记录 hostname 与实际 IP；短时缓存并防止解析突变绕过。
-- 浏览器自身代理设置由 Node 控制，不能由页面任意修改。
+授权仅应用于该 Node 的受管浏览器，不等于任意端口转发，也不让远程 Client 直接连接本地端口。浏览器在 Node 本机访问，结果通过结构化事件/截图返回。
 
-## 12. 下载
+### 12.3 DNS Rebinding
+
+当前实现采用双层绑定：
+
+- Node 授权 Origin 时解析并保存完整 pinned IP 集合。
+- `page.open/page.navigate` 前 Go 再解析并要求 IP 集合完全一致。
+- Sidecar 对本地/私网 HTTP/HTTPS 子请求和 WS/WSS 请求再次解析并要求集合完全一致；公网请求只要不落入危险地址即可直接访问。
+- Chromium 启动时为授权 hostname 注入精确 host-resolver rule，将真实浏览器连接绑定到 pinned IP，减少检查到建连之间的 DNS TOCTOU 窗口。
+- 同一 hostname 的多个授权 Origin 若持有不一致 pinned 地址，Sidecar 拒绝启动，要求重新授权。
+- 删除或修改本地 Origin 后，新导航立即按 Node 当前白名单检查；需要刷新 Sidecar 子资源策略时关闭并重新 launch 即可，不为此维护额外短期授权状态机。
+
+## 13. 下载
 
 - 下载默认进入该 Browser Session 的隔离临时目录。
 - 文件名只作逻辑名称，真实路径由 Node 生成。
@@ -234,7 +261,7 @@ expiresAt
 - 可执行文件、脚本和压缩包标记高风险。
 - 清理失败和磁盘占用进入运维告警。
 
-## 13. 浏览器测试 Job
+## 14. 浏览器测试 Job
 
 ```mermaid
 sequenceDiagram
@@ -270,7 +297,7 @@ sequenceDiagram
 
 取消时 Node 先中断动作，再关闭 Context/Browser 和 sidecar子进程；清理不完整不得虚报 canceled。
 
-## 14. 测试步骤 Schema
+## 15. 测试步骤 Schema
 
 多步骤测试不接受任意代码文件直接执行，首版可使用固定步骤：
 
@@ -288,7 +315,7 @@ sequenceDiagram
 
 敏感输入可通过短期 secret reference 传入；Event、日志和截图策略必须防止明文泄露。
 
-## 15. 桌面截图
+## 16. 桌面截图
 
 ### 支持目标
 
@@ -311,7 +338,7 @@ sequenceDiagram
 - Artifact 使用短保留和访问复核。
 - 多显示器、DPI、HDR 和敏感窗口需要平台专项测试。
 
-## 16. 平台实现
+## 17. 平台实现
 
 ### Windows
 
@@ -335,7 +362,7 @@ Go 库不足时使用窄接口 helper process/DLL，不把策略放入 native �
 
 使用系统 Screen Recording 权限和 API，明确首次授权与签名/notarization要求。
 
-## 17. 图片格式与限制
+## 18. 图片格式与限制
 
 | 格式 | 场景 |
 |---|---|
@@ -350,14 +377,14 @@ Go 库不足时使用窄接口 helper process/DLL，不把策略放入 native �
 - 截图编码在受限 worker 中完成，防止大图内存峰值。
 - 图片写入临时文件后 hash 校验并上传 Artifact。
 
-## 18. Trace、HAR 与视频
+## 19. Trace、HAR 与视频
 
 - Trace/HAR 是 Phase 5 后续可选 Artifact，默认关闭。
 - HAR 可能包含 URL、Header、Cookie 和请求体，必须脱敏并单独授权。
 - 浏览器测试视频不是桌面远控视频，但仍有隐私风险；不进入 MVP。
 - 任何录制功能都必须有明显状态、时限和清理策略。
 
-## 19. 资源与清理
+## 20. 资源与清理
 
 - 每 Node 默认最多一个 Browser Job。
 - Browser Session 空闲默认 10 分钟关闭。
@@ -366,7 +393,7 @@ Go 库不足时使用窄接口 helper process/DLL，不把策略放入 native �
 - 浏览器崩溃不使 Node 主进程退出；返回 `BROWSER_CRASHED` 并收集受限诊断。
 - 浏览器/driver 更新与 Node 版本建立兼容矩阵，避免自动升级破坏测试。
 
-## 20. 验收
+## 21. 验收
 
 - 隔离 Profile 中无法读取用户日常浏览器 Cookie。
 - 可打开明确授权的本地开发 URL，执行点击/输入/等待并返回页面截图。

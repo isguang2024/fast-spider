@@ -16,7 +16,7 @@ var shellEnvironmentAllowlist = map[string]struct{}{
 	"NVM_HOME": {}, "NVM_SYMLINK": {}, "PATH": {}, "PATHEXT": {},
 	"PNPM_HOME": {}, "PROCESSOR_ARCHITECTURE": {}, "PROGRAMDATA": {},
 	"PROGRAMFILES": {}, "PROGRAMFILES(X86)": {}, "PROGRAMW6432": {},
-	"RUSTUP_HOME": {}, "SHELL": {}, "SSH_AUTH_SOCK": {}, "SYSTEMROOT": {}, "TEMP": {},
+	"RUSTUP_HOME": {}, "SHELL": {}, "SSH_AUTH_SOCK": {}, "SYSTEMDRIVE": {}, "SYSTEMROOT": {}, "TEMP": {},
 	"TMP": {}, "TMPDIR": {}, "TZ": {}, "USER": {}, "USERDOMAIN": {},
 	"USERNAME": {}, "USERPROFILE": {}, "WINDIR": {},
 }

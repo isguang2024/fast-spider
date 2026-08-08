@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 它通过长期部署在公网服务器上的 Hub，将 GPT、Claude、Codex、Web Console、CLI 或其他自动化客户端的请求，安全路由到用户明确授权的 Windows、Linux，未来也包括 macOS 节点。Node 只主动建立 HTTPS/WSS 443 出站连接，不默认开放局域网或公网端口。
 
-> 当前状态：Phase 4 代码开发闭环已落地。除 Phase 1–3 的设备、Workspace、文件编辑和 Shell Job 外，Node 已接入系统 Git、受管 worktree、本机 Build Profile，以及 Hub 内容寻址 Artifact 存储。Git 写、Git 网络、Git hooks/filter 与 Build 都是独立本机权限；Artifact 支持 1 MiB 分块、断点续传、SHA-256/大小校验、配额和 30 天清理。浏览器、截图与 Local Bridge 尚未开放。
+> 当前状态：Phase 4 远程开发闭环已完成；Phase 5 正在落地隔离浏览器与一次性截图。Node 已加入可选 Playwright Chromium Sidecar；浏览器和桌面截图不再额外叠加 Workspace 权限。公网网页默认可访问，本机/局域网开发地址只需在 Node 本机加入一次持久 Origin 白名单；危险 scheme、link-local 和云元数据地址仍会阻止。Sidecar 仅通过 stdio 接入，不开放 CDP/监听端口，不控制用户现有浏览器 Profile。截图直接进入 Hub Artifact，不向远程暴露 Node 临时路径。
 
 ## 核心定位
 
@@ -82,7 +82,7 @@ Fast Spider 不是远程桌面，也不是通用内网穿透软件：
 
 ## 设计约束
 
-- 默认拒绝；用户、机器、Workspace、Capability、Action 五级授权。
+- 机器与 Workspace 是主要授权边界；只有文件写入、Shell、Git 网络/副作用和 Build 等真正危险操作保留独立本机权限，避免个人使用时层层授权。
 - Hub 与 Node 双重校验，Node 是最终裁决者。
 - 所有危险操作可审计、可取消、可超时、可限制输出。
 - Workspace ID、Machine ID、Session ID 均为 opaque 标识。
@@ -133,6 +133,10 @@ go run ./cmd/node workspace-add \
 # go run ./cmd/node workspace-permission --workspace '<workspaceId>' --allow read,write,shell
 # Git 写 + 网络 + hooks/filter + Build Profile：
 # go run ./cmd/node workspace-permission --workspace '<workspaceId>' --allow read,write,shell,git-write,git-network,git-hooks,build
+# Browser/桌面截图无需再单独授权。普通公网网页默认可访问；只有 localhost/局域网开发地址需要在 Node 本机加一次持久白名单：
+# go run ./cmd/node workspace-browser-allow --workspace '<workspaceId>' --origin 'http://127.0.0.1:3000'
+# go run ./cmd/node workspace-browser-list --workspace '<workspaceId>'
+# 不再使用 TTL；只有地址变化时才需要 remove/allow。
 #
 # Build/Test Profile 的真实 argv 也只能在 Node 本机登记：
 # go run ./cmd/node workspace-profile-set --workspace '<workspaceId>' --profile test --name Test --argv-json '["go","test","./..."]' --timeout-seconds 600
@@ -142,8 +146,14 @@ go run ./cmd/node workspace-add \
 # go run ./cmd/node workspace-enable  --workspace '<workspaceId>'
 # go run ./cmd/node workspace-remove  --workspace '<workspaceId>'
 
-# 8. 启动 Node；本地 HTTP 验证必须再次显式允许明文 Hub
-go run ./cmd/node run --allow-insecure
+# 8. 可选：安装隔离浏览器 Sidecar（仅需要 browser_control 时）
+# cd sidecar/browser
+# npm install --no-package-lock
+# npx playwright install chromium
+# cd ../..
+#
+# 启动 Node；本地 HTTP 验证必须再次显式允许明文 Hub
+go run ./cmd/node run --allow-insecure --browser-sidecar-dir ./sidecar/browser
 
 # 9. 查看机器
 go run ./cmd/spiderctl machine-list \
@@ -151,7 +161,7 @@ go run ./cmd/spiderctl machine-list \
   --allow-insecure
 ```
 
-远程 MCP 当前固定工具面为：`machine_list`、`machine_get`、`capability_list`、`workspace_list`、`file_read`、`code_search`、`file_edit`、`shell_run`、`job_watch`、`job_cancel`、`git_control`、`build_control`、`artifact_get`。远程文件工具只接受 `machineId + workspaceId + 相对路径`。`git_control` 只接受白名单 action，不接受任意 Git flags；`build_control` 只能运行 Node 本机登记的 Profile；`artifact_get` 对外只提供高层 get/uploadFile/uploadJobLog，原始分块上传是 Node↔Hub 内部协议。
+远程 MCP 当前固定工具面为 15 个：`machine_list`、`machine_get`、`capability_list`、`workspace_list`、`file_read`、`code_search`、`file_edit`、`shell_run`、`job_watch`、`job_cancel`、`git_control`、`build_control`、`artifact_get`、`browser_control`、`screenshot_take`。`browser_control` 仍是一个固定工具，通过 action 选择 launch/open/navigate/click/type/press/wait/snapshot/screenshot/events/close；不暴露任意 JavaScript、CDP 或 Playwright API。公网浏览默认可用，本地/私网 Origin 由 Node 本机持久白名单控制。`screenshot_take` 当前开放 `listDisplays/desktop/display/listWindows/window`，不再要求独立截图权限；窗口只需先列出一次拿 opaque `windowId`，结果同样只返回 Artifact。具体 Node 只有在 Sidecar、Playwright npm 包和受管 Chromium 都安装完成时才宣告 `browser.automation`。
 
 本机 HTTP/WS 仅用于开发验证；生产仍按文档要求使用 HTTPS/WSS 443，并建议 Hub 只监听 loopback，由 TLS 反向代理暴露公网入口。Shell/Git 仍以 Node 普通 OS 用户权限运行，不是 chroot/container 沙箱。Git commit/pull/push/worktree 会显式检查 hooks/filter 风险；受管 worktree 创建在 Node 数据目录并注册成新的默认只读 Workspace，不在原仓库目录里嵌套。
 

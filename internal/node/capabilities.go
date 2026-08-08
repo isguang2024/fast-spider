@@ -118,6 +118,10 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 		result, err = c.artifactUploadFile(ctx, req.WorkspaceId, req.Params)
 	case "artifact.store/uploadJobLog":
 		result, err = c.artifactUploadJobLog(ctx, req.WorkspaceId, req.Params)
+	case "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/page.close", "browser.automation/pages.list", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/wait", "browser.automation/snapshot", "browser.automation/screenshot", "browser.automation/events":
+		result, err = c.browserControl(ctx, req.WorkspaceId, req.Action, req.Params)
+	case "screenshot.capture/listDisplays", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/listWindows", "screenshot.capture/window":
+		result, err = c.screenshotCapture(ctx, req.WorkspaceId, req.Action, req.Params)
 	default:
 		response.Error = protocolError("UNSUPPORTED_CAPABILITY", "capability or action is not available", false)
 		return response
@@ -460,6 +464,10 @@ func capabilityError(err error) *protocolv1.ProtocolError {
 	if errors.As(err, &hubErr) {
 		return protocolError(hubErr.Code, hubErr.Message, hubErr.Retryable)
 	}
+	var browserErr *BrowserActionError
+	if errors.As(err, &browserErr) {
+		return protocolError(browserErr.Code, browserErr.Message, browserErr.Retryable)
+	}
 	switch {
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		return protocolError("DEADLINE_EXCEEDED", "request deadline exceeded or canceled", true)
@@ -494,9 +502,21 @@ func capabilityError(err error) *protocolv1.ProtocolError {
 	case errors.Is(err, ErrNotRepository):
 		return protocolError("NOT_A_REPOSITORY", "workspace root is not a Git repository", false)
 	case errors.Is(err, ErrGitHooksDenied):
-		return protocolError("HOOK_RISK_REQUIRES_APPROVAL", "active Git hooks require local git-hooks permission", false)
+		return protocolError("GIT_HOOKS_DISABLED", "active Git hooks or executable Git filters require local git-hooks permission", false)
 	case errors.Is(err, ErrGitOutputTooLarge):
 		return protocolError("OUTPUT_LIMIT", "Git output exceeds the inline limit", false)
+	case errors.Is(err, ErrBrowserUnavailable):
+		return protocolError("BROWSER_UNAVAILABLE", "browser sidecar or managed browser runtime is not installed", false)
+	case errors.Is(err, ErrBrowserOriginDenied), errors.Is(err, ErrBrowserOriginUnsafe):
+		return protocolError("BROWSER_NETWORK_DENIED", "browser origin is not authorized by local policy", false)
+	case errors.Is(err, ErrBrowserDNSChanged):
+		return protocolError("BROWSER_DNS_CHANGED", "browser origin DNS no longer matches the locally pinned addresses", false)
+	case errors.Is(err, ErrWindowTokenInvalid):
+		return protocolError("WINDOW_NOT_FOUND", "window ID is invalid or expired", false)
+	case errors.Is(err, ErrScreenshotUnavailable):
+		return protocolError("SCREENSHOT_UNAVAILABLE", "screenshot capture is unavailable in the current graphical session", false)
+	case errors.Is(err, ErrScreenshotTooLarge):
+		return protocolError("SCREENSHOT_TOO_LARGE", "desktop screenshot exceeds the configured resource limit", false)
 	case errors.Is(err, ErrNotRegularFile):
 		return protocolError("NOT_REGULAR_FILE", "path is not a regular file", false)
 	case errors.Is(err, ErrBinaryOrInvalidUTF8):

@@ -50,8 +50,8 @@
 - MUST 对外只暴露 opaque workspaceId 和显示名。
 - MUST 保存规范化根路径、Git 根、文件系统特征和允许能力。
 - MUST 防御 `..`、绝对路径注入、符号链接、junction、大小写和重解析点逃逸。
-- MUST 支持启用、禁用、删除授权和权限变化。
-- MUST 在授权收紧后使旧 Session/Capability Lease 失效。
+- MUST 支持启用、禁用、删除授权和少量实际需要的本机权限变化。
+- Workspace 禁用/删除必须立即阻止新请求；不为普通个人使用维护通用 Capability Lease 状态机。
 - SHOULD 支持子目录规则、只读 Workspace 和排除模式。
 
 ### 3.4 文件和代码
@@ -86,14 +86,14 @@
 - MUST 支持 status、diff、staged diff、log、show、branch、当前分支和 worktree 列表。
 - SHOULD 支持受管 worktree 创建/删除、add、commit、fetch、pull、push。
 - 读操作可按 Workspace 策略默认允许。
-- commit、pull、push、删除 worktree 必须有独立 Action 权限；策略可要求本机确认。
+- Git 权限按实际副作用分为 `git-write`、`git-network`、`git-hooks` 三类即可，不再为 commit/pull/push/deleteWorktree 分别堆一层权限。
 - 默认调用系统 Git，以兼容现有凭据、配置、LFS 和 hooks；高风险 hooks 行为必须可见并记录。
 
 ### 3.7 Job、事件和 Artifact
 
 - MUST 将长操作建模为 Job，而非保持单个同步 HTTP 请求。
 - MUST 支持事件序号、游标、重连续读、背压和保留窗口。
-- MUST 提供 accepted、progress、stdout、stderr、diff、artifact、approval_required、warning、result、error、heartbeat 事件。
+- MUST 提供 accepted、progress、stdout、stderr、diff、artifact、warning、result、error、heartbeat 等实际运行事件；`approval_required` 仅在未来多人/审批模式真正引入时再加入主链路。
 - MUST 支持日志、Diff、报告、截图、压缩包的分块上传、哈希校验和大小限制。
 - MUST 自动清理过期 Job 事件、日志和 Artifact，不能无限增长。
 - SHOULD 支持断点续传。
@@ -120,10 +120,10 @@
 
 ### 4.1 安全
 
-- 默认拒绝；用户、客户端、机器、Workspace、Capability、Action 多层授权。
-- Hub 与 Node 双重校验，Node 为最终裁决者。
+- 当前个人自托管 MVP 以 Owner 身份、Machine 和 Workspace 为主要授权边界；写入、Shell、Git 网络/副作用、Build 等真正危险操作才保留额外本机权限。
+- Hub 与 Node 双重校验，Node 为最终裁决者；不为每个 Capability/Action 再建立一套通用 Grant/Lease 引擎。
 - TLS 必需；设备密钥可轮换和吊销；可选 mTLS。
-- 高风险授权必须短时、可撤销，并可要求本机确认。
+- 高风险能力必须可在 Node 本机关闭/收紧；只有未来多人或不可信 Client 场景再评估逐次 Approval。
 - 更新包必须签名并支持回滚。
 - 审计记录必须防止普通用户静默修改。
 

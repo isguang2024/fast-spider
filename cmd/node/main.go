@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/isguang2024/fast-spider/internal/node"
 	"github.com/isguang2024/fast-spider/internal/version"
@@ -49,6 +50,12 @@ func main() {
 		runWorkspaceProfileList(os.Args[2:])
 	case "workspace-profile-remove":
 		runWorkspaceProfileRemove(os.Args[2:])
+	case "workspace-browser-allow":
+		runWorkspaceBrowserAllow(os.Args[2:])
+	case "workspace-browser-list":
+		runWorkspaceBrowserList(os.Args[2:])
+	case "workspace-browser-remove":
+		runWorkspaceBrowserRemove(os.Args[2:])
 	case "version":
 		fmt.Println(version.Version)
 	default:
@@ -82,8 +89,9 @@ func runNode(logger *slog.Logger, args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
 	allowInsecure := fs.Bool("allow-insecure", false, "allow a previously enrolled http/ws Hub only for local development")
+	browserSidecarDir := fs.String("browser-sidecar-dir", "", "optional Playwright sidecar directory; defaults to FAST_SPIDER_BROWSER_SIDECAR_DIR or ./sidecar/browser")
 	_ = fs.Parse(args)
-	client, err := node.New(node.Config{DataDir: *dataDir, Version: version.Version, AllowInsecure: *allowInsecure, Logger: logger})
+	client, err := node.New(node.Config{DataDir: *dataDir, Version: version.Version, AllowInsecure: *allowInsecure, BrowserSidecarDir: *browserSidecarDir, Logger: logger})
 	fatalIf(err)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -208,6 +216,48 @@ func runWorkspaceProfileRemove(args []string) {
 	printJSON(map[string]any{"workspaceId": *workspaceID, "profileId": *profileID, "removed": true})
 }
 
+func runWorkspaceBrowserAllow(args []string) {
+	fs := flag.NewFlagSet("workspace-browser-allow", flag.ExitOnError)
+	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
+	workspaceID := fs.String("workspace", "", "opaque workspaceId")
+	origin := fs.String("origin", "", "persistent local/private http(s) origin to allow, including port when non-default")
+	_ = fs.Parse(args)
+	if *workspaceID == "" || *origin == "" {
+		fatalIf(errors.New("--workspace and --origin are required"))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	record, err := node.NewWorkspaceStore(*dataDir).AuthorizeBrowserOrigin(ctx, *workspaceID, *origin)
+	fatalIf(err)
+	printJSON(record)
+}
+
+func runWorkspaceBrowserList(args []string) {
+	fs := flag.NewFlagSet("workspace-browser-list", flag.ExitOnError)
+	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
+	workspaceID := fs.String("workspace", "", "opaque workspaceId")
+	_ = fs.Parse(args)
+	if *workspaceID == "" {
+		fatalIf(errors.New("--workspace is required"))
+	}
+	record, err := node.NewWorkspaceStore(*dataDir).Resolve(*workspaceID)
+	fatalIf(err)
+	printJSON(map[string]any{"workspaceId": *workspaceID, "origins": record.BrowserOrigins})
+}
+
+func runWorkspaceBrowserRemove(args []string) {
+	fs := flag.NewFlagSet("workspace-browser-remove", flag.ExitOnError)
+	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
+	workspaceID := fs.String("workspace", "", "opaque workspaceId")
+	origin := fs.String("origin", "", "exact http(s) origin to revoke")
+	_ = fs.Parse(args)
+	if *workspaceID == "" || *origin == "" {
+		fatalIf(errors.New("--workspace and --origin are required"))
+	}
+	fatalIf(node.NewWorkspaceStore(*dataDir).RevokeBrowserOrigin(*workspaceID, *origin))
+	printJSON(map[string]any{"workspaceId": *workspaceID, "origin": *origin, "removed": true})
+}
+
 func runWorkspaceRemove(args []string) {
 	fs := flag.NewFlagSet("workspace-remove", flag.ExitOnError)
 	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
@@ -251,5 +301,5 @@ func fatalIf(err error) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: fast-spider-node <enroll|run|status|workspace-add|workspace-list|workspace-enable|workspace-disable|workspace-permission|workspace-profile-set|workspace-profile-list|workspace-profile-remove|workspace-remove|version> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: fast-spider-node <enroll|run|status|workspace-add|workspace-list|workspace-enable|workspace-disable|workspace-permission|workspace-profile-set|workspace-profile-list|workspace-profile-remove|workspace-browser-allow|workspace-browser-list|workspace-browser-remove|workspace-remove|version> [flags]")
 }

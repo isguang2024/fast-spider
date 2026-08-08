@@ -35,8 +35,8 @@
 | `git.repository` | status, diff, log, show, commit, pull, push, worktree | R1–R3 | Phase 4 |
 | `build.test` | runProfile | R2 | Phase 4 |
 | `artifact.transfer` | create, uploadChunk, complete, getMetadata | R1–R3 | Phase 3–4 |
-| `screenshot.capture` | desktop, display, window, page | R3 | Phase 5 |
-| `browser.automation` | launch, navigate, click, type, snapshot, close | R2–R3 | Phase 5 |
+| `screenshot.capture` | listDisplays, desktop, display, listWindows, window | R2 | Phase 5 |
+| `browser.automation` | launch, page.open/navigate/close, pages.list, click, type, press, wait, snapshot, screenshot, events, close | R2–R3 | Phase 5（Browser MVP 已落地） |
 | `agent.control` | providers, models, projects, session.*, run.* | R1–R3 | Phase 6 |
 | `local.client` | register, list, revoke | R2–R3 | Phase 6 |
 | `node.update` | check, download, install, rollback | R3–R4 | Phase 7 |
@@ -229,7 +229,7 @@
 
 - 超时：读 30 秒；网络操作默认 10 分钟。
 - 当前实现 Git Diff/Show 在线预览上限 128 KiB；超出后同一次 Git 读取同时落临时文件并上传 Artifact，单 Artifact 上限 100 MiB，避免二次执行导致 Diff 漂移。
-- 错误：`GIT_NOT_FOUND`、`NOT_A_REPOSITORY`、`DIRTY_WORKTREE`、`HOOK_RISK_REQUIRES_APPROVAL`、`AUTH_REQUIRED`、`NON_FAST_FORWARD`、`MERGE_CONFLICT`。
+- 错误：`GIT_NOT_FOUND`、`NOT_A_REPOSITORY`、`DIRTY_WORKTREE`、`GIT_HOOKS_DISABLED`、`AUTH_REQUIRED`、`NON_FAST_FORWARD`、`MERGE_CONFLICT`。
 - 凭据和 remote URL 脱敏；不返回完整 credential helper 输出。
 
 ## 10. 构建与测试
@@ -264,27 +264,31 @@
 
 | Action | 请求 | 风险/确认 | 输出 |
 |---|---|---|---|
-| `desktop` | format, quality, maxDimension | R3，默认可见提示 | Artifact |
-| `display` | displayId, crop | R3 | Artifact |
-| `window` | windowId, includeFrame | R3 | Artifact |
-| `page` | browserSessionId, fullPage | R2/R3 | Artifact |
+| `listDisplays` | 无 | R1 | active display index 与边界 |
+| `desktop` | format, quality | R2，Node 本机记录操作 | Artifact |
+| `display` | displayIndex, format, quality | R2 | Artifact |
+| `listWindows` | 无 | R1 | 短期 opaque windowId、标题与边界；Windows 当前支持 |
+| `window` | windowId, format, quality | R2 | Artifact；Windows 当前支持 |
 
-- 格式：PNG 默认；JPEG/WebP 用于大图压缩。
-- 最大原始像素和编码大小必须限制。
-- 锁屏、无桌面会话或权限不足返回明确错误。
-- 错误：`CAPTURE_PERMISSION_DENIED`、`NO_INTERACTIVE_DESKTOP`、`DISPLAY_NOT_FOUND`、`WINDOW_NOT_FOUND`、`CAPTURE_TOO_LARGE`。
+- Browser page screenshot 由 `browser.automation/screenshot` 完成，不与 OS 截图 Action 混用。
+- 格式当前只开放 PNG（默认）和 JPEG；JPEG quality 为 20–95。
+- desktop/display 原始像素上限 25MP，编码文件上限 32 MiB；窗口同样执行像素/编码上限。
+- 每个 Node 同时最多执行一个 OS 截图，避免并发压垮图形栈/Wayland Portal。
+- Windows `windowId` 为 5 分钟 HMAC opaque token，绑定 workspaceId、HWND 及 PID+Window Class 身份摘要；不暴露原始 HWND。
+- Windows 当前为个人版简化实现：Node 进程内直接调用同步 `PrintWindow`，并由单槽 screenshot semaphore 限制同一时间最多一个 OS 截图；极少数应用若使 `PrintWindow` 长时间阻塞，只占用该截图槽/调用线程，不阻塞文件、Shell、Git 或 Browser 等其他能力。若后续实测兼容性或阻塞成为问题，再升级为窄接口可杀 helper，不提前增加常驻组件。
+- 锁屏、无图形会话、Linux 当前请求 window、窗口关闭/最小化/过期 token 返回明确错误。
+- 主要错误：`SCREENSHOT_UNAVAILABLE`、`SCREENSHOT_TOO_LARGE`、`WINDOW_NOT_FOUND`。
 
 ## 13. 浏览器自动化
 
 `browser.automation` 默认只控制 Node 创建的隔离 Profile。
 
-代表 actions：`launch`、`contexts`、`pages`、`open`、`navigate`、`click`、`type`、`key`、`wait`、`snapshot`、`evaluateRestricted`、`screenshot`、`downloads`、`consoleLogs`、`networkErrors`、`close`。
+当前 actions：`launch`、`close`、`page.open`、`page.navigate`、`page.close`、`pages.list`、`click`、`type`、`press`、`wait`、`snapshot`、`screenshot`、`events`。
 
-- 权限：隔离浏览器 R2；连接现有真实浏览器 R3。
-- 确认：首次访问真实登录态必须明确确认。
+- 隔离浏览器不再额外叠加 Workspace 权限；Workspace 启用即可使用。未来若支持连接现有真实浏览器，再单独作为高风险能力处理。
 - 单动作默认 30 秒；测试 Job 最大 30 分钟。
 - 脚本执行只允许受限表达式/预定义动作；不默认提供任意本机 Node.js 执行。
-- URL 策略阻止 `file:`、危险 scheme、云元数据和受限内网地址；访问本地开发站点需 Workspace/策略明确允许。
+- URL 策略阻止 `file:`、危险 scheme、云元数据和 link-local；公网默认可访问，localhost/私网开发站点需 Node 本机持久 Origin 白名单。
 - 错误：`BROWSER_UNAVAILABLE`、`PROFILE_DENIED`、`NAVIGATION_BLOCKED`、`ELEMENT_NOT_FOUND`、`PAGE_CLOSED`、`DOWNLOAD_DENIED`。
 
 ## 14. Agent 控制

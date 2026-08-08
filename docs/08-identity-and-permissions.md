@@ -2,18 +2,17 @@
 
 ## 1. 安全目标
 
-Fast Spider 的授权不能退化为“拿到 Hub Token 就能控制所有 Node”。每次操作都必须绑定并验证：
+Fast Spider 的授权不能退化为“拿到 Hub Token 就能控制所有 Node”，但个人自托管 MVP 也不需要把每个 Action 都做成企业级审批系统。当前实际边界是：
 
 ```text
-User / Client
+Owner / Client 身份
 → Machine
 → Workspace
-→ Capability
-→ Action
-→ 可选参数风险与短期 Approval
+→ 少量真正危险的本机权限（write / shell / git-* / build）
+→ 固定参数、路径、网络与资源安全检查
 ```
 
-Hub 进行第一层资格判断；Node 使用本地事实进行第二层判断并拥有最终拒绝权。任何外部协议都不能以绝对路径、Node 名称或 UI 选择状态替代 Workspace 授权。
+Hub 进行身份与资源归属判断；Node 使用本地 Workspace 和运行时事实进行最终裁决。浏览器、截图、读取等常用能力不再额外叠一层独立 grant。任何外部协议仍不能以绝对路径、Node 名称或 UI 选择状态替代 Workspace 授权。
 
 ## 2. 身份实体
 
@@ -28,8 +27,8 @@ Hub 进行第一层资格判断；Node 使用本地事实进行第二层判断�
 | Workspace | `workspaceId` | Node 本地 Registry 解析 | 对外 opaque，不暴露路径 |
 | Local Client | `localClientId` | Named Pipe/UDS OS 身份 + Token/密钥 | 不复用 Hub OAuth Token |
 | Session | `sessionId` | 继承创建者与边界 | 只是会话，不扩大权限 |
-| Approval | `approvalId` | 用户/本机明确决定 | 针对风险摘要的一次决定 |
-| Capability Lease | `leaseId` | 由策略和 Approval 签发 | 短时、窄边界授权 |
+| Approval | `approvalId` | 未来多人/高风险模式可选 | 当前个人 MVP 不进入正常执行链路 |
+| Capability Lease | `leaseId` | 未来多人模式可选 | 当前个人 MVP 不实现通用 Lease 状态机 |
 
 ## 3. Owner 模式与未来多用户
 
@@ -37,12 +36,12 @@ Hub 进行第一层资格判断；Node 使用本地事实进行第二层判断�
 
 - 一个实例至少有一个 Owner。
 - Owner 可以配对/吊销机器、查看审计和配置策略。
-- Owner 不是“自动允许所有 Action”；高风险操作仍受 Node 本地策略与确认约束。
-- 外部 MCP Client 只获得被授予的 scope 和资源边界，不继承 Owner 的 Web Session 权限。
+- Owner 对已配对 Machine 和已启用 Workspace 拥有正常使用权；写入、Shell、Git 网络/副作用和 Build 仍受 Node 本地开关约束。
+- 外部 MCP Client 仍受认证 scope、Machine/Workspace 归属和 Node 本地边界限制，不继承 Owner 的 Web Session 凭据。
 
 ### 未来多用户
 
-预留 `organizationId` 和 role，但不在 MVP 实现复杂 RBAC。未来角色可为 Owner、Admin、Operator、Viewer；实际授权仍落到资源和 Action grant，不只依赖角色名。
+预留 `organizationId` 和 role，但不在 MVP 实现复杂 RBAC。未来如果真的进入多人共享场景，再根据实际需求决定是否需要 Owner、Admin、Operator、Viewer 和细粒度资源授权；当前代码不为这些角色提前设计执行分支。
 
 ## 4. 认证域
 
@@ -76,137 +75,85 @@ Hub 进行第一层资格判断；Node 使用本地事实进行第二层判断�
 - loopback HTTP 默认关闭；开启时必须使用短期 Token、Host/Origin 校验和 127.0.0.1/::1 绑定。
 - Local Client 不因为在本机就自动获得所有 Workspace。
 
-## 5. Grant 模型
+## 5. 当前个人模式权限模型
 
-Grant 是长期或中期策略记录：
+MVP 不实现通用 Grant 表、策略 DSL、Capability Lease 或逐 Action Approval。实际判断只保留几层：
 
-```json
-{
-  "subjectType": "client",
-  "subjectId": "cli_opaque",
-  "machineId": "mach_opaque",
-  "workspaceId": "ws_opaque",
-  "capability": "file.system",
-  "actions": ["list", "stat", "read"],
-  "effect": "allow",
-  "conditions": {
-    "workspaceRevisionAtLeast": 8,
-    "maxRisk": "R1",
-    "source": ["remote_mcp"],
-    "timeWindow": null
-  },
-  "expiresAt": null
-}
-```
+- Owner/Client 身份有效，Machine 属于该 Owner 且在线。
+- 请求必须使用 opaque `machineId + workspaceId`；Workspace 在 Node 本机存在且启用。
+- 读取、搜索、隔离浏览器和一次性截图直接使用 Workspace 基础授权。
+- `write`、`shell`、`git-write`、`git-network`、`git-hooks`、`build` 是当前少量额外本机权限。
+- 每个 Capability 仍执行自己的参数白名单、路径限制、URL/SSRF、并发、大小、deadline 和幂等检查。
+- Node 永远可以拒绝请求；Hub 不能绕过 Node 本地边界。
 
-### 5.1 默认拒绝
+这套模型的目标是让个人机器“配置一次就正常用”，而不是每次操作都弹确认或维护短期授权。
 
-没有匹配 allow 即拒绝。显式 deny 优先于 allow，用于紧急封锁或局部排除。
+## 6. 未来多人模式
 
-### 5.2 匹配维度
+只有出现以下真实需求时，再通过 ADR 引入 Grant/Lease/Approval：
 
-- organization/user/client/localClient。
-- machineId。
-- workspaceId。
-- capabilityId + version range。
-- action。
-- origin（remote MCP、Web Console、CLI、Local Bridge）。
-- 风险等级、时间、并发、参数约束。
+- 多个互不信任用户或团队共享同一 Hub/Node。
+- 需要按 Client、角色、时间窗口精细授权。
+- 需要合规审批、双人确认或临时第三方访问。
 
-MVP 不支持通用策略脚本或可执行表达式，避免策略引擎本身成为复杂攻击面。条件使用固定、可审计字段。
-
-## 6. Capability Lease
-
-Lease 用于把一次审批或近期授权限定在窄范围：
-
-| 字段 | 规则 |
-|---|---|
-| subject | 精确到 user/client |
-| machine/workspace | 必须固定，不允许 wildcard 扩大 |
-| capability/action | 精确或小集合 |
-| riskDigest | 绑定规范化参数/副作用摘要 |
-| allowedCount | 默认 1，可设置少量次数 |
-| expiresAt | 默认分钟级 |
-| workspaceRevision | 必须匹配当前 revision |
-| issuer | Hub Approval 或 Node local approval |
-| nonce | 防止重放 |
-
-Lease 不是 Bearer 超级 Token。Hub 转发时携带引用和签名上下文；Node 仍要查本地策略和 revision。
+未来扩展不得改变两个基础原则：Workspace 路径仍只由 Node 本机解析；Node 仍拥有最终拒绝权。当前代码不为未来模式预埋长期双路径执行逻辑。
 
 ## 7. 权限校验流程
 
 ```mermaid
 flowchart TD
-    A[收到外部请求] --> B{客户端认证有效?}
+    A[收到外部请求] --> B{Client/Owner 认证有效?}
     B -- 否 --> X1[拒绝 AUTH_REQUIRED]
-    B -- 是 --> C[规范化 capability/action/params]
-    C --> D{machineId 与 workspaceId 明确?}
-    D -- 否 --> X2[拒绝 TARGET_REQUIRED]
-    D -- 是 --> E{Hub grant 允许?}
-    E -- 否 --> X3[拒绝 HUB_POLICY_DENIED]
-    E -- 是 --> F{需要 Hub Approval/Lease?}
-    F -- 是且缺失 --> W[Job waiting_for_approval]
-    F -- 否或有效 --> G[路由到认证 Node 连接]
-    G --> H{Node machineId/generation 有效?}
-    H -- 否 --> X4[拒绝 NODE_IDENTITY_MISMATCH]
-    H -- 是 --> I[Node 查本地 Workspace Registry]
-    I --> J{Workspace active 且 revision 匹配?}
-    J -- 否 --> X5[拒绝 WORKSPACE_REVOKED]
-    J -- 是 --> K[路径/参数安全解析]
-    K --> L{Node local grant 允许?}
-    L -- 否 --> X6[拒绝 NODE_POLICY_DENIED]
-    L -- 是 --> M{需要本机确认?}
-    M -- 是 --> N[显示目标、风险和期限]
-    N --> O{用户允许?}
-    O -- 否/超时 --> X7[拒绝 APPROVAL_DENIED/EXPIRED]
-    O -- 是 --> P[重新校验参数、revision、deadline]
-    M -- 否 --> P
-    P --> Q{资源/并发/限额允许?}
-    Q -- 否 --> X8[拒绝 NODE_BUSY/LIMIT_EXCEEDED]
-    Q -- 是 --> R[Capability Engine 执行并审计]
+    B -- 是 --> C{Machine 属于当前 Owner 且在线?}
+    C -- 否 --> X2[拒绝 MACHINE_NOT_FOUND/OFFLINE]
+    C -- 是 --> D[路由到认证 Node]
+    D --> E{Workspace 存在且启用?}
+    E -- 否 --> X3[拒绝 WORKSPACE_NOT_FOUND/DISABLED]
+    E -- 是 --> F{该动作需要额外本机权限?}
+    F -- 是且未开启 --> X4[拒绝 PERMISSION_DENIED]
+    F -- 否或已开启 --> G[路径/参数/网络/资源校验]
+    G --> H{校验通过?}
+    H -- 否 --> X5[返回结构化错误]
+    H -- 是 --> I[Capability Engine 执行]
 ```
 
-任何 Approval 返回后必须重新校验，而不是从中断点无条件继续。
+## 8. 会话上下文
 
-## 8. 安全会话上下文
+MCP/Web 后续可以保存“当前 Machine/Workspace”以减少重复参数，但它只是易用性上下文：
 
-MCP/Web 可以创建“当前机器/Workspace”上下文以减少重复参数，但它必须：
-
-- 由 Hub 生成并签名。
-- 绑定 userId、clientId、machineId、workspaceId、Workspace revision 和 expiresAt。
-- 只减少目标选择，不扩大 grant。
 - 不包含绝对路径。
-- Workspace 禁用、权限变化、Client 吊销或 Session 结束时失效。
-- 工具仍可显式覆盖目标，但覆盖值必须重新授权。
+- 不扩大 Workspace 或额外本机权限。
+- Workspace 禁用/删除、Machine 吊销或 Session 结束后失效。
+- 显式覆盖目标时仍重新检查 Machine/Workspace 归属。
 
-UI 中的“已打开 Workspace”不是权限本身。
+UI 中的“已打开 Workspace”不是新的权限对象。
 
 ## 9. Action 权限建议
 
 ### 文件
 
-- `file.read`、`code.search`：只读 grant。
-- `file.write`、`file.edit`、`file.applyPatch`：独立写 grant。
-- `file.deleteRecoverable`：独立 grant。
-- `file.purge`：MVP 默认拒绝或本机逐次确认。
+- `file.read`、`code.search`：Workspace 启用即可。
+- `file.write`、`file.edit`、`file.applyPatch`：统一使用 `write` 本机权限。
+- 删除能力若后续加入，优先可恢复删除；永久删除再单独评估，不提前做审批系统。
 
 ### Shell
 
 - `shell.run.argv` 与 `shell.run.profile` 分开。
 - Profile 白名单可以允许常规 test/build。
 - 任意 shell string、后台任务、网络工具和系统目录访问提升风险。
-- 提权永远不能仅由 Hub grant 自动允许。
+- 提权不进入普通远程执行链路；Hub 不能把普通 Shell 升级成管理员/root。
 
 ### Git
 
-- read、stage、commit、network、worktree-delete 分开。
-- push/pull/commit 可按 Workspace 设置短期 Lease。
+- 读操作使用 Workspace 基础授权。
+- 写操作统一 `git-write`，联网操作统一 `git-network`，可能执行 hooks/filter/driver 的操作使用 `git-hooks`。
+- 不再为 commit/pull/push/worktree-delete 各建独立权限或短期 Lease。
 
 ### 浏览器/截图
 
-- 隔离浏览器与用户现有浏览器分开。
-- 页面截图与桌面/窗口截图分开。
-- 访问真实登录态、本地网络或下载执行文件是高风险 Action。
+- 当前隔离浏览器和一次性截图使用 Workspace 基础授权，不再要求额外 `browser`/`screenshot` 权限。
+- 公网浏览默认可用；localhost/私网 Origin 只需本机加入一次持久白名单。
+- 接管用户现有浏览器 Profile、持续录屏或远控仍不进入 MVP；如果未来加入，再作为独立高风险能力设计。
 
 ### Agent
 
@@ -214,20 +161,16 @@ UI 中的“已打开 Workspace”不是权限本身。
 - session share/handoff 单独授权。
 - Agent 调用其他 Agent 受 hopLimit、correlationId 和发起者权限约束。
 
-## 10. Approval 展示
+## 10. 本机可见性
 
-确认界面至少显示：
+当前个人 MVP 不做逐次 Approval 弹窗，但本机仍应让用户看得懂正在发生什么：
 
-- 发起用户和客户端。
-- 来源（远程 MCP、本地 Client、Web Console）。
-- 机器与 Workspace 显示名。
-- capability/action。
-- 结构化影响摘要，如文件数量、命令、Git remote、浏览器 URL。
-- 风险等级和为什么需要确认。
-- 允许一次、允许短时间或拒绝；不得默认“永久允许所有”。
-- deadline 和 Lease 期限。
+- 能查看已授权 Workspace、实际 Root 和额外本机权限。
+- 能看到当前运行中的 Shell/Build/Git 网络/Browser 等长任务。
+- 错误和日志不隐藏真实目标，但敏感 Token/凭据必须脱敏。
+- 紧急情况下可以禁用 Workspace、停止 Node 或吊销 Machine。
 
-敏感参数可以部分脱敏，但不能脱敏到用户无法判断风险。
+未来多人模式如引入 Approval，再单独定义确认界面与期限，不把这套交互提前塞进个人模式。
 
 ## 11. 撤销与失效
 
@@ -236,9 +179,8 @@ UI 中的“已打开 Workspace”不是权限本身。
 | 用户/Client 吊销 | Token 和新请求失效；运行 Job 按策略取消 |
 | Machine 吊销 | 关闭连接，拒绝重连和新事件 |
 | Device Credential 吊销 | 对应凭据失效；machine 可用新凭据重连 |
-| Workspace 禁用/删除 | revision 增加，旧 Session/Lease 失效 |
-| Grant 收紧 | 新请求立即生效；相关 queued/waiting Job 重新评估 |
-| Lease 过期/使用完 | 不可再次使用 |
+| Workspace 禁用/删除 | 新请求立即拒绝；运行中的相关能力按各自取消/清理规则结束 |
+| 本机额外权限收紧 | 新请求立即生效；长 Job 按现有周期 guard 重新检查 |
 | Hub 紧急锁定 | 停止新执行，只保留管理员恢复路径 |
 | Node 本地暂停 | Hub allow 也不能绕过 |
 
@@ -260,10 +202,9 @@ userId / clientId / localClientId
 organizationId
 machineId / credentialId / connectionId
 workspaceId / workspaceRevision
-capability / action / risk
-approvalId / leaseId
+capability / action
 requestId / jobId / traceId / correlationId
-policy decision at Hub and Node
+Hub identity/resource decision + Node local decision
 result / side-effect knowledge / timestamps
 ```
 
@@ -280,4 +221,4 @@ result / side-effect knowledge / timestamps
 
 ## 15. MVP 策略实现
 
-MVP 使用关系表 + 固定决策函数，不引入 OPA、通用 DSL 或远程策略服务。等出现真实复杂组织策略需求后，再通过 ADR 评估外部策略引擎；即使引入，Node 本地最终裁决和固定安全底线不可外包。
+MVP 只使用 Owner/Machine 归属、Node Workspace Registry、少量额外本机权限和固定决策函数。不创建通用 Grant/Lease/Approval 数据表，也不引入 OPA、通用 DSL 或远程策略服务。等真正出现多人共享和细粒度授权需求后再通过 ADR 评估；即使未来扩展，Node 本地最终裁决和固定安全底线不可外包。

@@ -38,15 +38,16 @@ type BuildProfileRecord struct {
 }
 
 type WorkspaceRecord struct {
-	WorkspaceID   string               `json:"workspaceId"`
-	DisplayName   string               `json:"displayName"`
-	Root          string               `json:"root"`
-	Enabled       bool                 `json:"enabled"`
-	Revision      int64                `json:"revision"`
-	Permissions   []string             `json:"permissions"`
-	BuildProfiles []BuildProfileRecord `json:"buildProfiles,omitempty"`
-	CreatedAt     time.Time            `json:"createdAt"`
-	UpdatedAt     time.Time            `json:"updatedAt"`
+	WorkspaceID    string                `json:"workspaceId"`
+	DisplayName    string                `json:"displayName"`
+	Root           string                `json:"root"`
+	Enabled        bool                  `json:"enabled"`
+	Revision       int64                 `json:"revision"`
+	Permissions    []string              `json:"permissions"`
+	BuildProfiles  []BuildProfileRecord  `json:"buildProfiles,omitempty"`
+	BrowserOrigins []BrowserOriginRecord `json:"browserOrigins,omitempty"`
+	CreatedAt      time.Time             `json:"createdAt"`
+	UpdatedAt      time.Time             `json:"updatedAt"`
 }
 
 type workspaceRegistryFile struct {
@@ -55,13 +56,14 @@ type workspaceRegistryFile struct {
 }
 
 type LocalWorkspaceSummary struct {
-	WorkspaceID     string   `json:"workspaceId"`
-	DisplayName     string   `json:"displayName"`
-	Root            string   `json:"root"`
-	Enabled         bool     `json:"enabled"`
-	Revision        int64    `json:"revision"`
-	Permissions     []string `json:"permissions"`
-	BuildProfileIDs []string `json:"buildProfileIds,omitempty"`
+	WorkspaceID     string                 `json:"workspaceId"`
+	DisplayName     string                 `json:"displayName"`
+	Root            string                 `json:"root"`
+	Enabled         bool                   `json:"enabled"`
+	Revision        int64                  `json:"revision"`
+	Permissions     []string               `json:"permissions"`
+	BuildProfileIDs []string               `json:"buildProfileIds,omitempty"`
+	BrowserOrigins  []BrowserOriginSummary `json:"browserOrigins,omitempty"`
 }
 
 type WorkspaceStore struct{ path string }
@@ -136,9 +138,13 @@ func (s *WorkspaceStore) ListLocal() ([]LocalWorkspaceSummary, error) {
 			profiles = append(profiles, profile.ProfileID)
 		}
 		sort.Strings(profiles)
+		origins := make([]BrowserOriginSummary, 0, len(item.BrowserOrigins))
+		for _, origin := range item.BrowserOrigins {
+			origins = append(origins, BrowserOriginSummary{Origin: origin.Origin, PinnedIPs: append([]string(nil), origin.PinnedIPs...)})
+		}
 		out = append(out, LocalWorkspaceSummary{
 			WorkspaceID: item.WorkspaceID, DisplayName: item.DisplayName, Root: item.Root, Enabled: item.Enabled,
-			Revision: item.Revision, Permissions: append([]string(nil), item.Permissions...), BuildProfileIDs: profiles,
+			Revision: item.Revision, Permissions: append([]string(nil), item.Permissions...), BuildProfileIDs: profiles, BrowserOrigins: origins,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].DisplayName < out[j].DisplayName })

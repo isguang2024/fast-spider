@@ -4,11 +4,64 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
+
+func TestClientCapabilitiesAdvertiseOSSpecificScreenshot(t *testing.T) {
+	for _, descriptor := range protocolv1.NodeCapabilities {
+		if descriptor.CapabilityId == protocolv1.ScreenshotCapability.CapabilityId {
+			t.Fatal("screenshot capability must not be part of the static NodeCapabilities baseline")
+		}
+	}
+
+	client, err := New(Config{DataDir: t.TempDir(), Version: "capability-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var advertised []protocolv1.CapabilityDescriptor
+	for _, descriptor := range client.Capabilities() {
+		if descriptor.CapabilityId == protocolv1.ScreenshotCapability.CapabilityId {
+			advertised = append(advertised, descriptor)
+		}
+	}
+	if len(advertised) != 1 {
+		t.Fatalf("advertised screenshot descriptors=%d, want 1", len(advertised))
+	}
+	want := protocolv1.ScreenshotCapabilityForOS(runtime.GOOS)
+	got := advertised[0]
+	if got.CapabilityId != want.CapabilityId || got.Version != want.Version || len(got.Actions) != len(want.Actions) {
+		t.Fatalf("advertised screenshot capability=%+v, want=%+v", got, want)
+	}
+	for index := range want.Actions {
+		if got.Actions[index] != want.Actions[index] {
+			t.Fatalf("advertised screenshot actions=%v, want=%v", got.Actions, want.Actions)
+		}
+	}
+
+	linux := protocolv1.ScreenshotCapabilityForOS("linux")
+	for _, action := range linux.Actions {
+		if action == "listWindows" || action == "window" {
+			t.Fatalf("Linux screenshot capability falsely advertises window action: %v", linux.Actions)
+		}
+	}
+	windows := protocolv1.ScreenshotCapabilityForOS("windows")
+	for _, action := range []string{"listWindows", "window"} {
+		found := false
+		for _, advertisedAction := range windows.Actions {
+			if advertisedAction == action {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("Windows screenshot capability omitted %q: %v", action, windows.Actions)
+		}
+	}
+}
 
 func TestPhase2CapabilityReadSearchAndDenials(t *testing.T) {
 	dataDir := t.TempDir()

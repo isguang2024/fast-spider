@@ -114,9 +114,9 @@ flowchart LR
 - Node 只出站连接；默认无公网/局域网监听。
 - TLS 必需，每台设备独立身份，一次性短时配对码。
 - 可轮换、可吊销设备密钥；可选 mTLS。
-- 默认拒绝的用户、Client、机器、Workspace、Capability、Action 授权。
-- Hub 与 Node 双重校验，Node 最终裁决。
-- 高风险操作短期授权和本机可见确认。
+- 当前个人 MVP 以 Owner/Client 身份、Machine、Workspace 为主要边界；写入、Shell、Git 网络/副作用、Build 等危险能力额外由 Node 本机开关控制。
+- Hub 与 Node 双重校验，Node 最终裁决；不依赖通用 Grant/Lease/Approval 引擎才能安全运行。
+- 高风险操作必须可在 Node 本机整体关闭/收紧，并保持可见、可取消和可审计。
 - 服务默认普通用户运行；不自动提权。
 - 签名更新与可回滚安装。
 - Token、日志、环境变量和错误脱敏。
@@ -134,9 +134,9 @@ flowchart LR
 
 - **场景**：攻击者控制 Hub 进程/数据库，向 Node 发送任意请求、窃取 Artifact 或篡改审批。
 - **风险**：Critical。
-- **控制**：Node 本地 Workspace Registry；Node 独立 grant 和风险底线；Hub 不持有绝对路径/Provider Token；设备会话认证；Approval 风险摘要与 Workspace revision 绑定；Node 可要求本机确认；Node UI 显示来源和操作；紧急暂停/吊销；最小 OS 权限；备份和审计。
-- **剩余风险**：Hub 能在已授予范围内滥用合法能力，也可读取 Hub 已保存 Artifact。高度敏感 Workspace 应采用 Node 逐次确认或不授权。
-- **验证**：伪造 Hub 请求不能越过本地 Action、路径、revision 和并发限制。
+- **控制**：Node 本地 Workspace Registry 和额外危险权限开关；Hub 不持有绝对路径/Provider Token；设备会话认证；固定 Action/参数白名单；路径、URL、资源与并发底线；Node 本机可看到授权目录和运行任务；紧急暂停/吊销；最小 OS 权限；备份和审计。
+- **剩余风险**：Hub 能在已启用 Workspace 和本机允许能力范围内滥用合法请求，也可读取 Hub 已保存 Artifact。高度敏感目录应直接不注册为 Workspace，或临时禁用 Workspace。
+- **验证**：伪造 Hub 请求不能越过 Workspace、路径、参数、网络和并发限制，也不能把未开启的 write/shell/git/build 能力变成已开启。
 
 ### T02 Node 被攻破
 
@@ -150,8 +150,8 @@ flowchart LR
 
 - **场景**：Client Token 被恶意插件/提示注入滥用，批量读取、写入或执行命令。
 - **风险**：High/Critical。
-- **控制**：每 Client 独立 OAuth 身份、scope 与资源 grant；短时 Token；最小权限；危险 Action Approval；速率/并发限制；安全会话上下文不扩大权限；审计和即时吊销。
-- **剩余风险**：Client 可滥用其合法权限。建议只给 AI Client 所需 Workspace 和 Action。
+- **控制**：每 Client 独立 OAuth 身份和 scope；短时 Token；Machine/Workspace 资源归属；Node 本机危险权限；速率/并发限制；安全会话上下文不扩大权限；审计和即时吊销。
+- **剩余风险**：Client 可滥用其合法 Workspace 和已开启能力。个人模式应只注册真正愿意让 AI 使用的 Workspace，并只开启实际需要的 write/shell/git/build 权限。
 
 ### T04 用户账号被盗
 

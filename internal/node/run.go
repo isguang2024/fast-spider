@@ -20,11 +20,19 @@ import (
 
 func (c *Client) Run(ctx context.Context) error {
 	go c.jobs.StartMaintenance(ctx)
+	if c.browser != nil {
+		go c.browser.StartMaintenance(ctx)
+	}
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := c.jobs.CancelAll(shutdownCtx); err != nil {
 			c.cfg.Logger.Error("node job shutdown incomplete", "error", err)
+		}
+		if c.browser != nil {
+			if err := c.browser.Close(shutdownCtx); err != nil {
+				c.cfg.Logger.Error("browser shutdown incomplete", "error", err)
+			}
 		}
 	}()
 	state, err := c.State()
@@ -109,7 +117,7 @@ func (c *Client) runSession(ctx context.Context, state State) error {
 		MachineId:          state.MachineID,
 		ProtocolVersions:   []string{protocolv1.ProtocolVersion},
 		ChallengeSignature: security.EncodeSignature(ed25519.Sign(c.privateKey, protocolv1.DeviceChallengePayload(state.MachineID, serverHello.Challenge))),
-		Capabilities:       protocolv1.NodeCapabilities,
+		Capabilities:       c.Capabilities(),
 		NodeVersion:        c.cfg.Version,
 		Os:                 runtime.GOOS,
 		Arch:               runtime.GOARCH,
