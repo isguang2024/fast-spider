@@ -7,7 +7,7 @@
 - 每个 Phase 都必须有可演示闭环、拒绝路径、资源上限和回滚方案。
 - 不为未来规模提前引入微服务、Kubernetes、Redis、NATS、Kafka、S3 或长期双写。
 - 公开 Contract、状态机和权限语义先于 Adapter/界面。
-- 浏览器、截图、Local Bridge 和自动更新在核心链路稳定后进入。
+- 浏览器、截图、Local Bridge 在核心链路稳定后进入；自动更新不作为当前 MVP 既定阶段。
 - 一个阶段未达到安全门禁，不用“后面再补”进入正式发布。
 
 ## 2. 阶段总览
@@ -21,7 +21,7 @@
 | 4 | Git、构建、测试、Artifact | 完整代码修改与验证闭环 |
 | 5 | 浏览器控制与截图 | 本地开发页面自动测试闭环 |
 | 6 | Local Bridge、MCP、Codex Adapter | 本机与远程 AI 共用能力与 Session |
-| 7 | 安装包、托盘、签名更新、备份恢复 | 可安装、可升级、可恢复产品 |
+| 7 | 简单运维、备份恢复、版本检查 | 启动方式收敛、数据可备份恢复 |
 | 8 | 安全强化、审计、故障演练、正式发布 | 发布门禁和稳定版本 |
 
 ## 3. Phase 0：文档与技术决策
@@ -107,7 +107,7 @@
 
 - Workspace、文件、Shell、Git。
 - 浏览器、Local Bridge、Agent。
-- 多实例 Hub、团队 RBAC、自动更新。
+- 多实例 Hub、团队 RBAC、自动更新。自动更新只有真实需求出现时再单独立项，不阻塞当前路线。
 
 ### 依赖
 
@@ -405,56 +405,60 @@ Workspace 默认只读，可整体关闭 `file.system`/`code.search`。Node 保�
 
 使用 Node 本机开关关闭 Local Bridge/Agent capability；文件/Shell/Git 远程链路继续。Provider Adapter 独立版本，不修改核心 Job/Contract；不存在需要清理的 Local Client 凭据表。
 
-## 10. Phase 7：安装包、托盘、签名更新、备份恢复
+## 10. Phase 7：简单运维、备份恢复与版本检查
 
 ### 目标
 
-把开发程序收敛为只有一个正式安装/启动/升级路径的可运维产品。
+把当前可运行程序收敛成个人项目真正容易维护的形态：启动方式唯一、版本看得见、Hub 数据可验证备份并安全恢复。
 
 ### 范围
 
-- Hub 签名发布包和 systemd。
-- Windows 每用户 Node 安装包、托盘 UI、自启动。
-- Linux user systemd 包。
-- 版本目录、签名 manifest、下载、健康门禁、回滚。
-- SQLite/Artifact 一致性备份和恢复。
-- Recovery Mode、卸载和残留检查。
+- Hub 正式入口固定为一个构建后二进制；Linux 可由一个 systemd unit 管理。
+- Node 正式入口固定为一个当前用户 `fast-spider-node run` 进程。
+- Hub/Node/CLI 版本查询。
+- `spiderctl backup / backup-verify / restore`。
+- Hub `hub.db + secrets + artifacts` 单 data-dir 备份边界。
+- 手工可观察升级与失败回退文档。
+- 明确卸载只移除程序，数据是否删除由用户决定。
 
 ### 非目标
 
-- Windows 默认 SYSTEM 服务。
-- 自动提权。
-- 多种并行生产启动脚本。
+- Windows 安装包、托盘 UI、SYSTEM service。
+- 自动更新下载/安装和自动提权。
+- Release Key/Root Key/签名 manifest 状态机。
+- Recovery Mode 常驻恢复器。
+- 多版本 `current/previous` 进程管理。
 - Kubernetes/多实例无停机升级。
 
 ### 依赖
 
-- 前序能力达到稳定 Contract。
-- 发布签名/Windows 代码签名方案。
-- Migration/backup API 验证。
+- Phase 1–6 Contract 与数据目录已经稳定。
+- SQLite、secrets、Artifact 均已收口到 Hub data-dir。
 
 ### 风险
 
-- 供应链/签名密钥。
-- 更新半完成、Schema 不可回退。
-- 多实例/旧服务残留。
-- 托盘与后台权限不一致。
+- Hub 活跃写入期间生成混合时间点备份。
+- 备份包包含 Hub 私钥，被当普通文件泄露。
+- 恢复覆盖已有 data-dir 导致新旧数据混杂。
+- 不兼容 migration 后直接切旧二进制失败。
 
 ### 验收标准
 
-- 干净机器可安装/配对/卸载。
-- 正式环境只有一个 Hub/Node 服务和启动入口。
-- 更新篡改/降级拒绝，新版本失败自动回滚。
-- Backup 经过隔离恢复验证。
-- 卸载无隐藏进程、服务、端口、自启动和 Helper。
+- 备份过程中源数据变化会使备份失败，不发布半成品。
+- 备份 manifest 对每个文件记录 SHA-256，篡改后 `backup-verify` 拒绝。
+- Restore 只接受不存在或空目录，并以临时目录完成后再发布。
+- 恢复后的 DB/secrets/Artifact 与源数据一致。
+- Hub/Node/spiderctl 都能查询版本。
+- 正式运行仍只有一个 Hub 和每机一个 Node，不增加 updater/helper/daemon。
+- Windows/Linux build 与 Phase 1–6 全量测试继续通过。
 
 ### 可演示场景
 
-安装旧版本 → 配对/授权 → 签名升级 → 模拟健康失败回滚 → 备份 → 清空测试实例 → 恢复并重连对账。
+准备测试 Hub data-dir → `backup` → `backup-verify` → 篡改副本验证拒绝 → `restore` 到新空目录 → 用恢复目录启动 Hub → `/livez`、`/readyz` 正常。
 
 ### 回滚
 
-版本目录保留 previous；不可逆 DB migration 用升级前备份恢复。重复失败进入 Recovery Mode，不无限自动重试。
+升级前备份并校验。新版本失败时先停新版本；数据库未发生不兼容变化时切回旧二进制，发生不可逆 migration 时用升级前备份恢复到新 data-dir 后再启动旧版本。
 
 ## 11. Phase 8：安全强化、故障演练和正式发布
 
@@ -505,7 +509,7 @@ Workspace 默认只读，可整体关闭 `file.system`/`code.search`。Node 保�
 
 ### 回滚
 
-发布候选失败则不升级 stable；保留上一稳定签名版本。安全问题触发 minimumSafeVersion、组件禁用或紧急锁定，而不是隐瞒继续发布。
+发布候选失败则不替换当前稳定二进制；保留上一稳定版本和升级前已验证备份。安全问题优先禁用相关组件/能力并回退版本，不在当前阶段引入 minimumSafeVersion 自动更新状态机。
 
 ## 12. 分支与提交策略
 
@@ -530,7 +534,7 @@ Workspace 默认只读，可整体关闭 `file.system`/`code.search`。Node 保�
 - 文件写/Shell：Path Guard、idempotency、process tree 原型通过。
 - 浏览器/截图：SSRF/隐私/平台原型通过。
 - Local Bridge/Agent：本地身份、owner/phase、loop prevention 通过。
-- 自动更新：签名、backup、health rollback 通过。
+- 运维恢复：backup-verify、恢复到空目录、health/smoke 回退流程通过。
 
 ## 14. 路线变更规则
 

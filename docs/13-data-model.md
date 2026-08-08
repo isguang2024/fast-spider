@@ -344,9 +344,9 @@ recoveryId、workspaceId、original relative path、internal storage path、hash
 
 当前 Phase 6 直接读取 Codex 官方 Session/Turn 事实并在 Node 内维护有界运行时事件，不额外创建 Fast Spider `agent_sessions` 持久表。若未来确有跨 Provider/离线索引需求，再评估最小持久化模型；Provider Token 不进入 Hub/Node 通用数据库。
 
-### 12.8 `update_state`
+### 12.8 运维状态
 
-current/previous/pending version、manifest hash、signature key id、download path、install state、health deadline、rollback reason。
+当前 Phase 7 不建立 `update_state` 表。版本来自正在运行的二进制；备份 manifest 保存在备份 ZIP 内；升级与回退由 Owner 明确执行。只有以后真正加入自动更新时，才根据实际流程决定是否需要最小持久状态。
 
 ## 13. 事务边界
 

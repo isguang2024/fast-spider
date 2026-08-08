@@ -1,0 +1,14 @@
+[Unit]
+Description=Fast Spider Node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/fast-spider-node run
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=30s
+
+[Install]
+WantedBy=default.target

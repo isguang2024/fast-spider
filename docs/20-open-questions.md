@@ -234,21 +234,19 @@ Phase 6 只实现 `bridge_owned`。desktop-owned、可信 Hook、handoff/recover
 
 个人单 Owner 模式不实现 Local Client 注册、配对 Token、公钥、Grant、Lease 或逐次 Approval。Windows/Linux 当前统一使用 Node 当前用户 data-dir 下的 AF_UNIX/UDS Local Bridge；请求直接复用 Workspace 和现有 `write/shell/git-*/build` 等真实边界。Local Bridge 默认启用，可用本机开关整体关闭。
 
-## 8. 进入 Phase 7 前必须决定
+## 8. Phase 7 当前决策
 
-### Q28. 发布签名和 Windows 代码签名
+### Q28. 自动更新/代码签名 — 后置
 
-需确定：离线 root key、release key、密钥保管、Windows Authenticode 证书、发布渠道和紧急撤销流程。没有可验证签名与回滚前，不发布自动更新。
+当前 Phase 7 不发布自动更新，也不建设 root/release key、签名 manifest、Windows Authenticode 或安装器状态机。人工取得/构建二进制后先查看版本、备份、停进程、替换、健康检查。只有以后真正需要无人值守更新时，再把签名信任链作为该功能的前置条件。
 
-**推荐默认值**：Hub/Node release manifest 使用独立 Ed25519 签名；Windows 安装包同时做 Authenticode。Root key 离线，release key 使用受保护的发布环境；发布后从公开地址重新下载验签。
+### Q29. RPO/RTO — 保持简单
 
-### Q29. RPO/RTO
+单人自托管先以“关键升级前必备份 + 用户自行安排周期备份”为主。`spiderctl backup` 不引入后台 scheduler；如果后续实际需要每日备份，优先用现有 systemd timer/任务计划调用同一个命令，而不是在 Fast Spider 内增加第二套调度器。
 
-**推荐初始目标**：单人自托管场景 RPO 24 小时、RTO 4 小时；每日一致性备份、每周完整备份和异机加密副本。Owner 有更严格需求时再提高频率，不先引入连续复制集群。
+### Q30. 升级审批 — 不需要状态机
 
-### Q30. Hub 更新审批
-
-**推荐默认值**：自动检查、管理员确认安装；patch 也不默认无人值守做不可逆 migration。Node 低风险 patch 可在维护窗口自动安装，但 major/minor、权限变化和服务模式变化必须确认。
+当前所有升级都由 Owner 人工执行，不存在 Hub 内部 update approval。不可逆 migration 前的实际门槛是：已生成并通过 `backup-verify` 的升级前备份。
 
 ## 9. 以后再决定
 

@@ -59,6 +59,15 @@ func TestCodexAdapterRealE2E(t *testing.T) {
 		_ = adapter.ArchiveThread(archiveCtx, sessionID)
 	}()
 
+	preTurnRead, err := adapter.ReadThread(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("thread/read before first turn: %v", err)
+	}
+	preTurnThread, _ := preTurnRead["thread"].(map[string]any)
+	if mapString(preTurnThread, "id") != sessionID {
+		t.Fatalf("metadata-only thread/read returned wrong session: %#v", preTurnRead)
+	}
+
 	turnResult, err := adapter.StartTurn(ctx, sessionID, "只回复 OK，不调用任何工具。", root, modelID, "")
 	if err != nil {
 		t.Fatalf("turn/start: %v", err)

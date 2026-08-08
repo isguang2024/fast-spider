@@ -1,0 +1,23 @@
+[Unit]
+Description=Fast Spider Hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fast-spider
+Group=fast-spider
+StateDirectory=fast-spider
+WorkingDirectory=/var/lib/fast-spider
+Environment=FAST_SPIDER_ALLOWED_HOSTS=localhost,127.0.0.1
+EnvironmentFile=-/etc/fast-spider/hub.env
+ExecStart=/usr/local/bin/fast-spider-hub --listen 127.0.0.1:8787 --data-dir /var/lib/fast-spider --allowed-hosts ${FAST_SPIDER_ALLOWED_HOSTS}
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=30s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

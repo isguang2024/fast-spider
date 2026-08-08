@@ -291,21 +291,20 @@ Provider 不可用时返回结构化状态，不阻塞文件/Shell能力。
 - migration checksum、重复运行、部分失败。
 - WAL、busy、崩溃恢复、磁盘满。
 - 一致性备份包含 WAL；恢复 integrity check。
-- Job 终态、Event sequence、Lease 次数等不变量。
+- Job 终态、Event sequence、Workspace revision 等不变量。
 - 清理任务批次/cursor/崩溃续跑。
 - PostgreSQL 迁移不在 MVP 实现，但存储语义测试避免依赖非必要 SQLite 行为。
 
-## 18. 更新与安装测试
+## 18. 运维、备份与恢复测试
 
-- Manifest/package 签名、hash、size、os/arch、过期和 key 撤销。
-- 下载断点、缓存污染和截断。
-- Hub drain、备份、migration、health、回滚。
-- Windows 每用户安装、升级、卸载、自启动、无管理员权限。
-- Linux user systemd 安装/升级/卸载。
-- 更新中断在每个状态恢复。
-- minimumSafeVersion 和防回滚。
-- 更新后只有一个实例/服务/启动入口。
-- 卸载不留进程、端口、service、计划任务或 Local Bridge。
+- `backup → backup-verify → restore` 完整闭环。
+- 备份期间文件集合/内容变化时失败且不发布临时包。
+- ZIP 内容篡改、重复 entry、路径逃逸、缺失 `hub.db` 均拒绝。
+- Restore 只接受不存在或空目录；失败不修改原 data-dir。
+- 恢复后的 DB、secrets、Artifact 与源数据逐文件一致。
+- Hub/Node/spiderctl 版本查询。
+- 手工升级后的 `/livez`、`/readyz`、Node 重连和关键 smoke。
+- 正式运行保持一个 Hub/每机一个 Node，不出现 updater/helper/重复启动入口。
 
 ## 19. 安全测试与 Fuzz
 
@@ -317,7 +316,7 @@ Fuzz 目标：
 - Patch/unified diff parser。
 - Git/rg/命令参数映射。
 - MCP/API input 和 cursor。
-- Artifact manifest、release manifest。
+- Artifact manifest、Hub backup manifest。
 
 安全工具：依赖/SBOM/secret scan、静态分析、Go race detector、平台安全 API review。高风险 native helper 需要内存安全/边界专项审查。
 

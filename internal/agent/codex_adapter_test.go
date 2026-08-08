@@ -41,6 +41,15 @@ func (w *concurrentLineWriter) Lines() []string {
 	return lines
 }
 
+func TestCodexThreadNotMaterializedClassification(t *testing.T) {
+	if !isCodexThreadNotMaterialized(fmt.Errorf("Codex thread/read: thread abc is not materialized yet; includeTurns is unavailable before first user message")) {
+		t.Fatal("expected Codex not-materialized error to be recognized")
+	}
+	if isCodexThreadNotMaterialized(fmt.Errorf("Codex thread/read: session not found")) {
+		t.Fatal("unrelated Codex error was misclassified")
+	}
+}
+
 func TestCodexAdapterWriteLineSerializesConcurrentRPCMessages(t *testing.T) {
 	adapter := NewCodexAdapter(nil)
 	writer := &concurrentLineWriter{}

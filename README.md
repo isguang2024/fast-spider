@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 它通过长期部署在公网服务器上的 Hub，将 GPT、Claude、Codex、Web Console、CLI 或其他自动化客户端的请求，安全路由到用户明确授权的 Windows、Linux，未来也包括 macOS 节点。Node 只主动建立 HTTPS/WSS 443 出站连接，不默认开放局域网或公网端口。
 
-> 当前状态：Phase 5 的隔离浏览器与一次性桌面/显示器/窗口截图已完成；Phase 6 正在落地 Local Bridge 与 Codex Adapter。Node 本机入口使用当前用户数据目录下的 AF_UNIX socket，Windows/Linux 共用同一实现，不监听 TCP，也不维护本地 Client 注册/Token/Grant。Codex 直接使用本机 `codex app-server --stdio`，Provider 凭据不上传 Hub；`agent.control` 只复用现有 Workspace 与 `write/shell` 等实际权限。
+> 当前状态：Phase 1–7 已形成完整可运行闭环。Node 本机入口使用当前用户数据目录下的 AF_UNIX socket，Windows/Linux 共用同一实现，不监听 TCP，也不维护本地 Client 注册/Token/Grant。Codex 直接使用本机 `codex app-server --stdio`。运维主线已收敛为版本检查和 `spiderctl backup / backup-verify / restore`，不建设安装器、托盘或自动更新服务。
 
 ## 核心定位
 
@@ -53,7 +53,7 @@ Fast Spider 不是远程桌面，也不是通用内网穿透软件：
 6. Job watch、事件游标、结果和 Artifact。
 7. 稳定的 MCP 工具面，以及独立的内部 Capability Request。
 
-浏览器、截图已落地；当前继续推进 Local Bridge、Codex Adapter，安装/更新按后续阶段推进。
+浏览器、截图、Local Bridge、Codex Adapter 与简单备份恢复均已落地；下一阶段只做安全/故障回归和发布门禁，不再扩产品功能。
 
 ## 文档导航
 
@@ -164,6 +164,17 @@ go run ./cmd/node run --allow-insecure --browser-sidecar-dir ./sidecar/browser
 go run ./cmd/spiderctl machine-list \
   --hub http://127.0.0.1:8787 \
   --allow-insecure
+
+# 10. Hub 运维：备份 → 校验 → 恢复到新的空目录
+# 备份包包含 Hub 私钥，请按敏感数据保存。
+go run ./cmd/spiderctl backup --data-dir ./data --out ../fast-spider-backup.zip
+go run ./cmd/spiderctl backup-verify --file ../fast-spider-backup.zip
+# go run ./cmd/spiderctl restore --file ../fast-spider-backup.zip --data-dir ./data-restored
+
+# 版本检查
+go run ./cmd/hub --version
+go run ./cmd/node version
+go run ./cmd/spiderctl version
 ```
 
 远程 MCP 当前固定工具面为 16 个：`machine_list`、`machine_get`、`capability_list`、`workspace_list`、`file_read`、`code_search`、`file_edit`、`shell_run`、`job_watch`、`job_cancel`、`git_control`、`build_control`、`artifact_get`、`browser_control`、`screenshot_take`、`ai_control`。`browser_control` 仍是一个固定工具，通过 action 选择 launch/open/navigate/click/type/press/wait/snapshot/screenshot/events/close；不暴露任意 JavaScript、CDP 或 Playwright API。公网浏览默认可用，本地/私网 Origin 由 Node 本机持久白名单控制。`screenshot_take` 当前开放 `listDisplays/desktop/display/listWindows/window`，不再要求独立截图权限；窗口只需先列出一次拿 opaque `windowId`，结果同样只返回 Artifact。具体 Node 只有在 Sidecar、Playwright npm 包和受管 Chromium 都安装完成时才宣告 `browser.automation`。`ai_control` 当前实现本机 Codex 的 `providers/models/projects/session.*`；创建或继续 Codex Run 复用 Workspace 现有 `write + shell` 权限，不新增单独 `agent` 权限。未指定模型时从当前 `codex model/list` 自动选择可用模型，避免本机默认模型与旧 CLI 不兼容导致 Session 直接失败。
@@ -178,8 +189,8 @@ go test ./... -count=1
 go build ./cmd/hub ./cmd/node ./cmd/spiderctl ./cmd/contractgen
 ```
 
-当前验证链覆盖 Owner bootstrap → enrollment → Node 上线 → Workspace/文件/搜索/编辑 → Git/Build/Artifact → Shell/Job → 隔离 Chromium → 页面/桌面/窗口截图 Artifact → Local Bridge → `agent.control` → 本机 Codex Session/Turn。Phase 6 实机还验证了本机 Codex CLI 0.141.0 的实际 `model/list`，并通过 Local Bridge 自动选择当前可用模型完成 `session.create → result/watch → archive`。
+当前验证链覆盖 Owner bootstrap → enrollment → Node 上线 → Workspace/文件/搜索/编辑 → Git/Build/Artifact → Shell/Job → 隔离 Chromium → 页面/桌面/窗口截图 Artifact → Local Bridge → `agent.control` → 本机 Codex Session/Turn。Phase 6 实机验证了真实 Codex `model/list` 与 Session/Turn；Phase 7 在此基础上补充 Hub data-dir 的备份、逐文件 SHA-256 校验和空目录恢复闭环。
 
 ## 仓库状态
 
-Phase 0 文档保留为设计历史，但实现以当前代码和已更新 ADR 为准。Phase 1–5 已形成可运行闭环，Phase 6 正在收口 Local Bridge/Codex Adapter；仍保持单进程 Hub/Node，不引入复杂队列、微服务、第二套本地权限系统或通用远控能力。
+Phase 0 文档保留为设计历史，但实现以当前代码和已更新 ADR 为准。Phase 1–7 已形成可运行闭环；仍保持单进程 Hub/Node，不引入复杂队列、微服务、第二套本地权限系统、安装器状态机、自动更新服务或通用远控能力。

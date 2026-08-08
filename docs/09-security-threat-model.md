@@ -23,14 +23,14 @@ Fast Spider 能在真实开发机上读取和修改代码、执行命令、控�
 ### 3.1 高价值资产
 
 - Node 设备私钥和 Hub 签名/加密密钥。
-- OAuth Access/Refresh Token、Web Session 和 Local Bridge 凭据。
+- OAuth Access/Refresh Token、Web Session；Local Bridge 当前不维护独立凭据。
 - 本机 Workspace 源码、配置、密钥文件和 Git 凭据。
 - Shell 执行权限、进程环境和系统资源。
 - 浏览器 Profile、Cookie、下载内容和内网可达性。
 - 本地 AI Provider Token、Session 历史和模型权限。
 - Artifact、截图、Diff、测试报告和日志。
-- 授权策略、Approval、Audit 和设备吊销状态。
-- 更新签名密钥、发布流水线和安装包。
+- Workspace/危险本机权限、Audit 和设备吊销状态。
+- Hub 备份包、恢复数据和人工升级使用的二进制。
 
 ### 3.2 完整性资产
 
@@ -107,7 +107,7 @@ flowchart LR
 5. Node ↔ 浏览器/桌面边界。
 6. Node ↔ Local Bridge/本地进程边界。
 7. Node ↔ Agent Provider 边界。
-8. Hub/Node ↔ 更新供应链边界。
+8. Owner ↔ 备份介质/人工升级文件边界。
 
 ## 6. 安全基线
 
@@ -118,10 +118,10 @@ flowchart LR
 - Hub 与 Node 双重校验，Node 最终裁决；不依赖通用 Grant/Lease/Approval 引擎才能安全运行。
 - 高风险操作必须可在 Node 本机整体关闭/收紧，并保持可见、可取消和可审计。
 - 服务默认普通用户运行；不自动提权。
-- 签名更新与可回滚安装。
+- 升级前可验证备份，失败时人工回退二进制或恢复备份。
 - Token、日志、环境变量和错误脱敏。
-- Local Bridge 独立认证。
-- 任务、命令、审批和策略决策审计。
+- Local Bridge 使用当前 OS 用户/data-dir ACL，并继续复用 Workspace 与危险本机权限。
+- 任务、命令和关键策略决策审计。
 - 审计、Event、日志和 Artifact 有保留/容量策略。
 - 紧急断开、机器吊销、Workspace 禁用和 Client 吊销。
 - 禁止隐蔽模式、任意 TCP 转发和绕过用户知情。
@@ -269,12 +269,13 @@ flowchart LR
 - **控制**：Descriptor 签在认证连接上下文；Hub 只把它当设备声明；调用仍受策略；结果校验；协议 conformance；异常能力变更审计。
 - **剩余风险**：Hub 无法完全证明 Node 的本地实现正确，只能限制影响和识别异常。
 
-### T21 恶意或被篡改自动更新
+### T21 被篡改的备份或人工升级文件
 
-- **场景**：更新服务器、DNS、CI、签名密钥或下载缓存被攻破。
-- **风险**：Critical。
-- **控制**：离线根/在线发布签名分离；包和 manifest 签名；版本/平台/hash 绑定；TLS 不是唯一信任；防回滚策略；分阶段更新；原子切换；健康确认；自动回滚；发布审计和密钥轮换。
-- **验证**：错误签名、旧版本、截断包、平台不符、回滚演练。
+- **场景**：备份介质损坏、备份被替换，或人工取得的新二进制来自错误/受污染来源。
+- **风险**：High/Critical。
+- **控制**：备份包逐文件 SHA-256、恢复前强制 `backup-verify`、恢复到空目录、升级前保留可验证备份；程序升级不自动下载或静默安装，来源由 Owner 明确选择。
+- **剩余风险**：当前备份 manifest 没有外部签名，能可靠发现随机损坏和未同步篡改，但不能抵抗同时重写内容与 manifest 的攻击者；因此备份文件本身仍需操作系统权限/离线副本保护。若未来开放自动更新，再单独引入签名信任链。
+- **验证**：篡改 ZIP 内容、缺失/额外 entry、恢复覆盖、错误二进制版本和升级失败回退演练。
 
 ### T22 Local Bridge 本机越权调用
 
@@ -328,15 +329,15 @@ flowchart LR
 
 - **场景**：确认框目标模糊、连续弹窗导致用户无脑允许。
 - **风险**：Medium/High。
-- **控制**：显示真实 Client、机器、Workspace、Action 和影响；同类请求合并但不扩大；危险默认拒绝；短时 Lease；无“永久允许所有”；异常频率告警。
+- **控制**：个人 MVP 尽量不使用逐次确认；高风险能力通过少量持久本机开关整体启用/关闭，并在执行结果中显示真实 Client、机器、Workspace、Action 和影响，避免连续弹窗造成同意疲劳。
 
 ## 8. STRIDE 汇总
 
 | 类别 | 典型威胁 | 主要控制 |
 |---|---|---|
-| Spoofing | 设备/用户/Client 冒充 | OAuth、设备证明、独立 Local 身份、吊销 |
-| Tampering | 消息、Event、更新、Artifact 篡改 | TLS、sequence/hash、签名更新、内容寻址 |
-| Repudiation | 否认执行/审批 | 结构化审计、身份链、时间与 Job 关联 |
+| Spoofing | 设备/用户/Client 冒充 | OAuth、设备证明、OS 用户边界、吊销 |
+| Tampering | 消息、Event、备份、Artifact 篡改 | TLS、sequence/hash、备份 SHA-256、内容寻址 |
+| Repudiation | 否认执行 | 结构化审计、身份链、时间与 Job 关联 |
 | Information Disclosure | 文件、Token、截图、日志泄露 | 最小权限、脱敏、隔离 Profile、保留策略 |
 | Denial of Service | 连接、搜索、日志、Artifact 洪泛 | 有界队列、限流、配额、超时、清理 |
 | Elevation of Privilege | 路径逃逸、Shell/Local Bridge 提权 | Node 最终裁决、Path Guard、普通用户、无自动提权 |

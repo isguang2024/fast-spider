@@ -6,16 +6,20 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/isguang2024/fast-spider/internal/adminclient"
+	"github.com/isguang2024/fast-spider/internal/opsbackup"
 	"github.com/isguang2024/fast-spider/internal/version"
 )
 
 type commonFlags struct {
-	hub           *string
-	allowInsecure *bool
+	hub            *string
+	allowInsecure  *bool
 	ownerTokenFile *string
 }
 
@@ -24,10 +28,22 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+	command := os.Args[1]
+	switch command {
+	case "backup":
+		backup(os.Args[2:])
+		return
+	case "backup-verify":
+		backupVerify(os.Args[2:])
+		return
+	case "restore":
+		restore(os.Args[2:])
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	switch os.Args[1] {
+	switch command {
 	case "bootstrap":
 		bootstrap(ctx, os.Args[2:])
 	case "enrollment-create":
@@ -112,10 +128,81 @@ func machineRevoke(ctx context.Context, args []string) {
 	printJSON(map[string]any{"machineId": *machineID, "status": "revoked"})
 }
 
+func backup(args []string) {
+	fs := flag.NewFlagSet("backup", flag.ExitOnError)
+	dataDir := fs.String("data-dir", "./data", "Hub data directory")
+	output := fs.String("out", defaultBackupName(), "backup archive path; must be outside the Hub data directory")
+	_ = fs.Parse(args)
+	ctx, cancel := operationContext()
+	defer cancel()
+	manifest, err := opsbackup.Create(ctx, *dataDir, *output, version.Version)
+	fatalIf(err)
+	absolute, _ := filepath.Abs(*output)
+	printJSON(map[string]any{
+		"backup":    absolute,
+		"format":    manifest.Format,
+		"createdAt": manifest.CreatedAt,
+		"version":   manifest.FastSpiderVersion,
+		"files":     len(manifest.Files),
+	})
+	fmt.Fprintln(os.Stderr, "Backup contains Hub secrets. Store the archive as sensitive data.")
+}
+
+func backupVerify(args []string) {
+	fs := flag.NewFlagSet("backup-verify", flag.ExitOnError)
+	file := fs.String("file", "", "backup archive path")
+	_ = fs.Parse(args)
+	if *file == "" {
+		fatalf("--file is required")
+	}
+	ctx, cancel := operationContext()
+	defer cancel()
+	manifest, err := opsbackup.Verify(ctx, *file)
+	fatalIf(err)
+	printJSON(map[string]any{
+		"valid":     true,
+		"format":    manifest.Format,
+		"createdAt": manifest.CreatedAt,
+		"version":   manifest.FastSpiderVersion,
+		"files":     len(manifest.Files),
+	})
+}
+
+func restore(args []string) {
+	fs := flag.NewFlagSet("restore", flag.ExitOnError)
+	file := fs.String("file", "", "backup archive path")
+	dataDir := fs.String("data-dir", "./data", "empty Hub data directory to restore")
+	_ = fs.Parse(args)
+	if *file == "" {
+		fatalf("--file is required")
+	}
+	ctx, cancel := operationContext()
+	defer cancel()
+	manifest, err := opsbackup.Restore(ctx, *file, *dataDir)
+	fatalIf(err)
+	absolute, _ := filepath.Abs(*dataDir)
+	printJSON(map[string]any{
+		"restored":  absolute,
+		"format":    manifest.Format,
+		"createdAt": manifest.CreatedAt,
+		"version":   manifest.FastSpiderVersion,
+		"files":     len(manifest.Files),
+	})
+	fmt.Fprintln(os.Stderr, "Restore completed. Start the Hub with this data directory only after confirming the previous Hub instance is stopped.")
+}
+
+func defaultBackupName() string {
+	return "fast-spider-backup-" + time.Now().UTC().Format("20060102-150405") + ".zip"
+}
+
+func operationContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
+
 func addCommon(fs *flag.FlagSet) commonFlags {
 	return commonFlags{
-		hub: fs.String("hub", "https://127.0.0.1:8787", "Hub base URL"),
-		allowInsecure: fs.Bool("allow-insecure", false, "allow http only for local development"),
+		hub:            fs.String("hub", "https://127.0.0.1:8787", "Hub base URL"),
+		allowInsecure:  fs.Bool("allow-insecure", false, "allow http only for local development"),
 		ownerTokenFile: fs.String("owner-token-file", "", "file containing the owner token; otherwise FAST_SPIDER_OWNER_TOKEN is used"),
 	}
 }
@@ -165,5 +252,5 @@ func fatalf(format string, args ...any) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: spiderctl <bootstrap|enrollment-create|machine-list|machine-get|machine-revoke|version> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: spiderctl <bootstrap|enrollment-create|machine-list|machine-get|machine-revoke|backup|backup-verify|restore|version> [flags]")
 }

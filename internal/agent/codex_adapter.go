@@ -544,7 +544,22 @@ func (a *CodexAdapter) ListThreads(ctx context.Context, root string, limit int) 
 }
 
 func (a *CodexAdapter) ReadThread(ctx context.Context, sessionID string) (map[string]any, error) {
-	return a.request(ctx, "thread/read", map[string]any{"threadId": sessionID, "includeTurns": true})
+	result, err := a.request(ctx, "thread/read", map[string]any{"threadId": sessionID, "includeTurns": true})
+	if err == nil || !isCodexThreadNotMaterialized(err) {
+		return result, err
+	}
+	// Codex can acknowledge turn/start before the persisted thread is ready for
+	// includeTurns. A metadata-only read keeps immediate get/watch/result calls
+	// stable and also supports a newly-created session that has no first turn yet.
+	return a.request(ctx, "thread/read", map[string]any{"threadId": sessionID, "includeTurns": false})
+}
+
+func isCodexThreadNotMaterialized(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "not materialized yet") && strings.Contains(message, "includeturns")
 }
 
 func (a *CodexAdapter) StartThread(ctx context.Context, root, model, thinking string) (map[string]any, error) {

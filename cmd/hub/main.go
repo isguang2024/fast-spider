@@ -25,7 +25,12 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8787", "Hub HTTP listen address; production should stay on loopback behind TLS reverse proxy")
 	dataDir := flag.String("data-dir", "./data", "Hub data directory")
 	allowedHosts := flag.String("allowed-hosts", "localhost,127.0.0.1", "comma-separated Host allowlist; use the public Hub hostname in production")
+	showVersion := flag.Bool("version", false, "print Fast Spider version and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(version.Version)
+		return
+	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
