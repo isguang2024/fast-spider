@@ -154,6 +154,23 @@ type screenshotTakeInput struct {
 	Quality      int    `json:"quality,omitempty" jsonschema:"jpeg quality 20-95"`
 }
 
+type aiControlInput struct {
+	MachineID        string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	WorkspaceID      string `json:"workspaceId,omitempty" jsonschema:"workspace for project/session actions; omit for providers/models/projects discovery"`
+	Action           string `json:"action" jsonschema:"providers.list,models.list,projects.list,session.list,session.get,session.create,session.send,session.watch,session.cancel,session.result,session.rename,session.archive"`
+	ProviderID       string `json:"providerId,omitempty" jsonschema:"provider ID; defaults to codex"`
+	SessionID        string `json:"sessionId,omitempty" jsonschema:"opaque provider session ID"`
+	TurnID           string `json:"turnId,omitempty" jsonschema:"active turn ID for cancel when known"`
+	Prompt           string `json:"prompt,omitempty" jsonschema:"prompt for session.create/session.send"`
+	WorkingDirectory string `json:"workingDirectory,omitempty" jsonschema:"relative directory inside the authorized Workspace"`
+	Model            string `json:"model,omitempty" jsonschema:"optional provider model ID"`
+	Thinking         string `json:"thinking,omitempty" jsonschema:"optional provider reasoning effort"`
+	Cursor           int64  `json:"cursor,omitempty" jsonschema:"last consumed normalized event sequence"`
+	WaitSeconds      int64  `json:"waitSeconds,omitempty" jsonschema:"session.watch long-poll from 0 to 15 seconds"`
+	Limit            int    `json:"limit,omitempty" jsonschema:"session.list maximum, default 50 and maximum 100"`
+	Name             string `json:"name,omitempty" jsonschema:"new session name for session.rename"`
+}
+
 type genericCapabilityOutput struct {
 	Result map[string]any `json:"result"`
 }
@@ -456,6 +473,23 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input screenshotTakeInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		params := map[string]any{"displayIndex": input.DisplayIndex, "windowId": input.WindowID, "format": input.Format, "quality": input.Quality}
 		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "screenshot.capture", input.Action, params)
+		if err != nil {
+			return nil, genericCapabilityOutput{}, err
+		}
+		return nil, genericCapabilityOutput{Result: result}, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "ai_control",
+		Description: "Discover local AI providers/models/projects and control provider sessions through the Node. Phase 6 currently implements bridge-owned Codex sessions only; it reuses the authorized Workspace and never sends provider credentials to Hub.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input aiControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+		params := map[string]any{
+			"providerId": input.ProviderID, "sessionId": input.SessionID, "turnId": input.TurnID,
+			"prompt": input.Prompt, "workingDirectory": input.WorkingDirectory, "model": input.Model,
+			"thinking": input.Thinking, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds,
+			"limit": input.Limit, "name": input.Name,
+		}
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "agent.control", input.Action, params)
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}

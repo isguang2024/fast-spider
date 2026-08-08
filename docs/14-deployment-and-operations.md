@@ -90,6 +90,7 @@ wss://fast-spider.example.com/node/connect
 ├─ jobs/
 ├─ recovery-bin/
 ├─ browser-profiles/
+├─ local/                    # Local Bridge AF_UNIX socket，仅运行时存在
 ├─ updates/
 └─ run/
 ```
@@ -152,7 +153,7 @@ security:
 - Hub URL 与信任指纹。
 - 连接/心跳/重连策略。
 - Workspace Registry 引用。
-- Local Bridge 开关和传输。
+- Local Bridge 默认启用；使用当前用户 data-dir 下的 AF_UNIX socket，可通过 `--disable-local-bridge` 整体关闭。
 - 每类 Job 并发和资源上限。
 - 更新渠道。
 - UI 可见性、通知和本机确认策略。
@@ -199,8 +200,8 @@ Hub 主机：
 Node：
 
 - 不要求入站规则。
-- 出站仅需 DNS、HTTPS/WSS 443 访问 Hub，以及用户明确运行的构建/浏览器业务网络。
-- Local Bridge Named Pipe/UDS 不占网络端口。
+- 出站仅需 DNS、HTTPS/WSS 443 访问 Hub，以及用户明确运行的构建/浏览器/Provider 业务网络。
+- Local Bridge 使用本机 AF_UNIX/UDS，不占 TCP/UDP 端口；Codex Adapter 直接启动本机 `codex app-server --stdio`，不另起 agent-service/daemon。
 
 ## 11. 首次初始化
 
@@ -236,7 +237,7 @@ Node 使用托盘 UI、系统服务管理或正式 CLI。
 - Hub 退出前停止接受新 Job，关闭/通知 Node 连接并完成短事务。
 - 重启后运行 migration 检查、打开数据库、恢复连接注册和 Job 对账。
 - Node 自动指数退避重连并带抖动。
-- 不要求手工启动多个 agent-service、隧道或脚本才能恢复核心链路。
+- 不要求手工启动 agent-service、Codex daemon、Local Bridge helper、隧道或脚本才能恢复核心链路；Node 自己管理本机 socket 和 Codex stdio 子进程。
 
 ## 13. 健康检查
 

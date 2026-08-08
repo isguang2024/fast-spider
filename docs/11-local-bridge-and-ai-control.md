@@ -6,86 +6,56 @@ Node 可选择性提供只面向本机的 Local Bridge，供 Codex、其他 AI �
 
 Local Bridge 不是：
 
-- 无认证的 localhost 后门。
-- 向局域网开放的通用 MCP Server。
-- 绕过 Workspace/Action 权限的“本机全权模式”。
+- localhost/TCP 后门或局域网 MCP Server。
+- 绕过 Workspace、路径和现有危险操作开关的“本机全权模式”。
+- 为单人电脑再维护一套 Client 注册、Grant、Lease、Approval 的权限系统。
 - 让多个 AI 自动无限互相调用的代理网络。
 - 把本地 Provider Token 上传到 Hub 的通道。
 
 ## 2. 默认状态
 
-- 默认关闭。
-- Windows 优先 Named Pipe；Linux 优先 Unix Domain Socket。
-- 只有兼容需求明确时才启用 loopback HTTP/MCP。
-- loopback 只能绑定 `127.0.0.1` 和可选 `::1`，不得默认监听 `0.0.0.0`。
-- UI 明确显示已启用接口、客户端、权限和最近活动。
+- Node 正常运行时默认启用本机 IPC；它不占 TCP 端口，因此不要求用户每次手工打开。
+- Windows/Linux 使用当前用户 data-dir 下的 AF_UNIX socket；macOS 后续沿用 Unix Domain Socket。
+- 提供 `--disable-local-bridge` 作为明确关闭入口。
+- loopback HTTP/MCP 默认不实现；只有出现真实兼容需求时再单独评估。
+- 本机状态只需显示 Local Bridge 是否启用、endpoint 类型和最近活动，不维护“已注册客户端列表”。
 
 ## 3. 传输选择
 
 | 传输 | 优点 | 风险/限制 | 推荐 |
 |---|---|---|---|
-| Windows Named Pipe | OS ACL、无 TCP 端口、当前用户隔离好 | 跨语言库和异步取消需验证 | Windows 默认 |
-| Unix Domain Socket | 文件权限清晰、无 TCP 暴露 | 容器/挂载和 stale socket 处理 | Linux/macOS 默认 |
+| AF_UNIX / Unix Domain Socket | Windows 10/11 与 Linux 共用 Go `net.Unix*`，无 TCP 端口、协议一致 | Windows 依赖当前用户 data-dir ACL；Unix 还需处理 stale socket | Phase 6 默认 |
 | stdio | 生命周期与父进程绑定、边界简单 | 不适合多个长期客户端或发现 | 单客户端 Adapter 可用 |
 | loopback HTTP/MCP | 兼容生态、易调试 | DNS rebinding、Origin、Token 泄露、端口冲突 | 默认关闭的兼容项 |
 
 详细决策见 [adr/0006-local-bridge.md](adr/0006-local-bridge.md)。
 
-## 4. Local Client 身份
+## 4. 本地信任边界
 
-每个本地客户端独立登记：
+个人模式把 **当前 OS 用户** 作为 Local Bridge 的信任边界：
 
-```json
-{
-  "localClientId": "lcli_opaque",
-  "displayName": "Codex Desktop",
-  "executableIdentity": "optional platform evidence",
-  "publicKey": "optional",
-  "allowedWorkspaces": ["ws_opaque"],
-  "allowedCapabilities": {
-    "file.system": ["list", "stat", "read", "edit"],
-    "shell.process": ["run", "status", "logs", "cancel"]
-  },
-  "expiresAt": null
-}
-```
+- Socket 固定放在 Node 当前用户 data-dir 的私有 `local/` 子目录，不依赖名称保密。
+- Unix 目录/Socket 使用 `0700/0600`；Windows 继承当前用户 data-dir 的 Windows ACL，不再维护第二套 SID/SDDL 代码。
+- 不做 Local Client 注册、一次性配对 Token、公钥、Capability Grant 或逐请求 nonce。
+- 连接可生成临时 `connectionId` 仅用于日志和排错，它不是权限对象。
+- 本地请求仍必须使用 opaque `workspaceId`，并继续经过 Workspace enabled、相对路径、URL、资源限制，以及现有 `write/shell/git-*/build` 本机权限。
 
-身份来源组合：
+如果未来出现“同一机器多个互不信任 OS 用户共享一个 Node”的真实需求，再单独设计多人本地身份；当前不预埋双路径。
 
-- OS 用户/SID、socket ACL。
-- 首次本机配对产生的独立 Token 或公钥。
-- 可选进程路径/签名信息只作为风险信号，不能作为唯一认证，因为进程路径可被替换。
-- 每次连接使用 challenge/nonce，防止简单 Token 重放。
+## 5. 为什么首版不做 Loopback HTTP
 
-Client 可单独暂停、吊销和查看审计。
-
-## 5. Loopback HTTP 安全
-
-启用兼容 HTTP 时必须：
-
-- 随机高位端口或用户指定端口，只绑定 loopback。
-- `Host` 只允许明确的 `127.0.0.1:<port>`、`[::1]:<port>` 或固定本地域名。
-- 浏览器来源请求严格校验 Origin；默认不允许网页跨域。
-- 不设置 `Access-Control-Allow-Origin: *`。
-- 使用独立短期 Token，不能复用 Hub 高权限 Token。
-- 敏感写操作使用每请求 nonce/CSRF 保护。
-- 禁止通过 GET 产生副作用。
-- 启动时检测端口被占用和代理劫持，失败即不启用。
-- 管理页面与 API 若共用端口，使用强 CSP、frame-ancestors 和内容隔离。
+AF_UNIX/UDS 已覆盖本机长期 Client 的核心需求，而且没有端口、CORS、Host、CSRF、DNS rebinding 和本地 Token 管理成本。Phase 6 首版因此不实现 loopback HTTP/MCP；需要兼容只支持 HTTP 的第三方客户端时，再通过一个很薄的可选 Adapter 评估，而不是把 HTTP 安全复杂度塞进 Node 主链路。
 
 ## 6. Local Bridge 调用链
 
 ```text
-Local Client
-→ transport authentication
-→ localClientId binding
+Local Client（当前 OS 用户）
+→ 当前用户 data-dir 下的 AF_UNIX / UDS 文件边界
 → request schema and size validation
-→ Workspace/Capability/Action grant
-→ optional local approval
+→ Workspace enabled + 现有危险权限/路径/网络/资源检查
 → same Dispatcher / Job Manager
 → same Capability Engine
 → local Event/Result
-→ local audit
 ```
 
 如果该操作同时需要 Hub 同步，Node 只同步允许的 Job 摘要/审计，不把 Local Client 的 Provider Token 或私有 Session 内容默认上传。
@@ -173,8 +143,6 @@ session.create
 session.send
 session.watch
 session.cancel
-session.recover
-session.handoff
 session.rename
 session.archive
 session.result
@@ -182,180 +150,82 @@ session.result
 
 ### 8.1 `session.create`
 
-必需：providerId、prompt/message、sessionMode；项目会话还需 workspaceId/projectId。可选：modelId、executionMode、workingDirectory（必须为 Workspace 内相对目录）。
+必需：workspaceId。可选：prompt、workingDirectory、model、thinking；providerId 省略时默认为 `codex`。Workspace 必须已有 `write + shell` 权限。未指定 model 时先读取本机 Codex 当前 `model/list` 并自动选择可用模型。
 
-返回：bootstrapId、sessionId、可选 runId/turnId、owner、phase、handoffStatus、nextCursor。
+只创建 Session 时可不带 prompt，返回 phase=`ready`；带 prompt 时同时启动 Turn，返回 sessionId、turnId、model、executionMode=`bridge_owned`、phase=`running`。
 
-### 8.2 `session.watch`
+### 8.2 `session.list/get/result`
 
-按 opaque cursor 长轮询/订阅 normalized events；首次可不带 cursor，后续使用 nextCursor。它只观察，不改变 Session 所有权。
+- `session.list`：只列当前 Workspace 内 Codex Session，不返回本机 cwd/root。
+- `session.get`：返回有限 Session/最新 Turn 摘要。
+- `session.result`：返回最新 Turn 的真实 status 与 finalAgentMessage（存在时）。
 
-### 8.3 `session.get`
+### 8.3 `session.send`
 
-提供稳定视图：summary、latest、conversation、timeline、changes、diagnostic、evidence。Provider 原始数据需要归一化和脱敏；完整历史分页读取。
+Session 空闲时启动下一 Turn；active Turn 存在时返回 `AGENT_SESSION_BUSY`，不做隐式 steering。可选 workingDirectory 仍必须位于当前 Workspace 内。
 
-### 8.4 `session.send`
+### 8.4 `session.watch`
 
-在 Session 空闲时创建新 Run；若 active Run 支持 steering，可带 expectedRunId 明确发送。不能在所有权不明时把消息同时发给桌面与 bridge。
+按本机有界 event cursor 读取 assistant/status/warning/error 等归一化事件；waitSeconds 最多 15 秒。它只观察，不创建第二条 Provider 执行链。
 
 ### 8.5 `session.cancel`
 
-取消 active Run，返回“取消请求已接收”与后续真实终态；不能把 API ack 当作已取消。
+对当前 active Turn 调用 Codex `turn/interrupt`。返回 cancelRequested 后，真实终态继续由 `session.watch/result` 获取。
 
-### 8.6 `session.recover`
+### 8.6 `session.rename/archive`
 
-用于 Node/Provider 服务中断后的同 Session 恢复。它可以创建新的恢复 Run，但不承诺 token 级无缝续写；必须带 recoveryKey 防重复恢复。
+直接映射 Codex `thread/name/set` 与 `thread/archive`。当前不实现 recover、handoff、share、desktop-owned 或通用 AI→AI workflow。
 
-### 8.7 `session.handoff`
+## 9. 当前执行模式
 
-把后续 Run 所有权移交给明确客户端/桌面模式。handoff 本身不启动 Run，也不保证桌面用户已提交内容。
+Phase 6 只有 `bridge_owned`：Node 启动本机 `codex app-server --stdio` 并管理 Session/Turn。一个 Session 同时只允许一个 active Turn。没有 `desktop_owned`/Hook/handoff 的第二套状态机。
 
-## 9. 执行模式与所有权
+## 10. Codex Adapter
 
-Canonical execution modes：
+当前实际实现：
 
-### `bridge_owned`
+1. 运行时探测本机 `codex --version`。
+2. 直接启动 `codex app-server --stdio` 并完成 `initialize/initialized`。
+3. 使用 `model/list`、`thread/list/read/start/name/set/archive`、`turn/start/interrupt`。
+4. stdio JSON-line 写入使用独立写锁，避免并发 RPC 交叉破坏协议。
+5. Provider 凭据、ChatGPT/Codex 本地认证状态、环境变量和 Workspace 绝对路径不返回 Hub。
+6. App Server 崩溃只影响 Agent Adapter，不拖垮 Node 主进程；下次调用可重新启动。
 
-- Node 通过 Provider 官方 App Server、SDK、CLI/stdio 或本地 agent-service 启动 Run。
-- active owner=`node_agent_bridge`。
-- Provider Desktop 可显示历史，但显示不改变 owner。
-- Node 可以 watch、cancel 和恢复其启动的 Run。
+当前 Windows 实机使用 Codex CLI 0.141.0 已验证：自动选择 `model/list` 当前可用模型后，`session.create → result/watch → archive` 可以完整返回最终 `OK`。
 
-### `desktop_owned`
-
-- Node 创建一次性 handoff/prompt 预填或导航请求。
-- Node/agent-service 不静默启动 Provider Run。
-- 初始 owner=`none`，phase=`dispatching`。
-- 只有本机可信 Hook/Provider 官方事件观察到用户真实提交并核验 Session/Run 后，owner 才变为 `desktop`，phase 才能进入 running。
-- Hook 未信任、用户未提交或关联失败时保持 dispatching/handoff_failed，不伪报运行。
-
-可扩展 `external_owned` 用于只观察已有 Provider Session，但 MVP 不自动接管。
-
-## 10. Agent 生命周期
-
-Provider-specific 状态保留在 `providerPhase`；公共映射：
-
-```text
-session: created → active → archived
-run/job: queued → dispatched → accepted → running
-         → completed / failed / canceled / expired / lost
-```
-
-辅助阶段：
-
-- `native_attached`：官方 Provider Run 已关联，但是否 running 取决于真实开始事件。
-- `bridge_running`：bridge_owned 且 Provider 已开始。
-- `handoff_failed`：desktop_owned 关联失败。
-- `waiting_for_user_submit`：桌面预填但尚未提交。
-
-UI 必须同时展示 owner、executionMode 和 phase，避免“会话已创建”被理解为“AI 已执行”。
-
-## 11. Codex Adapter
-
-优先顺序：
-
-1. 官方 Codex App Server/SDK 或公开稳定接口。
-2. 独立本地 `agent-service`，由 Node 通过 Named Pipe/UDS/loopback/stdio 调用。
-3. 受控 CLI 作为降级路径，功能和可恢复性较弱。
-
-Node 不把 agent-service 直接暴露到公网。Adapter 负责：
-
-- 发现 Codex runtime、模型、项目和会话。
-- 创建/读取/继续 Session。
-- 规范化 Turn、工具、审批、变更、token usage 和运行时事件。
-- 将 Provider Session/Turn ID 只作为本地映射字段保存。
-- 验证 desktop_owned Hook 的本机来源、信任、一次性 requestId 和真实持久化 Turn。
-
-## 12. Codex 调用时序图
-
-### 12.1 Bridge-owned
+## 11. 调用链
 
 ```mermaid
 sequenceDiagram
     participant C as MCP/Local Client
-    participant H as Hub Adapter
-    participant N as Node Agent Bridge
-    participant A as Local Codex App Server
-    participant S as Codex Session Store
+    participant H as Hub
+    participant N as Node Agent Capability
+    participant A as Codex app-server --stdio
 
-    C->>H: ai_control session.create(workspaceId,prompt,bridge_owned)
-    H->>N: CapabilityRequest
-    N->>N: local policy + provider/model/project validation
-    N->>A: create official session and start turn
-    A->>S: persist session/turn
-    A-->>N: sessionId + turnId + owner evidence
-    N-->>H: accepted/running + normalized events
-    loop watch
-      C->>H: session.watch(cursor)
-      H->>N: watch/resume
-      A-->>N: turn/tool/approval/result events
-      N-->>H: normalized sequenced events
-      H-->>C: events + nextCursor
+    C->>H: ai_control session.create(workspaceId,prompt)
+    H->>N: agent.control/session.create
+    N->>N: Workspace + write/shell + path validation
+    N->>A: model/list + thread/start + turn/start
+    A-->>N: sessionId + turnId + events
+    N-->>H: bridge_owned/running
+    loop observe
+      C->>H: session.watch/result
+      H->>N: agent.control
+      A-->>N: normalized status/message/error
+      N-->>H: bounded result/events
     end
-    A-->>N: completed result
-    N-->>H: terminal result + artifacts
-    H-->>C: completed
+    C->>H: session.archive
+    H->>N: thread/archive
 ```
 
-### 12.2 Desktop-owned
+## 12. 本机与远程共用 Session
 
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant N as Node Agent Bridge
-    participant D as Codex Desktop
-    participant K as Trusted Local Hook
-    participant S as Session Store
+- 本机 Local Bridge 与远程 MCP 都调用同一个 `agent.control`，看到同一 Codex Session 事实。
+- Local Bridge connectionId 只是日志字段，不形成 Session 分享权限。
+- Client 断开不自动取消 Provider Turn；显式 `session.cancel` 才中断。
+- 当前不实现“AI 自动调用另一个 AI”的通用递归网络。
 
-    C->>N: session.create(..., desktop_owned)
-    N->>N: create one-time handoff request
-    N->>D: open/prefill Desktop session
-    N-->>C: dispatching, owner=none, user action required
-    Note over D: User reviews and submits prompt
-    D->>S: persist native session/turn
-    D->>K: trusted UserPromptSubmit/turn evidence
-    K->>S: verify persisted session/turn/request binding
-    K->>N: attach verified native turn
-    N-->>C: native_attached/running, owner=desktop
-    D-->>N: events/result through official/local adapter
-    N-->>C: normalized watch/result
-```
-
-若 Hook 不可信或无法验证，不允许手工修改 trusted hash 或绕过信任；返回明确 handoff_failed/仍未信任。
-
-## 13. 多客户端与 Session 归属
-
-- 每个请求记录发起 localClientId/remote clientId。
-- Session 有创建者和可共享 Client 列表。
-- 默认只有创建者与 Owner 可继续/取消；共享需明确授权。
-- 一个 active Run 只有一个 owner。
-- Client 关闭不自动取消 Run，除非创建策略设置 `cancelOnDisconnect`。
-- Desktop 打开会话只是导航证据，不转移 owner。
-- `session.open`、`rename`、`archive` 是管理操作，不等于执行。
-
-## 14. 防递归调用
-
-每次 Agent 调用带：
-
-```text
-correlationId
-parentRunId
-initiatorClientId
-hopCount
-hopLimit
-callChain[]
-```
-
-规则：
-
-- 默认 hopLimit=1。
-- 最大建议 4，且每一跳需策略允许。
-- 同 provider/session 或同 correlationId 的循环立即拒绝 `AGENT_LOOP_DETECTED`。
-- AI 不能自行扩大 hopLimit。
-- 跨 Provider 调用默认需要用户授权或预定义 workflow。
-- Token、预算、运行时间和并发有上限。
-
-## 15. Provider Token 与秘密
+## 13. Provider Token 与秘密
 
 - Token 只保存在 Provider/Node 本机安全存储。
 - Hub 只知道 providerId、可用性和经过策略过滤的模型摘要。
@@ -363,37 +233,23 @@ callChain[]
 - Provider 原始事件中的 Header、环境变量、账户名和路径必须脱敏。
 - 配置导出和 Artifact 不包含 Token。
 
-## 16. Artifact 与变更
+## 14. Artifact 与变更
 
-Agent Run 可关联：
+Phase 6 不复制完整 Codex 会话历史、Trace 或 Token usage 到 Hub，也不额外建立 Agent Artifact 流。Codex 在授权 Workspace 中产生的文件变更仍由现有 file/Git/Build/Artifact 工具查看和导出；截图仍走 Phase 5 的既有 Artifact 链路。
 
-- 文件变更摘要和 Diff。
-- 测试/构建日志。
-- Provider 生成的计划或报告。
-- 截图和浏览器 Trace。
+## 15. 审计与日志
 
-Artifact 权限继承 Session/Workspace，但下载时重新授权。Provider 会话历史不默认完整复制到 Hub；可按用户选择同步摘要或必要证据。
+当前 Hub 对 `session.create/send/cancel/rename/archive` 记录 capability 审计；Node/Adapter 日志只记录必要的 request/session/provider 状态和有界错误，不默认永久保存完整 prompt、Provider 原始事件、环境变量或凭据。本机 Local Bridge connectionId 只用于排错，不形成长期身份记录。
 
-## 17. 审计
+## 16. 当前 Phase 6 范围
 
-Agent 审计至少记录：
+已实现：
 
-- Client、Provider、model、project/workspace。
-- sessionId、runId、jobId、owner、executionMode。
-- prompt 摘要/hash，而不是默认全文永久审计。
-- 创建、发送、steer、cancel、recover、handoff、share。
-- Hook 信任/关联结果。
-- 文件变更、命令和 Approval 引用。
-- 终态、错误和 token usage 摘要（Provider 可用时）。
+1. 默认启用的当前用户 AF_UNIX/UDS Local Bridge，可用 `--disable-local-bridge` 关闭。
+2. Local Bridge 复用同一个 Capability Engine，不建立 Local Client 注册/Grant/Approval。
+3. Codex provider/model/project 发现。
+4. bridge_owned `session.list/get/create/send/watch/cancel/result/rename/archive`。
+5. Session 与 Workspace 真实路径边界绑定。
+6. 本机 `codex app-server --stdio` Adapter 与实际模型自动选择。
 
-## 18. MVP 顺序
-
-Phase 6 首版只实现：
-
-1. Local Bridge 开关和 Named Pipe/UDS 身份。
-2. Provider/model/project 发现。
-3. bridge_owned session create/get/watch/send/cancel/result。
-4. Session 与 Workspace 绑定。
-5. 基础 Codex Adapter。
-
-`desktop_owned`、可信 Hook、handoff/recover、跨 Client 分享在基础链路稳定后加入，但协议从第一版保留 owner/executionMode/phase，避免后续破坏性改造。
+当前明确不实现 desktop-owned、Hook、handoff/recover、Agent 专属 Artifact 流或通用 AI→AI workflow。

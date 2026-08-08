@@ -122,6 +122,12 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 		result, err = c.browserControl(ctx, req.WorkspaceId, req.Action, req.Params)
 	case "screenshot.capture/listDisplays", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/listWindows", "screenshot.capture/window":
 		result, err = c.screenshotCapture(ctx, req.WorkspaceId, req.Action, req.Params)
+	case "agent.control/providers.list", "agent.control/models.list", "agent.control/projects.list", "agent.control/session.list", "agent.control/session.get", "agent.control/session.create", "agent.control/session.send", "agent.control/session.watch", "agent.control/session.cancel", "agent.control/session.result", "agent.control/session.rename", "agent.control/session.archive":
+		if c.agent == nil {
+			err = ErrAgentProviderUnavailable
+		} else {
+			result, err = c.agent.Control(ctx, req.WorkspaceId, req.Action, req.Params)
+		}
 	default:
 		response.Error = protocolError("UNSUPPORTED_CAPABILITY", "capability or action is not available", false)
 		return response
@@ -513,6 +519,12 @@ func capabilityError(err error) *protocolv1.ProtocolError {
 		return protocolError("BROWSER_DNS_CHANGED", "browser origin DNS no longer matches the locally pinned addresses", false)
 	case errors.Is(err, ErrWindowTokenInvalid):
 		return protocolError("WINDOW_NOT_FOUND", "window ID is invalid or expired", false)
+	case errors.Is(err, ErrAgentProviderUnavailable):
+		return protocolError("AGENT_PROVIDER_UNAVAILABLE", "agent provider is unavailable on this Node", true)
+	case errors.Is(err, ErrAgentSessionNotFound):
+		return protocolError("AGENT_SESSION_NOT_FOUND", "agent session was not found in this Workspace", false)
+	case errors.Is(err, ErrAgentSessionBusy):
+		return protocolError("AGENT_SESSION_BUSY", "agent session already has an active run", true)
 	case errors.Is(err, ErrScreenshotUnavailable):
 		return protocolError("SCREENSHOT_UNAVAILABLE", "screenshot capture is unavailable in the current graphical session", false)
 	case errors.Is(err, ErrScreenshotTooLarge):

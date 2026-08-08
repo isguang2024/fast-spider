@@ -15,7 +15,7 @@
 | Owner | 自托管实例拥有者，MVP 唯一最高权限主体 |
 | Operator | 未来可管理机器、Workspace 和任务的用户 |
 | MCP Client | GPT、Claude、Codex 或其他 MCP Host |
-| Local Client | 通过 Named Pipe/UDS/loopback 访问 Node 的本机工具 |
+| Local Client | 通过当前用户 AF_UNIX/UDS Local Bridge 访问 Node 的本机工具 |
 | Hub | 身份、权限、路由、状态、审计和 Artifact 控制面 |
 | Node | 本机执行面和最终权限裁决者 |
 | Agent Provider | Codex 或其他本地 AI 服务，不持有 Hub 权限 |
@@ -25,7 +25,7 @@
 ### 3.1 Hub
 
 - MUST 提供 HTTPS 公网入口、OAuth 2.1 授权和 MCP Server。
-- MUST 管理用户、客户端、机器、Workspace 逻辑目录、权限、Job、事件、审批、审计和 Artifact 元数据。
+- MUST 管理用户、客户端、机器、Workspace 逻辑目录、权限、Job、事件、审计和 Artifact 元数据；当前个人 MVP 不建立通用审批系统。
 - MUST 维护 Node 长连接注册表并按 machineId 路由。
 - MUST 在请求离开 Hub 前完成第一层授权和参数约束。
 - MUST 不直接读取 Node 文件或执行 Node 命令。
@@ -108,13 +108,13 @@
 
 ### 3.9 Local Bridge 与 AI
 
-- 本地接口 MUST 默认关闭。
-- 启用后 MUST 优先 Named Pipe/UDS；loopback HTTP 只能绑定 127.0.0.1。
-- MUST 使用独立客户端身份和凭据，不因 localhost 跳过权限。
-- MUST 校验 Host/Origin，防止 DNS rebinding 和跨站请求。
-- MUST 提供 provider-neutral 的 provider/model/project/session/run/event/cancel/result 能力。
+- 当前用户 AF_UNIX/UDS Local Bridge MUST 默认随 Node 启用，并可由本机开关关闭。
+- Windows/Linux 共用同一 AF_UNIX/UDS 实现，不监听 TCP/loopback HTTP。
+- 当前 OS 用户 + Node data-dir 权限作为本机信任边界；不建立 Local Client 注册、Token、Grant 或 Approval。
+- Local Bridge MUST 直接复用既有 Workspace、Capability 和危险本机权限检查。
+- MUST 提供 provider-neutral 的 provider/model/project/session create/list/get/send/watch/cancel/result/rename/archive 能力。
 - Provider Token MUST 保留在 Node 本机，不能经 Hub 传播。
-- 多 AI 调用 MUST 使用 correlationId 和 hopLimit，默认禁止无边界递归。
+- 首版不开放通用 AI→AI 递归或 desktop-owned/handoff 第二执行链。
 
 ## 4. 非功能需求
 

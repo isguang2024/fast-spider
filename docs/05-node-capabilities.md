@@ -37,8 +37,7 @@
 | `artifact.transfer` | create, uploadChunk, complete, getMetadata | R1–R3 | Phase 3–4 |
 | `screenshot.capture` | listDisplays, desktop, display, listWindows, window | R2 | Phase 5 |
 | `browser.automation` | launch, page.open/navigate/close, pages.list, click, type, press, wait, snapshot, screenshot, events, close | R2–R3 | Phase 5（Browser MVP 已落地） |
-| `agent.control` | providers, models, projects, session.*, run.* | R1–R3 | Phase 6 |
-| `local.client` | register, list, revoke | R2–R3 | Phase 6 |
+| `agent.control` | providers.list, models.list, projects.list, session.* | R1–R3 | Phase 6 |
 | `node.update` | check, download, install, rollback | R3–R4 | Phase 7 |
 
 ## 4. 节点管理
@@ -304,15 +303,18 @@ Provider-neutral actions：
 - `session.watch`
 - `session.cancel`
 - `session.result`
-- `session.handoff`
+- `session.rename`
+- `session.archive`
 
-请求必须包括 providerId、clientId、workspaceId、correlationId 和 hopLimit。Session 创建后 provider、Workspace 边界和所有权不能被静默改变。
+当前 Phase 6 只实现本机 Codex `bridge_owned`。发现类 action 不要求 Workspace；项目/Session action 使用 opaque workspaceId，并由 Node 校验真实 Workspace 边界。
 
-- 权限：发现 R1；创建/发送 R2；跨客户端共享/handoff R3。
-- Provider Token 不进入协议或 Hub。
-- 默认 hopLimit=1，最大建议 4。
-- 事件必须标识真实 owner 和 execution mode，不能把“打开桌面 UI”误报为“任务已运行”。
-- 错误：`PROVIDER_UNAVAILABLE`、`MODEL_NOT_ALLOWED`、`SESSION_NOT_FOUND`、`OWNER_CONFLICT`、`HOP_LIMIT_EXCEEDED`、`ACTIVE_TURN_CONFLICT`。
+- `session.create/send` 复用已有 `write + shell` 本机权限，不新增 `agent` 权限。
+- Provider Token、ChatGPT/Codex 本地认证状态和环境凭据不进入协议或 Hub。
+- Node 直接管理 `codex app-server --stdio`；不要求单独启动 Codex daemon 或 agent-service。
+- 未指定 model 时从当前 Codex `model/list` 自动选择实际可用模型；显式不可用模型提前拒绝。
+- 一个 Session 只允许一个 active Run；事件通过 `session.watch` 有界返回。
+- `desktop_owned`、Hook、handoff、AI→AI 通用递归不进入当前 MVP。
+- 错误：`AGENT_PROVIDER_UNAVAILABLE`、`AGENT_SESSION_NOT_FOUND`、`AGENT_SESSION_BUSY`、`PERMISSION_DENIED`、`INVALID_REQUEST`。
 
 ## 15. 通用结构化错误
 

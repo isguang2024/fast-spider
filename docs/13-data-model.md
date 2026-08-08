@@ -322,33 +322,29 @@ machineId、Hub endpoint、Hub trust fingerprint、credential reference、status
 
 路径不上传 Hub。
 
-### 12.3 `local_grants`
+### 12.3 Local Bridge 状态
 
-remote subject/client/local client + workspace + capability/action + effect/conditions。Node 安全底线可以由编译/配置固定，不能被 Hub allow 覆盖。
+当前个人 MVP 不建立 `local_grants` 或 `local_clients` 表。Local Bridge 只依赖当前 OS 用户/data-dir ACL，并复用 Workspace Registry 与现有危险本机权限；连接级 `connectionId` 仅作临时日志字段，不持久化为权限主体。
 
-### 12.4 `local_clients`
-
-localClientId、displayName、credential hash/public key、OS identity constraints、allowed Workspaces/Actions、last_used、revoked。
-
-### 12.5 `local_jobs`
+### 12.4 `local_jobs`
 
 jobId、request/idempotency、params digest、workspace revision、state、phase、process metadata、deadline、sequence、result digest、Hub ack sequence、created/finished。
 
 进程句柄不能跨重启永久恢复；保存 PID、start time、process group/Job Object metadata用于重启后识别和清理，不能只按 PID 杀进程。
 
-### 12.6 `local_events`
+### 12.5 `local_events`
 
 有界事件缓冲和 Hub ack。stdout/stderr 可引用受限本地日志文件，关键状态和终态持久化。
 
-### 12.7 `recovery_items`
+### 12.6 `recovery_items`
 
 recoveryId、workspaceId、original relative path、internal storage path、hash、size、deletedAt、expiresAt。内部路径不对远程返回。
 
-### 12.8 `agent_sessions`
+### 12.7 Agent Session 状态
 
-providerId、provider-local ref、Fast Spider sessionId、workspaceId、owner、executionMode、lifecycle、created Client、last event cursor。Provider Token 不在表内。
+当前 Phase 6 直接读取 Codex 官方 Session/Turn 事实并在 Node 内维护有界运行时事件，不额外创建 Fast Spider `agent_sessions` 持久表。若未来确有跨 Provider/离线索引需求，再评估最小持久化模型；Provider Token 不进入 Hub/Node 通用数据库。
 
-### 12.9 `update_state`
+### 12.8 `update_state`
 
 current/previous/pending version、manifest hash、signature key id、download path、install state、health deadline、rollback reason。
 
@@ -360,7 +356,7 @@ current/previous/pending version、manifest hash、signature key id、download p
 
 ### Job 创建
 
-一个事务：检查有效 Lease 使用次数 → 幂等查找/插入 → 创建 Job → 写初始审计。Node dispatch 在提交后进行。
+一个事务：完成当前身份/资源授权 → 幂等查找/插入 → 创建 Job → 写初始审计。Node dispatch 在提交后进行。
 
 ### Job Event
 

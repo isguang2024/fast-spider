@@ -217,7 +217,7 @@ subjects × machines × workspaces × capabilities × actions × origins × risk
 - 使用官方 MCP SDK conformance 测试固定版本。
 - 工具列表不随机器数重复增长。
 - 工具 Schema 大小、描述和必需字段。
-- `workspace_open` 不扩大 grant，权限变化失效。
+- 工具直接使用 machineId/workspaceId；不依赖 `workspace_open` 或短期 Context 才能保证权限收紧生效。
 - 长任务返回 jobId；watch cursor 正常恢复。
 - 绝对路径、任意 flags、未知 action 被拒绝。
 - OAuth/PKCE、Redirect URI、scope、audience、Token rotation。
@@ -228,28 +228,24 @@ subjects × machines × workspaces × capabilities × actions × origins × risk
 
 ## 13. Local Bridge 测试
 
-- 默认关闭，无端口/socket。
-- Named Pipe 当前用户 ACL；不同用户拒绝。
-- UDS 权限、stale socket、路径替换。
-- 每 Local Client 独立 Token/公钥和 Workspace/Action。
-- loopback 只监听 127.0.0.1/::1。
-- 非法 Host、Origin、CORS、CSRF、DNS rebinding 模拟。
-- 本地 Client 吊销和 Session 共享权限。
-- Local 与 Remote 同时调用的资源锁/审计一致。
+- 默认随 Node 启用，`--disable-local-bridge` 时不创建 endpoint。
+- Windows/Linux AF_UNIX/UDS round-trip、stale socket、路径替换和退出清理。
+- endpoint 位于当前用户 data-dir；Unix 权限收紧，Windows 继承当前用户目录 ACL。
+- 不监听 TCP/loopback HTTP，不存在 Local Client Token/注册状态。
+- 非法 JSON、未知字段、超大消息、并发连接和取消退出均有界。
+- Local 与 Remote 同时调用时复用同一 Workspace/Capability 规则。
 
 ## 14. Agent/Codex 测试
 
-- Provider/model/project 发现与 policy 过滤。
+- Provider/model/project 发现与当前 Codex `model/list` 真实结果一致。
 - Project 绝对路径只在 Node 匹配 workspaceId，不外泄。
-- Session create/get/send/watch/cancel/result。
-- 一个 Session active Run 冲突。
+- Session list/get/create/send/watch/cancel/result/rename/archive。
+- 一个 Session active Turn 冲突。
 - bridge_owned owner/phase 真实映射。
-- desktop_owned 未提交保持 dispatching；UI 打开不算 running。
-- Hook 不可信/请求过期/Session 不匹配拒绝 attach。
+- 未指定 model 自动使用当前 CLI 实际可用模型；不存在的显式 model 提前拒绝。
 - cancel ack 与真实 Turn 终态分离。
-- recover idempotency；不能把 desktop_owned 偷换 bridge_owned。
-- correlationId/hopLimit/循环检测。
-- Provider Token 不出 Node。
+- stdio JSON-line 并发写入必须串行，不能交叉破坏 RPC。
+- Provider Token 不出 Node；desktop-owned/handoff/recover 不属于当前测试矩阵。
 
 Provider 不可用时返回结构化状态，不阻塞文件/Shell能力。
 

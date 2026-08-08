@@ -32,6 +32,7 @@ type Config struct {
 	Version           string
 	AllowInsecure     bool
 	BrowserSidecarDir string
+	Agent             AgentController
 	Logger            *slog.Logger
 }
 
@@ -45,6 +46,7 @@ type Client struct {
 	writeMu        sync.Mutex
 	jobs           *JobManager
 	browser        *BrowserManager
+	agent          AgentController
 	requestSem     chan struct{}
 	screenshotSem  chan struct{}
 }
@@ -93,6 +95,7 @@ func New(cfg Config) (*Client, error) {
 		jobs:           NewJobManager(cfg.DataDir),
 		requestSem:     make(chan struct{}, 8),
 		screenshotSem:  make(chan struct{}, 1),
+		agent:          cfg.Agent,
 	}
 	client.browser = NewBrowserManager(cfg.DataDir, cfg.BrowserSidecarDir, cfg.Logger)
 	return client, nil

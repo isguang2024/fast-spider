@@ -25,15 +25,15 @@ MCP、REST、WebSocket、Web Console 和 CLI 都是 Fast Spider 的外部 Adapte
 
 ### B. `capability_list + capability_execute`
 
-优点：工具数最少、扩展快。缺点：Schema 过于动态；模型选择和审批界面不清晰；容易退化成“万能执行”接口，扩大安全风险。
+工具数少，但会把所有能力重新压进一个万能执行入口，Schema 动态、调试体验差。当前个人项目不采用，也不为未来预留第二条执行链。
 
-### C. 少量固定常用工具 + 动态能力发现
+### C. 固定常用工具 + 内部动态能力发现
 
-优点：常用路径稳定，特殊能力可扩展；Schema 大小可控；权限仍按明确 capability/action 审核。缺点：Adapter 需维护固定工具和内部能力版本映射。
+外部工具保持稳定；`capability_list` 只负责发现当前 Node 的真实能力，真正执行仍走语义明确的固定工具。这样模型选择简单，内部 Capability Engine 仍可扩展。
 
-## 3. 最终推荐：混合模式 C
+## 3. 当前固定工具面
 
-MVP 公开固定工具：
+Phase 6 公开固定工具共 16 个：
 
 ```text
 machine_list
@@ -49,37 +49,18 @@ git_control
 build_control
 artifact_get
 capability_list
-```
-
-后续阶段按功能启用：
-
-```text
-workspace_open
-capability_execute
 browser_control
 screenshot_take
 ai_control
 ```
 
-保留受限 `capability_execute` 仅用于已发现、已授权但尚未提升为固定工具的低频能力。它不是任意命令入口：`capability`、`action`、版本和参数仍必须匹配 Node Descriptor 与固定策略；R3/R4 能力默认不通过通用入口执行。
-
-不为每台机器、每个 Workspace、每个 Provider 或每个模型动态生成重复工具。
+不为每台机器、每个 Workspace、Provider、模型或 Session 动态生成重复工具，也不提供通用 `capability_execute`。
 
 ## 4. 公共目标选择
 
-所有远程执行工具必须通过以下方式之一确定目标：
+远程执行工具直接使用 opaque `machineId + workspaceId`。当前个人模式不再增加 `workspace_open/workspaceContextId` 短期上下文；需要减少重复参数时由客户端会话在本地记住当前选择即可，但每次请求仍由 Hub/Node 校验真实资源归属和 Workspace 状态。
 
-1. 参数显式提供 `machineId` 和 `workspaceId`。
-2. 使用 `workspace_open` 返回的短期 `workspaceContextId`。
-
-`workspaceContextId`：
-
-- 由 Hub 签名并绑定 userId、clientId、machineId、workspaceId、revision 和 expiresAt。
-- 只简化目标选择，不增加权限。
-- Workspace 权限变化后失效。
-- 不包含或透露 Node 绝对路径。
-
-显示名只能用于列表和人类确认，不能作为执行目标的唯一键。
+显示名只能用于列表和人类识别，不能作为执行目标的唯一键。
 
 ## 5. MCP 工具契约
 
@@ -109,66 +90,59 @@ ai_control
 
 输入：machineId、可选状态和分页。输出 workspaceId、显示名、Git 摘要、read/write 能力、revision 和状态；不返回绝对路径。
 
-### 5.4 `workspace_open`（后续）
-
-尚未进入当前 Phase 4 公开 Schema。目标输入为 machineId、workspaceId、requestedActions、ttlSeconds，输出短期 workspaceContextId、有效期和实际授予的 Action。
-
-“open”只建立安全上下文，不授权新目录，也不改变 Node 本地 Registry。
-
-### 5.5 `file_read`
+### 5.4 `file_read`
 
 输入：
 
 ```json
 {
-  "workspaceContextId": "wctx_opaque",
+  "machineId": "mach_opaque",
+  "workspaceId": "ws_opaque",
   "path": "internal/app.go",
   "offset": 0,
-  "length": 65536
+  "limit": 65536
 }
 ```
 
-输出：UTF-8 内容、文件 revision/hash、是否截断、下一 offset。二进制或超限文件返回 Artifact/结构化错误，不做隐式乱码转换。
+输出：UTF-8 内容、文件 SHA-256、字节范围和是否还有后续内容。二进制、非法 UTF-8 或超限请求返回结构化错误，不做隐式乱码转换。
 
-### 5.6 `file_edit`
+### 5.5 `file_edit`
 
-支持固定模式：`exact_replace`、`range_replace`、`patch`、`write`。必须带 expected revision/hash；返回每个文件的新 revision、Diff 摘要和可选 Artifact。
+当前只提供最常用的精确替换：`path + oldText + newText + expectedFileSha256`。`oldText` 必须唯一匹配，写入使用原子替换和乐观并发校验。远程不暴露任意绝对路径写入或万能 patch 模式。
 
-MCP 工具不暴露“任意文件路径写入”；所有 path 都是 Workspace 相对路径。
+### 5.6 `code_search`
 
-### 5.7 `code_search`
+输入：machineId、workspaceId、query、可选相对 path、regex、ignoreCase、limit。输出 path/line/column/text 结构化 match，并带 scannedFiles/truncated。
 
-输入：workspace context、mode（glob/grep）、pattern、globs、contextLines、maxResults。输出结构化 match；超限明确标记 truncated。
+### 5.7 `shell_run`
 
-### 5.8 `shell_run`
+输入：machineId、workspaceId、显式 `argv[]`、可选相对 cwd、timeoutSeconds、idempotencyKey。没有隐式 shell 插值、远程 env 覆盖或 background 魔法参数；输出 jobId 和初始状态，长输出统一由 `job_watch` 获取。
 
-输入：workspace context、cwd、`argv` 或已授权 shell profile、env 覆盖、timeout、background。输出 jobId 和初始状态。长输出必须由 `job_watch` 获取，不能让一次 MCP tool call 无限保持或返回无限文本。
-
-### 5.9 `job_watch`
+### 5.8 `job_watch`
 
 输入：machineId、workspaceId、jobId、cursor、waitSeconds。输出 Job snapshot、事件、nextCursor、terminal。Node 会再次校验 Workspace 仍启用且 Job 确实属于该 Workspace；跨 Workspace 的 jobId 按不存在处理。watch 超时不取消 Job；Node 在线事件窗口有硬上限，完整 Job 本地日志另行按 24 小时保留。
 
-### 5.10 `job_cancel`
+### 5.9 `job_cancel`
 
 输入：machineId、workspaceId、jobId。Node 同样校验 Job 的 Workspace 归属；只有完整进程树真正退出后才返回 terminal canceled，重复取消终态 Job 安全。
 
-### 5.11 `git_control`
+### 5.10 `git_control`
 
-输入：workspace context、action 和 action-specific params。Action 白名单来自契约，如 status、diff、log、show、commit、fetch、pull、push、worktree。MCP 层不接受任意 Git flags 字符串。
+输入：machineId、workspaceId、action 和固定 action-specific 参数。当前白名单包含 status/diff/stagedDiff/log/show/branches/currentBranch/worktrees/add/commit/fetch/pull/push/createWorktree/deleteWorktree；MCP 不接受任意 Git flags 字符串。
 
-### 5.12 `build_control`
+### 5.11 `build_control`
 
 固定 action 为 `list` / `run`。`list` 只返回 profileId、显示名、相对 cwd 和 timeout，不返回真实 argv；`run` 只能按 Node 本机登记的 profileId 启动并要求 idempotencyKey，远端不能覆盖命令模板。
 
-### 5.13 `artifact_get`
+### 5.12 `artifact_get`
 
 当前固定 action：`get`、`uploadFile`、`uploadJobLog`。`get` 返回元数据、下载路径，并仅对不超过 128 KiB 的文本/JSON/XML Artifact 内联内容；`uploadFile` 只能读取授权 Workspace 相对路径；`uploadJobLog` 只能导出对应 Workspace 的终态 Job 日志。1 MiB chunk/offset/resume/hash 等原始上传协议不直接暴露给 MCP。
 
-### 5.14 `capability_list`
+### 5.13 `capability_list`
 
-输入：可选 machineId/workspaceId。输出当前可见 Capability Descriptor、版本、Action、风险、平台和限额。它用于发现，不自动授权。
+输入：可选 machineId；省略时返回 Hub 公共能力目录，指定在线 machineId 时返回该 Node 实际宣告的能力。它用于发现，不新增权限。
 
-### 5.15 `browser_control`
+### 5.14 `browser_control`
 
 Phase 5 当前固定 action：`launch`、`close`、`page.open`、`page.navigate`、`page.close`、`pages.list`、`click`、`type`、`press`、`wait`、`snapshot`、`screenshot`、`events`。
 
@@ -176,13 +150,15 @@ Phase 5 当前固定 action：`launch`、`close`、`page.open`、`page.navigate`
 
 不接受任意 JavaScript、`evaluate`、Playwright API、CDP 消息或现有浏览器 Profile。`screenshot` 结果直接返回 Artifact 元数据，不返回 Node 临时路径。
 
-### 5.16 `screenshot_take`
+### 5.15 `screenshot_take`
 
 当前固定 action：`listDisplays`、`desktop`、`display`、`listWindows`、`window`。调用提供 machineId、workspaceId；workspaceId 仅用于确认当前 Workspace 仍启用并归属截图 Artifact，不再要求额外 `screenshot` 权限。窗口截图先用 `listWindows` 取得短期 opaque `windowId`，不暴露 OS 句柄；结果只返回尺寸与 Artifact 元数据，不返回 Node 临时路径。
 
-### 5.17 `ai_control`
+### 5.16 `ai_control`
 
-Provider-neutral：`providers.list`、`models.list`、`projects.list`、`session.create/get/send/watch/cancel/result/handoff`。工具返回真实 owner、phase 和 executionMode；打开桌面 UI 不等同于已启动 Turn。
+当前固定 action：`providers.list`、`models.list`、`projects.list`、`session.list`、`session.get`、`session.create`、`session.send`、`session.watch`、`session.cancel`、`session.result`、`session.rename`、`session.archive`。
+
+Phase 6 只实现本机 Codex 的 `bridge_owned` 执行：Node 直接启动 `codex app-server --stdio`，Provider 凭据和本机认证状态不进入 Hub。`session.create/send` 复用 Workspace 已有 `write + shell` 权限，不新增 `agent` 权限。未指定 model 时先读取当前 `model/list` 并选择当前 CLI 实际可用模型；显式传入不存在的 model 会在启动 Turn 前返回错误。`desktop_owned/handoff/Hook` 不进入当前 MVP。
 
 ## 6. 工具返回统一结构
 
@@ -238,16 +214,16 @@ Provider-neutral：`providers.list`、`models.list`、`projects.list`、`session
 - Capability Descriptor 不在每次工具调用重复发送。
 - 列表输出分页；大 Diff、日志、截图和报告使用 Artifact。
 - 描述中明确只使用 opaque ID 和相对路径。
-- 机器/Workspace 当前选择可以由安全上下文减少参数，但必须可见且可过期。
+- 客户端可以自己记住当前 Machine/Workspace 选择来减少 UI 操作，但请求仍发送 opaque ID，不再维护额外短期授权 Context。
 
-预计固定核心工具 12 个，后续完整工具面约 15 个；不会随 Node 数量线性增长。
+当前固定工具就是 16 个，不随 Node、Workspace、Provider、模型或 Session 数量增长。
 
 ## 9. MCP 权限与审批映射
 
 | 工具 | Hub scope 示例 | Node Action |
 |---|---|---|
 | machine_list/get | `machines:read` | node status/capabilities |
-| workspace_list/open | `workspaces:read` | workspace get/list |
+| workspace_list | `workspaces:read` | workspace list |
 | file_read/code_search | `workspace:read` | file.read/search |
 | file_edit | `workspace:write` | file.write/edit/patch |
 | shell_run | `jobs:execute` | shell.run.* |
@@ -268,7 +244,6 @@ REST 供 Web Console、CLI/SDK 和自动化使用，资源风格与 Job 模型�
 GET    /api/v1/machines
 GET    /api/v1/machines/{machineId}
 GET    /api/v1/machines/{machineId}/workspaces
-POST   /api/v1/workspace-contexts
 POST   /api/v1/jobs
 GET    /api/v1/jobs/{jobId}
 GET    /api/v1/jobs/{jobId}/events
@@ -308,7 +283,7 @@ MVP 支持两种读取方式：
 
 - 400：Schema/参数错误。
 - 401：未认证或 Token 无效。
-- 403：权限/Approval/Node 本地拒绝。
+- 403：Workspace/Node 本地权限拒绝。
 - 404：资源不可见或不存在，避免 ID 枚举。
 - 409：revision/idempotency/state 冲突。
 - 413：输入/Artifact 过大。
@@ -324,7 +299,7 @@ MVP 支持两种读取方式：
 - MCP tool arguments 不直接传给 shell、Git、ripgrep、CDP 或 Provider。
 - 结果做敏感字段和绝对路径脱敏。
 - Artifact 下载使用权限复核、Content-Disposition、nosniff 和范围限制。
-- `workspace_open`、`capability_list` 或工具列表不能泄露无权资源。
+- `workspace_list`、`capability_list` 或工具列表不能泄露无权资源，也不能返回 Node 绝对路径。
 - 调试接口和原始 FSWP 不对公网 Client 暴露。
 
 ## 15. 兼容与弃用

@@ -204,35 +204,35 @@ Migration 使用内置、版本化、带 checksum 的小型 runner；不引入�
 
 **推荐默认值**：MVP 提供 `normal/sensitive` 标签、附件下载、nosniff、短期访问和 hash；不强制引入外部恶意扫描服务。为未来 Scanner 接口预留，但没有扫描时显示 `unknown`，不能伪报安全。
 
-## 6. 进入 Phase 5 前必须决定
+## 6. Phase 5 已关闭的决策
 
-### Q22. Playwright sidecar 形态
+### Q22. Playwright sidecar 形态 — 已决定
 
-**候选**：Node.js sidecar、独立 Playwright 服务进程、直接使用 chromedp。
+当前使用固定版本的 Node.js Playwright Sidecar，通过 stdio 与 Go Node 通信，不监听网络。实际 Windows 开发机已完成 Chromium 真 E2E；Playwright `node_modules` 约 18 MiB，受管 Chromium 约 428 MiB。当前成本可接受，因此不同时维护 chromedp 第二套实现。
 
-**推荐默认值**：Node 管理的本机私有 Playwright sidecar，通过 stdio/Named Pipe/UDS，固定版本并无网络监听；浏览器作为可选组件包下载。先验证实际安装体积、离线安装、更新兼容和崩溃清理。若代价明显过高，缩减为 chromedp + Chromium，而不是长期维护两套完整实现。
+### Q23. 浏览器网络策略 — 已决定
 
-### Q23. 浏览器网络策略
+公网 HTTP/HTTPS/WS/WSS 默认可访问；`file:`、危险 scheme、云元数据、link-local 等仍阻止。localhost、RFC1918、ULA、CGNAT 等本地/私网目标通过 Node 本机 Workspace Origin 持久白名单开放，一次配置后持续有效直到删除；不使用 TTL。私网白名单固定解析 IP，Go 与 Sidecar 双层检查 DNS rebinding。
 
-**推荐默认值**：默认只允许公网 HTTP/HTTPS；阻止 `file:`、云元数据、link-local、loopback、RFC1918/ULA。Node 本地开发站点通过绑定 Workspace、主机、端口和期限的明确策略例外。每次 DNS 解析、重定向和连接目标重新校验。
+### Q24. 截图后端 — 已决定当前范围
 
-### Q24. 截图后端
+桌面/显示器使用当前 Go 截图库；Windows 窗口截图使用进程内 Win32 `PrintWindow`，不再启动 helper 子进程。三类截图都直接转 Hub Artifact，不增加独立 Workspace 权限。Linux/Wayland 的实际桌面权限差异继续作为平台兼容测试，不为此引入 root/helper 常驻服务。
 
-**推荐方法**：分别对 Windows Graphics Capture/Desktop Duplication、Linux X11 与 Wayland Portal/PipeWire 做真实原型。Go 库能可靠覆盖则直接使用；不足时增加窄 helper process。不能为了截图把整个 Node 改为双语言或要求 root 绕过 Wayland。
+## 7. Phase 6 已关闭的决策
 
-## 7. 进入 Phase 6 前必须决定
+### Q25. Codex 官方接入边界 — 已决定
 
-### Q25. Codex 官方接入边界
+当前 Windows 实机使用本机 `codex app-server --stdio`，不启动 Codex daemon，也不增加独立 agent-service。已用真实 Codex CLI 0.141.0 验证 `model/list → thread/start → turn/start → thread/read/watch → archive`。Provider 凭据和 ChatGPT/Codex 本地认证状态始终留在 Node 本机。
 
-**推荐默认值**：优先官方 App Server/SDK；若通过本地 agent-service，Node 只连接 loopback/Named Pipe/UDS/stdio，不能公网暴露。必须先固定并测试 Session/Turn/owner/phase/approval/cancel 的真实映射，再实现 MCP `ai_control`。
+未指定 model 时以当前 `model/list` 为事实源自动选择可用模型；显式不可用模型提前拒绝。这样避免本机 Codex 默认配置指向当前 CLI 不支持的模型时，让 Session 无提示失败。
 
-### Q26. desktop-owned Hook
+### Q26. desktop-owned Hook — 不进入当前 MVP
 
-**推荐默认值**：后于 bridge-owned 实现。Hook 必须由用户在本机明确安装/信任；使用一次性 requestId、过期时间和 persisted Session/Turn 证据。未信任时停止真实 desktop-owned 链路，不修改 trusted hash、不绕过官方信任。
+Phase 6 只实现 `bridge_owned`。desktop-owned、可信 Hook、handoff/recover 只有出现明确实际需求时再单独评估，不为未来可能性维护第二条执行链。
 
-### Q27. Local Client 配对
+### Q27. Local Client 配对 — 已取消
 
-**推荐默认值**：Named Pipe/UDS OS ACL + 每 Client 独立本机一次性配对/公钥。进程路径和签名只作为提示。Local Bridge 管理 UI 显示 Client、Workspace、Action 和撤销按钮。
+个人单 Owner 模式不实现 Local Client 注册、配对 Token、公钥、Grant、Lease 或逐次 Approval。Windows/Linux 当前统一使用 Node 当前用户 data-dir 下的 AF_UNIX/UDS Local Bridge；请求直接复用 Workspace 和现有 `write/shell/git-*/build` 等真实边界。Local Bridge 默认启用，可用本机开关整体关闭。
 
 ## 8. 进入 Phase 7 前必须决定
 

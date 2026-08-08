@@ -32,6 +32,11 @@ var ScreenshotCapability = CapabilityDescriptor{
 	Actions: []string{"listDisplays", "desktop", "display", "listWindows", "window"},
 }
 
+var AgentCapability = CapabilityDescriptor{
+	CapabilityId: "agent.control", Version: "1.0",
+	Actions: []string{"providers.list", "models.list", "projects.list", "session.list", "session.get", "session.create", "session.send", "session.watch", "session.cancel", "session.result", "session.rename", "session.archive"},
+}
+
 func ScreenshotCapabilityForOS(goos string) CapabilityDescriptor {
 	capability := ScreenshotCapability
 	if goos != "windows" {
@@ -53,6 +58,7 @@ var NodeCapabilities = []CapabilityDescriptor{
 	{CapabilityId: "git.repository", Version: "1.0", Actions: []string{"status", "diff", "stagedDiff", "log", "show", "branches", "currentBranch", "worktrees", "add", "commit", "fetch", "pull", "push", "createWorktree", "deleteWorktree"}},
 	{CapabilityId: "build.profile", Version: "1.0", Actions: []string{"list", "run"}},
 	{CapabilityId: "artifact.store", Version: "1.0", Actions: []string{"uploadFile", "uploadJobLog"}},
+	AgentCapability,
 }
 
 type messageHeader struct {

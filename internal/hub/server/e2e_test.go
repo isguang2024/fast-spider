@@ -136,7 +136,7 @@ func TestPhase1EndToEnd(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	wantNames := []string{"artifact_get", "browser_control", "build_control", "capability_list", "code_search", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "screenshot_take", "shell_run", "workspace_list"}
+	wantNames := []string{"ai_control", "artifact_get", "browser_control", "build_control", "capability_list", "code_search", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "screenshot_take", "shell_run", "workspace_list"}
 	if stringJSON(names) != stringJSON(wantNames) {
 		t.Fatalf("MCP tools=%v want=%v", names, wantNames)
 	}

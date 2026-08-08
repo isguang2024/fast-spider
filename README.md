@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 它通过长期部署在公网服务器上的 Hub，将 GPT、Claude、Codex、Web Console、CLI 或其他自动化客户端的请求，安全路由到用户明确授权的 Windows、Linux，未来也包括 macOS 节点。Node 只主动建立 HTTPS/WSS 443 出站连接，不默认开放局域网或公网端口。
 
-> 当前状态：Phase 4 远程开发闭环已完成；Phase 5 正在落地隔离浏览器与一次性截图。Node 已加入可选 Playwright Chromium Sidecar；浏览器和桌面截图不再额外叠加 Workspace 权限。公网网页默认可访问，本机/局域网开发地址只需在 Node 本机加入一次持久 Origin 白名单；危险 scheme、link-local 和云元数据地址仍会阻止。Sidecar 仅通过 stdio 接入，不开放 CDP/监听端口，不控制用户现有浏览器 Profile。截图直接进入 Hub Artifact，不向远程暴露 Node 临时路径。
+> 当前状态：Phase 5 的隔离浏览器与一次性桌面/显示器/窗口截图已完成；Phase 6 正在落地 Local Bridge 与 Codex Adapter。Node 本机入口使用当前用户数据目录下的 AF_UNIX socket，Windows/Linux 共用同一实现，不监听 TCP，也不维护本地 Client 注册/Token/Grant。Codex 直接使用本机 `codex app-server --stdio`，Provider 凭据不上传 Hub；`agent.control` 只复用现有 Workspace 与 `write/shell` 等实际权限。
 
 ## 核心定位
 
@@ -37,7 +37,7 @@ Fast Spider 不是远程桌面，也不是通用内网穿透软件：
 | Hub 数据库 | SQLite WAL，预留 PostgreSQL 迁移接口 |
 | Artifact | Hub 本地内容寻址文件存储，元数据入库 |
 | Web Console | 静态资源嵌入 Hub |
-| Local Bridge | Windows Named Pipe / Unix Domain Socket 优先；loopback HTTP 默认关闭 |
+| Local Bridge | Windows/Linux 统一 AF_UNIX socket；无 TCP 端口，loopback HTTP 不进入首版 |
 | 浏览器 | 隔离 Profile，优先 Playwright Adapter |
 | MCP | 固定常用工具 + 动态能力发现的混合模式 |
 
@@ -53,7 +53,7 @@ Fast Spider 不是远程桌面，也不是通用内网穿透软件：
 6. Job watch、事件游标、结果和 Artifact。
 7. 稳定的 MCP 工具面，以及独立的内部 Capability Request。
 
-浏览器、截图、Local Bridge、Codex Adapter 和安装包按后续阶段推进。
+浏览器、截图已落地；当前继续推进 Local Bridge、Codex Adapter，安装/更新按后续阶段推进。
 
 ## 文档导航
 
@@ -90,7 +90,7 @@ Fast Spider 不是远程桌面，也不是通用内网穿透软件：
 - MVP 不引入 Kubernetes、Redis、NATS、Kafka 或复杂消息队列。
 - 不做长期双协议、双写或兼容层堆叠；版本升级使用明确窗口与迁移规则。
 
-## Phase 1–4 本地运行
+## Phase 1–6 本地运行
 
 要求 Go 1.26+。
 
@@ -152,8 +152,13 @@ go run ./cmd/node workspace-add \
 # npx playwright install chromium
 # cd ../..
 #
-# 启动 Node；本地 HTTP 验证必须再次显式允许明文 Hub
+# 启动 Node；Local Bridge 默认同时启动，不占 TCP 端口。
+# 如明确不需要本机入口，可增加 --disable-local-bridge。
+# Codex AI 能力直接探测本机 codex CLI；无需单独启动 daemon/agent-service。
 go run ./cmd/node run --allow-insecure --browser-sidecar-dir ./sidecar/browser
+#
+# 本机可直接复用同一 Capability Engine，例如读取 Workspace：
+# go run ./cmd/node local-call --workspace '<workspaceId>' --capability file.read --action read --params-json '{"path":"README.md","limit":4096}'
 
 # 9. 查看机器
 go run ./cmd/spiderctl machine-list \
@@ -161,7 +166,7 @@ go run ./cmd/spiderctl machine-list \
   --allow-insecure
 ```
 
-远程 MCP 当前固定工具面为 15 个：`machine_list`、`machine_get`、`capability_list`、`workspace_list`、`file_read`、`code_search`、`file_edit`、`shell_run`、`job_watch`、`job_cancel`、`git_control`、`build_control`、`artifact_get`、`browser_control`、`screenshot_take`。`browser_control` 仍是一个固定工具，通过 action 选择 launch/open/navigate/click/type/press/wait/snapshot/screenshot/events/close；不暴露任意 JavaScript、CDP 或 Playwright API。公网浏览默认可用，本地/私网 Origin 由 Node 本机持久白名单控制。`screenshot_take` 当前开放 `listDisplays/desktop/display/listWindows/window`，不再要求独立截图权限；窗口只需先列出一次拿 opaque `windowId`，结果同样只返回 Artifact。具体 Node 只有在 Sidecar、Playwright npm 包和受管 Chromium 都安装完成时才宣告 `browser.automation`。
+远程 MCP 当前固定工具面为 16 个：`machine_list`、`machine_get`、`capability_list`、`workspace_list`、`file_read`、`code_search`、`file_edit`、`shell_run`、`job_watch`、`job_cancel`、`git_control`、`build_control`、`artifact_get`、`browser_control`、`screenshot_take`、`ai_control`。`browser_control` 仍是一个固定工具，通过 action 选择 launch/open/navigate/click/type/press/wait/snapshot/screenshot/events/close；不暴露任意 JavaScript、CDP 或 Playwright API。公网浏览默认可用，本地/私网 Origin 由 Node 本机持久白名单控制。`screenshot_take` 当前开放 `listDisplays/desktop/display/listWindows/window`，不再要求独立截图权限；窗口只需先列出一次拿 opaque `windowId`，结果同样只返回 Artifact。具体 Node 只有在 Sidecar、Playwright npm 包和受管 Chromium 都安装完成时才宣告 `browser.automation`。`ai_control` 当前实现本机 Codex 的 `providers/models/projects/session.*`；创建或继续 Codex Run 复用 Workspace 现有 `write + shell` 权限，不新增单独 `agent` 权限。未指定模型时从当前 `codex model/list` 自动选择可用模型，避免本机默认模型与旧 CLI 不兼容导致 Session 直接失败。
 
 本机 HTTP/WS 仅用于开发验证；生产仍按文档要求使用 HTTPS/WSS 443，并建议 Hub 只监听 loopback，由 TLS 反向代理暴露公网入口。Shell/Git 仍以 Node 普通 OS 用户权限运行，不是 chroot/container 沙箱。Git commit/pull/push/worktree 会显式检查 hooks/filter 风险；受管 worktree 创建在 Node 数据目录并注册成新的默认只读 Workspace，不在原仓库目录里嵌套。
 
@@ -173,8 +178,8 @@ go test ./... -count=1
 go build ./cmd/hub ./cmd/node ./cmd/spiderctl ./cmd/contractgen
 ```
 
-当前 E2E 覆盖 Owner bootstrap → enrollment → Node 上线 → Workspace/文件/搜索 → 精确编辑 → `git_control` → 本机 Build Profile → `build_control` → Job 日志上传 Artifact → `artifact_get` 读取 → Shell/Job 取消 → Node 吊销。专项测试还覆盖 Git hooks/filter 权限、Git 网络幂等、受管 worktree、Artifact offset/SHA 错误、断点续传、配额、内容寻址去重、过期 Blob 清理，以及 24 小时 Job 日志清理。
+当前验证链覆盖 Owner bootstrap → enrollment → Node 上线 → Workspace/文件/搜索/编辑 → Git/Build/Artifact → Shell/Job → 隔离 Chromium → 页面/桌面/窗口截图 Artifact → Local Bridge → `agent.control` → 本机 Codex Session/Turn。Phase 6 实机还验证了本机 Codex CLI 0.141.0 的实际 `model/list`，并通过 Local Bridge 自动选择当前可用模型完成 `session.create → result/watch → archive`。
 
 ## 仓库状态
 
-Phase 0 文档仍是设计基线；Phase 1–4 的远程开发核心链路已经具备可运行实现。下一阶段进入 Phase 5 的隔离浏览器控制与截图；仍继续保持单进程 Hub/Node，不引入复杂队列、微服务或通用远控能力。
+Phase 0 文档保留为设计历史，但实现以当前代码和已更新 ADR 为准。Phase 1–5 已形成可运行闭环，Phase 6 正在收口 Local Bridge/Codex Adapter；仍保持单进程 Hub/Node，不引入复杂队列、微服务、第二套本地权限系统或通用远控能力。

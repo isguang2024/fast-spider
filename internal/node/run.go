@@ -34,6 +34,11 @@ func (c *Client) Run(ctx context.Context) error {
 				c.cfg.Logger.Error("browser shutdown incomplete", "error", err)
 			}
 		}
+		if c.agent != nil {
+			if err := c.agent.Close(shutdownCtx); err != nil {
+				c.cfg.Logger.Error("agent provider shutdown incomplete", "error", err)
+			}
+		}
 	}()
 	state, err := c.State()
 	if err != nil {
@@ -44,7 +49,6 @@ func (c *Client) Run(ctx context.Context) error {
 		return fmt.Errorf("validate enrolled hub URL: %w", err)
 	}
 	state.HubURL = normalizedHubURL
-
 	backoff := 500 * time.Millisecond
 	for {
 		if err := ctx.Err(); err != nil {

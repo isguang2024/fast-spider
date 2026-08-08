@@ -25,10 +25,8 @@ Hub 进行身份与资源归属判断；Node 使用本地 Workspace 和运行时
 | Device Credential | `credentialId` | 私钥证明，可选 mTLS | 每台设备可轮换多个凭据 |
 | Node Connection | `connectionId` | 认证后的短期连接上下文 | 带 generation，不持久充当设备身份 |
 | Workspace | `workspaceId` | Node 本地 Registry 解析 | 对外 opaque，不暴露路径 |
-| Local Client | `localClientId` | Named Pipe/UDS OS 身份 + Token/密钥 | 不复用 Hub OAuth Token |
-| Session | `sessionId` | 继承创建者与边界 | 只是会话，不扩大权限 |
-| Approval | `approvalId` | 未来多人/高风险模式可选 | 当前个人 MVP 不进入正常执行链路 |
-| Capability Lease | `leaseId` | 未来多人模式可选 | 当前个人 MVP 不实现通用 Lease 状态机 |
+| Local Connection | `connectionId`（临时） | 当前用户 data-dir 下 AF_UNIX/UDS | 只用于运行日志，不形成长期权限主体 |
+| Session | `sessionId` | 继承 Machine/Workspace 边界 | 只是 Provider 会话，不扩大权限 |
 
 ## 3. Owner 模式与未来多用户
 
@@ -68,12 +66,12 @@ Hub 进行身份与资源归属判断；Node 使用本地 Workspace 和运行时
 - 凭据支持轮换、短 overlap、立即吊销和最后使用时间。
 - 设备私钥不能经 Hub、MCP 或普通日志传输。
 
-### 4.4 Local Client
+### 4.4 本机 Local Bridge
 
-- Windows Named Pipe 限制当前用户 SID；Linux UDS 使用所有者权限。
-- OS 身份只是第一层，客户端仍应有独立注册凭据和 `localClientId`。
-- loopback HTTP 默认关闭；开启时必须使用短期 Token、Host/Origin 校验和 127.0.0.1/::1 绑定。
-- Local Client 不因为在本机就自动获得所有 Workspace。
+- Windows/Linux 使用当前用户 data-dir 下的 AF_UNIX/UDS；不监听 localhost TCP。
+- 不注册 `localClientId`、Token、公钥或独立 Capability Grant；连接只生成临时 connectionId 用于日志。
+- Local Bridge 请求仍必须携带真实 workspaceId，并复用 Workspace 状态、路径检查和 `write/shell/git-*/build` 等现有本机权限。
+- 如不需要本机入口，用户可直接用 Node 启动参数整体关闭 Local Bridge。
 
 ## 5. 当前个人模式权限模型
 
@@ -157,9 +155,9 @@ UI 中的“已打开 Workspace”不是新的权限对象。
 
 ### Agent
 
-- provider/model 发现与 run 分开。
-- session share/handoff 单独授权。
-- Agent 调用其他 Agent 受 hopLimit、correlationId 和发起者权限约束。
+- provider/model 发现与 Session/Turn 执行分开。
+- `session.create/send` 直接复用 Workspace 现有 `write + shell` 权限，不新增 `agent` 权限。
+- 当前只实现 bridge-owned Codex；不实现 session share/handoff、desktop-owned 或通用 Agent→Agent 递归。
 
 ## 10. 本机可见性
 
@@ -198,7 +196,7 @@ UI 中的“已打开 Workspace”不是新的权限对象。
 每个危险操作的审计条目包含：
 
 ```text
-userId / clientId / localClientId
+userId / clientId
 organizationId
 machineId / credentialId / connectionId
 workspaceId / workspaceRevision
@@ -217,7 +215,7 @@ result / side-effect knowledge / timestamps
 - Local Agent Adapter 不把 Provider 身份当作 Fast Spider 用户身份。
 - Artifact 下载再次检查当前主体权限，不因知道 artifactId 即允许。
 - Job cancel、watch、result 都检查 Job 所属资源和主体权限。
-- 跨 Session handoff 需要明确共享授权，不能只凭 sessionId。
+- 当前不实现跨 Session handoff/share；sessionId 只用于已绑定 Workspace 内的现有 Session 操作。
 
 ## 15. MVP 策略实现
 

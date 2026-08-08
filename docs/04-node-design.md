@@ -37,12 +37,12 @@ MVP 使用单 Node 进程；Windows 托盘 UI 可以是同进程 UI 壳或通过
 | Connection Manager | Hub 信任、认证、WSS、重连、心跳、协议协商 |
 | Workspace Registry | 本地路径、opaque workspaceId、权限与生命周期 |
 | Path Guard | 规范化、打开时校验、symlink/junction/reparse point 防护 |
-| Local Policy | Client/Workspace/Capability/Action、风险与本机确认 |
+| Local Policy | Workspace、危险本机权限、参数/路径/网络与资源边界 |
 | Dispatcher | 校验请求封装、deadline、idempotency 和路由 |
 | Job Manager | 并发、状态、事件、取消、恢复和孤儿进程回收 |
 | Capability Engine | 统一能力注册和执行接口 |
 | Platform Layer | Windows/Linux 路径、进程、截图、凭据和通知差异 |
-| Local Bridge | Named Pipe/UDS/loopback Adapter，默认关闭 |
+| Local Bridge | 当前用户 AF_UNIX/UDS Adapter，默认随 Node 启用，可显式关闭 |
 | Agent Adapters | Codex 等本地 Provider 的独立适配器 |
 | Update Manager | 签名检查、下载、切换、回滚 |
 | Local Audit | Hub 不可用时仍保留必要的本机安全记录 |
@@ -80,7 +80,7 @@ MVP 使用单 Node 进程；Windows 托盘 UI 可以是同进程 UI 壳或通过
 - machineId、设备凭据引用、Hub 信任材料。
 - Workspace Registry 和本地权限。
 - Job 执行摘要、idempotency 去重窗口和事件缓冲。
-- 本机待确认、更新和恢复状态。
+- 更新和恢复状态；当前个人 MVP 不持久化通用逐次 Approval 状态。
 - 不保存 Hub 用户密码或远程 Provider Token。
 
 敏感私钥使用 Windows DPAPI/Credential Manager 或 Linux Secret Service；不可用时使用权限严格的加密文件，并向用户显示降级状态。
@@ -132,7 +132,7 @@ Workspace 禁用、删除或权限收紧时：
 - registry revision 增加。
 - 取消尚未开始的相关 Job。
 - 运行中写 Job默认请求取消；无法立即终止的标记并警告。
-- 旧 Session/Lease 携带的 revision 不再有效。
+- 后续请求和 Session 再次使用 Workspace 时必须看到最新 revision/启用状态。
 - 新请求返回 `WORKSPACE_REVOKED`。
 
 ## 6. Capability Engine
@@ -245,7 +245,7 @@ MVP 默认调用本机 `git`：
 
 - `safe.directory` 不自动全局放宽。
 - 不自动修改全局 Git config。
-- commit/pull/push 可能触发 hooks，执行前将风险和 hooks 是否存在纳入审批摘要。
+- commit/pull/push 可能触发 hooks；`git-hooks` 开关关闭时拒绝，需要时在日志/结果中明确提示 hooks 风险。
 - 远程 URL 中的凭据脱敏。
 - 删除 worktree 前验证它是 Fast Spider 创建的受管 worktree，且无未提交变更，除非用户明确强制。
 
@@ -261,13 +261,13 @@ MVP 默认调用本机 `git`：
 
 ## 12. Local Bridge
 
-Local Bridge 默认关闭。启用时：
+当前 Phase 6 使用一条简单本机链路：
 
-- Windows 优先 Named Pipe，并限制当前用户 SID。
-- Linux 优先 UDS，文件权限 `0600`。
-- 每个客户端独立注册，拥有 clientId、名称、公钥/Token 和权限。
-- loopback HTTP 仅作为兼容选项，绑定 127.0.0.1/::1，并校验 Host、Origin 和短期 Token。
-- 所有请求仍携带 workspaceId 和 action，进入同一 Dispatcher/Policy/Job Manager。
+- Windows/Linux 都使用 Go 原生 AF_UNIX/UDS，endpoint 位于当前用户 Node data-dir。
+- Node 运行时默认启动 Local Bridge，可通过本机 `--disable-local-bridge` 关闭。
+- 当前 OS 用户与 data-dir 文件系统权限即本机信任边界；不注册 localClientId、公钥、Token 或独立 Grant。
+- 不监听 TCP/loopback HTTP，不存在 Host/Origin/CORS 配置负担。
+- 所有请求仍携带 workspaceId 和 action，并进入同一 Capability Dispatcher；危险操作继续复用现有 write/shell/git/build 权限和路径/资源检查。
 
 ## 13. 断线重连
 

@@ -276,17 +276,17 @@ flowchart LR
 - **控制**：离线根/在线发布签名分离；包和 manifest 签名；版本/平台/hash 绑定；TLS 不是唯一信任；防回滚策略；分阶段更新；原子切换；健康确认；自动回滚；发布审计和密钥轮换。
 - **验证**：错误签名、旧版本、截断包、平台不符、回滚演练。
 
-### T22 Local Bridge DNS Rebinding/跨站调用
+### T22 Local Bridge 本机越权调用
 
-- **场景**：恶意网页访问 127.0.0.1 接口，或伪造 Host/Origin。
-- **风险**：Critical。
-- **控制**：默认 Named Pipe/UDS；HTTP 默认关闭；只绑定 loopback；Host allowlist；Origin/CSRF 校验；短期独立 Token；禁止 CORS wildcard；浏览器请求不能自动注册 Client。
+- **场景**：同机其他用户或错误权限的进程尝试连接 Local Bridge。
+- **风险**：High。
+- **控制**：Windows/Linux 统一使用当前用户 data-dir 下的 AF_UNIX/UDS；依赖 OS 用户目录/Socket 权限作为本机信任边界；不监听 TCP/loopback HTTP；请求仍必须通过 Workspace 与 Capability 的既有边界。
 
 ### T23 多个 AI 递归调用
 
-- **场景**：AI A 调用 B，B 再调用 A，形成费用、任务或写操作循环。
+- **场景**：未来若加入 AI→AI workflow，可能形成费用、任务或写操作循环。
 - **风险**：High。
-- **控制**：correlationId、调用链、hopLimit；默认 hopLimit=1；每 Client/Provider 并发和预算；Session 所有权；自动跨 AI 调用默认拒绝；审批与审计。
+- **控制**：当前 MVP 不开放通用 AI→AI 调用；同一 Session 只允许一个 active Turn。只有真实引入跨 Provider workflow 时再增加 correlationId/hopLimit 等专门策略。
 
 ### T24 Node 离线后任务重复执行
 

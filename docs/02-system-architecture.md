@@ -83,7 +83,7 @@ sequenceDiagram
 
     C->>H: tool/API request
     H->>P: bind identity + authorize
-    P-->>H: allow / deny / approval
+    P-->>H: allow / deny
     H->>R: CapabilityRequest
     R->>N: route over existing WSS
     N->>N: workspace/path/action recheck
@@ -97,15 +97,15 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     LC[Local Codex / AI Client]
-    LB[Node Local Bridge<br/>Named Pipe / UDS]
-    LI[Local Identity + Policy]
+    LB[Node Local Bridge<br/>AF_UNIX / UDS]
+    LI[Current OS User + Existing Policy]
     CE[Same Capability Engine]
     Res[Workspace / Shell / Git / Browser / Agent]
 
     LC --> LB --> LI --> CE --> Res
 ```
 
-Local Bridge 不经过 Hub，但必须使用独立本地身份、Workspace 权限、审计和限额。
+Local Bridge 不经过 Hub；当前个人模式直接以当前 OS 用户作为本机信任边界，并复用同一 Workspace、危险本机权限、审计和限额，不再维护独立 Local Client 身份系统。
 
 ## 5. Hub 内部模块图
 
@@ -119,7 +119,7 @@ flowchart TB
 
     APP[Application Services]
     AUTH[Identity & OAuth]
-    POLICY[Policy & Approval]
+    POLICY[Policy / Resource Boundary]
     JOBS[Job & Event Service]
     ROUTER[Node Connection Registry & Router]
     AUDIT[Audit Service]
@@ -154,7 +154,7 @@ flowchart TB
     CONN[Hub Connection Manager]
     LOCAL[Optional Local Bridge]
     DISPATCH[Request Dispatcher]
-    POLICY[Local Policy & Approval]
+    POLICY[Local Policy / Resource Boundary]
     WS[Workspace Registry & Path Guard]
     JOB[Job Manager]
     CAP[Capability Engine]
@@ -199,7 +199,7 @@ flowchart TB
 
     subgraph WindowsMachine[Windows Development Machine]
       NW[fast-spider-node]
-      Pipe[Named Pipe Local Bridge]
+      Pipe[AF_UNIX Local Bridge]
       Codex[Codex / Local AI]
       WorkW[Authorized Workspaces]
     end
@@ -249,8 +249,9 @@ fast-spider/
 │  │  ├─ workspace/
 │  │  ├─ policy/
 │  │  ├─ jobs/
-│  │  ├─ localbridge/
 │  │  └─ platform/
+│  ├─ localbridge/
+│  ├─ agent/
 │  ├─ capabilities/
 │  │  ├─ files/
 │  │  ├─ search/

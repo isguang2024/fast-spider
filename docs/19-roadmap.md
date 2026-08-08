@@ -358,14 +358,14 @@ Workspace 默认只读，可整体关闭 `file.system`/`code.search`。Node 保�
 
 ### 范围
 
-- Windows Named Pipe、Linux UDS，默认关闭。
-- Local Client 注册、身份、权限和审计。
-- 可选 loopback MCP（严格 Host/Origin/Token）。
+- Windows/Linux 统一 AF_UNIX/UDS，Node 运行时默认启用，可显式关闭。
+- 当前 OS 用户即本地信任边界，不实现 Local Client 注册/Grant/Approval。
+- 首版不做 loopback HTTP/MCP；只有真实兼容需求出现时再评估薄 Adapter。
 - Provider/model/project 发现。
 - Agent session create/get/send/watch/cancel/result。
 - bridge_owned Codex Adapter。
 - owner/executionMode/phase 字段。
-- 后续 desktop_owned trusted hook/handoff/recover。
+- 当前阶段只维护 bridge_owned 一条执行链；desktop-owned/handoff/recover 不进入路线图，只有出现真实需求时再单独立项。
 
 ### 非目标
 
@@ -378,32 +378,32 @@ Workspace 默认只读，可整体关闭 `file.system`/`code.search`。Node 保�
 
 - Phase 3 Job/Event、Phase 4 Artifact。
 - ADR 0006。
-- Codex 官方接口/agent-service 的稳定适配层。
+- 本机官方 Codex `app-server --stdio` 的稳定适配层。
 
 ### 风险
 
-- localhost/DNS rebinding。
+- 当前用户 data-dir/Socket ACL 或 stale socket 处理错误。
 - Session owner/phase误报。
-- Desktop 与 bridge 双重执行。
-- AI 循环、预算和权限扩大。
+- Provider Turn 重复启动和资源消耗。
+- Codex stdio 并发写入或进程退出造成 RPC 状态异常。
 
 ### 验收标准
 
-- Local Bridge 默认无端口/socket。
-- OS ACL +独立 Client 身份和 Action 权限。
+- Local Bridge 默认无 TCP 端口，只创建当前用户 data-dir 下的 AF_UNIX/UDS，并可显式关闭。
+- OS ACL +现有 Workspace/危险本机权限即可，不维护独立 Local Client 权限系统。
 - Session 绑定 Workspace/Provider/owner。
-- UI 打开不算 running；取消 ack 不算 canceled。
-- hopLimit/correlationId 阻止递归循环。
+- 取消 ack 不算 canceled；终态以真实 Codex Turn 事实为准。
+- 同一 Session 单 active Turn；首版不开放通用 AI→AI workflow。
 - Provider Token 不离开 Node。
-- Hook 未信任时明确停止 desktop_owned 真链路，不手工绕过。
+- 未指定 model 时按当前 `model/list` 自动选可用模型，避免本机默认模型与 CLI 版本不兼容。
 
 ### 可演示场景
 
-本机 Codex通过 Local Bridge读取同一 Workspace → 远程 Client创建 bridge_owned Codex Session → watch事件/结果 → 第二 Client无分享权限时拒绝访问。
+本机 Codex/CLI 通过 Local Bridge 读取同一 Workspace → 远程 Client 创建 bridge_owned Codex Session → 本机或远程继续 watch/result；两条入口看到同一 Session/Job 事实，不需要再做本地 Client 分享授权。
 
 ### 回滚
 
-关闭 Local Bridge/Agent capability；文件/Shell/Git 继续。Provider Adapter 独立版本，不修改核心 Job/Contract。删除客户端凭据和 Session 映射，不删除用户 Provider 原始数据。
+使用 Node 本机开关关闭 Local Bridge/Agent capability；文件/Shell/Git 远程链路继续。Provider Adapter 独立版本，不修改核心 Job/Contract；不存在需要清理的 Local Client 凭据表。
 
 ## 10. Phase 7：安装包、托盘、签名更新、备份恢复
 

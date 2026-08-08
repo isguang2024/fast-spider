@@ -7,32 +7,32 @@
 
 ## 背景
 
-Node 需要可选择性提供本地入口，供本机 Codex、其他 AI 编程软件、CLI 或编辑器调用同一 Capability Engine。需求明确：本地接口默认关闭；启用后只绑定本机；优先 Named Pipe/Unix Domain Socket；必须防止 DNS rebinding、浏览器跨站和“localhost 等于可信”的错误假设。
+Node 需要提供本地入口，供本机 Codex、其他 AI 编程软件、CLI 或编辑器调用同一 Capability Engine。当前项目是单 Owner、个人开发机优先，因此目标是“当前 OS 用户能直接用”，而不是再实现一套企业级 Local Client 权限系统。当前 Windows 10/11 与 Linux 都可由 Go 原生 AF_UNIX/Unix Domain Socket 覆盖，因此不再为 Windows 单独维护 Named Pipe/DACL 实现。
 
 ## 决策驱动因素
 
-- 默认无监听端口和最小攻击面。
-- 利用 OS 用户边界和文件/管道 ACL。
-- 每个本地 Client 独立身份、权限和审计。
-- 兼容 MCP/CLI/Provider Adapter。
+- 默认无 TCP 监听端口和最小攻击面。
+- 直接利用当前 OS 用户 data-dir 与 Socket 文件边界。
+- 本机 Client 无需注册、配对、Grant、Lease 或逐次 Approval。
+- 兼容 CLI/Provider Adapter，并复用现有 Capability Engine。
 - 不重复实现文件、Shell、Git、Job 和权限逻辑。
-- 能明确关闭、吊销和观察。
+- 用户可以明确整体关闭 Local Bridge。
 
 ## 考虑的方案
 
-### 方案 A：Windows Named Pipe / Unix Domain Socket
+### 方案 A：跨平台 AF_UNIX / Unix Domain Socket
 
 优点：
 
 - 不占网络端口。
-- 可以使用 SID/文件权限限制当前用户。
+- Windows/Linux 可共用同一 Go `net.Unix*` 传输实现。
 - DNS rebinding 和普通网页跨站攻击面显著降低。
 - 适合长期本机 Client。
 
 缺点：
 
 - 跨语言/SDK 接入比 HTTP 稍复杂。
-- Windows/Linux 分别实现和测试。
+- Windows 与 Unix 的文件权限语义仍不同，需要平台实测。
 
 ### 方案 B：127.0.0.1 HTTP/MCP
 
@@ -53,63 +53,43 @@ Node 需要可选择性提供本地入口，供本机 Codex、其他 AI 编程�
 
 Local Bridge 的默认实现：
 
-- **Windows：Named Pipe**。
-- **Linux/macOS：Unix Domain Socket**。
+- **Windows/Linux：当前用户 data-dir 下的 AF_UNIX / Unix Domain Socket**。
+- **macOS：后续沿用 Unix Domain Socket**。
 - **stdio：允许作为单 Client/Provider Adapter 的专用模式**。
 - **loopback HTTP/MCP：默认关闭，仅作为明确启用的兼容模式**。
 
-Local Bridge 整体默认关闭。启用后仍必须经过：transport authentication → localClientId → Workspace/Capability/Action grant → 可选 Approval → 同一 Dispatcher/Job Manager/Capability Engine → Audit。
+Local Bridge 在 Node 正常运行时默认启用，但只创建本机 IPC，不监听 TCP。用户可使用 `--disable-local-bridge` 关闭。调用链为：OS ACL → schema/size 校验 → Workspace/现有危险权限/路径/网络/资源检查 → 同一 Capability Engine。
 
 ## 本地身份
 
-每个 Client 独立注册，至少保存：
+Phase 6 个人模式不建立长期 Local Client 身份表。当前 OS 用户就是本地信任边界：
 
-- localClientId、显示名。
-- 独立公钥或 Token 摘要。
-- OS 用户/SID/UID 约束。
-- 允许的 Workspace、Capability 和 Action。
-- 状态、最近使用和吊销时间。
+- Socket 位于当前用户私有 data-dir；Windows 继承该目录 ACL，不额外维护 SID/SDDL 代码。
+- Unix Socket 目录/文件使用严格的 `0700/0600` 权限。
+- 每个连接可生成临时 connectionId 用于日志，但它不参与授权。
+- 不保存本地 Client Token、公钥、Capability 列表、过期时间或吊销记录。
 
-OS ACL 是第一层，不是唯一认证。进程路径/签名可作为风险提示，但不能成为唯一身份，因为路径和进程可以被替换或代理。
+未来只有出现多个互不信任本地用户共享同一个 Node 的真实需求时，才通过新 ADR 评估独立 Client 身份；当前实现不预埋双认证链路。
 
-首次注册使用本机可见的一次性配对流程。一个 Client 的凭据不能复制成另一个 Client 的身份；吊销只影响对应 Client。
+## AF_UNIX / Unix Domain Socket
 
-## Windows Named Pipe
+- endpoint 固定为 Node data-dir 下的 `local/bridge.sock`，方便本机发现，不依赖名称保密。
+- Windows 使用当前用户 data-dir 的现有 Windows ACL；个人 MVP 不额外生成 SID/SDDL 规则。
+- Unix 目录/Socket 使用 `0700/0600`。
+- 启动时检测 stale socket：已有活跃监听则拒绝重复实例，失效 socket 才清理后重建。
+- 消息有长度、deadline 和并发限制；不叠加应用层配对握手。
+- Node 关闭后移除 socket；不留下 helper/端口服务。
 
-- Pipe 名称包含不可猜测实例部分或由安全本机发现机制提供。
-- DACL 默认只允许当前用户 SID 和必要的 Node 服务身份。
-- 拒绝 Everyone/Authenticated Users 的宽泛写权限。
-- 校验连接者 token/SID；服务模式不能因 SYSTEM 身份自动信任所有本地用户。
-- 消息有长度、deadline、并发和认证握手。
-- Node 卸载/关闭后无遗留 pipe/helper。
+## Loopback HTTP
 
-## Unix Domain Socket
-
-- Socket 目录和文件仅 Node 用户可访问，默认权限 `0700/0600`。
-- 使用安全创建和原子替换，处理 stale socket。
-- 校验 peer credentials（平台支持时）并结合独立 Client 凭据。
-- 不放在其他用户可替换父目录。
-- 容器/挂载场景不自动扩大 ACL。
-
-## Loopback HTTP 安全底线
-
-兼容模式启用时：
-
-- 只绑定 `127.0.0.1` 和可选 `::1`；不得监听 `0.0.0.0`。
-- Host allowlist 只接受配置的 loopback host/port。
-- 严格 Origin；默认不允许浏览器跨域，不使用 `Access-Control-Allow-Origin: *`。
-- 独立短期 Token/Client 凭据，不复用 Hub Owner/MCP Token。
-- 写操作使用 nonce/CSRF 防护；GET 不产生副作用。
-- 管理页面使用 CSP、frame-ancestors 和安全 Cookie。
-- 启动时检测端口占用；失败即禁用，而不是自动换到未知暴露地址。
-- 日志不打印完整 URL Token、Authorization 或 Cookie。
+Phase 6 首版不实现 loopback HTTP/MCP。这样直接删除 Host/Origin/CORS/CSRF/本地 Token/端口冲突等整组问题。以后如果某个实际第三方客户端只能走 HTTP，再增加一个薄的可选兼容 Adapter，而不是改变 Node 默认边界。
 
 ## 权限与 Workspace
 
 - Local Client 仍只使用 opaque workspaceId。
 - 不能传绝对路径临时扩大 Workspace。
 - 同机不代表拥有全部本地目录。
-- Workspace revision 变化使旧 Local Session/Lease 失效。
+- Workspace 禁用/删除立即阻止新请求；普通 revision 变化不制造额外 Local Session/Lease 状态机。
 - Local 与远程请求共享资源组和并发限制，防止互相耗尽 Node。
 - 本地 Client 发起的文件、Shell、Git、浏览器和 Agent 操作使用相同 Job/Event/Result 语义。
 
@@ -117,18 +97,18 @@ OS ACL 是第一层，不是唯一认证。进程路径/签名可作为风险提
 
 - Local Bridge 可以暴露 provider-neutral `agent.control`。
 - Provider Token 只在 Node/Provider 本机，不进入 Local Client普通响应或 Hub。
-- 每个 Client 的 Session 创建者、共享列表和 active Run owner 明确。
-- correlationId、hopLimit 和调用链阻止多个 AI 自动递归。
-- desktop-owned handoff 需要可信本机 Hook/官方事件；打开 UI 不等于运行。
+- 同一 Provider Session 只允许一个 active Run；本机连接本身不形成新的权限主体或分享列表。
+- 首版不开放通用 AI→AI 递归调用；同一 Provider Session 只允许一个 active Run，`correlationId/parentRunId` 用于追踪即可。
+- 当前 Phase 6 只实现 `bridge_owned`；desktop-owned handoff 只有出现真实需求时再单独评估。
 
 ## 可见性与控制
 
 Node UI/CLI 必须显示：
 
 - Local Bridge 是否启用、实际传输和 endpoint 类型。
-- 已注册 Client、权限、最近访问和 active Job。
-- 新 Client 配对和高风险 Approval。
-- 暂停、逐 Client 吊销和整体关闭。
+- Local Bridge endpoint 类型、最近活动和 active Job。
+- 当前 Workspace 与既有危险权限状态。
+- 整体关闭 Local Bridge。
 
 不提供隐藏监听、无日志模式或让 Hub 静默开启 Local Bridge 的功能。Hub 可以建议配置，但最终开关由 Node 本机用户决定。
 
@@ -138,26 +118,26 @@ Node UI/CLI 必须显示：
 
 - 默认无网络端口，攻击面最小。
 - 本地 Client 与远程 Client 使用同一安全和执行语义。
-- 可逐 Client 授权、审计和吊销。
+- 当前 OS 用户开箱即用，配置和运维负担小。
 - 保留 HTTP/MCP 生态兼容而不把它设为默认。
 
 ### 负面
 
-- 需要实现和测试两种平台 IPC。
+- Windows 与 Unix 仍要分别验证 Socket 文件/目录权限和 stale socket 行为。
 - 某些现有工具只支持 HTTP，需要兼容模式或小型 stdio Adapter。
-- OS peer identity 在不同平台行为不同，仍需独立凭据。
+- Windows/Linux IPC 权限实现不同，需要分别测试。
 
 ## 不采用的做法
 
-- 不因地址是 localhost 跳过 Workspace/Action 权限。
+- 不因本机 IPC 跳过 Workspace、路径和现有危险操作权限。
 - 不默认监听固定公网可猜端口。
 - 不允许 CORS wildcard 或 Host 任意值。
-- 不复用 Hub 高权限 Token。
+- Local Bridge 不需要 Hub Token，也不创建新的本地 Bearer Token。
 - 不让多个 AI 在没有 owner、hopLimit 和共享边界时自动互调。
 
 ## 重新评估触发条件
 
-只有主流 MCP/编辑器无法通过 Named Pipe/UDS/stdio Adapter 接入，且安全 HTTP 兼容层被证明更低成本时，才考虑把 loopback HTTP提升为默认。即使提升，上述 Host/Origin/Token/权限底线不变。
+只有真实常用客户端无法通过 AF_UNIX/UDS/stdio Adapter 接入，并且因此显著影响个人使用体验时，才评估 loopback HTTP 兼容层。即使加入，也保持可选，不替代默认本机 IPC。
 
 ## 相关文档
 
