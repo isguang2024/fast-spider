@@ -1,0 +1,38 @@
+# Build outputs
+/bin/
+/dist/
+/coverage/
+*.test
+*.out
+
+# Runtime state
+/data/
+/artifacts/
+/tmp/
+*.db
+*.db-shm
+*.db-wal
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.token
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Node/browser tooling used by optional adapters
+node_modules/
+playwright-report/
+test-results/
+
+# Local development
+.local/
+.learnings/
