@@ -58,8 +58,15 @@ func New(service *core.Service, cfg Config) *Server {
 	mux.HandleFunc("GET /api/v1/machines", s.ownerOnly(s.handleMachineList))
 	mux.HandleFunc("GET /api/v1/machines/{machineId}", s.ownerOnly(s.handleMachineGet))
 	mux.HandleFunc("POST /api/v1/machines/{machineId}/revoke", s.ownerOnly(s.handleMachineRevoke))
+	mux.HandleFunc("GET /api/v1/artifacts/{artifactId}", s.ownerOnly(s.handleArtifactMetadata))
+	mux.HandleFunc("GET /api/v1/artifacts/{artifactId}/content", s.ownerOnly(s.handleArtifactContent))
 	mux.Handle("/mcp", s.newMCPHandler())
 	mux.HandleFunc("GET /node/v1/connect", s.handleNodeConnect)
+	mux.HandleFunc("POST /node/v1/artifacts", s.handleArtifactCreate)
+	mux.HandleFunc("GET /node/v1/artifacts/{uploadId}", s.handleArtifactUploadStatus)
+	mux.HandleFunc("PUT /node/v1/artifacts/{uploadId}/chunk", s.handleArtifactChunk)
+	mux.HandleFunc("POST /node/v1/artifacts/{uploadId}/complete", s.handleArtifactComplete)
+	mux.HandleFunc("DELETE /node/v1/artifacts/{uploadId}", s.handleArtifactAbort)
 	s.http = &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           s.securityHeaders(s.hostGuard(mux)),

@@ -110,6 +110,40 @@ type AuditEntry struct {
 	CreatedAt  time.Time
 }
 
+type ArtifactRecord struct {
+	ID          string    `json:"artifactId"`
+	OwnerID     string    `json:"-"`
+	MachineID   string    `json:"machineId"`
+	WorkspaceID string    `json:"workspaceId,omitempty"`
+	JobID       string    `json:"jobId,omitempty"`
+	LogicalName string    `json:"logicalName"`
+	ContentType string    `json:"contentType"`
+	SizeBytes   int64     `json:"sizeBytes"`
+	SHA256      string    `json:"sha256"`
+	StorageKey  string    `json:"-"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"createdAt"`
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
+	ExpiresAt   time.Time `json:"expiresAt"`
+}
+
+type ArtifactUploadRecord struct {
+	ID             string
+	ArtifactID     string
+	MachineID      string
+	ExpectedSize   int64
+	ExpectedSHA256 string
+	ReceivedSize   int64
+	Status         string
+	ExpiresAt      time.Time
+}
+
+type ArtifactUsageRecord struct {
+	ActiveUploads int
+	MachineBytes  int64
+	OwnerBytes    int64
+}
+
 func Open(ctx context.Context, path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create database directory: %w", err)
@@ -603,6 +637,278 @@ func (s *Store) RevokeMachine(ctx context.Context, ownerID, machineID string, no
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Store) FindResumableArtifactUpload(ctx context.Context, ownerID, machineID, workspaceID, jobID, logicalName, contentType string, sizeBytes int64, sha256 string, now time.Time) (ArtifactUploadRecord, bool, error) {
+	var rec ArtifactUploadRecord
+	var expires int64
+	err := s.db.QueryRowContext(ctx, `SELECT u.id, u.artifact_id, u.machine_id, u.expected_size, u.expected_sha256, u.received_size, u.status, u.expires_at
+		FROM artifact_uploads u JOIN artifacts a ON a.id = u.artifact_id
+		WHERE a.owner_id = ? AND a.machine_id = ? AND COALESCE(a.workspace_id,'') = ? AND COALESCE(a.job_id,'') = ?
+		AND a.logical_name = ? AND a.content_type = ? AND a.size_bytes = ? AND a.sha256 = ?
+		AND a.status = 'uploading' AND u.status = 'active' AND u.expires_at > ?
+		ORDER BY u.created_at DESC LIMIT 1`, ownerID, machineID, workspaceID, jobID, logicalName, contentType, sizeBytes, sha256, now.Unix()).
+		Scan(&rec.ID, &rec.ArtifactID, &rec.MachineID, &rec.ExpectedSize, &rec.ExpectedSHA256, &rec.ReceivedSize, &rec.Status, &expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ArtifactUploadRecord{}, false, nil
+	}
+	if err != nil {
+		return ArtifactUploadRecord{}, false, err
+	}
+	rec.ExpiresAt = time.Unix(expires, 0).UTC()
+	return rec, true, nil
+}
+
+func (s *Store) ArtifactUsage(ctx context.Context, ownerID, machineID string, now time.Time) (ArtifactUsageRecord, error) {
+	var usage ArtifactUsageRecord
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(expected_size),0)
+		FROM artifact_uploads WHERE machine_id = ? AND status = 'active' AND expires_at > ?`, machineID, now.Unix()).
+		Scan(&usage.ActiveUploads, &usage.MachineBytes); err != nil {
+		return ArtifactUsageRecord{}, err
+	}
+	var completedMachineBytes int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(size_bytes),0) FROM artifacts
+		WHERE machine_id = ? AND status = 'complete' AND expires_at > ?`, machineID, now.Unix()).Scan(&completedMachineBytes); err != nil {
+		return ArtifactUsageRecord{}, err
+	}
+	usage.MachineBytes += completedMachineBytes
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(a.size_bytes),0) FROM artifacts a
+		WHERE a.owner_id = ? AND ((a.status = 'complete' AND a.expires_at > ?)
+		OR (a.status = 'uploading' AND EXISTS (SELECT 1 FROM artifact_uploads u WHERE u.artifact_id = a.id AND u.status = 'active' AND u.expires_at > ?)))`, ownerID, now.Unix(), now.Unix()).Scan(&usage.OwnerBytes); err != nil {
+		return ArtifactUsageRecord{}, err
+	}
+	return usage, nil
+}
+
+func (s *Store) CreateArtifactUpload(ctx context.Context, artifact ArtifactRecord, upload ArtifactUploadRecord) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var ownerID, status string
+	if err := tx.QueryRowContext(ctx, "SELECT owner_id, status FROM machines WHERE id = ?", artifact.MachineID).Scan(&ownerID, &status); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if ownerID != artifact.OwnerID || status != "active" || upload.MachineID != artifact.MachineID || upload.ArtifactID != artifact.ID {
+		return ErrUnauthorized
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO artifacts(
+		id, owner_id, machine_id, workspace_id, job_id, logical_name, content_type, size_bytes, sha256, status, created_at, expires_at
+	) VALUES(?,?,?,?,?,?,?,?,?,'uploading',?,?)`, artifact.ID, artifact.OwnerID, artifact.MachineID, nullString(artifact.WorkspaceID), nullString(artifact.JobID), artifact.LogicalName, artifact.ContentType, artifact.SizeBytes, artifact.SHA256, artifact.CreatedAt.Unix(), artifact.ExpiresAt.Unix()); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO artifact_uploads(
+		id, artifact_id, machine_id, expected_size, expected_sha256, received_size, status, created_at, expires_at
+	) VALUES(?,?,?,?,?,0,'active',?,?)`, upload.ID, upload.ArtifactID, upload.MachineID, upload.ExpectedSize, upload.ExpectedSHA256, artifact.CreatedAt.Unix(), upload.ExpiresAt.Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) GetArtifactUploadState(ctx context.Context, machineID, uploadID string) (ArtifactUploadRecord, error) {
+	var rec ArtifactUploadRecord
+	var expires int64
+	err := s.db.QueryRowContext(ctx, `SELECT id, artifact_id, machine_id, expected_size, expected_sha256, received_size, status, expires_at
+		FROM artifact_uploads WHERE id = ? AND machine_id = ?`, uploadID, machineID).
+		Scan(&rec.ID, &rec.ArtifactID, &rec.MachineID, &rec.ExpectedSize, &rec.ExpectedSHA256, &rec.ReceivedSize, &rec.Status, &expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ArtifactUploadRecord{}, ErrNotFound
+	}
+	if err != nil {
+		return ArtifactUploadRecord{}, err
+	}
+	rec.ExpiresAt = time.Unix(expires, 0).UTC()
+	return rec, nil
+}
+
+func (s *Store) GetArtifactUpload(ctx context.Context, machineID, uploadID string, now time.Time) (ArtifactUploadRecord, error) {
+	rec, err := s.GetArtifactUploadState(ctx, machineID, uploadID)
+	if err != nil {
+		return ArtifactUploadRecord{}, err
+	}
+	if rec.Status != "active" {
+		return ArtifactUploadRecord{}, ErrConflict
+	}
+	if !rec.ExpiresAt.After(now) {
+		return ArtifactUploadRecord{}, ErrExpired
+	}
+	return rec, nil
+}
+
+func (s *Store) AdvanceArtifactUpload(ctx context.Context, machineID, uploadID string, expectedOffset, newOffset int64, now time.Time) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE artifact_uploads SET received_size = ?
+		WHERE id = ? AND machine_id = ? AND status = 'active' AND received_size = ? AND expires_at > ?`, newOffset, uploadID, machineID, expectedOffset, now.Unix())
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (s *Store) CompleteArtifactUpload(ctx context.Context, machineID, uploadID, storageKey string, now time.Time) (ArtifactRecord, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ArtifactRecord{}, err
+	}
+	defer tx.Rollback()
+	var artifactID string
+	var expectedSize, receivedSize, expiresAt int64
+	var expectedSHA, status string
+	if err := tx.QueryRowContext(ctx, `SELECT artifact_id, expected_size, expected_sha256, received_size, status, expires_at
+		FROM artifact_uploads WHERE id = ? AND machine_id = ?`, uploadID, machineID).
+		Scan(&artifactID, &expectedSize, &expectedSHA, &receivedSize, &status, &expiresAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ArtifactRecord{}, ErrNotFound
+		}
+		return ArtifactRecord{}, err
+	}
+	if status != "active" || expectedSize != receivedSize {
+		return ArtifactRecord{}, ErrConflict
+	}
+	if expiresAt <= now.Unix() {
+		return ArtifactRecord{}, ErrExpired
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE artifact_uploads SET status = 'complete' WHERE id = ?", uploadID); err != nil {
+		return ArtifactRecord{}, err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE artifacts SET status = 'complete', storage_key = ?, completed_at = ? WHERE id = ? AND machine_id = ? AND status = 'uploading'", storageKey, now.Unix(), artifactID, machineID); err != nil {
+		return ArtifactRecord{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ArtifactRecord{}, err
+	}
+	return s.GetArtifactByMachine(ctx, machineID, artifactID)
+}
+
+func (s *Store) AbortArtifactUpload(ctx context.Context, machineID, uploadID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var artifactID string
+	if err := tx.QueryRowContext(ctx, "SELECT artifact_id FROM artifact_uploads WHERE id = ? AND machine_id = ?", uploadID, machineID).Scan(&artifactID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE artifact_uploads SET status = 'aborted' WHERE id = ?", uploadID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE artifacts SET status = 'aborted' WHERE id = ? AND status = 'uploading'", artifactID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) GetArtifact(ctx context.Context, ownerID, artifactID string) (ArtifactRecord, error) {
+	return s.getArtifact(ctx, "owner_id", ownerID, artifactID)
+}
+
+func (s *Store) GetArtifactByMachine(ctx context.Context, machineID, artifactID string) (ArtifactRecord, error) {
+	return s.getArtifact(ctx, "machine_id", machineID, artifactID)
+}
+
+func (s *Store) getArtifact(ctx context.Context, scopeColumn, scopeID, artifactID string) (ArtifactRecord, error) {
+	if scopeColumn != "owner_id" && scopeColumn != "machine_id" {
+		return ArtifactRecord{}, ErrUnauthorized
+	}
+	query := `SELECT id, owner_id, machine_id, COALESCE(workspace_id,''), COALESCE(job_id,''), logical_name, content_type, size_bytes, sha256, COALESCE(storage_key,''), status, created_at, completed_at, expires_at
+		FROM artifacts WHERE id = ? AND ` + scopeColumn + ` = ?`
+	var rec ArtifactRecord
+	var created, expires int64
+	var completed sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, query, artifactID, scopeID).Scan(&rec.ID, &rec.OwnerID, &rec.MachineID, &rec.WorkspaceID, &rec.JobID, &rec.LogicalName, &rec.ContentType, &rec.SizeBytes, &rec.SHA256, &rec.StorageKey, &rec.Status, &created, &completed, &expires); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ArtifactRecord{}, ErrNotFound
+		}
+		return ArtifactRecord{}, err
+	}
+	rec.CreatedAt = time.Unix(created, 0).UTC()
+	rec.ExpiresAt = time.Unix(expires, 0).UTC()
+	if completed.Valid {
+		t := time.Unix(completed.Int64, 0).UTC()
+		rec.CompletedAt = &t
+	}
+	return rec, nil
+}
+
+func (s *Store) CleanupArtifacts(ctx context.Context, now time.Time) (uploadIDs []string, orphanStorageKeys []string, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, "SELECT id, artifact_id, status FROM artifact_uploads WHERE expires_at <= ? OR status = 'aborted'", now.Unix())
+	if err != nil {
+		return nil, nil, err
+	}
+	var staleArtifactIDs []string
+	for rows.Next() {
+		var id, artifactID, status string
+		if err := rows.Scan(&id, &artifactID, &status); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		if status != "complete" {
+			uploadIDs = append(uploadIDs, id)
+			staleArtifactIDs = append(staleArtifactIDs, artifactID)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return nil, nil, err
+	}
+	storageRows, err := tx.QueryContext(ctx, "SELECT DISTINCT storage_key FROM artifacts WHERE expires_at <= ? AND storage_key IS NOT NULL", now.Unix())
+	if err != nil {
+		return nil, nil, err
+	}
+	var candidates []string
+	for storageRows.Next() {
+		var key string
+		if err := storageRows.Scan(&key); err != nil {
+			storageRows.Close()
+			return nil, nil, err
+		}
+		candidates = append(candidates, key)
+	}
+	if err := storageRows.Close(); err != nil {
+		return nil, nil, err
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM artifact_uploads WHERE expires_at <= ? OR status = 'aborted'", now.Unix()); err != nil {
+		return nil, nil, err
+	}
+	for _, artifactID := range staleArtifactIDs {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM artifacts WHERE id = ? AND status <> 'complete'", artifactID); err != nil {
+			return nil, nil, err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM artifacts WHERE expires_at <= ? OR status = 'aborted'", now.Unix()); err != nil {
+		return nil, nil, err
+	}
+	for _, key := range candidates {
+		var count int
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM artifacts WHERE storage_key = ?", key).Scan(&count); err != nil {
+			return nil, nil, err
+		}
+		if count == 0 {
+			orphanStorageKeys = append(orphanStorageKeys, key)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, nil, err
+	}
+	return uploadIDs, orphanStorageKeys, nil
 }
 
 func (s *Store) CleanupExpired(ctx context.Context, now time.Time) error {

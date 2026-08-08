@@ -103,9 +103,21 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 	case "shell.exec/run":
 		result, err = c.shellRun(ctx, req.WorkspaceId, req.Params)
 	case "job.control/watch":
-		result, err = c.jobWatch(ctx, req.Params)
+		result, err = c.jobWatch(ctx, req.WorkspaceId, req.Params)
 	case "job.control/cancel":
-		result, err = c.jobCancel(ctx, req.Params)
+		result, err = c.jobCancel(ctx, req.WorkspaceId, req.Params)
+	case "git.repository/status", "git.repository/diff", "git.repository/stagedDiff", "git.repository/log", "git.repository/show", "git.repository/branches", "git.repository/currentBranch", "git.repository/worktrees", "git.repository/add", "git.repository/commit", "git.repository/fetch", "git.repository/pull", "git.repository/push", "git.repository/createWorktree", "git.repository/deleteWorktree":
+		params := cloneParams(req.Params)
+		params["action"] = req.Action
+		result, err = c.gitControl(ctx, req.WorkspaceId, params)
+	case "build.profile/list", "build.profile/run":
+		params := cloneParams(req.Params)
+		params["action"] = req.Action
+		result, err = c.buildControl(ctx, req.WorkspaceId, params)
+	case "artifact.store/uploadFile":
+		result, err = c.artifactUploadFile(ctx, req.WorkspaceId, req.Params)
+	case "artifact.store/uploadJobLog":
+		result, err = c.artifactUploadJobLog(ctx, req.WorkspaceId, req.Params)
 	default:
 		response.Error = protocolError("UNSUPPORTED_CAPABILITY", "capability or action is not available", false)
 		return response
@@ -419,6 +431,14 @@ func trimIncompleteUTF8Suffix(input []byte) ([]byte, bool) {
 	return nil, false
 }
 
+func cloneParams(input map[string]any) map[string]any {
+	out := make(map[string]any, len(input)+1)
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
+}
+
 func decodeParams(input map[string]any, output any) error {
 	raw, err := json.Marshal(input)
 	if err != nil {
@@ -436,6 +456,10 @@ var (
 )
 
 func capabilityError(err error) *protocolv1.ProtocolError {
+	var hubErr *HubAPIError
+	if errors.As(err, &hubErr) {
+		return protocolError(hubErr.Code, hubErr.Message, hubErr.Retryable)
+	}
 	switch {
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		return protocolError("DEADLINE_EXCEEDED", "request deadline exceeded or canceled", true)
@@ -457,10 +481,22 @@ func capabilityError(err error) *protocolv1.ProtocolError {
 		return protocolError("EDIT_NOT_UNIQUE", "oldText must match exactly once", false)
 	case errors.Is(err, ErrJobNotFound):
 		return protocolError("JOB_NOT_FOUND", "job was not found", false)
+	case errors.Is(err, ErrJobNotComplete):
+		return protocolError("JOB_NOT_COMPLETE", "job must be terminal before exporting its log", true)
+	case errors.Is(err, ErrJobLogUnavailable):
+		return protocolError("JOB_LOG_UNAVAILABLE", "job log is unavailable", false)
 	case errors.Is(err, ErrJobLimit):
 		return protocolError("RESOURCE_LIMIT", "job resource limit reached", true)
 	case errors.Is(err, ErrIdempotencyConflict):
 		return protocolError("IDEMPOTENCY_CONFLICT", "idempotency key was reused with different parameters", false)
+	case errors.Is(err, ErrGitNotFound):
+		return protocolError("GIT_NOT_FOUND", "system Git is not available", false)
+	case errors.Is(err, ErrNotRepository):
+		return protocolError("NOT_A_REPOSITORY", "workspace root is not a Git repository", false)
+	case errors.Is(err, ErrGitHooksDenied):
+		return protocolError("HOOK_RISK_REQUIRES_APPROVAL", "active Git hooks require local git-hooks permission", false)
+	case errors.Is(err, ErrGitOutputTooLarge):
+		return protocolError("OUTPUT_LIMIT", "Git output exceeds the inline limit", false)
 	case errors.Is(err, ErrNotRegularFile):
 		return protocolError("NOT_REGULAR_FILE", "path is not a regular file", false)
 	case errors.Is(err, ErrBinaryOrInvalidUTF8):

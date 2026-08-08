@@ -22,7 +22,7 @@ const (
 	MessageCapabilityResponse = "capability.response"
 )
 
-var Phase1Capabilities = []CapabilityDescriptor{
+var NodeCapabilities = []CapabilityDescriptor{
 	{CapabilityId: "machine.status", Version: "1.0", Actions: []string{"report"}},
 	{CapabilityId: "workspace.registry", Version: "1.0", Actions: []string{"list"}},
 	{CapabilityId: "file.read", Version: "1.0", Actions: []string{"read"}},
@@ -30,6 +30,9 @@ var Phase1Capabilities = []CapabilityDescriptor{
 	{CapabilityId: "code.search", Version: "1.0", Actions: []string{"search"}},
 	{CapabilityId: "shell.exec", Version: "1.0", Actions: []string{"run"}},
 	{CapabilityId: "job.control", Version: "1.0", Actions: []string{"watch", "cancel"}},
+	{CapabilityId: "git.repository", Version: "1.0", Actions: []string{"status", "diff", "stagedDiff", "log", "show", "branches", "currentBranch", "worktrees", "add", "commit", "fetch", "pull", "push", "createWorktree", "deleteWorktree"}},
+	{CapabilityId: "build.profile", Version: "1.0", Actions: []string{"list", "run"}},
+	{CapabilityId: "artifact.store", Version: "1.0", Actions: []string{"uploadFile", "uploadJobLog"}},
 }
 
 type messageHeader struct {

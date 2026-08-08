@@ -16,7 +16,7 @@ var shellEnvironmentAllowlist = map[string]struct{}{
 	"NVM_HOME": {}, "NVM_SYMLINK": {}, "PATH": {}, "PATHEXT": {},
 	"PNPM_HOME": {}, "PROCESSOR_ARCHITECTURE": {}, "PROGRAMDATA": {},
 	"PROGRAMFILES": {}, "PROGRAMFILES(X86)": {}, "PROGRAMW6432": {},
-	"RUSTUP_HOME": {}, "SHELL": {}, "SYSTEMROOT": {}, "TEMP": {},
+	"RUSTUP_HOME": {}, "SHELL": {}, "SSH_AUTH_SOCK": {}, "SYSTEMROOT": {}, "TEMP": {},
 	"TMP": {}, "TMPDIR": {}, "TZ": {}, "USER": {}, "USERDOMAIN": {},
 	"USERNAME": {}, "USERPROFILE": {}, "WINDIR": {},
 }
@@ -46,5 +46,6 @@ func safeShellEnvironment() []string {
 	for _, key := range keys {
 		out = append(out, key+"="+values[key])
 	}
+	out = append(out, "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=Never")
 	return out
 }

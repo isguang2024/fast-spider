@@ -69,24 +69,30 @@ func (c *Client) shellRun(ctx context.Context, workspaceID string, params map[st
 	return c.jobs.StartShell(workspaceID, resolvedCwd, input.Argv, timeout, input.IdempotencyKey, guard)
 }
 
-func (c *Client) jobWatch(ctx context.Context, params map[string]any) (JobSnapshot, error) {
+func (c *Client) jobWatch(ctx context.Context, workspaceID string, params map[string]any) (JobSnapshot, error) {
 	var input jobWatchParams
 	if err := decodeParams(params, &input); err != nil {
 		return JobSnapshot{}, fmt.Errorf("invalid params: %w", err)
 	}
-	if input.JobID == "" || input.WaitSeconds < 0 {
-		return JobSnapshot{}, fmt.Errorf("jobId is required and waitSeconds must be non-negative")
+	if workspaceID == "" || input.JobID == "" || input.WaitSeconds < 0 {
+		return JobSnapshot{}, fmt.Errorf("workspaceId and jobId are required and waitSeconds must be non-negative")
 	}
-	return c.jobs.Watch(ctx, input.JobID, input.Cursor, time.Duration(input.WaitSeconds)*time.Second)
+	if _, err := NewWorkspaceStore(c.cfg.DataDir).Resolve(workspaceID); err != nil {
+		return JobSnapshot{}, err
+	}
+	return c.jobs.WatchWorkspace(ctx, workspaceID, input.JobID, input.Cursor, time.Duration(input.WaitSeconds)*time.Second)
 }
 
-func (c *Client) jobCancel(ctx context.Context, params map[string]any) (JobSnapshot, error) {
+func (c *Client) jobCancel(ctx context.Context, workspaceID string, params map[string]any) (JobSnapshot, error) {
 	var input jobCancelParams
 	if err := decodeParams(params, &input); err != nil {
 		return JobSnapshot{}, fmt.Errorf("invalid params: %w", err)
 	}
-	if input.JobID == "" {
-		return JobSnapshot{}, fmt.Errorf("jobId is required")
+	if workspaceID == "" || input.JobID == "" {
+		return JobSnapshot{}, fmt.Errorf("workspaceId and jobId are required")
 	}
-	return c.jobs.Cancel(ctx, input.JobID)
+	if _, err := NewWorkspaceStore(c.cfg.DataDir).Resolve(workspaceID); err != nil {
+		return JobSnapshot{}, err
+	}
+	return c.jobs.CancelWorkspace(ctx, workspaceID, input.JobID)
 }

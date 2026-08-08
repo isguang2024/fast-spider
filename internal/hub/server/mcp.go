@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/isguang2024/fast-spider/internal/hub/core"
@@ -66,14 +67,52 @@ type shellRunInput struct {
 
 type jobWatchInput struct {
 	MachineID   string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	JobID       string `json:"jobId" jsonschema:"opaque job ID returned by shell_run"`
+	WorkspaceID string `json:"workspaceId" jsonschema:"workspace that owns the job"`
+	JobID       string `json:"jobId" jsonschema:"opaque job ID returned by shell_run/build_control/git_control"`
 	Cursor      int64  `json:"cursor,omitempty" jsonschema:"last consumed event sequence"`
 	WaitSeconds int64  `json:"waitSeconds,omitempty" jsonschema:"long-poll wait from 0 to 15 seconds"`
 }
 
 type jobCancelInput struct {
-	MachineID string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	JobID     string `json:"jobId" jsonschema:"opaque job ID returned by shell_run"`
+	MachineID   string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	WorkspaceID string `json:"workspaceId" jsonschema:"workspace that owns the job"`
+	JobID       string `json:"jobId" jsonschema:"opaque job ID returned by shell_run/build_control/git_control"`
+}
+
+type gitControlInput struct {
+	MachineID      string   `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	WorkspaceID    string   `json:"workspaceId" jsonschema:"opaque Node-authorized workspace ID"`
+	Action         string   `json:"action" jsonschema:"one of status,diff,stagedDiff,log,show,branches,currentBranch,worktrees,add,commit,fetch,pull,push,createWorktree,deleteWorktree"`
+	Revision       string   `json:"revision,omitempty" jsonschema:"revision for show"`
+	Paths          []string `json:"paths,omitempty" jsonschema:"relative paths for add"`
+	Message        string   `json:"message,omitempty" jsonschema:"commit message"`
+	Remote         string   `json:"remote,omitempty" jsonschema:"configured remote name for network actions"`
+	Branch              string   `json:"branch,omitempty" jsonschema:"branch or ref for network/worktree actions"`
+	WorktreeWorkspaceID string   `json:"worktreeWorkspaceId,omitempty" jsonschema:"managed worktree workspace ID for deleteWorktree"`
+	IdempotencyKey      string   `json:"idempotencyKey,omitempty" jsonschema:"required for network actions"`
+}
+
+type buildControlInput struct {
+	MachineID      string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	WorkspaceID    string `json:"workspaceId" jsonschema:"opaque Node-authorized workspace ID"`
+	Action         string `json:"action" jsonschema:"list or run"`
+	ProfileID      string `json:"profileId,omitempty" jsonschema:"locally configured profile ID for run"`
+	IdempotencyKey string `json:"idempotencyKey,omitempty" jsonschema:"required for run"`
+}
+
+type artifactGetInput struct {
+	Action      string `json:"action" jsonschema:"get, uploadFile, or uploadJobLog"`
+	ArtifactID  string `json:"artifactId,omitempty" jsonschema:"artifact ID for get"`
+	MachineID   string `json:"machineId,omitempty" jsonschema:"machine ID for upload actions"`
+	WorkspaceID string `json:"workspaceId,omitempty" jsonschema:"workspace ID for upload actions"`
+	Path        string `json:"path,omitempty" jsonschema:"relative workspace file path for uploadFile"`
+	JobID       string `json:"jobId,omitempty" jsonschema:"terminal job ID for uploadJobLog"`
+	LogicalName string `json:"logicalName,omitempty" jsonschema:"artifact display file name"`
+	ContentType string `json:"contentType,omitempty" jsonschema:"optional MIME type for uploadFile"`
+}
+
+type genericCapabilityOutput struct {
+	Result map[string]any `json:"result"`
 }
 
 type mcpMachine struct {
@@ -305,7 +344,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		Name: "job_watch",
 		Description: "Read bounded stdout/stderr/status events for one Node job after a cursor, optionally long-polling for up to 15 seconds.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input jobWatchInput) (*mcp.CallToolResult, jobOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "", "job.control", "watch", map[string]any{"jobId": input.JobID, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds})
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "job.control", "watch", map[string]any{"jobId": input.JobID, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds})
 		if err != nil {
 			return nil, jobOutput{}, err
 		}
@@ -320,7 +359,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		Name: "job_cancel",
 		Description: "Cancel one active Node job and terminate its process tree. Repeated cancellation of a terminal job is safe.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input jobCancelInput) (*mcp.CallToolResult, jobOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "", "job.control", "cancel", map[string]any{"jobId": input.JobID})
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "job.control", "cancel", map[string]any{"jobId": input.JobID})
 		if err != nil {
 			return nil, jobOutput{}, err
 		}
@@ -329,6 +368,69 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 			return nil, jobOutput{}, err
 		}
 		return nil, out, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "git_control",
+		Description: "Run one allowlisted system-Git action inside an authorized repository. Git write, network, and hook execution are separately controlled by local Node permissions.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input gitControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "git.repository", input.Action, map[string]any{
+			"revision": input.Revision, "paths": input.Paths, "message": input.Message, "remote": input.Remote,
+			"branch": input.Branch, "worktreeWorkspaceId": input.WorktreeWorkspaceID, "idempotencyKey": input.IdempotencyKey,
+		})
+		if err != nil {
+			return nil, genericCapabilityOutput{}, err
+		}
+		return nil, genericCapabilityOutput{Result: result}, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "build_control",
+		Description: "List or run a build/test profile that was configured locally on the Node. Remote callers cannot supply an arbitrary build command.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input buildControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "build.profile", input.Action, map[string]any{"profileId": input.ProfileID, "idempotencyKey": input.IdempotencyKey})
+		if err != nil {
+			return nil, genericCapabilityOutput{}, err
+		}
+		return nil, genericCapabilityOutput{Result: result}, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "artifact_get",
+		Description: "Get Artifact metadata/content or ask a Node to upload an authorized workspace file or terminal Job log into Hub Artifact storage. Raw chunk upload remains an internal Node protocol.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input artifactGetInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+		switch input.Action {
+		case "uploadFile", "uploadJobLog":
+			params := map[string]any{"path": input.Path, "jobId": input.JobID, "logicalName": input.LogicalName, "contentType": input.ContentType}
+			result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "artifact.store", input.Action, params)
+			if err != nil {
+				return nil, genericCapabilityOutput{}, err
+			}
+			return nil, genericCapabilityOutput{Result: result}, nil
+		case "get":
+			artifact, err := s.service.GetArtifact(ctx, ownerID, input.ArtifactID)
+			if err != nil {
+				return nil, genericCapabilityOutput{}, err
+			}
+			raw, err := json.Marshal(artifact)
+			if err != nil {
+				return nil, genericCapabilityOutput{}, err
+			}
+			var result map[string]any
+			if err := json.Unmarshal(raw, &result); err != nil {
+				return nil, genericCapabilityOutput{}, err
+			}
+			result["downloadPath"] = "/api/v1/artifacts/" + artifact.ID + "/content"
+			if content, ok, err := readArtifactInline(ctx, s.service, artifact); err != nil {
+				return nil, genericCapabilityOutput{}, err
+			} else if ok {
+				result["content"] = content
+				result["encoding"] = "utf-8"
+			}
+			return nil, genericCapabilityOutput{Result: result}, nil
+		default:
+			return nil, genericCapabilityOutput{}, fmt.Errorf("unsupported artifact action %q", input.Action)
+		}
 	})
 
 	return server

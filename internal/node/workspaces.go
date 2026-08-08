@@ -20,25 +20,48 @@ var (
 )
 
 const (
-	WorkspacePermissionRead  = "read"
-	WorkspacePermissionWrite = "write"
-	WorkspacePermissionShell = "shell"
+	WorkspacePermissionRead       = "read"
+	WorkspacePermissionWrite      = "write"
+	WorkspacePermissionShell      = "shell"
+	WorkspacePermissionGitWrite   = "git-write"
+	WorkspacePermissionGitNetwork = "git-network"
+	WorkspacePermissionGitHooks   = "git-hooks"
+	WorkspacePermissionBuild      = "build"
 )
 
+type BuildProfileRecord struct {
+	ProfileID      string   `json:"profileId"`
+	DisplayName    string   `json:"displayName"`
+	Argv           []string `json:"argv"`
+	Cwd            string   `json:"cwd"`
+	TimeoutSeconds int64    `json:"timeoutSeconds"`
+}
+
 type WorkspaceRecord struct {
-	WorkspaceID string    `json:"workspaceId"`
-	DisplayName string    `json:"displayName"`
-	Root        string    `json:"root"`
-	Enabled     bool      `json:"enabled"`
-	Revision    int64     `json:"revision"`
-	Permissions []string  `json:"permissions"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	WorkspaceID   string               `json:"workspaceId"`
+	DisplayName   string               `json:"displayName"`
+	Root          string               `json:"root"`
+	Enabled       bool                 `json:"enabled"`
+	Revision      int64                `json:"revision"`
+	Permissions   []string             `json:"permissions"`
+	BuildProfiles []BuildProfileRecord `json:"buildProfiles,omitempty"`
+	CreatedAt     time.Time            `json:"createdAt"`
+	UpdatedAt     time.Time            `json:"updatedAt"`
 }
 
 type workspaceRegistryFile struct {
 	Version    int               `json:"version"`
 	Workspaces []WorkspaceRecord `json:"workspaces"`
+}
+
+type LocalWorkspaceSummary struct {
+	WorkspaceID     string   `json:"workspaceId"`
+	DisplayName     string   `json:"displayName"`
+	Root            string   `json:"root"`
+	Enabled         bool     `json:"enabled"`
+	Revision        int64    `json:"revision"`
+	Permissions     []string `json:"permissions"`
+	BuildProfileIDs []string `json:"buildProfileIds,omitempty"`
 }
 
 type WorkspaceStore struct{ path string }
@@ -101,6 +124,27 @@ func (s *WorkspaceStore) List() ([]protocolv1.WorkspaceSummary, error) {
 	return out, nil
 }
 
+func (s *WorkspaceStore) ListLocal() ([]LocalWorkspaceSummary, error) {
+	registry, err := s.load()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]LocalWorkspaceSummary, 0, len(registry.Workspaces))
+	for _, item := range registry.Workspaces {
+		profiles := make([]string, 0, len(item.BuildProfiles))
+		for _, profile := range item.BuildProfiles {
+			profiles = append(profiles, profile.ProfileID)
+		}
+		sort.Strings(profiles)
+		out = append(out, LocalWorkspaceSummary{
+			WorkspaceID: item.WorkspaceID, DisplayName: item.DisplayName, Root: item.Root, Enabled: item.Enabled,
+			Revision: item.Revision, Permissions: append([]string(nil), item.Permissions...), BuildProfileIDs: profiles,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].DisplayName < out[j].DisplayName })
+	return out, nil
+}
+
 func (s *WorkspaceStore) SetEnabled(workspaceID string, enabled bool) error {
 	registry, err := s.load()
 	if err != nil {
@@ -137,6 +181,120 @@ func (s *WorkspaceStore) SetPermissions(workspaceID string, permissions []string
 	return ErrWorkspaceNotFound
 }
 
+func (s *WorkspaceStore) SetBuildProfile(workspaceID string, profile BuildProfileRecord) error {
+	profile.ProfileID = strings.TrimSpace(profile.ProfileID)
+	profile.DisplayName = strings.TrimSpace(profile.DisplayName)
+	profile.Cwd = strings.TrimSpace(profile.Cwd)
+	if profile.ProfileID == "" || len(profile.ProfileID) > 64 {
+		return fmt.Errorf("profileId is required and must be at most 64 characters")
+	}
+	for _, r := range profile.ProfileID {
+		if !(r == '-' || r == '_' || r == '.' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
+			return fmt.Errorf("profileId contains unsupported characters")
+		}
+	}
+	if profile.DisplayName == "" {
+		profile.DisplayName = profile.ProfileID
+	}
+	if len(profile.DisplayName) > 128 {
+		return fmt.Errorf("profile display name is too long")
+	}
+	if profile.Cwd == "" {
+		profile.Cwd = "."
+	}
+	if filepath.IsAbs(profile.Cwd) || filepath.VolumeName(profile.Cwd) != "" || profile.Cwd == ".." || strings.HasPrefix(filepath.Clean(profile.Cwd), ".."+string(filepath.Separator)) {
+		return ErrPathOutsideWorkspace
+	}
+	if profile.TimeoutSeconds <= 0 {
+		profile.TimeoutSeconds = int64(defaultJobTimeout / time.Second)
+	}
+	if profile.TimeoutSeconds > int64(maxJobTimeout/time.Second) {
+		return fmt.Errorf("profile timeout exceeds limit")
+	}
+	if err := validateShellSpec(profile.Argv, time.Duration(profile.TimeoutSeconds)*time.Second, "profile_validation_key"); err != nil {
+		return err
+	}
+	registry, err := s.load()
+	if err != nil {
+		return err
+	}
+	for i := range registry.Workspaces {
+		if registry.Workspaces[i].WorkspaceID != workspaceID {
+			continue
+		}
+		replaced := false
+		for p := range registry.Workspaces[i].BuildProfiles {
+			if registry.Workspaces[i].BuildProfiles[p].ProfileID == profile.ProfileID {
+				registry.Workspaces[i].BuildProfiles[p] = profile
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			if len(registry.Workspaces[i].BuildProfiles) >= 32 {
+				return fmt.Errorf("workspace build profile limit reached")
+			}
+			registry.Workspaces[i].BuildProfiles = append(registry.Workspaces[i].BuildProfiles, profile)
+		}
+		sort.Slice(registry.Workspaces[i].BuildProfiles, func(a, b int) bool {
+			return registry.Workspaces[i].BuildProfiles[a].ProfileID < registry.Workspaces[i].BuildProfiles[b].ProfileID
+		})
+		registry.Workspaces[i].Revision++
+		registry.Workspaces[i].UpdatedAt = time.Now().UTC()
+		return s.save(registry)
+	}
+	return ErrWorkspaceNotFound
+}
+
+func (s *WorkspaceStore) RemoveBuildProfile(workspaceID, profileID string) error {
+	registry, err := s.load()
+	if err != nil {
+		return err
+	}
+	for i := range registry.Workspaces {
+		if registry.Workspaces[i].WorkspaceID != workspaceID {
+			continue
+		}
+		for p := range registry.Workspaces[i].BuildProfiles {
+			if registry.Workspaces[i].BuildProfiles[p].ProfileID == profileID {
+				registry.Workspaces[i].BuildProfiles = append(registry.Workspaces[i].BuildProfiles[:p], registry.Workspaces[i].BuildProfiles[p+1:]...)
+				registry.Workspaces[i].Revision++
+				registry.Workspaces[i].UpdatedAt = time.Now().UTC()
+				return s.save(registry)
+			}
+		}
+		return ErrWorkspaceNotFound
+	}
+	return ErrWorkspaceNotFound
+}
+
+func (s *WorkspaceStore) BuildProfiles(workspaceID string) ([]BuildProfileRecord, error) {
+	workspace, err := s.Resolve(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]BuildProfileRecord, len(workspace.BuildProfiles))
+	for i, item := range workspace.BuildProfiles {
+		out[i] = item
+		out[i].Argv = append([]string(nil), item.Argv...)
+	}
+	return out, nil
+}
+
+func (s *WorkspaceStore) BuildProfile(workspaceID, profileID string) (BuildProfileRecord, error) {
+	workspace, err := s.Resolve(workspaceID)
+	if err != nil {
+		return BuildProfileRecord{}, err
+	}
+	for _, item := range workspace.BuildProfiles {
+		if item.ProfileID == profileID {
+			item.Argv = append([]string(nil), item.Argv...)
+			return item, nil
+		}
+	}
+	return BuildProfileRecord{}, ErrWorkspaceNotFound
+}
+
 func (s *WorkspaceStore) Remove(workspaceID string) error {
 	registry, err := s.load()
 	if err != nil {
@@ -151,20 +309,28 @@ func (s *WorkspaceStore) Remove(workspaceID string) error {
 	return ErrWorkspaceNotFound
 }
 
-func (s *WorkspaceStore) Resolve(workspaceID string) (WorkspaceRecord, error) {
+func (s *WorkspaceStore) Lookup(workspaceID string) (WorkspaceRecord, error) {
 	registry, err := s.load()
 	if err != nil {
 		return WorkspaceRecord{}, err
 	}
 	for _, item := range registry.Workspaces {
 		if item.WorkspaceID == workspaceID {
-			if !item.Enabled {
-				return WorkspaceRecord{}, ErrWorkspaceDisabled
-			}
 			return item, nil
 		}
 	}
 	return WorkspaceRecord{}, ErrWorkspaceNotFound
+}
+
+func (s *WorkspaceStore) Resolve(workspaceID string) (WorkspaceRecord, error) {
+	item, err := s.Lookup(workspaceID)
+	if err != nil {
+		return WorkspaceRecord{}, err
+	}
+	if !item.Enabled {
+		return WorkspaceRecord{}, ErrWorkspaceDisabled
+	}
+	return item, nil
 }
 
 func (s *WorkspaceStore) load() (workspaceRegistryFile, error) {
@@ -228,7 +394,7 @@ func normalizeWorkspacePermissions(input []string) ([]string, error) {
 	for _, item := range input {
 		item = strings.TrimSpace(strings.ToLower(item))
 		switch item {
-		case WorkspacePermissionRead, WorkspacePermissionWrite, WorkspacePermissionShell:
+		case WorkspacePermissionRead, WorkspacePermissionWrite, WorkspacePermissionShell, WorkspacePermissionGitWrite, WorkspacePermissionGitNetwork, WorkspacePermissionGitHooks, WorkspacePermissionBuild:
 			seen[item] = true
 		case "":
 		default:

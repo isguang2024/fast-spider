@@ -1,6 +1,7 @@
 package node
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -35,6 +36,26 @@ func TestWorkspaceRegistryAndPathGuard(t *testing.T) {
 	}
 	if len(list) != 1 || list[0].WorkspaceId != record.WorkspaceID || !list[0].Enabled {
 		t.Fatalf("unexpected workspace list: %#v", list)
+	}
+	if err := store.SetBuildProfile(record.WorkspaceID, BuildProfileRecord{ProfileID: "zeta", Argv: shellEchoArgv("zeta"), Cwd: ".", TimeoutSeconds: 10}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetBuildProfile(record.WorkspaceID, BuildProfileRecord{ProfileID: "alpha", Argv: shellEchoArgv("alpha"), Cwd: ".", TimeoutSeconds: 10}); err != nil {
+		t.Fatal(err)
+	}
+	local, err := store.ListLocal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(local) != 1 || local[0].Root != record.Root || strings.Join(local[0].BuildProfileIDs, ",") != "alpha,zeta" {
+		t.Fatalf("unexpected local workspace list: %#v", local)
+	}
+	rawList, err := json.Marshal(list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rawList), record.Root) || strings.Contains(string(rawList), `"root"`) {
+		t.Fatalf("remote workspace list leaked root: %s", rawList)
 	}
 
 	resolved, err := resolveWorkspacePath(root, "inside.txt")

@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -29,11 +31,15 @@ const (
 	defaultJobTimeout   = 10 * time.Minute
 	maxJobWatchWait     = 15 * time.Second
 	maxScannerTokenSize = 64 << 10
+	maxJobLogBytes      = 10 << 20
+	jobRetention        = 24 * time.Hour
 )
 
 var (
 	ErrJobNotFound         = errors.New("job not found")
 	ErrJobLimit            = errors.New("job limit reached")
+	ErrJobNotComplete      = errors.New("job is not complete")
+	ErrJobLogUnavailable   = errors.New("job log is unavailable")
 	ErrIdempotencyConflict = errors.New("idempotency key conflicts with an existing job")
 )
 
@@ -79,6 +85,12 @@ type Job struct {
 	stop            chan string
 	done            chan struct{}
 	stopReason      string
+	workspaceID     string
+	logPath         string
+	logFile         *os.File
+	logBytes        int64
+	logTruncated    bool
+	logErr          string
 }
 
 type JobManager struct {
@@ -87,14 +99,21 @@ type JobManager struct {
 	order       []string
 	idempotency map[string]idempotencyRecord
 	semaphore   chan struct{}
+	logDir      string
 }
 
-func NewJobManager() *JobManager {
-	return &JobManager{
+func NewJobManager(dataDirs ...string) *JobManager {
+	manager := &JobManager{
 		jobs:        make(map[string]*Job),
 		idempotency: make(map[string]idempotencyRecord),
 		semaphore:   make(chan struct{}, maxConcurrentJobs),
 	}
+	if len(dataDirs) > 0 && strings.TrimSpace(dataDirs[0]) != "" {
+		manager.logDir = filepath.Join(dataDirs[0], "jobs")
+		_ = os.MkdirAll(manager.logDir, 0o700)
+		manager.cleanupOldJobLogs(time.Now().UTC())
+	}
+	return manager
 }
 
 func (m *JobManager) StartShell(workspaceID, cwd string, argv []string, timeout time.Duration, idempotencyKey string, permissionGuard func() bool) (JobSnapshot, error) {
@@ -132,6 +151,19 @@ func (m *JobManager) StartShell(workspaceID, cwd string, argv []string, timeout 
 		return JobSnapshot{}, ErrJobLimit
 	}
 
+	jobID, err := security.RandomOpaque("job_")
+	if err != nil {
+		<-m.semaphore
+		m.mu.Unlock()
+		return JobSnapshot{}, err
+	}
+	var logFile *os.File
+	var logPath string
+	if m.logDir != "" {
+		logPath = filepath.Join(m.logDir, jobID+".log")
+		logFile, _ = os.OpenFile(logPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	}
+
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = cwd
 	cmd.Env = safeShellEnvironment()
@@ -149,22 +181,18 @@ func (m *JobManager) StartShell(workspaceID, cwd string, argv []string, timeout 
 		return JobSnapshot{}, err
 	}
 	if err := cmd.Start(); err != nil {
-		<-m.semaphore
-		m.mu.Unlock()
-		return JobSnapshot{}, err
-	}
-	jobID, err := security.RandomOpaque("job_")
-	if err != nil {
-		_ = killProcessTree(cmd)
-		_ = cmd.Wait()
+		if logFile != nil {
+			_ = logFile.Close()
+			_ = os.Remove(logPath)
+		}
 		<-m.semaphore
 		m.mu.Unlock()
 		return JobSnapshot{}, err
 	}
 	now := time.Now().UTC()
 	job := &Job{
-		id: jobID, idempotencyKey: idempotencyKey, state: "running", startedAt: now,
-		notify: make(chan struct{}), cmd: cmd, stop: make(chan string, 1), done: make(chan struct{}),
+		id: jobID, idempotencyKey: idempotencyKey, state: "running", startedAt: now, workspaceID: workspaceID,
+		notify: make(chan struct{}), cmd: cmd, stop: make(chan string, 1), done: make(chan struct{}), logPath: logPath, logFile: logFile,
 	}
 	job.appendEvent("started", "process started")
 
@@ -232,6 +260,13 @@ func (m *JobManager) runJob(job *Job, stdout, stderr interface{ Read([]byte) (in
 	<-m.semaphore
 }
 
+func (m *JobManager) WatchWorkspace(ctx context.Context, workspaceID, jobID string, cursor int64, wait time.Duration) (JobSnapshot, error) {
+	if !m.jobBelongsToWorkspace(jobID, workspaceID) {
+		return JobSnapshot{}, ErrJobNotFound
+	}
+	return m.Watch(ctx, jobID, cursor, wait)
+}
+
 func (m *JobManager) Watch(ctx context.Context, jobID string, cursor int64, wait time.Duration) (JobSnapshot, error) {
 	if cursor < 0 {
 		return JobSnapshot{}, fmt.Errorf("cursor must be non-negative")
@@ -267,6 +302,13 @@ func (m *JobManager) Watch(ctx context.Context, jobID string, cursor int64, wait
 	}
 }
 
+func (m *JobManager) CancelWorkspace(ctx context.Context, workspaceID, jobID string) (JobSnapshot, error) {
+	if !m.jobBelongsToWorkspace(jobID, workspaceID) {
+		return JobSnapshot{}, ErrJobNotFound
+	}
+	return m.Cancel(ctx, jobID)
+}
+
 func (m *JobManager) Cancel(ctx context.Context, jobID string) (JobSnapshot, error) {
 	m.mu.RLock()
 	job := m.jobs[jobID]
@@ -294,6 +336,18 @@ func (m *JobManager) Cancel(ctx context.Context, jobID string) (JobSnapshot, err
 		case <-notify:
 		}
 	}
+}
+
+func (m *JobManager) jobBelongsToWorkspace(jobID, workspaceID string) bool {
+	m.mu.RLock()
+	job := m.jobs[jobID]
+	m.mu.RUnlock()
+	if job == nil || workspaceID == "" {
+		return false
+	}
+	job.mu.Lock()
+	defer job.mu.Unlock()
+	return job.workspaceID == workspaceID
 }
 
 func (m *JobManager) CancelAll(ctx context.Context) error {
@@ -330,10 +384,62 @@ func (m *JobManager) CancelAll(ctx context.Context) error {
 	return nil
 }
 
-func (m *JobManager) cleanupLocked() {
-	if len(m.jobs) < maxRetainedJobs {
+func (m *JobManager) StartMaintenance(ctx context.Context) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.mu.Lock()
+			m.cleanupLocked()
+			m.mu.Unlock()
+			m.cleanupOldJobLogs(time.Now().UTC())
+		}
+	}
+}
+
+func (m *JobManager) JobLog(jobID string) (workspaceID, path string, size int64, truncated bool, err error) {
+	m.mu.RLock()
+	job := m.jobs[jobID]
+	m.mu.RUnlock()
+	if job == nil {
+		return "", "", 0, false, ErrJobNotFound
+	}
+	job.mu.Lock()
+	defer job.mu.Unlock()
+	if !isTerminalJobState(job.state) {
+		return "", "", 0, false, ErrJobNotComplete
+	}
+	if job.logPath == "" || job.logErr != "" {
+		return "", "", 0, job.logTruncated, ErrJobLogUnavailable
+	}
+	return job.workspaceID, job.logPath, job.logBytes, job.logTruncated, nil
+}
+
+func (m *JobManager) cleanupOldJobLogs(now time.Time) {
+	if m.logDir == "" {
 		return
 	}
+	entries, err := os.ReadDir(m.logDir)
+	if err != nil {
+		return
+	}
+	cutoff := now.Add(-24 * time.Hour)
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".log") {
+			continue
+		}
+		info, err := entry.Info()
+		if err == nil && info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(m.logDir, entry.Name()))
+		}
+	}
+}
+
+func (m *JobManager) cleanupLocked() {
+	cutoff := time.Now().UTC().Add(-jobRetention)
 	kept := m.order[:0]
 	for _, jobID := range m.order {
 		job := m.jobs[jobID]
@@ -342,11 +448,16 @@ func (m *JobManager) cleanupLocked() {
 		}
 		job.mu.Lock()
 		terminal := isTerminalJobState(job.state)
+		finishedAt := job.finishedAt
 		key := job.idempotencyKey
 		job.mu.Unlock()
-		if terminal && len(m.jobs) >= maxRetainedJobs {
+		expired := terminal && !finishedAt.IsZero() && finishedAt.Before(cutoff)
+		if terminal && (expired || len(m.jobs) >= maxRetainedJobs) {
 			delete(m.jobs, jobID)
 			delete(m.idempotency, key)
+			if job.logPath != "" {
+				_ = os.Remove(job.logPath)
+			}
 			continue
 		}
 		kept = append(kept, jobID)
@@ -373,10 +484,31 @@ func (j *Job) captureStream(eventType string, reader interface{ Read([]byte) (in
 func (j *Job) appendEvent(eventType, text string) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	j.appendEventLocked(eventType, text, time.Now().UTC())
+}
+
+func (j *Job) appendEventLocked(eventType, text string, now time.Time) {
 	j.nextSequence++
-	event := JobEvent{Sequence: j.nextSequence, Type: eventType, Text: text, Timestamp: time.Now().UTC().Format(time.RFC3339Nano)}
+	event := JobEvent{Sequence: j.nextSequence, Type: eventType, Text: text, Timestamp: now.Format(time.RFC3339Nano)}
 	j.events = append(j.events, event)
 	j.eventBytes += len(text)
+	if j.logFile != nil && !j.logTruncated && j.logErr == "" {
+		line := []byte(event.Timestamp + "\t" + event.Type + "\t" + event.Text)
+		remaining := int64(maxJobLogBytes) - j.logBytes
+		if remaining <= 0 {
+			j.logTruncated = true
+		} else {
+			if int64(len(line)) > remaining {
+				line = line[:remaining]
+				j.logTruncated = true
+			}
+			n, err := j.logFile.Write(line)
+			j.logBytes += int64(n)
+			if err != nil {
+				j.logErr = err.Error()
+			}
+		}
+	}
 	for len(j.events) > maxJobEvents || j.eventBytes > maxJobEventBytes {
 		dropped := j.events[0]
 		j.events = j.events[1:]
@@ -431,17 +563,16 @@ func (j *Job) finish(waitErr error) {
 			j.errText = waitErr.Error()
 		}
 	}
-	j.nextSequence++
-	j.events = append(j.events, JobEvent{Sequence: j.nextSequence, Type: j.state, Text: j.errText, Timestamp: j.finishedAt.Format(time.RFC3339Nano)})
-	j.eventBytes += len(j.errText)
-	for len(j.events) > maxJobEvents || j.eventBytes > maxJobEventBytes {
-		dropped := j.events[0]
-		j.events = j.events[1:]
-		j.eventBytes -= len(dropped.Text)
-		j.truncatedBefore = dropped.Sequence
+	j.appendEventLocked(j.state, j.errText, j.finishedAt)
+	if j.logFile != nil {
+		if err := j.logFile.Sync(); err != nil && j.logErr == "" {
+			j.logErr = err.Error()
+		}
+		if err := j.logFile.Close(); err != nil && j.logErr == "" {
+			j.logErr = err.Error()
+		}
+		j.logFile = nil
 	}
-	close(j.notify)
-	j.notify = make(chan struct{})
 }
 
 func (j *Job) snapshotAfter(cursor int64) (JobSnapshot, <-chan struct{}) {

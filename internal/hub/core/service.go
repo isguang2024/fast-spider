@@ -129,6 +129,7 @@ func (s *Service) HubPrivateKey() ed25519.PrivateKey { return s.hubPrivate }
 func (s *Service) Version() string { return s.version }
 func (s *Service) Registry() *registry.Registry { return s.registry }
 func (s *Service) Store() *store.Store { return s.store }
+func (s *Service) DataDir() string { return s.dataDir }
 
 func (s *Service) EnsureBootstrap(ctx context.Context) (string, error) {
 	hasOwner, err := s.store.HasOwner(ctx)
@@ -360,8 +361,8 @@ func (s *Service) RevokeMachine(ctx context.Context, ownerID, machineID, remoteA
 }
 
 func (s *Service) CapabilityCatalog() []protocolv1.CapabilityDescriptor {
-	out := make([]protocolv1.CapabilityDescriptor, len(protocolv1.Phase1Capabilities))
-	copy(out, protocolv1.Phase1Capabilities)
+	out := make([]protocolv1.CapabilityDescriptor, len(protocolv1.NodeCapabilities))
+	copy(out, protocolv1.NodeCapabilities)
 	return out
 }
 
@@ -385,7 +386,7 @@ func (s *Service) CallCapability(ctx context.Context, ownerID, machineID, worksp
 	if err != nil {
 		return nil, err
 	}
-	deadline := s.now().UTC().Add(20 * time.Second)
+	deadline := s.now().UTC().Add(capabilityCallTimeout(capability, action))
 	if current, ok := ctx.Deadline(); ok && current.Before(deadline) {
 		deadline = current
 	}
@@ -419,9 +420,22 @@ func (s *Service) CallCapability(ctx context.Context, ownerID, machineID, worksp
 	return response.Result, nil
 }
 
+func capabilityCallTimeout(capability, action string) time.Duration {
+	switch capability + "/" + action {
+	case "artifact.store/uploadFile", "artifact.store/uploadJobLog":
+		return 10 * time.Minute
+	case "git.repository/diff", "git.repository/stagedDiff", "git.repository/show":
+		return 5 * time.Minute
+	case "job.control/watch":
+		return 30 * time.Second
+	default:
+		return 20 * time.Second
+	}
+}
+
 func shouldAuditCapability(capability, action string) bool {
 	switch capability + "/" + action {
-	case "file.write/edit", "shell.exec/run", "job.control/cancel":
+	case "file.write/edit", "shell.exec/run", "job.control/cancel", "git.repository/add", "git.repository/commit", "git.repository/fetch", "git.repository/pull", "git.repository/push", "git.repository/createWorktree", "git.repository/deleteWorktree", "build.profile/run":
 		return true
 	default:
 		return false
@@ -438,7 +452,26 @@ func (s *Service) StartMaintenance(ctx context.Context) {
 		case now := <-ticker.C:
 			s.registry.CloseStale(ctx, now.Add(-95*time.Second))
 			_ = s.store.CleanupExpired(ctx, now.UTC())
+			s.cleanupArtifacts(ctx, now.UTC())
 		}
+	}
+}
+
+func (s *Service) cleanupArtifacts(ctx context.Context, now time.Time) {
+	uploadIDs, storageKeys, err := s.store.CleanupArtifacts(ctx, now)
+	if err != nil {
+		return
+	}
+	for _, uploadID := range uploadIDs {
+		_ = os.Remove(filepath.Join(s.dataDir, "artifacts", "uploads", uploadID+".part"))
+	}
+	blobRoot := filepath.Join(s.dataDir, "artifacts", "blobs")
+	for _, storageKey := range storageKeys {
+		clean := filepath.Clean(filepath.FromSlash(storageKey))
+		if clean == "." || clean == ".." || filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			continue
+		}
+		_ = os.Remove(filepath.Join(blobRoot, clean))
 	}
 }
 
@@ -493,10 +526,15 @@ func atomicWritePrivate(path string, data []byte) error {
 }
 
 func IsClientError(err error) bool {
-	return errors.Is(err, store.ErrUnauthorized) || errors.Is(err, store.ErrExpired) || errors.Is(err, store.ErrConsumed) || errors.Is(err, store.ErrRevoked) || errors.Is(err, store.ErrReplay) || errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound)
+	var callErr *CapabilityCallError
+	return errors.As(err, &callErr) || errors.Is(err, store.ErrUnauthorized) || errors.Is(err, store.ErrExpired) || errors.Is(err, store.ErrConsumed) || errors.Is(err, store.ErrRevoked) || errors.Is(err, store.ErrReplay) || errors.Is(err, store.ErrConflict) || errors.Is(err, store.ErrNotFound)
 }
 
 func ErrorCode(err error) string {
+	var callErr *CapabilityCallError
+	if errors.As(err, &callErr) {
+		return callErr.Code
+	}
 	switch {
 	case errors.Is(err, store.ErrUnauthorized): return "UNAUTHORIZED"
 	case errors.Is(err, store.ErrExpired): return "EXPIRED"
@@ -510,6 +548,23 @@ func ErrorCode(err error) string {
 }
 
 func ErrorStatus(err error) int {
+	var callErr *CapabilityCallError
+	if errors.As(err, &callErr) {
+		switch callErr.Code {
+		case "MACHINE_OFFLINE":
+			return 503
+		case "DEADLINE_EXCEEDED", "TIMEOUT":
+			return 504
+		case "PERMISSION_DENIED":
+			return 403
+		case "NOT_FOUND":
+			return 404
+		case "INVALID_REQUEST":
+			return 400
+		default:
+			return 409
+		}
+	}
 	switch {
 	case errors.Is(err, store.ErrUnauthorized): return 401
 	case errors.Is(err, store.ErrExpired), errors.Is(err, store.ErrConsumed), errors.Is(err, store.ErrRevoked), errors.Is(err, store.ErrReplay), errors.Is(err, store.ErrConflict): return 409

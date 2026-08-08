@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -55,5 +56,23 @@ func TestShellConcurrentIdempotentStart(t *testing.T) {
 	}
 	if final.State != "canceled" {
 		t.Fatalf("cancel state=%q", final.State)
+	}
+}
+
+func TestJobWorkspaceScopeRejectsCrossWorkspaceWatchAndCancel(t *testing.T) {
+	jobs := NewJobManager()
+	defer func() { _ = jobs.CancelAll(context.Background()) }()
+	job, err := jobs.StartShell("workspace-a", t.TempDir(), shellSleepArgv(), 20*time.Second, "idem_workspace_scope_001", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := jobs.WatchWorkspace(context.Background(), "workspace-b", job.JobID, 0, 0); !errors.Is(err, ErrJobNotFound) {
+		t.Fatalf("cross-workspace watch error=%v", err)
+	}
+	if _, err := jobs.CancelWorkspace(context.Background(), "workspace-b", job.JobID); !errors.Is(err, ErrJobNotFound) {
+		t.Fatalf("cross-workspace cancel error=%v", err)
+	}
+	if _, err := jobs.WatchWorkspace(context.Background(), "workspace-a", job.JobID, 0, 0); err != nil {
+		t.Fatalf("authorized workspace watch error=%v", err)
 	}
 }

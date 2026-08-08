@@ -6,10 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,8 +67,20 @@ func TestPhase1EndToEnd(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspaceDir, "hello.txt"), []byte("alpha\nneedle value\nomega\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	workspace, err := node.NewWorkspaceStore(nodeDataDir).Add(workspaceDir, "fixture")
+	if err := os.WriteFile(filepath.Join(workspaceDir, "large.txt"), []byte(strings.Repeat("A", 160<<10)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runE2EGit(t, workspaceDir, "init")
+	runE2EGit(t, workspaceDir, "config", "user.name", "Fast Spider E2E")
+	runE2EGit(t, workspaceDir, "config", "user.email", "fast-spider-e2e@example.invalid")
+	runE2EGit(t, workspaceDir, "add", "hello.txt", "large.txt")
+	runE2EGit(t, workspaceDir, "commit", "-m", "initial")
+	workspaceStore := node.NewWorkspaceStore(nodeDataDir)
+	workspace, err := workspaceStore.Add(workspaceDir, "fixture")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := workspaceStore.SetBuildProfile(workspace.WorkspaceID, node.BuildProfileRecord{ProfileID: "verify", DisplayName: "Verify", Argv: e2eEchoArgv(), Cwd: ".", TimeoutSeconds: 10}); err != nil {
 		t.Fatal(err)
 	}
 	nodeClient, err := node.New(node.Config{DataDir: nodeDataDir, Version: "test", AllowInsecure: true})
@@ -117,7 +130,7 @@ func TestPhase1EndToEnd(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	wantNames := []string{"capability_list", "code_search", "file_edit", "file_read", "job_cancel", "job_watch", "machine_get", "machine_list", "shell_run", "workspace_list"}
+	wantNames := []string{"artifact_get", "build_control", "capability_list", "code_search", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "shell_run", "workspace_list"}
 	if stringJSON(names) != stringJSON(wantNames) {
 		t.Fatalf("MCP tools=%v want=%v", names, wantNames)
 	}
@@ -209,7 +222,7 @@ func TestPhase1EndToEnd(t *testing.T) {
 		t.Fatalf("unexpected code_search: %s", raw)
 	}
 
-	if err := node.NewWorkspaceStore(nodeDataDir).SetPermissions(workspace.WorkspaceID, []string{"read", "write", "shell"}); err != nil {
+	if err := workspaceStore.SetPermissions(workspace.WorkspaceID, []string{"read", "write", "shell", "git-write", "build"}); err != nil {
 		t.Fatal(err)
 	}
 	editResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "file_edit", Arguments: map[string]any{
@@ -241,6 +254,161 @@ func TestPhase1EndToEnd(t *testing.T) {
 		t.Fatalf("file edit did not persist: %q", editedContent)
 	}
 
+	gitResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "git_control", Arguments: map[string]any{
+		"machineId": state.MachineID, "workspaceId": workspace.WorkspaceID, "action": "status",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = json.Marshal(gitResult.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "hello.txt") {
+		t.Fatalf("git_control status did not report edited file: %s", raw)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceDir, "large.txt"), []byte(strings.Repeat("B", 160<<10)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	largeDiffResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "git_control", Arguments: map[string]any{
+		"machineId": state.MachineID, "workspaceId": workspace.WorkspaceID, "action": "diff",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = json.Marshal(largeDiffResult.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var largeDiffEnvelope struct {
+		Result struct {
+			Truncated  bool   `json:"truncated"`
+			ArtifactID string `json:"artifactId"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &largeDiffEnvelope); err != nil || !largeDiffEnvelope.Result.Truncated || largeDiffEnvelope.Result.ArtifactID == "" {
+		t.Fatalf("large git diff did not produce artifact: %v raw=%s", err, raw)
+	}
+	largeDiffArtifact, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "artifact_get", Arguments: map[string]any{"action": "get", "artifactId": largeDiffEnvelope.Result.ArtifactID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = json.Marshal(largeDiffArtifact.StructuredContent)
+	if err != nil || !strings.Contains(string(raw), `"artifactId":"`+largeDiffEnvelope.Result.ArtifactID+`"`) {
+		t.Fatalf("large diff artifact lookup failed: %v raw=%s", err, raw)
+	}
+
+	buildListResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "build_control", Arguments: map[string]any{
+		"machineId": state.MachineID, "workspaceId": workspace.WorkspaceID, "action": "list",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = json.Marshal(buildListResult.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"profileId":"verify"`) {
+		t.Fatalf("build_control list missing local profile: %s", raw)
+	}
+	buildRunResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "build_control", Arguments: map[string]any{
+		"machineId": state.MachineID, "workspaceId": workspace.WorkspaceID, "action": "run", "profileId": "verify", "idempotencyKey": "idem_e2e_build_0001",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = json.Marshal(buildRunResult.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buildEnvelope struct {
+		Result struct {
+			Job struct {
+				JobID string `json:"jobId"`
+			} `json:"job"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &buildEnvelope); err != nil || buildEnvelope.Result.Job.JobID == "" {
+		t.Fatalf("decode build_control run: %v raw=%s", err, raw)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		watchResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "job_watch", Arguments: map[string]any{"machineId": state.MachineID, "workspaceId": workspace.WorkspaceID, "jobId": buildEnvelope.Result.Job.JobID}})
+		if err != nil {
+			return false
+		}
+		raw, _ := json.Marshal(watchResult.StructuredContent)
+		var watch struct {
+			State string `json:"state"`
+		}
+		return json.Unmarshal(raw, &watch) == nil && watch.State == "completed"
+	})
+
+	fileArtifactUpload, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "artifact_get", Arguments: map[string]any{
+		"action": "uploadFile", "machineId": state.MachineID, "workspaceId": workspace.WorkspaceID,
+		"path": "hello.txt", "logicalName": "source.txt", "contentType": "text/plain; charset=utf-8",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = json.Marshal(fileArtifactUpload.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fileArtifactEnvelope struct {
+		Result struct {
+			ArtifactID string `json:"artifactId"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &fileArtifactEnvelope); err != nil || fileArtifactEnvelope.Result.ArtifactID == "" {
+		t.Fatalf("decode file artifact upload: %v raw=%s", err, raw)
+	}
+	fileArtifactGet, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "artifact_get", Arguments: map[string]any{
+		"action": "get", "artifactId": fileArtifactEnvelope.Result.ArtifactID,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = json.Marshal(fileArtifactGet.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "needle changed") || !strings.Contains(string(raw), `"logicalName":"source.txt"`) {
+		t.Fatalf("artifact_get did not return uploaded workspace file: %s", raw)
+	}
+
+	artifactUploadResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "artifact_get", Arguments: map[string]any{
+		"action": "uploadJobLog", "machineId": state.MachineID, "workspaceId": workspace.WorkspaceID,
+		"jobId": buildEnvelope.Result.Job.JobID, "logicalName": "build.log",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = json.Marshal(artifactUploadResult.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var artifactEnvelope struct {
+		Result struct {
+			ArtifactID string `json:"artifactId"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &artifactEnvelope); err != nil || artifactEnvelope.Result.ArtifactID == "" {
+		t.Fatalf("decode artifact upload: %v raw=%s", err, raw)
+	}
+	artifactGetResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "artifact_get", Arguments: map[string]any{
+		"action": "get", "artifactId": artifactEnvelope.Result.ArtifactID,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = json.Marshal(artifactGetResult.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "phase3-e2e") || !strings.Contains(string(raw), `"logicalName":"build.log"`) {
+		t.Fatalf("artifact_get did not return uploaded job log: %s", raw)
+	}
+
 	shellResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "shell_run", Arguments: map[string]any{
 		"machineId": state.MachineID, "workspaceId": workspace.WorkspaceID, "argv": e2eEchoArgv(),
 		"timeoutSeconds": 10, "idempotencyKey": "idem_e2e_shell_0001",
@@ -263,7 +431,7 @@ func TestPhase1EndToEnd(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		watchResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "job_watch", Arguments: map[string]any{
-			"machineId": state.MachineID, "jobId": shellJob.JobID, "cursor": cursor, "waitSeconds": 1,
+			"machineId": state.MachineID, "workspaceId": workspace.WorkspaceID, "jobId": shellJob.JobID, "cursor": cursor, "waitSeconds": 1,
 		}})
 		if err != nil {
 			t.Fatal(err)
@@ -314,16 +482,31 @@ func TestPhase1EndToEnd(t *testing.T) {
 	if err := json.Unmarshal(raw, &longJob); err != nil || longJob.JobID == "" {
 		t.Fatalf("decode long shell_run: %v raw=%s", err, raw)
 	}
-	if _, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "job_cancel", Arguments: map[string]any{"machineId": state.MachineID, "jobId": longJob.JobID}}); err != nil {
+	crossRoot := t.TempDir()
+	crossWorkspace, err := workspaceStore.Add(crossRoot, "cross-workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongWatch, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "job_watch", Arguments: map[string]any{"machineId": state.MachineID, "workspaceId": crossWorkspace.WorkspaceID, "jobId": longJob.JobID}})
+	if err == nil && !wrongWatch.IsError {
+		t.Fatalf("cross-workspace job_watch was accepted: %+v", wrongWatch)
+	}
+	wrongCancel, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "job_cancel", Arguments: map[string]any{"machineId": state.MachineID, "workspaceId": crossWorkspace.WorkspaceID, "jobId": longJob.JobID}})
+	if err == nil && !wrongCancel.IsError {
+		t.Fatalf("cross-workspace job_cancel was accepted: %+v", wrongCancel)
+	}
+	if _, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "job_cancel", Arguments: map[string]any{"machineId": state.MachineID, "workspaceId": workspace.WorkspaceID, "jobId": longJob.JobID}}); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 10*time.Second, func() bool {
-		watchResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "job_watch", Arguments: map[string]any{"machineId": state.MachineID, "jobId": longJob.JobID}})
+		watchResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "job_watch", Arguments: map[string]any{"machineId": state.MachineID, "workspaceId": workspace.WorkspaceID, "jobId": longJob.JobID}})
 		if err != nil {
 			return false
 		}
 		raw, _ := json.Marshal(watchResult.StructuredContent)
-		var watch struct{ State string `json:"state"` }
+		var watch struct {
+			State string `json:"state"`
+		}
 		return json.Unmarshal(raw, &watch) == nil && watch.State == "canceled"
 	})
 
@@ -358,6 +541,16 @@ func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatal("condition did not become true before timeout")
+}
+
+func runE2EGit(t *testing.T, cwd string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = cwd
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, out)
+	}
 }
 
 func e2eEchoArgv() []string {

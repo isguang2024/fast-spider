@@ -43,6 +43,12 @@ func main() {
 		runWorkspaceRemove(os.Args[2:])
 	case "workspace-permission":
 		runWorkspacePermission(os.Args[2:])
+	case "workspace-profile-set":
+		runWorkspaceProfileSet(os.Args[2:])
+	case "workspace-profile-list":
+		runWorkspaceProfileList(os.Args[2:])
+	case "workspace-profile-remove":
+		runWorkspaceProfileRemove(os.Args[2:])
 	case "version":
 		fmt.Println(version.Version)
 	default:
@@ -116,7 +122,7 @@ func runWorkspaceList(args []string) {
 	fs := flag.NewFlagSet("workspace-list", flag.ExitOnError)
 	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
 	_ = fs.Parse(args)
-	items, err := node.NewWorkspaceStore(*dataDir).List()
+	items, err := node.NewWorkspaceStore(*dataDir).ListLocal()
 	fatalIf(err)
 	printJSON(map[string]any{"workspaces": items})
 }
@@ -137,7 +143,7 @@ func runWorkspacePermission(args []string) {
 	fs := flag.NewFlagSet("workspace-permission", flag.ExitOnError)
 	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
 	workspaceID := fs.String("workspace", "", "opaque workspaceId")
-	allow := fs.String("allow", "read", "comma-separated permissions: read,write,shell; read is always retained")
+	allow := fs.String("allow", "read", "comma-separated permissions: read,write,shell,git-write,git-network,git-hooks,build; read is always retained")
 	_ = fs.Parse(args)
 	if *workspaceID == "" {
 		fatalIf(errors.New("--workspace is required"))
@@ -154,6 +160,52 @@ func runWorkspacePermission(args []string) {
 		}
 	}
 	fatalIf(node.ErrWorkspaceNotFound)
+}
+
+func runWorkspaceProfileSet(args []string) {
+	fs := flag.NewFlagSet("workspace-profile-set", flag.ExitOnError)
+	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
+	workspaceID := fs.String("workspace", "", "opaque workspaceId")
+	profileID := fs.String("profile", "", "build profile ID")
+	name := fs.String("name", "", "build profile display name")
+	argvJSON := fs.String("argv-json", "", "JSON array containing the fixed local argv")
+	cwd := fs.String("cwd", ".", "relative working directory inside the workspace")
+	timeoutSeconds := fs.Int64("timeout-seconds", 600, "profile timeout in seconds, maximum 1800")
+	_ = fs.Parse(args)
+	if *workspaceID == "" || *profileID == "" || *argvJSON == "" {
+		fatalIf(errors.New("--workspace, --profile and --argv-json are required"))
+	}
+	var argv []string
+	fatalIf(json.Unmarshal([]byte(*argvJSON), &argv))
+	profile := node.BuildProfileRecord{ProfileID: *profileID, DisplayName: *name, Argv: argv, Cwd: *cwd, TimeoutSeconds: *timeoutSeconds}
+	fatalIf(node.NewWorkspaceStore(*dataDir).SetBuildProfile(*workspaceID, profile))
+	printJSON(map[string]any{"workspaceId": *workspaceID, "profileId": *profileID, "saved": true})
+}
+
+func runWorkspaceProfileList(args []string) {
+	fs := flag.NewFlagSet("workspace-profile-list", flag.ExitOnError)
+	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
+	workspaceID := fs.String("workspace", "", "opaque workspaceId")
+	_ = fs.Parse(args)
+	if *workspaceID == "" {
+		fatalIf(errors.New("--workspace is required"))
+	}
+	profiles, err := node.NewWorkspaceStore(*dataDir).BuildProfiles(*workspaceID)
+	fatalIf(err)
+	printJSON(map[string]any{"workspaceId": *workspaceID, "profiles": profiles})
+}
+
+func runWorkspaceProfileRemove(args []string) {
+	fs := flag.NewFlagSet("workspace-profile-remove", flag.ExitOnError)
+	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
+	workspaceID := fs.String("workspace", "", "opaque workspaceId")
+	profileID := fs.String("profile", "", "build profile ID")
+	_ = fs.Parse(args)
+	if *workspaceID == "" || *profileID == "" {
+		fatalIf(errors.New("--workspace and --profile are required"))
+	}
+	fatalIf(node.NewWorkspaceStore(*dataDir).RemoveBuildProfile(*workspaceID, *profileID))
+	printJSON(map[string]any{"workspaceId": *workspaceID, "profileId": *profileID, "removed": true})
 }
 
 func runWorkspaceRemove(args []string) {
@@ -199,5 +251,5 @@ func fatalIf(err error) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: fast-spider-node <enroll|run|status|workspace-add|workspace-list|workspace-enable|workspace-disable|workspace-permission|workspace-remove|version> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: fast-spider-node <enroll|run|status|workspace-add|workspace-list|workspace-enable|workspace-disable|workspace-permission|workspace-profile-set|workspace-profile-list|workspace-profile-remove|workspace-remove|version> [flags]")
 }

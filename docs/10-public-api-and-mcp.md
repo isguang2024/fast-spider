@@ -39,13 +39,14 @@ MVP 公开固定工具：
 machine_list
 machine_get
 workspace_list
-workspace_open
 file_read
 file_edit
 code_search
 shell_run
 job_watch
+job_cancel
 git_control
+build_control
 artifact_get
 capability_list
 ```
@@ -53,6 +54,8 @@ capability_list
 后续阶段按功能启用：
 
 ```text
+workspace_open
+capability_execute
 browser_control
 screenshot_take
 ai_control
@@ -106,11 +109,11 @@ ai_control
 
 输入：machineId、可选状态和分页。输出 workspaceId、显示名、Git 摘要、read/write 能力、revision 和状态；不返回绝对路径。
 
-### 5.4 `workspace_open`
+### 5.4 `workspace_open`（后续）
 
-输入：machineId、workspaceId、requestedActions、ttlSeconds。输出短期 workspaceContextId、有效期和实际授予的 Action。
+尚未进入当前 Phase 4 公开 Schema。目标输入为 machineId、workspaceId、requestedActions、ttlSeconds，输出短期 workspaceContextId、有效期和实际授予的 Action。
 
-“open”是建立安全上下文，不是授权新目录，也不改变 Node 本地 Registry。
+“open”只建立安全上下文，不授权新目录，也不改变 Node 本地 Registry。
 
 ### 5.5 `file_read`
 
@@ -143,29 +146,37 @@ MCP 工具不暴露“任意文件路径写入”；所有 path 都是 Workspace
 
 ### 5.9 `job_watch`
 
-输入：jobId、cursor、waitMs、maxEvents。输出 Job snapshot、事件、nextCursor、terminal。watch 超时不取消 Job。
+输入：machineId、workspaceId、jobId、cursor、waitSeconds。输出 Job snapshot、事件、nextCursor、terminal。Node 会再次校验 Workspace 仍启用且 Job 确实属于该 Workspace；跨 Workspace 的 jobId 按不存在处理。watch 超时不取消 Job；Node 在线事件窗口有硬上限，完整 Job 本地日志另行按 24 小时保留。
 
-### 5.10 `git_control`
+### 5.10 `job_cancel`
+
+输入：machineId、workspaceId、jobId。Node 同样校验 Job 的 Workspace 归属；只有完整进程树真正退出后才返回 terminal canceled，重复取消终态 Job 安全。
+
+### 5.11 `git_control`
 
 输入：workspace context、action 和 action-specific params。Action 白名单来自契约，如 status、diff、log、show、commit、fetch、pull、push、worktree。MCP 层不接受任意 Git flags 字符串。
 
-### 5.11 `artifact_get`
+### 5.12 `build_control`
 
-输入：artifactId、可选 range/metadataOnly。输出元数据和受限下载引用；每次重新检查调用者对原 Job/Workspace 的权限。
+固定 action 为 `list` / `run`。`list` 只返回 profileId、显示名、相对 cwd 和 timeout，不返回真实 argv；`run` 只能按 Node 本机登记的 profileId 启动并要求 idempotencyKey，远端不能覆盖命令模板。
 
-### 5.12 `capability_list`
+### 5.13 `artifact_get`
+
+当前固定 action：`get`、`uploadFile`、`uploadJobLog`。`get` 返回元数据、下载路径，并仅对不超过 128 KiB 的文本/JSON/XML Artifact 内联内容；`uploadFile` 只能读取授权 Workspace 相对路径；`uploadJobLog` 只能导出对应 Workspace 的终态 Job 日志。1 MiB chunk/offset/resume/hash 等原始上传协议不直接暴露给 MCP。
+
+### 5.14 `capability_list`
 
 输入：可选 machineId/workspaceId。输出当前可见 Capability Descriptor、版本、Action、风险、平台和限额。它用于发现，不自动授权。
 
-### 5.13 `browser_control`
+### 5.15 `browser_control`
 
 使用固定 `action` 枚举，指向受管 browserSessionId/contextId/pageId；不接受任意 Playwright/CDP 原始消息。真实浏览器 Profile 的操作必须显式标记并审批。
 
-### 5.14 `screenshot_take`
+### 5.16 `screenshot_take`
 
 输入：targetType（desktop/display/window/page）、targetId、格式、质量和尺寸。输出 Job/Artifact；桌面/窗口截图单独授权。
 
-### 5.15 `ai_control`
+### 5.17 `ai_control`
 
 Provider-neutral：`providers.list`、`models.list`、`projects.list`、`session.create/get/send/watch/cancel/result/handoff`。工具返回真实 owner、phase 和 executionMode；打开桌面 UI 不等同于已启动 Turn。
 

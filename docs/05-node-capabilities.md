@@ -228,7 +228,7 @@
 | `push` | R3 | 默认确认 | remote refs |
 
 - 超时：读 30 秒；网络操作默认 10 分钟。
-- 最大 Diff 在线 2 MiB，超出转 Artifact。
+- 当前实现 Git Diff/Show 在线预览上限 128 KiB；超出后同一次 Git 读取同时落临时文件并上传 Artifact，单 Artifact 上限 100 MiB，避免二次执行导致 Diff 漂移。
 - 错误：`GIT_NOT_FOUND`、`NOT_A_REPOSITORY`、`DIRTY_WORKTREE`、`HOOK_RISK_REQUIRES_APPROVAL`、`AUTH_REQUIRED`、`NON_FAST_FORWARD`、`MERGE_CONFLICT`。
 - 凭据和 remote URL 脱敏；不返回完整 credential helper 输出。
 
@@ -236,8 +236,8 @@
 
 ### `build.test.runProfile`
 
-- 请求：profileId、可选目标、允许参数、timeout。
-- Profile 由 Workspace 本地配置，将 typecheck/lint/test/build 映射为受控命令。
+- 请求：profileId、idempotencyKey；当前远端不能覆盖 argv/cwd/timeout。
+- Profile 由 Workspace 本地配置，将 typecheck/lint/test/build 映射为受控命令；真实 argv/cwd/timeout 只能在 Node 本机登记。
 - 响应：jobId、结构化摘要、报告 Artifact。
 - 权限：R2；确认通常继承 shell 策略。
 - 不按语言创建复杂调度框架；Profile 只是受控 Shell 模板。
@@ -253,7 +253,10 @@
 | `abort` | 清理临时上传 | 幂等 |
 | `getMetadata` | 查询 Artifact | R1 |
 
-- 单 Artifact 默认 100 MiB；实例和 Workspace 可配置。
+- 单 Artifact 默认 100 MiB；当前同时限制单机未过期 Artifact 总量 512 MiB、Owner 总量 2 GiB、单机并发上传 4 个。
+- 分块默认 1 MiB；创建相同 machine/workspace/job/name/type/size/hash 的上传会恢复未过期 uploadId/offset，不重复建立上传。
+- 完成时校验 size + SHA-256；Blob 以 SHA-256 内容寻址并在复用时再次校验已有 Blob 完整性。
+- 当前默认保留 30 天；Hub 定时清理过期上传、元数据和无引用 Blob。
 - 压缩包不能自动解压到 Workspace。
 - 错误：`ARTIFACT_TOO_LARGE`、`HASH_MISMATCH`、`OFFSET_CONFLICT`、`CONTENT_TYPE_DENIED`、`UPLOAD_EXPIRED`。
 

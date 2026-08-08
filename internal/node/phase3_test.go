@@ -132,7 +132,7 @@ func TestPhase3EditShellJobsAndPermissionRevocation(t *testing.T) {
 		t.Fatalf("long shell run error=%+v", longRun.Error)
 	}
 	longJobID, _ := longRun.Result["jobId"].(string)
-	cancel := call("job.control", "cancel", "", map[string]any{"jobId": longJobID})
+	cancel := call("job.control", "cancel", workspace.WorkspaceID, map[string]any{"jobId": longJobID})
 	if cancel.Error != nil {
 		t.Fatalf("job cancel error=%+v", cancel.Error)
 	}

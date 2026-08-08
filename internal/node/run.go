@@ -19,6 +19,7 @@ import (
 )
 
 func (c *Client) Run(ctx context.Context) error {
+	go c.jobs.StartMaintenance(ctx)
 	defer func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -108,7 +109,7 @@ func (c *Client) runSession(ctx context.Context, state State) error {
 		MachineId:          state.MachineID,
 		ProtocolVersions:   []string{protocolv1.ProtocolVersion},
 		ChallengeSignature: security.EncodeSignature(ed25519.Sign(c.privateKey, protocolv1.DeviceChallengePayload(state.MachineID, serverHello.Challenge))),
-		Capabilities:       protocolv1.Phase1Capabilities,
+		Capabilities:       protocolv1.NodeCapabilities,
 		NodeVersion:        c.cfg.Version,
 		Os:                 runtime.GOOS,
 		Arch:               runtime.GOARCH,

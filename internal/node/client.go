@@ -62,6 +62,14 @@ type protocolAPIError struct {
 	Error protocolv1.ProtocolError `json:"error"`
 }
 
+type HubAPIError struct {
+	Code      string
+	Message   string
+	Retryable bool
+}
+
+func (e *HubAPIError) Error() string { return "hub " + e.Code + ": " + e.Message }
+
 func New(cfg Config) (*Client, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -77,7 +85,7 @@ func New(cfg Config) (*Client, error) {
 		publicKey:  pub,
 		privateKey: priv,
 		statePath:  filepath.Join(cfg.DataDir, "state.json"),
-		jobs:       NewJobManager(),
+		jobs:       NewJobManager(cfg.DataDir),
 		requestSem: make(chan struct{}, 8),
 	}, nil
 }
@@ -180,7 +188,7 @@ func (c *Client) postJSON(ctx context.Context, endpoint, bearer string, payload,
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		var apiErr protocolAPIError
 		if json.Unmarshal(body, &apiErr) == nil && apiErr.Error.Code != "" {
-			return fmt.Errorf("hub %s: %s", apiErr.Error.Code, apiErr.Error.Message)
+			return &HubAPIError{Code: apiErr.Error.Code, Message: apiErr.Error.Message, Retryable: apiErr.Error.Retryable}
 		}
 		return fmt.Errorf("hub HTTP status %d", resp.StatusCode)
 	}
