@@ -108,7 +108,7 @@ func (c *Client) runSession(ctx context.Context, state State) error {
 		Timestamp:          protocolv1.Timestamp(time.Now()),
 	}
 	writeCtx, cancelWrite := context.WithTimeout(ctx, 10*time.Second)
-	err = wsjson.Write(writeCtx, conn, clientHello)
+	err = c.writeJSON(writeCtx, conn, clientHello)
 	cancelWrite()
 	if err != nil {
 		return fmt.Errorf("write client hello: %w", err)
@@ -130,7 +130,7 @@ func (c *Client) runSession(ctx context.Context, state State) error {
 	}
 
 	readyCtx, cancelReady := context.WithTimeout(ctx, 10*time.Second)
-	err = wsjson.Write(readyCtx, conn, protocolv1.NodeReady{
+	err = c.writeJSON(readyCtx, conn, protocolv1.NodeReady{
 		MessageType: protocolv1.MessageNodeReady,
 		Status:      "ready",
 		Timestamp:   protocolv1.Timestamp(time.Now()),
@@ -170,6 +170,20 @@ func (c *Client) heartbeatLoop(ctx context.Context, conn *websocket.Conn, interv
 				case ack <- time.Now():
 				default:
 				}
+			case protocolv1.MessageCapabilityRequest:
+				var request protocolv1.CapabilityRequest
+				if err := json.Unmarshal(raw, &request); err != nil {
+					readErr <- err
+					return
+				}
+				response := c.handleCapabilityRequest(ctx, request)
+				writeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+				err := c.writeJSON(writeCtx, conn, response)
+				cancel()
+				if err != nil {
+					readErr <- err
+					return
+				}
 			case protocolv1.MessageConnectionClose:
 				var closed protocolv1.ConnectionClose
 				if err := json.Unmarshal(raw, &closed); err != nil {
@@ -205,7 +219,7 @@ func (c *Client) heartbeatLoop(ctx context.Context, conn *websocket.Conn, interv
 			}
 			sequence++
 			writeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			err := wsjson.Write(writeCtx, conn, protocolv1.Heartbeat{
+			err := c.writeJSON(writeCtx, conn, protocolv1.Heartbeat{
 				MessageType: protocolv1.MessageHeartbeat,
 				Sequence:    sequence,
 				Status:      "ready",
@@ -294,6 +308,12 @@ func jitter(base time.Duration, fraction float64) time.Duration {
 		return 100 * time.Millisecond
 	}
 	return value
+}
+
+func (c *Client) writeJSON(ctx context.Context, conn *websocket.Conn, value any) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return wsjson.Write(ctx, conn, value)
 }
 
 func absNodeDuration(value time.Duration) time.Duration {

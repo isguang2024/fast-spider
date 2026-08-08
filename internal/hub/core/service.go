@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -81,6 +82,14 @@ type DeviceTokenResult struct {
 	DeviceToken string    `json:"deviceToken"`
 	ExpiresAt   time.Time `json:"expiresAt"`
 }
+
+type CapabilityCallError struct {
+	Code      string
+	Message   string
+	Retryable bool
+}
+
+func (e *CapabilityCallError) Error() string { return e.Code + ": " + e.Message }
 
 type MachineView struct {
 	MachineID    string                           `json:"machineId"`
@@ -354,6 +363,55 @@ func (s *Service) CapabilityCatalog() []protocolv1.CapabilityDescriptor {
 	out := make([]protocolv1.CapabilityDescriptor, len(protocolv1.Phase1Capabilities))
 	copy(out, protocolv1.Phase1Capabilities)
 	return out
+}
+
+func (s *Service) CallCapability(ctx context.Context, ownerID, machineID, workspaceID, capability, action string, params any) (map[string]any, error) {
+	record, err := s.store.GetMachine(ctx, ownerID, machineID)
+	if err != nil {
+		return nil, err
+	}
+	if record.Status != "active" {
+		return nil, &CapabilityCallError{Code: "MACHINE_INACTIVE", Message: "machine is not active", Retryable: false}
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		return nil, err
+	}
+	var normalized map[string]any
+	if err := json.Unmarshal(raw, &normalized); err != nil {
+		return nil, err
+	}
+	requestID, err := security.RandomOpaque("req_")
+	if err != nil {
+		return nil, err
+	}
+	deadline := s.now().UTC().Add(20 * time.Second)
+	if current, ok := ctx.Deadline(); ok && current.Before(deadline) {
+		deadline = current
+	}
+	callCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	response, err := s.registry.Call(callCtx, machineID, protocolv1.CapabilityRequest{
+		MessageType: protocolv1.MessageCapabilityRequest,
+		RequestId: requestID,
+		Capability: capability,
+		Action: action,
+		WorkspaceId: workspaceID,
+		Params: normalized,
+		Deadline: protocolv1.Timestamp(deadline),
+		Timestamp: protocolv1.Timestamp(s.now()),
+	})
+	if err != nil {
+		if errors.Is(err, registry.ErrMachineOffline) {
+			return nil, &CapabilityCallError{Code: "MACHINE_OFFLINE", Message: "machine is offline", Retryable: true}
+		}
+		return nil, err
+	}
+	if response.Error != nil {
+		return nil, &CapabilityCallError{Code: response.Error.Code, Message: response.Error.Message, Retryable: response.Error.Retryable}
+	}
+	_ = s.audit(ctx, store.AuditEntry{OwnerID: ownerID, MachineID: machineID, ActorType: "owner", ActorID: ownerID, Action: capability + "." + action, Result: "success", Detail: map[string]any{"workspaceId": workspaceID}, CreatedAt: s.now().UTC()})
+	return response.Result, nil
 }
 
 func (s *Service) StartMaintenance(ctx context.Context) {

@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -9,6 +10,8 @@ import (
 	"github.com/coder/websocket/wsjson"
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
+
+var ErrMachineOffline = errors.New("machine offline")
 
 type Connection struct {
 	MachineID    string
@@ -19,8 +22,10 @@ type Connection struct {
 	Status       string
 	Capabilities []protocolv1.CapabilityDescriptor
 
-	conn    *websocket.Conn
-	writeMu sync.Mutex
+	conn      *websocket.Conn
+	writeMu   sync.Mutex
+	pendingMu sync.Mutex
+	pending   map[string]chan protocolv1.CapabilityResponse
 }
 
 type Snapshot struct {
@@ -108,6 +113,16 @@ func (r *Registry) List() []Snapshot {
 	return out
 }
 
+func (r *Registry) Call(ctx context.Context, machineID string, req protocolv1.CapabilityRequest) (protocolv1.CapabilityResponse, error) {
+	r.mu.RLock()
+	current := r.conns[machineID]
+	r.mu.RUnlock()
+	if current == nil {
+		return protocolv1.CapabilityResponse{}, ErrMachineOffline
+	}
+	return current.Call(ctx, req)
+}
+
 func (r *Registry) CloseMachine(ctx context.Context, machineID, code, reason string) bool {
 	r.mu.RLock()
 	current := r.conns[machineID]
@@ -150,6 +165,46 @@ func (c *Connection) ReadJSON(ctx context.Context, value any) error {
 	return wsjson.Read(ctx, c.conn, value)
 }
 
+func (c *Connection) Call(ctx context.Context, req protocolv1.CapabilityRequest) (protocolv1.CapabilityResponse, error) {
+	ch := make(chan protocolv1.CapabilityResponse, 1)
+	c.pendingMu.Lock()
+	if _, exists := c.pending[req.RequestId]; exists {
+		c.pendingMu.Unlock()
+		return protocolv1.CapabilityResponse{}, errors.New("duplicate request id")
+	}
+	c.pending[req.RequestId] = ch
+	c.pendingMu.Unlock()
+	defer func() {
+		c.pendingMu.Lock()
+		delete(c.pending, req.RequestId)
+		c.pendingMu.Unlock()
+	}()
+	if err := c.WriteJSON(ctx, req); err != nil {
+		return protocolv1.CapabilityResponse{}, err
+	}
+	select {
+	case response := <-ch:
+		return response, nil
+	case <-ctx.Done():
+		return protocolv1.CapabilityResponse{}, ctx.Err()
+	}
+}
+
+func (c *Connection) DeliverResponse(response protocolv1.CapabilityResponse) bool {
+	c.pendingMu.Lock()
+	ch := c.pending[response.RequestId]
+	c.pendingMu.Unlock()
+	if ch == nil {
+		return false
+	}
+	select {
+	case ch <- response:
+		return true
+	default:
+		return false
+	}
+}
+
 func (c *Connection) WriteJSON(ctx context.Context, value any) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
@@ -171,6 +226,7 @@ func NewConnection(machineID, connectionID string, generation int64, now time.Ti
 		LastSeenAt:   now,
 		Status:       "ready",
 		conn:         conn,
+		pending:      make(map[string]chan protocolv1.CapabilityResponse),
 	}
 }
 

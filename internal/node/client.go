@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
@@ -39,6 +40,7 @@ type Client struct {
 	publicKey ed25519.PublicKey
 	privateKey ed25519.PrivateKey
 	statePath string
+	writeMu sync.Mutex
 }
 
 type enrollResponse struct {

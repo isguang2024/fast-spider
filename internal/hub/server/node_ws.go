@@ -188,8 +188,17 @@ func (s *Server) nodeReadLoop(ctx context.Context, conn *registry.Connection, he
 			}); err != nil {
 				return
 			}
+		case protocolv1.MessageCapabilityResponse:
+			var response protocolv1.CapabilityResponse
+			if err := json.Unmarshal(raw, &response); err != nil || response.RequestId == "" {
+				_ = conn.Close(websocket.StatusPolicyViolation, "invalid capability.response")
+				return
+			}
+			if !conn.DeliverResponse(response) {
+				s.config.Logger.Warn("unmatched capability response", "machineId", conn.MachineID, "requestId", response.RequestId)
+			}
 		default:
-			_ = conn.Close(websocket.StatusUnsupportedData, "message type not available in phase 1")
+			_ = conn.Close(websocket.StatusUnsupportedData, "message type not available")
 			return
 		}
 	}

@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 它通过长期部署在公网服务器上的 Hub，将 GPT、Claude、Codex、Web Console、CLI 或其他自动化客户端的请求，安全路由到用户明确授权的 Windows、Linux，未来也包括 macOS 节点。Node 只主动建立 HTTPS/WSS 443 出站连接，不默认开放局域网或公网端口。
 
-> 当前状态：Phase 1 开发中。已落地 Go Hub/Node/CLI、Contract v1、SQLite WAL、Owner bootstrap、一次性 enrollment、设备 Ed25519 身份、Node→Hub WebSocket 控制通道、心跳/在线状态、机器列表/吊销，以及固定 MCP `machine_list` / `machine_get` / `capability_list`。尚未进入 Workspace、文件、Shell、Git 等 Phase 2+ 能力。
+> 当前状态：Phase 2 只读开发闭环已落地。除 Phase 1 的设备身份、配对、WSS 控制通道和机器目录外，Node 已支持本机 Workspace 授权/禁用/删除、opaque workspaceId、路径边界校验、UTF-8 分段读取和受限代码搜索；远程 MCP 已增加 `workspace_list` / `file_read` / `code_search`。Shell、文件写入、Git 写操作仍未开放。
 
 ## 核心定位
 
@@ -90,7 +90,7 @@ Fast Spider 不是远程桌面，也不是通用内网穿透软件：
 - MVP 不引入 Kubernetes、Redis、NATS、Kafka 或复杂消息队列。
 - 不做长期双协议、双写或兼容层堆叠；版本升级使用明确窗口与迁移规则。
 
-## Phase 1 本地运行
+## Phase 1/2 本地运行
 
 要求 Go 1.26+。
 
@@ -121,14 +121,27 @@ go run ./cmd/node enroll \
   --token '<enrollment token>' \
   --name dev-node
 
-# 6. 启动 Node；本地 HTTP 验证必须再次显式允许明文 Hub
+# 6. 在 Node 本机授权代码目录；真实绝对路径只保存在 Node 本机
+go run ./cmd/node workspace-add \
+  --path 'V:/repos/GitHub/example' \
+  --name example
+
+# 7. 本机可查看/禁用/重新启用/删除授权
+# go run ./cmd/node workspace-list
+# go run ./cmd/node workspace-disable --workspace '<workspaceId>'
+# go run ./cmd/node workspace-enable  --workspace '<workspaceId>'
+# go run ./cmd/node workspace-remove  --workspace '<workspaceId>'
+
+# 8. 启动 Node；本地 HTTP 验证必须再次显式允许明文 Hub
 go run ./cmd/node run --allow-insecure
 
-# 7. 查看机器
+# 9. 查看机器
 go run ./cmd/spiderctl machine-list \
   --hub http://127.0.0.1:8787 \
   --allow-insecure
 ```
+
+远程 MCP 当前固定工具面为：`machine_list`、`machine_get`、`capability_list`、`workspace_list`、`file_read`、`code_search`。远程文件工具只接受 `machineId + workspaceId + 相对路径`，不会接受或返回 Node 本机授权目录的绝对路径。
 
 本机 HTTP/WS 仅用于开发验证；生产仍按文档要求使用 HTTPS/WSS 443，并建议 Hub 只监听 loopback，由 TLS 反向代理暴露公网入口。
 
@@ -140,8 +153,8 @@ go test ./... -count=1
 go build ./cmd/hub ./cmd/node ./cmd/spiderctl ./cmd/contractgen
 ```
 
-当前 E2E 覆盖 Owner bootstrap → enrollment → Node 上线 → MCP 列出机器 → Node 吊销；核心测试同时覆盖 enrollment 并发幂等、token 重放拒绝、设备 token 签名和吊销失效。
+当前 E2E 覆盖 Owner bootstrap → enrollment → Node 上线 → MCP `machine_list` → `workspace_list` → `file_read` → `code_search` → Node 吊销。核心测试同时覆盖 enrollment 并发幂等、token 重放拒绝、设备 token 签名和吊销失效，以及 `../`、绝对路径、符号链接逃逸、禁用 Workspace、二进制/非法 UTF-8 和超大读取拒绝。
 
 ## 仓库状态
 
-Phase 0 文档仍是设计基线；Phase 1 实现严格限制在节点身份、注册、出站控制连接、机器目录和最小 MCP，不提前进入 Phase 2。后续实施顺序见 [路线图](docs/19-roadmap.md)。
+Phase 0 文档仍是设计基线；Phase 1 已完成节点身份、注册、出站控制连接和机器目录，Phase 2 当前完成 Workspace 授权、只读文件与代码搜索闭环。下一阶段按路线图进入原子编辑、Shell Job、事件游标和完整取消，不提前引入复杂队列或微服务。

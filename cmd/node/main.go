@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -29,6 +30,16 @@ func main() {
 		runNode(logger, os.Args[2:])
 	case "status":
 		runStatus(logger, os.Args[2:])
+	case "workspace-add":
+		runWorkspaceAdd(os.Args[2:])
+	case "workspace-list":
+		runWorkspaceList(os.Args[2:])
+	case "workspace-enable":
+		runWorkspaceEnabled(os.Args[2:], true)
+	case "workspace-disable":
+		runWorkspaceEnabled(os.Args[2:], false)
+	case "workspace-remove":
+		runWorkspaceRemove(os.Args[2:])
 	case "version":
 		fmt.Println(version.Version)
 	default:
@@ -84,6 +95,59 @@ func runStatus(logger *slog.Logger, args []string) {
 	fmt.Printf("machineId=%s\nhub=%s\nhubFingerprint=%s\n", state.MachineID, state.HubURL, state.HubFingerprint)
 }
 
+func runWorkspaceAdd(args []string) {
+	fs := flag.NewFlagSet("workspace-add", flag.ExitOnError)
+	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
+	path := fs.String("path", "", "local directory to authorize")
+	name := fs.String("name", "", "workspace display name")
+	_ = fs.Parse(args)
+	if *path == "" {
+		fatalIf(errors.New("--path is required"))
+	}
+	record, err := node.NewWorkspaceStore(*dataDir).Add(*path, *name)
+	fatalIf(err)
+	printJSON(record)
+}
+
+func runWorkspaceList(args []string) {
+	fs := flag.NewFlagSet("workspace-list", flag.ExitOnError)
+	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
+	_ = fs.Parse(args)
+	items, err := node.NewWorkspaceStore(*dataDir).List()
+	fatalIf(err)
+	printJSON(map[string]any{"workspaces": items})
+}
+
+func runWorkspaceEnabled(args []string, enabled bool) {
+	fs := flag.NewFlagSet("workspace-state", flag.ExitOnError)
+	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
+	workspaceID := fs.String("workspace", "", "opaque workspaceId")
+	_ = fs.Parse(args)
+	if *workspaceID == "" {
+		fatalIf(errors.New("--workspace is required"))
+	}
+	fatalIf(node.NewWorkspaceStore(*dataDir).SetEnabled(*workspaceID, enabled))
+	printJSON(map[string]any{"workspaceId": *workspaceID, "enabled": enabled})
+}
+
+func runWorkspaceRemove(args []string) {
+	fs := flag.NewFlagSet("workspace-remove", flag.ExitOnError)
+	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
+	workspaceID := fs.String("workspace", "", "opaque workspaceId")
+	_ = fs.Parse(args)
+	if *workspaceID == "" {
+		fatalIf(errors.New("--workspace is required"))
+	}
+	fatalIf(node.NewWorkspaceStore(*dataDir).Remove(*workspaceID))
+	printJSON(map[string]any{"workspaceId": *workspaceID, "removed": true})
+}
+
+func printJSON(value any) {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetIndent("", "  ")
+	fatalIf(encoder.Encode(value))
+}
+
 func defaultDataDir() string {
 	base, err := os.UserConfigDir()
 	if err != nil {
@@ -109,5 +173,5 @@ func fatalIf(err error) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: fast-spider-node <enroll|run|status|version> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: fast-spider-node <enroll|run|status|workspace-add|workspace-list|workspace-enable|workspace-disable|workspace-remove|version> [flags]")
 }

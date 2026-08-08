@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sort"
 	"testing"
 	"time"
@@ -59,7 +61,16 @@ func TestPhase1EndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	nodeClient, err := node.New(node.Config{DataDir: t.TempDir(), Version: "test", AllowInsecure: true})
+	nodeDataDir := t.TempDir()
+	workspaceDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspaceDir, "hello.txt"), []byte("alpha\nneedle value\nomega\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := node.NewWorkspaceStore(nodeDataDir).Add(workspaceDir, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeClient, err := node.New(node.Config{DataDir: nodeDataDir, Version: "test", AllowInsecure: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +117,7 @@ func TestPhase1EndToEnd(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	wantNames := []string{"capability_list", "machine_get", "machine_list"}
+	wantNames := []string{"capability_list", "code_search", "file_read", "machine_get", "machine_list", "workspace_list"}
 	if stringJSON(names) != stringJSON(wantNames) {
 		t.Fatalf("MCP tools=%v want=%v", names, wantNames)
 	}
@@ -130,6 +141,71 @@ func TestPhase1EndToEnd(t *testing.T) {
 	}
 	if len(machineList.Machines) != 1 || machineList.Machines[0].MachineID != state.MachineID || !machineList.Machines[0].Online {
 		t.Fatalf("unexpected MCP machine list: %s", raw)
+	}
+
+	workspaceResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "workspace_list", Arguments: map[string]any{"machineId": state.MachineID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = json.Marshal(workspaceResult.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workspaceList struct {
+		Workspaces []struct {
+			WorkspaceID string `json:"workspaceId"`
+			DisplayName string `json:"displayName"`
+			Enabled     bool   `json:"enabled"`
+		} `json:"workspaces"`
+	}
+	if err := json.Unmarshal(raw, &workspaceList); err != nil {
+		t.Fatalf("decode workspace_list: %v raw=%s", err, raw)
+	}
+	if len(workspaceList.Workspaces) != 1 || workspaceList.Workspaces[0].WorkspaceID != workspace.WorkspaceID || !workspaceList.Workspaces[0].Enabled {
+		t.Fatalf("unexpected workspace list: %s", raw)
+	}
+	if strings.Contains(string(raw), workspaceDir) {
+		t.Fatalf("workspace_list leaked local absolute path: %s", raw)
+	}
+
+	fileResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "file_read", Arguments: map[string]any{"machineId": state.MachineID, "workspaceId": workspace.WorkspaceID, "path": "hello.txt", "limit": 128}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = json.Marshal(fileResult.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fileRead struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &fileRead); err != nil {
+		t.Fatalf("decode file_read: %v raw=%s", err, raw)
+	}
+	if fileRead.Path != "hello.txt" || !strings.Contains(fileRead.Content, "needle value") {
+		t.Fatalf("unexpected file_read: %s", raw)
+	}
+
+	searchResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "code_search", Arguments: map[string]any{"machineId": state.MachineID, "workspaceId": workspace.WorkspaceID, "query": "needle", "limit": 10}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = json.Marshal(searchResult.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var search struct {
+		Matches []struct {
+			Path string `json:"path"`
+			Line int    `json:"line"`
+		} `json:"matches"`
+	}
+	if err := json.Unmarshal(raw, &search); err != nil {
+		t.Fatalf("decode code_search: %v raw=%s", err, raw)
+	}
+	if len(search.Matches) != 1 || search.Matches[0].Path != "hello.txt" || search.Matches[0].Line != 2 {
+		t.Fatalf("unexpected code_search: %s", raw)
 	}
 
 	if err := admin.RevokeMachine(ctx, state.MachineID); err != nil {

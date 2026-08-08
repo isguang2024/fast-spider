@@ -106,6 +106,44 @@
         "timestamp": {"type": "string", "format": "date-time"}
       }
     },
+    "WorkspaceSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["workspaceId", "displayName", "enabled", "revision"],
+      "properties": {
+        "workspaceId": {"type": "string", "pattern": "^ws_[A-Za-z0-9_-]{20,64}$"},
+        "displayName": {"type": "string", "minLength": 1, "maxLength": 128},
+        "enabled": {"type": "boolean"},
+        "revision": {"type": "integer", "minimum": 1}
+      }
+    },
+    "CapabilityRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["messageType", "requestId", "capability", "action", "params", "deadline", "timestamp"],
+      "properties": {
+        "messageType": {"const": "capability.request"},
+        "requestId": {"type": "string", "minLength": 12, "maxLength": 128},
+        "capability": {"type": "string", "minLength": 1, "maxLength": 128},
+        "action": {"type": "string", "minLength": 1, "maxLength": 64},
+        "workspaceId": {"type": "string", "maxLength": 128},
+        "params": {"type": "object"},
+        "deadline": {"type": "string", "format": "date-time"},
+        "timestamp": {"type": "string", "format": "date-time"}
+      }
+    },
+    "CapabilityResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["messageType", "requestId", "timestamp"],
+      "properties": {
+        "messageType": {"const": "capability.response"},
+        "requestId": {"type": "string", "minLength": 12, "maxLength": 128},
+        "result": {"type": "object"},
+        "error": {"$ref": "#/$defs/ProtocolError"},
+        "timestamp": {"type": "string", "format": "date-time"}
+      }
+    },
     "ProtocolError": {
       "type": "object",
       "additionalProperties": false,

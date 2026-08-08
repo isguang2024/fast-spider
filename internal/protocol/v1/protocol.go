@@ -18,10 +18,15 @@ const (
 	MessageHeartbeat          = "heartbeat"
 	MessageHeartbeatAck       = "heartbeat.ack"
 	MessageConnectionClose    = "connection.close"
+	MessageCapabilityRequest  = "capability.request"
+	MessageCapabilityResponse = "capability.response"
 )
 
 var Phase1Capabilities = []CapabilityDescriptor{
 	{CapabilityId: "machine.status", Version: "1.0", Actions: []string{"report"}},
+	{CapabilityId: "workspace.registry", Version: "1.0", Actions: []string{"list"}},
+	{CapabilityId: "file.read", Version: "1.0", Actions: []string{"read"}},
+	{CapabilityId: "code.search", Version: "1.0", Actions: []string{"search"}},
 }
 
 type messageHeader struct {

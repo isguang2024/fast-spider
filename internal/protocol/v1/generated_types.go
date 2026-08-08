@@ -8,6 +8,25 @@ type CapabilityDescriptor struct {
 	Version      string   `json:"version"`
 }
 
+type CapabilityRequest struct {
+	Action      string         `json:"action"`
+	Capability  string         `json:"capability"`
+	Deadline    string         `json:"deadline"`
+	MessageType string         `json:"messageType"`
+	Params      map[string]any `json:"params"`
+	RequestId   string         `json:"requestId"`
+	Timestamp   string         `json:"timestamp"`
+	WorkspaceId string         `json:"workspaceId,omitempty"`
+}
+
+type CapabilityResponse struct {
+	Error       *ProtocolError `json:"error,omitempty"`
+	MessageType string         `json:"messageType"`
+	RequestId   string         `json:"requestId"`
+	Result      map[string]any `json:"result,omitempty"`
+	Timestamp   string         `json:"timestamp"`
+}
+
 type ClientHello struct {
 	Arch               string                 `json:"arch"`
 	Capabilities       []CapabilityDescriptor `json:"capabilities"`
@@ -60,20 +79,27 @@ type ProtocolError struct {
 }
 
 type ServerHello struct {
-	Challenge      string   `json:"challenge"`
-	HubFingerprint string   `json:"hubFingerprint"`
-	HubPublicKey   string   `json:"hubPublicKey"`
-	MessageType    string   `json:"messageType"`
+	Challenge        string   `json:"challenge"`
+	HubFingerprint   string   `json:"hubFingerprint"`
+	HubPublicKey     string   `json:"hubPublicKey"`
+	MessageType      string   `json:"messageType"`
 	ProtocolVersions []string `json:"protocolVersions"`
-	ServerSignature string   `json:"serverSignature"`
+	ServerSignature  string   `json:"serverSignature"`
 	Timestamp        string   `json:"timestamp"`
 }
 
 type SessionEstablished struct {
-	ConnectionId    string `json:"connectionId"`
-	Generation      int64  `json:"generation"`
+	ConnectionId     string `json:"connectionId"`
+	Generation       int64  `json:"generation"`
 	HeartbeatSeconds int64  `json:"heartbeatSeconds"`
 	MessageType      string `json:"messageType"`
 	ProtocolVersion  string `json:"protocolVersion"`
 	Timestamp        string `json:"timestamp"`
+}
+
+type WorkspaceSummary struct {
+	DisplayName string `json:"displayName"`
+	Enabled     bool   `json:"enabled"`
+	Revision    int64  `json:"revision"`
+	WorkspaceId string `json:"workspaceId"`
 }

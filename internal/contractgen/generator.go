@@ -58,6 +58,9 @@ func Generate(raw []byte, packageName string) ([]byte, error) {
 			}
 			tag := jsonName
 			if !required[jsonName] {
+				if prop.Ref != "" {
+					goType = "*" + goType
+				}
 				tag += ",omitempty"
 			}
 			fmt.Fprintf(&out, "\t%s %s `json:\"%s\"`\n", goName(jsonName), goType, tag)
