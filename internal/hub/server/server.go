@@ -18,14 +18,17 @@ import (
 const maxControlMessageBytes = 1 << 20
 
 type Config struct {
-	ListenAddr   string
-	AllowedHosts []string
-	Logger       *slog.Logger
+	ListenAddr         string
+	AllowedHosts       []string
+	PublicBaseURL      string
+	OAuthRedirectHosts []string
+	Logger             *slog.Logger
 }
 
 type Server struct {
 	service *core.Service
 	config  Config
+	oauth   *oauthState
 	http    *http.Server
 }
 
@@ -47,7 +50,7 @@ func New(service *core.Service, cfg Config) *Server {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	s := &Server{service: service, config: cfg}
+	s := &Server{service: service, config: cfg, oauth: newOAuthState()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /livez", s.handleLive)
 	mux.HandleFunc("GET /readyz", s.handleReady)
@@ -60,6 +63,14 @@ func New(service *core.Service, cfg Config) *Server {
 	mux.HandleFunc("POST /api/v1/machines/{machineId}/revoke", s.ownerOnly(s.handleMachineRevoke))
 	mux.HandleFunc("GET /api/v1/artifacts/{artifactId}", s.ownerOnly(s.handleArtifactMetadata))
 	mux.HandleFunc("GET /api/v1/artifacts/{artifactId}/content", s.ownerOnly(s.handleArtifactContent))
+	mux.HandleFunc("GET /.well-known/oauth-protected-resource", s.handleOAuthProtectedResource)
+	mux.HandleFunc("GET /.well-known/oauth-protected-resource/{resourcePath...}", s.handleOAuthProtectedResource)
+	mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.handleOAuthAuthorizationServer)
+	mux.HandleFunc("GET /.well-known/oauth-authorization-server/{issuerPath...}", s.handleOAuthAuthorizationServer)
+	mux.HandleFunc("POST /oauth/register", s.handleOAuthRegister)
+	mux.HandleFunc("/oauth/authorize", oauthFormMethodOnly(s.handleOAuthAuthorize))
+	mux.HandleFunc("POST /oauth/token", oauthPostOnly(s.handleOAuthToken))
+	mux.HandleFunc("POST /oauth/revoke", oauthPostOnly(s.handleOAuthRevoke))
 	mux.Handle("/mcp", s.newMCPHandler())
 	mux.HandleFunc("GET /node/v1/connect", s.handleNodeConnect)
 	mux.HandleFunc("POST /node/v1/artifacts", s.handleArtifactCreate)

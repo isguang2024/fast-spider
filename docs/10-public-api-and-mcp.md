@@ -218,23 +218,13 @@ Phase 6 只实现本机 Codex 的 `bridge_owned` 执行：Node 直接启动 `cod
 
 当前固定工具就是 16 个，不随 Node、Workspace、Provider、模型或 Session 数量增长。
 
-## 9. MCP 权限与审批映射
+## 9. MCP 权限与工具语义
 
-| 工具 | Hub scope 示例 | Node Action |
-|---|---|---|
-| machine_list/get | `machines:read` | node status/capabilities |
-| workspace_list | `workspaces:read` | workspace list |
-| file_read/code_search | `workspace:read` | file.read/search |
-| file_edit | `workspace:write` | file.write/edit/patch |
-| shell_run | `jobs:execute` | shell.run.* |
-| job_watch | `jobs:read` | job events/result |
-| git_control | `git:read`/`git:write`/`git:network` | action-specific |
-| artifact_get | `artifacts:read` | artifact metadata/download |
-| browser_control | `browser:control` | browser action |
-| screenshot_take | `capture:read` | screenshot action |
-| ai_control | `agent:control` | agent action |
+当前单 Owner 模式只使用一个 OAuth scope：`fast-spider`。它表示“这个 MCP Client 已经被 Owner 授权连接 Fast Spider”，不再为每个工具维护一套 Hub scope 矩阵。真正的资源和副作用边界继续由 `machineId + workspaceId`、Node 本机 Workspace 状态以及 `write/shell/git-write/git-network/git-hooks/build` 等少量实际危险开关决定。
 
-Scope 是 Hub 第一层；Node 继续执行 Workspace、路径、进程和网络等实际安全边界。个人使用场景不要求每个 Capability 再叠一层独立 grant，只有真正有本机副作用的写入/Shell/Git 网络/Build 等操作保留独立本机权限。
+MCP 工具列表始终暴露 Fast Spider 已实现的完整固定能力，不因为某个客户端类型主动裁剪 `file_edit`、`shell_run`、`git_control` 或 `build_control`。客户端只负责调用；实际执行和最终授权裁决都在 Node。
+
+工具使用标准 MCP annotations 描述语义：纯查询设置 `readOnlyHint=true`；文件编辑、Shell、Git/Build、Browser/AI 等按真实副作用设置 `destructiveHint/openWorldHint/idempotentHint`。这些字段帮助 MCP Host 正确展示和确认工具，但不能替代 Node 的实际权限校验。
 
 ## 10. REST API
 
@@ -271,11 +261,21 @@ MVP 支持两种读取方式：
 
 ## 12. OAuth 与公开入口
 
-- MCP/API Access Token 的 audience、scope 和 Client 必须匹配。
-- OAuth Metadata、Protected Resource Metadata 和授权流程依据固定的官方 MCP 规范版本实现。
-- 设备 WSS 使用独立设备认证路径，不接受用户 Access Token 代替。
-- Web Console 使用独立 Session/CSRF 模型，不把浏览器 Cookie 直接当 MCP Token。
-- 管理、MCP、Artifact、Node WSS 分别限流和记录。
+当前公网 MCP 支持两种 Bearer：原有 Owner Token（CLI/兼容入口）和 MCP OAuth Access Token。OAuth 不建立第二套 Fast Spider 用户体系；授权页验证现有 Owner Token，成功后把 OAuth Client 映射回同一个 ownerId。
+
+当前 OAuth 流程：
+
+1. Protected Resource Metadata 暴露 MCP resource 与 authorization server。
+2. Authorization Server Metadata 暴露 authorize/token/register/revoke endpoint。
+3. MCP Client 通过 Dynamic Client Registration 注册 redirect URI；只接受允许 host，公网 redirect 必须 HTTPS。
+4. Authorization Code 流程强制 PKCE S256；授权码有效期 5 分钟。
+5. Access Token 有效期 1 小时；Refresh Token 有效期 30 天并在刷新时轮换。
+6. Access/Refresh Token、Client 和 MCP resource 绑定；当前 scope 固定为 `fast-spider`。
+7. Owner Token 仍可直接访问 `/mcp`，便于 CLI、调试和迁移，不影响 OAuth Client 使用。
+
+带 path-prefix 的共享域部署要同时支持 MCP 规范的 path-insertion discovery，例如 resource `https://host/fast-spider/mcp` 对应 `/.well-known/oauth-protected-resource/fast-spider/mcp`，issuer `https://host/fast-spider` 对应 `/.well-known/oauth-authorization-server/fast-spider`。反向代理只需把这些 exact well-known 路由交给同一个 Hub，不需要把 Fast Spider 独占整个域名。
+
+设备 WSS 继续使用独立设备认证路径，不接受用户/OAuth Access Token 代替。Web Console 如后续实现登录仍使用独立 Session/CSRF 模型，不把浏览器 Cookie 直接当 MCP Token。认证、MCP、Artifact、Node WSS 的日志都不得记录 Token 内容。
 
 ## 13. 错误映射
 

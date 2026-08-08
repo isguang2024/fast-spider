@@ -18,9 +18,8 @@ Hub 进行身份与资源归属判断；Node 使用本地 Workspace 和运行时
 
 | 实体 | 标识 | 认证方式 | 说明 |
 |---|---|---|---|
-| User | `userId` | Web 登录/OAuth Session | MVP 主要为 Owner |
-| Organization | `organizationId` | 归属于 User | MVP 可只有一个隐式组织 |
-| OAuth Client / MCP Client | `clientId` | OAuth 2.1 Client/Token | 每个外部客户端独立身份 |
+| Owner | `ownerId` | 首次 bootstrap 后签发的 Owner API Token | 当前实例唯一的人类控制主体 |
+| OAuth Client / MCP Client | `clientId` | OAuth Authorization Code + PKCE Token | 映射回同一 Owner，不形成第二套用户权限 |
 | Machine | `machineId` | 设备密钥/凭据 | 逻辑设备，不等于连接 |
 | Device Credential | `credentialId` | 私钥证明，可选 mTLS | 每台设备可轮换多个凭据 |
 | Node Connection | `connectionId` | 认证后的短期连接上下文 | 带 generation，不持久充当设备身份 |
@@ -35,28 +34,27 @@ Hub 进行身份与资源归属判断；Node 使用本地 Workspace 和运行时
 - 一个实例至少有一个 Owner。
 - Owner 可以配对/吊销机器、查看审计和配置策略。
 - Owner 对已配对 Machine 和已启用 Workspace 拥有正常使用权；写入、Shell、Git 网络/副作用和 Build 仍受 Node 本地开关约束。
-- 外部 MCP Client 仍受认证 scope、Machine/Workspace 归属和 Node 本地边界限制，不继承 Owner 的 Web Session 凭据。
+- 外部 MCP Client 使用当前单一 `fast-spider` scope；它只证明“已由 Owner 授权连接”，Machine/Workspace 归属和 Node 本地边界仍逐次校验。
 
 ### 未来多用户
 
-预留 `organizationId` 和 role，但不在 MVP 实现复杂 RBAC。未来如果真的进入多人共享场景，再根据实际需求决定是否需要 Owner、Admin、Operator、Viewer 和细粒度资源授权；当前代码不为这些角色提前设计执行分支。
+当前不实现 Organization/RBAC。未来如果真的进入多人共享场景，再根据实际需求决定是否需要 Organization、Owner/Admin/Operator/Viewer 和细粒度资源授权；当前代码不为这些角色提前设计执行分支。
 
 ## 4. 认证域
 
-### 4.1 人类用户
+### 4.1 Owner
 
-- Web Console 使用安全登录 Session。
-- 支持外部 OIDC/OAuth Provider 是后续选项；MVP 可提供 Owner 初始化和受保护的本地账户。
-- 密码若存在，使用现代自适应哈希并支持恢复流程；不在日志、配置或 URL 中出现。
-- 高风险管理操作可要求近期重新认证。
+- 首次启动时 Hub 生成短时一次性 `bootstrap-token`；Owner bootstrap 成功后签发 Owner API Token。
+- Owner API Token 只存哈希，可直接用于管理 API/MCP，也作为 MCP OAuth 授权页的一次所有者证明。
+- 当前不实现 Web 登录账户、密码系统或外部 OIDC Provider；出现真实 Web Console 登录需求后再设计。
 
-### 4.2 MCP 与 API Client
+### 4.2 MCP Client
 
-- 使用 OAuth 2.1 授权码 + PKCE，具体流程遵循编码时选定的官方 MCP 规范版本。
-- Redirect URI 精确匹配。
-- Access Token 短时，Refresh Token 轮换并可吊销。
-- Token 绑定 clientId、subject、audience、scope、issuedAt、expiresAt；不把 Workspace 路径写入 Token。
-- 公网 MCP 与普通管理 API 使用独立 audience/scope。
+- 公网 MCP 使用 Authorization Code + PKCE S256，并支持 Dynamic Client Registration。
+- Redirect URI 必须来自已注册精确 URI，注册阶段又受本机配置的 redirect host allowlist 约束；公网 redirect 必须 HTTPS。
+- Access Token 1 小时；Refresh Token 30 天并轮换；数据库只保存 Token 哈希。
+- OAuth Token 绑定 `clientId + ownerId + resource + scope`，其中当前 resource 是公开 `/mcp` URL，scope 固定为 `fast-spider`。
+- OAuth 只适配 MCP Client 认证，不替代 Node Workspace/危险能力权限，也不扩散到 Node WSS 设备认证。
 
 ### 4.3 Node
 

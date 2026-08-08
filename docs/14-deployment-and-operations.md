@@ -43,7 +43,8 @@ Linux Hub 推荐：**一个二进制 + 一个 systemd unit**。
 fast-spider-hub \
   --listen 127.0.0.1:8787 \
   --data-dir /var/lib/fast-spider \
-  --allowed-hosts fast-spider.example.com,127.0.0.1
+  --allowed-hosts sharedservices.example.com,127.0.0.1 \
+  --public-base-url https://sharedservices.example.com/fast-spider
 ```
 
 公网只由现有 Caddy/Nginx/其他 TLS 反向代理暴露 443：
@@ -56,11 +57,15 @@ Internet :443
 
 Hub 本身不需要为了 Fast Spider 再部署数据库服务、Redis、队列或内部微服务。
 
-仓库提供最小 unit 模板：`packaging/systemd/fast-spider-hub.service`。默认二进制路径为 `/usr/local/bin/fast-spider-hub`，运行用户为 `fast-spider`。生产域名只需在 `/etc/fast-spider/hub.env` 写一行：
+仓库提供最小 unit 模板：`packaging/systemd/fast-spider-hub.service`。默认二进制路径为 `/usr/local/bin/fast-spider-hub`，运行用户为 `fast-spider`；`StateDirectoryMode=0700` 固化 Hub data-dir 权限，避免 systemd 重启时恢复为默认 0755。生产使用共享域 path-prefix 时，在 `/etc/fast-spider/hub.env` 配置：
 
 ```text
-FAST_SPIDER_ALLOWED_HOSTS=fast-spider.example.com,127.0.0.1
+FAST_SPIDER_ALLOWED_HOSTS=sharedservices.example.com,127.0.0.1
+FAST_SPIDER_PUBLIC_BASE_URL=https://sharedservices.example.com/fast-spider
+FAST_SPIDER_OAUTH_REDIRECT_HOSTS=chatgpt.com,localhost,127.0.0.1,::1
 ```
+
+`FAST_SPIDER_PUBLIC_BASE_URL` 是 Hub 对外的 base，不包含 `/mcp`；它用于 OAuth resource/issuer/redirect discovery，必须与反向代理公开路径一致。
 
 模板不包含安装器或更新逻辑，只负责启动这一个进程。
 
@@ -168,8 +173,10 @@ Hub 主机：
 
 - 公网只开放 HTTPS/WSS 443；
 - 8787 保持 loopback；
-- `/node/connect` 允许 WebSocket upgrade，idle timeout 不应过短；
-- 不缓存认证、MCP、Node WSS 或私有 Artifact 响应；
+- 共享域只代理 Fast Spider 自己的 path-prefix，不接管根路径或其他服务路径；
+- `/node/v1/connect` 允许 WebSocket upgrade，idle timeout 不应过短；
+- 带 path-prefix 的 MCP OAuth 额外代理两个标准 discovery 路径：`/.well-known/oauth-protected-resource/<prefix>/mcp` 与 `/.well-known/oauth-authorization-server/<prefix>`；
+- 不缓存认证、OAuth、MCP、Node WSS 或私有 Artifact 响应；
 - Access log 脱敏 Authorization、Cookie 和敏感 query。
 
 Node：

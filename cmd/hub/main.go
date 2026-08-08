@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -25,11 +26,18 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8787", "Hub HTTP listen address; production should stay on loopback behind TLS reverse proxy")
 	dataDir := flag.String("data-dir", "./data", "Hub data directory")
 	allowedHosts := flag.String("allowed-hosts", "localhost,127.0.0.1", "comma-separated Host allowlist; use the public Hub hostname in production")
+	publicBaseURL := flag.String("public-base-url", "", "public Hub base URL used for MCP OAuth discovery, for example https://sharedservices.example/fast-spider")
+	oauthRedirectHosts := flag.String("oauth-redirect-hosts", "chatgpt.com,localhost,127.0.0.1,::1", "comma-separated OAuth redirect host allowlist")
 	showVersion := flag.Bool("version", false, "print Fast Spider version and exit")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(version.Version)
 		return
+	}
+	publicBase, err := normalizePublicBaseURL(*publicBaseURL)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "invalid public base URL:", err)
+		os.Exit(2)
 	}
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -61,9 +69,11 @@ func main() {
 
 	go service.StartMaintenance(ctx)
 	hub := server.New(service, server.Config{
-		ListenAddr:   *listen,
-		AllowedHosts: splitCSV(*allowedHosts),
-		Logger:       logger,
+		ListenAddr:         *listen,
+		AllowedHosts:       splitCSV(*allowedHosts),
+		PublicBaseURL:      publicBase,
+		OAuthRedirectHosts: splitCSV(*oauthRedirectHosts),
+		Logger:             logger,
 	})
 
 	go func() {
@@ -79,6 +89,23 @@ func main() {
 	if err := hub.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fatal(logger, "hub server failed", err)
 	}
+}
+
+func normalizePublicBaseURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("must be an absolute http(s) URL without credentials, query, or fragment")
+	}
+	host := strings.ToLower(u.Hostname())
+	if u.Scheme != "https" && host != "localhost" && host != "127.0.0.1" && host != "::1" {
+		return "", fmt.Errorf("public non-loopback URLs must use https")
+	}
+	u.Path = strings.TrimRight(u.Path, "/")
+	return u.String(), nil
 }
 
 func splitCSV(raw string) []string {
