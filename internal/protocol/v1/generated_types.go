@@ -98,8 +98,9 @@ type SessionEstablished struct {
 }
 
 type WorkspaceSummary struct {
-	DisplayName string `json:"displayName"`
-	Enabled     bool   `json:"enabled"`
-	Revision    int64  `json:"revision"`
-	WorkspaceId string `json:"workspaceId"`
+	DisplayName string   `json:"displayName"`
+	Enabled     bool     `json:"enabled"`
+	Permissions []string `json:"permissions"`
+	Revision    int64    `json:"revision"`
+	WorkspaceId string   `json:"workspaceId"`
 }

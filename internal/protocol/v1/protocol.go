@@ -26,7 +26,10 @@ var Phase1Capabilities = []CapabilityDescriptor{
 	{CapabilityId: "machine.status", Version: "1.0", Actions: []string{"report"}},
 	{CapabilityId: "workspace.registry", Version: "1.0", Actions: []string{"list"}},
 	{CapabilityId: "file.read", Version: "1.0", Actions: []string{"read"}},
+	{CapabilityId: "file.write", Version: "1.0", Actions: []string{"edit"}},
 	{CapabilityId: "code.search", Version: "1.0", Actions: []string{"search"}},
+	{CapabilityId: "shell.exec", Version: "1.0", Actions: []string{"run"}},
+	{CapabilityId: "job.control", Version: "1.0", Actions: []string{"watch", "cancel"}},
 }
 
 type messageHeader struct {

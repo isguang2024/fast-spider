@@ -132,7 +132,7 @@ retention:
   job_days: 90
   event_days: 14
   artifact_days: 30
-  audit_days: 365
+  audit_days: 30
 
 security:
   secret_key_ref: file:/etc/fast-spider/secrets/app-key
@@ -314,7 +314,7 @@ Node 可在 heartbeat 中上报摘要，但不得高频上报大明细。
 默认结构化日志到 stdout/journald；可选文件输出必须轮换。
 
 - 普通日志默认 7–14 天。
-- 安全审计独立保留。
+- 安全审计独立保留；当前 MVP 默认 30 天，并由 Hub 定时清理，后续配置化时仍需设置硬上限。
 - stdout/stderr 和大诊断转 Artifact。
 - 日志按大小/时间限制，压缩旧文件，删除有上限。
 - 禁止无限 debug；临时 debug 有自动过期。

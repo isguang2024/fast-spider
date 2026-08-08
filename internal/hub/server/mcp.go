@@ -33,7 +33,7 @@ type fileReadInput struct {
 	WorkspaceID string `json:"workspaceId" jsonschema:"opaque Node-authorized workspace ID"`
 	Path        string `json:"path" jsonschema:"relative path inside the authorized workspace; absolute paths are rejected"`
 	Offset      int64  `json:"offset,omitempty" jsonschema:"byte offset, default 0"`
-	Limit       int64  `json:"limit,omitempty" jsonschema:"maximum bytes to return, default and maximum 1048576"`
+	Limit       int64  `json:"limit,omitempty" jsonschema:"maximum bytes to return, default and maximum 131072; use offset for larger files"`
 }
 
 type codeSearchInput struct {
@@ -44,6 +44,36 @@ type codeSearchInput struct {
 	Regex       bool   `json:"regex,omitempty" jsonschema:"interpret query as a Go regular expression"`
 	IgnoreCase  bool   `json:"ignoreCase,omitempty" jsonschema:"case-insensitive matching"`
 	Limit       int    `json:"limit,omitempty" jsonschema:"maximum matches, default 100 and maximum 200"`
+}
+
+type fileEditInput struct {
+	MachineID          string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	WorkspaceID        string `json:"workspaceId" jsonschema:"opaque Node-authorized workspace ID"`
+	Path               string `json:"path" jsonschema:"relative path inside the authorized workspace"`
+	OldText            string `json:"oldText" jsonschema:"text that must occur exactly once"`
+	NewText            string `json:"newText" jsonschema:"replacement text"`
+	ExpectedFileSHA256 string `json:"expectedFileSha256" jsonschema:"full file SHA-256 from file_read; required for optimistic concurrency"`
+}
+
+type shellRunInput struct {
+	MachineID      string   `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	WorkspaceID    string   `json:"workspaceId" jsonschema:"opaque Node-authorized workspace ID"`
+	Argv           []string `json:"argv" jsonschema:"explicit executable and arguments; no implicit shell interpolation"`
+	Cwd            string   `json:"cwd,omitempty" jsonschema:"relative working directory inside the workspace"`
+	TimeoutSeconds int64    `json:"timeoutSeconds,omitempty" jsonschema:"0 uses the default; maximum 1800 seconds"`
+	IdempotencyKey string   `json:"idempotencyKey" jsonschema:"12-128 character key preventing duplicate process starts on retries"`
+}
+
+type jobWatchInput struct {
+	MachineID   string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	JobID       string `json:"jobId" jsonschema:"opaque job ID returned by shell_run"`
+	Cursor      int64  `json:"cursor,omitempty" jsonschema:"last consumed event sequence"`
+	WaitSeconds int64  `json:"waitSeconds,omitempty" jsonschema:"long-poll wait from 0 to 15 seconds"`
+}
+
+type jobCancelInput struct {
+	MachineID string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	JobID     string `json:"jobId" jsonschema:"opaque job ID returned by shell_run"`
 }
 
 type mcpMachine struct {
@@ -84,7 +114,36 @@ type fileReadOutput struct {
 	Size        int64  `json:"size"`
 	Truncated   bool   `json:"truncated"`
 	ChunkSHA256 string `json:"chunkSha256"`
+	FileSHA256  string `json:"fileSha256,omitempty"`
 	Encoding    string `json:"encoding"`
+}
+
+type fileEditOutput struct {
+	Path          string `json:"path"`
+	BeforeSHA256  string `json:"beforeSha256"`
+	AfterSHA256   string `json:"afterSha256"`
+	Bytes         int64  `json:"bytes"`
+	Diff          string `json:"diff"`
+	DiffTruncated bool   `json:"diffTruncated"`
+}
+
+type mcpJobEvent struct {
+	Sequence  int64  `json:"sequence"`
+	Type      string `json:"type"`
+	Text      string `json:"text,omitempty"`
+	Timestamp string `json:"timestamp"`
+}
+
+type jobOutput struct {
+	JobID           string        `json:"jobId"`
+	State           string        `json:"state"`
+	ExitCode        *int          `json:"exitCode,omitempty"`
+	Error           string        `json:"error,omitempty"`
+	Events          []mcpJobEvent `json:"events"`
+	NextCursor      int64         `json:"nextCursor"`
+	TruncatedBefore int64         `json:"truncatedBefore,omitempty"`
+	StartedAt       string        `json:"startedAt"`
+	FinishedAt      string        `json:"finishedAt,omitempty"`
 }
 
 type codeSearchMatch struct {
@@ -208,6 +267,66 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		var out codeSearchOutput
 		if err := decodeCapabilityResult(result, &out); err != nil {
 			return nil, codeSearchOutput{}, err
+		}
+		return nil, out, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "file_edit",
+		Description: "Perform one exact optimistic-concurrency text replacement inside a Node-authorized workspace. Write permission must be enabled locally on the Node.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input fileEditInput) (*mcp.CallToolResult, fileEditOutput, error) {
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "file.write", "edit", map[string]any{"path": input.Path, "oldText": input.OldText, "newText": input.NewText, "expectedFileSha256": input.ExpectedFileSHA256})
+		if err != nil {
+			return nil, fileEditOutput{}, err
+		}
+		var out fileEditOutput
+		if err := decodeCapabilityResult(result, &out); err != nil {
+			return nil, fileEditOutput{}, err
+		}
+		return nil, out, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "shell_run",
+		Description: "Start a bounded non-interactive process in a Node-authorized workspace using an explicit argv array. Shell permission must be enabled locally on the Node.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input shellRunInput) (*mcp.CallToolResult, jobOutput, error) {
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "shell.exec", "run", map[string]any{"argv": input.Argv, "cwd": input.Cwd, "timeoutSeconds": input.TimeoutSeconds, "idempotencyKey": input.IdempotencyKey})
+		if err != nil {
+			return nil, jobOutput{}, err
+		}
+		var out jobOutput
+		if err := decodeCapabilityResult(result, &out); err != nil {
+			return nil, jobOutput{}, err
+		}
+		return nil, out, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "job_watch",
+		Description: "Read bounded stdout/stderr/status events for one Node job after a cursor, optionally long-polling for up to 15 seconds.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input jobWatchInput) (*mcp.CallToolResult, jobOutput, error) {
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "", "job.control", "watch", map[string]any{"jobId": input.JobID, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds})
+		if err != nil {
+			return nil, jobOutput{}, err
+		}
+		var out jobOutput
+		if err := decodeCapabilityResult(result, &out); err != nil {
+			return nil, jobOutput{}, err
+		}
+		return nil, out, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "job_cancel",
+		Description: "Cancel one active Node job and terminate its process tree. Repeated cancellation of a terminal job is safe.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input jobCancelInput) (*mcp.CallToolResult, jobOutput, error) {
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "", "job.control", "cancel", map[string]any{"jobId": input.JobID})
+		if err != nil {
+			return nil, jobOutput{}, err
+		}
+		var out jobOutput
+		if err := decodeCapabilityResult(result, &out); err != nil {
+			return nil, jobOutput{}, err
 		}
 		return nil, out, nil
 	})

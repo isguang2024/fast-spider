@@ -21,6 +21,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+const auditRetention = 30 * 24 * time.Hour
+
 var (
 	ErrNotFound     = errors.New("not found")
 	ErrUnauthorized = errors.New("unauthorized")
@@ -612,12 +614,15 @@ func (s *Store) CleanupExpired(ctx context.Context, now time.Time) error {
 	for _, stmt := range []string{
 		"DELETE FROM device_nonces WHERE expires_at <= ?",
 		"DELETE FROM device_access_tokens WHERE expires_at <= ? OR revoked_at IS NOT NULL",
-		"DELETE FROM enrollment_tokens WHERE expires_at <= ? AND consumed_at IS NOT NULL",
-		"DELETE FROM bootstrap_tokens WHERE expires_at <= ? AND consumed_at IS NOT NULL",
+		"DELETE FROM enrollment_tokens WHERE expires_at <= ?",
+		"DELETE FROM bootstrap_tokens WHERE expires_at <= ?",
 	} {
 		if _, err := tx.ExecContext(ctx, stmt, now.Unix()); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM audit_entries WHERE created_at <= ?", now.Add(-auditRetention).Unix()); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

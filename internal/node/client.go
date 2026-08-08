@@ -35,12 +35,14 @@ type Config struct {
 }
 
 type Client struct {
-	cfg       Config
-	http      *http.Client
-	publicKey ed25519.PublicKey
+	cfg        Config
+	http       *http.Client
+	publicKey  ed25519.PublicKey
 	privateKey ed25519.PrivateKey
-	statePath string
-	writeMu sync.Mutex
+	statePath  string
+	writeMu    sync.Mutex
+	jobs       *JobManager
+	requestSem chan struct{}
 }
 
 type enrollResponse struct {
@@ -70,11 +72,13 @@ func New(cfg Config) (*Client, error) {
 		return nil, err
 	}
 	return &Client{
-		cfg: cfg,
-		http: &http.Client{Timeout: 20 * time.Second},
-		publicKey: pub,
+		cfg:        cfg,
+		http:       &http.Client{Timeout: 20 * time.Second},
+		publicKey:  pub,
 		privateKey: priv,
-		statePath: filepath.Join(cfg.DataDir, "state.json"),
+		statePath:  filepath.Join(cfg.DataDir, "state.json"),
+		jobs:       NewJobManager(),
+		requestSem: make(chan struct{}, 8),
 	}, nil
 }
 

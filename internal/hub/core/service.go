@@ -408,10 +408,24 @@ func (s *Service) CallCapability(ctx context.Context, ownerID, machineID, worksp
 		return nil, err
 	}
 	if response.Error != nil {
+		if shouldAuditCapability(capability, action) {
+			_ = s.audit(ctx, store.AuditEntry{OwnerID: ownerID, MachineID: machineID, ActorType: "owner", ActorID: ownerID, Action: capability + "." + action, Result: "rejected", Detail: map[string]any{"workspaceId": workspaceID, "errorCode": response.Error.Code}, CreatedAt: s.now().UTC()})
+		}
 		return nil, &CapabilityCallError{Code: response.Error.Code, Message: response.Error.Message, Retryable: response.Error.Retryable}
 	}
-	_ = s.audit(ctx, store.AuditEntry{OwnerID: ownerID, MachineID: machineID, ActorType: "owner", ActorID: ownerID, Action: capability + "." + action, Result: "success", Detail: map[string]any{"workspaceId": workspaceID}, CreatedAt: s.now().UTC()})
+	if shouldAuditCapability(capability, action) {
+		_ = s.audit(ctx, store.AuditEntry{OwnerID: ownerID, MachineID: machineID, ActorType: "owner", ActorID: ownerID, Action: capability + "." + action, Result: "success", Detail: map[string]any{"workspaceId": workspaceID}, CreatedAt: s.now().UTC()})
+	}
 	return response.Result, nil
+}
+
+func shouldAuditCapability(capability, action string) bool {
+	switch capability + "/" + action {
+	case "file.write/edit", "shell.exec/run", "job.control/cancel":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Service) StartMaintenance(ctx context.Context) {

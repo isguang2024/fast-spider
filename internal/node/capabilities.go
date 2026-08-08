@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	maxFileReadBytes    = 1 << 20
+	maxFileReadBytes    = 128 << 10
 	maxSearchFileBytes  = 2 << 20
 	maxSearchFiles      = 5000
 	defaultSearchLimit  = 100
@@ -43,6 +43,7 @@ type fileReadResult struct {
 	Size        int64  `json:"size"`
 	Truncated   bool   `json:"truncated"`
 	ChunkSHA256 string `json:"chunkSha256"`
+	FileSHA256  string `json:"fileSha256,omitempty"`
 	Encoding    string `json:"encoding"`
 }
 
@@ -95,8 +96,16 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 		result, err = c.workspaceList()
 	case "file.read/read":
 		result, err = c.fileRead(ctx, req.WorkspaceId, req.Params)
+	case "file.write/edit":
+		result, err = c.fileEdit(ctx, req.WorkspaceId, req.Params)
 	case "code.search/search":
 		result, err = c.codeSearch(ctx, req.WorkspaceId, req.Params)
+	case "shell.exec/run":
+		result, err = c.shellRun(ctx, req.WorkspaceId, req.Params)
+	case "job.control/watch":
+		result, err = c.jobWatch(ctx, req.Params)
+	case "job.control/cancel":
+		result, err = c.jobCancel(ctx, req.Params)
 	default:
 		response.Error = protocolError("UNSUPPORTED_CAPABILITY", "capability or action is not available", false)
 		return response
@@ -211,10 +220,18 @@ func (c *Client) fileRead(ctx context.Context, workspaceID string, params map[st
 		}
 	}
 	sum := sha256.Sum256(buf)
+	fileSHA256 := ""
+	if info.Size() <= maxEditableFileBytes {
+		all, err := os.ReadFile(target)
+		if err != nil {
+			return fileReadResult{}, err
+		}
+		fileSHA256 = sha256String(all)
+	}
 	return fileReadResult{
 		Path: filepath.ToSlash(filepath.Clean(input.Path)), Content: string(buf), Offset: input.Offset,
 		BytesRead: int64(len(buf)), Size: info.Size(), Truncated: truncated || input.Offset+int64(len(buf)) < info.Size(),
-		ChunkSHA256: "sha256:" + hex.EncodeToString(sum[:]), Encoding: "utf-8",
+		ChunkSHA256: "sha256:" + hex.EncodeToString(sum[:]), FileSHA256: fileSHA256, Encoding: "utf-8",
 	}, nil
 }
 
@@ -431,7 +448,19 @@ func capabilityError(err error) *protocolv1.ProtocolError {
 	case errors.Is(err, os.ErrNotExist):
 		return protocolError("NOT_FOUND", "path was not found", false)
 	case errors.Is(err, ErrReadLimit):
-		return protocolError("OUTPUT_LIMIT", "requested read exceeds the allowed limit", false)
+		return protocolError("OUTPUT_LIMIT", "requested operation exceeds the allowed size limit", false)
+	case errors.Is(err, ErrPermissionDenied):
+		return protocolError("PERMISSION_DENIED", "workspace does not allow this operation", false)
+	case errors.Is(err, ErrRevisionConflict):
+		return protocolError("REVISION_CONFLICT", "file changed since it was read", false)
+	case errors.Is(err, ErrEditNotUnique):
+		return protocolError("EDIT_NOT_UNIQUE", "oldText must match exactly once", false)
+	case errors.Is(err, ErrJobNotFound):
+		return protocolError("JOB_NOT_FOUND", "job was not found", false)
+	case errors.Is(err, ErrJobLimit):
+		return protocolError("RESOURCE_LIMIT", "job resource limit reached", true)
+	case errors.Is(err, ErrIdempotencyConflict):
+		return protocolError("IDEMPOTENCY_CONFLICT", "idempotency key was reused with different parameters", false)
 	case errors.Is(err, ErrNotRegularFile):
 		return protocolError("NOT_REGULAR_FILE", "path is not a regular file", false)
 	case errors.Is(err, ErrBinaryOrInvalidUTF8):

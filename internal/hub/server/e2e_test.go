@@ -117,7 +117,7 @@ func TestPhase1EndToEnd(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	wantNames := []string{"capability_list", "code_search", "file_read", "machine_get", "machine_list", "workspace_list"}
+	wantNames := []string{"capability_list", "code_search", "file_edit", "file_read", "job_cancel", "job_watch", "machine_get", "machine_list", "shell_run", "workspace_list"}
 	if stringJSON(names) != stringJSON(wantNames) {
 		t.Fatalf("MCP tools=%v want=%v", names, wantNames)
 	}
@@ -177,13 +177,14 @@ func TestPhase1EndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	var fileRead struct {
-		Path    string `json:"path"`
-		Content string `json:"content"`
+		Path       string `json:"path"`
+		Content    string `json:"content"`
+		FileSHA256 string `json:"fileSha256"`
 	}
 	if err := json.Unmarshal(raw, &fileRead); err != nil {
 		t.Fatalf("decode file_read: %v raw=%s", err, raw)
 	}
-	if fileRead.Path != "hello.txt" || !strings.Contains(fileRead.Content, "needle value") {
+	if fileRead.Path != "hello.txt" || !strings.Contains(fileRead.Content, "needle value") || fileRead.FileSHA256 == "" {
 		t.Fatalf("unexpected file_read: %s", raw)
 	}
 
@@ -207,6 +208,124 @@ func TestPhase1EndToEnd(t *testing.T) {
 	if len(search.Matches) != 1 || search.Matches[0].Path != "hello.txt" || search.Matches[0].Line != 2 {
 		t.Fatalf("unexpected code_search: %s", raw)
 	}
+
+	if err := node.NewWorkspaceStore(nodeDataDir).SetPermissions(workspace.WorkspaceID, []string{"read", "write", "shell"}); err != nil {
+		t.Fatal(err)
+	}
+	editResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "file_edit", Arguments: map[string]any{
+		"machineId": state.MachineID, "workspaceId": workspace.WorkspaceID, "path": "hello.txt",
+		"oldText": "needle value", "newText": "needle changed", "expectedFileSha256": fileRead.FileSHA256,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = json.Marshal(editResult.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var edited struct {
+		AfterSHA256 string `json:"afterSha256"`
+		Diff        string `json:"diff"`
+	}
+	if err := json.Unmarshal(raw, &edited); err != nil {
+		t.Fatalf("decode file_edit: %v raw=%s", err, raw)
+	}
+	if edited.AfterSHA256 == "" || !strings.Contains(edited.Diff, "needle changed") {
+		t.Fatalf("unexpected file_edit: %s", raw)
+	}
+	editedContent, err := os.ReadFile(filepath.Join(workspaceDir, "hello.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(editedContent), "needle changed") {
+		t.Fatalf("file edit did not persist: %q", editedContent)
+	}
+
+	shellResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "shell_run", Arguments: map[string]any{
+		"machineId": state.MachineID, "workspaceId": workspace.WorkspaceID, "argv": e2eEchoArgv(),
+		"timeoutSeconds": 10, "idempotencyKey": "idem_e2e_shell_0001",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = json.Marshal(shellResult.StructuredContent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var shellJob struct {
+		JobID string `json:"jobId"`
+	}
+	if err := json.Unmarshal(raw, &shellJob); err != nil || shellJob.JobID == "" {
+		t.Fatalf("decode shell_run: %v raw=%s", err, raw)
+	}
+	cursor := int64(0)
+	var shellOutput strings.Builder
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		watchResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "job_watch", Arguments: map[string]any{
+			"machineId": state.MachineID, "jobId": shellJob.JobID, "cursor": cursor, "waitSeconds": 1,
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err = json.Marshal(watchResult.StructuredContent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var watch struct {
+			State      string `json:"state"`
+			NextCursor int64  `json:"nextCursor"`
+			Events     []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"events"`
+		}
+		if err := json.Unmarshal(raw, &watch); err != nil {
+			t.Fatalf("decode job_watch: %v raw=%s", err, raw)
+		}
+		for _, event := range watch.Events {
+			if event.Type == "stdout" {
+				shellOutput.WriteString(event.Text)
+			}
+		}
+		cursor = watch.NextCursor
+		if watch.State == "completed" {
+			break
+		}
+		if watch.State == "failed" || watch.State == "canceled" || watch.State == "expired" {
+			t.Fatalf("echo job ended unexpectedly: %s raw=%s", watch.State, raw)
+		}
+	}
+	if !strings.Contains(shellOutput.String(), "phase3-e2e") {
+		t.Fatalf("shell output=%q", shellOutput.String())
+	}
+
+	longResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "shell_run", Arguments: map[string]any{
+		"machineId": state.MachineID, "workspaceId": workspace.WorkspaceID, "argv": e2eSleepArgv(),
+		"timeoutSeconds": 30, "idempotencyKey": "idem_e2e_cancel_0001",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = json.Marshal(longResult.StructuredContent)
+	var longJob struct {
+		JobID string `json:"jobId"`
+	}
+	if err := json.Unmarshal(raw, &longJob); err != nil || longJob.JobID == "" {
+		t.Fatalf("decode long shell_run: %v raw=%s", err, raw)
+	}
+	if _, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "job_cancel", Arguments: map[string]any{"machineId": state.MachineID, "jobId": longJob.JobID}}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 10*time.Second, func() bool {
+		watchResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "job_watch", Arguments: map[string]any{"machineId": state.MachineID, "jobId": longJob.JobID}})
+		if err != nil {
+			return false
+		}
+		raw, _ := json.Marshal(watchResult.StructuredContent)
+		var watch struct{ State string `json:"state"` }
+		return json.Unmarshal(raw, &watch) == nil && watch.State == "canceled"
+	})
 
 	if err := admin.RevokeMachine(ctx, state.MachineID); err != nil {
 		t.Fatal(err)
@@ -239,6 +358,20 @@ func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatal("condition did not become true before timeout")
+}
+
+func e2eEchoArgv() []string {
+	if runtime.GOOS == "windows" {
+		return []string{"cmd.exe", "/d", "/s", "/c", "echo phase3-e2e"}
+	}
+	return []string{"sh", "-c", "printf 'phase3-e2e\\n'"}
+}
+
+func e2eSleepArgv() []string {
+	if runtime.GOOS == "windows" {
+		return []string{"cmd.exe", "/d", "/s", "/c", "ping -n 30 127.0.0.1 >NUL"}
+	}
+	return []string{"sh", "-c", "sleep 30"}
 }
 
 func stringJSON(value any) string {

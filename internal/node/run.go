@@ -19,6 +19,13 @@ import (
 )
 
 func (c *Client) Run(ctx context.Context) error {
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := c.jobs.CancelAll(shutdownCtx); err != nil {
+			c.cfg.Logger.Error("node job shutdown incomplete", "error", err)
+		}
+	}()
 	state, err := c.State()
 	if err != nil {
 		return err
@@ -176,13 +183,35 @@ func (c *Client) heartbeatLoop(ctx context.Context, conn *websocket.Conn, interv
 					readErr <- err
 					return
 				}
-				response := c.handleCapabilityRequest(ctx, request)
-				writeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-				err := c.writeJSON(writeCtx, conn, response)
-				cancel()
-				if err != nil {
-					readErr <- err
-					return
+				select {
+				case c.requestSem <- struct{}{}:
+					go func(request protocolv1.CapabilityRequest) {
+						defer func() { <-c.requestSem }()
+						response := c.handleCapabilityRequest(ctx, request)
+						writeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+						err := c.writeJSON(writeCtx, conn, response)
+						cancel()
+						if err != nil {
+							select {
+							case readErr <- err:
+							default:
+							}
+						}
+					}(request)
+				default:
+					response := protocolv1.CapabilityResponse{
+						MessageType: protocolv1.MessageCapabilityResponse,
+						RequestId:   request.RequestId,
+						Error:       &protocolv1.ProtocolError{Code: "RESOURCE_LIMIT", Message: "too many concurrent capability requests", Retryable: true},
+						Timestamp:   protocolv1.Timestamp(time.Now()),
+					}
+					writeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+					err := c.writeJSON(writeCtx, conn, response)
+					cancel()
+					if err != nil {
+						readErr <- err
+						return
+					}
 				}
 			case protocolv1.MessageConnectionClose:
 				var closed protocolv1.ConnectionClose

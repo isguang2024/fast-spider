@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/isguang2024/fast-spider/internal/node"
@@ -40,6 +41,8 @@ func main() {
 		runWorkspaceEnabled(os.Args[2:], false)
 	case "workspace-remove":
 		runWorkspaceRemove(os.Args[2:])
+	case "workspace-permission":
+		runWorkspacePermission(os.Args[2:])
 	case "version":
 		fmt.Println(version.Version)
 	default:
@@ -130,6 +133,29 @@ func runWorkspaceEnabled(args []string, enabled bool) {
 	printJSON(map[string]any{"workspaceId": *workspaceID, "enabled": enabled})
 }
 
+func runWorkspacePermission(args []string) {
+	fs := flag.NewFlagSet("workspace-permission", flag.ExitOnError)
+	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
+	workspaceID := fs.String("workspace", "", "opaque workspaceId")
+	allow := fs.String("allow", "read", "comma-separated permissions: read,write,shell; read is always retained")
+	_ = fs.Parse(args)
+	if *workspaceID == "" {
+		fatalIf(errors.New("--workspace is required"))
+	}
+	permissions := strings.Split(*allow, ",")
+	store := node.NewWorkspaceStore(*dataDir)
+	fatalIf(store.SetPermissions(*workspaceID, permissions))
+	items, err := store.List()
+	fatalIf(err)
+	for _, item := range items {
+		if item.WorkspaceId == *workspaceID {
+			printJSON(map[string]any{"workspaceId": *workspaceID, "permissions": item.Permissions})
+			return
+		}
+	}
+	fatalIf(node.ErrWorkspaceNotFound)
+}
+
 func runWorkspaceRemove(args []string) {
 	fs := flag.NewFlagSet("workspace-remove", flag.ExitOnError)
 	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
@@ -173,5 +199,5 @@ func fatalIf(err error) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: fast-spider-node <enroll|run|status|workspace-add|workspace-list|workspace-enable|workspace-disable|workspace-remove|version> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: fast-spider-node <enroll|run|status|workspace-add|workspace-list|workspace-enable|workspace-disable|workspace-permission|workspace-remove|version> [flags]")
 }

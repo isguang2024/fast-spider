@@ -19,12 +19,19 @@ var (
 	ErrWorkspaceDisabled = errors.New("workspace disabled")
 )
 
+const (
+	WorkspacePermissionRead  = "read"
+	WorkspacePermissionWrite = "write"
+	WorkspacePermissionShell = "shell"
+)
+
 type WorkspaceRecord struct {
 	WorkspaceID string    `json:"workspaceId"`
 	DisplayName string    `json:"displayName"`
 	Root        string    `json:"root"`
 	Enabled     bool      `json:"enabled"`
 	Revision    int64     `json:"revision"`
+	Permissions []string  `json:"permissions"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
 }
@@ -73,7 +80,7 @@ func (s *WorkspaceStore) Add(root, displayName string) (WorkspaceRecord, error) 
 		return WorkspaceRecord{}, err
 	}
 	now := time.Now().UTC()
-	record := WorkspaceRecord{WorkspaceID: id, DisplayName: displayName, Root: real, Enabled: true, Revision: 1, CreatedAt: now, UpdatedAt: now}
+	record := WorkspaceRecord{WorkspaceID: id, DisplayName: displayName, Root: real, Enabled: true, Revision: 1, Permissions: []string{WorkspacePermissionRead}, CreatedAt: now, UpdatedAt: now}
 	registry.Workspaces = append(registry.Workspaces, record)
 	if err := s.save(registry); err != nil {
 		return WorkspaceRecord{}, err
@@ -88,7 +95,7 @@ func (s *WorkspaceStore) List() ([]protocolv1.WorkspaceSummary, error) {
 	}
 	out := make([]protocolv1.WorkspaceSummary, 0, len(registry.Workspaces))
 	for _, item := range registry.Workspaces {
-		out = append(out, protocolv1.WorkspaceSummary{WorkspaceId: item.WorkspaceID, DisplayName: item.DisplayName, Enabled: item.Enabled, Revision: item.Revision})
+		out = append(out, protocolv1.WorkspaceSummary{WorkspaceId: item.WorkspaceID, DisplayName: item.DisplayName, Enabled: item.Enabled, Revision: item.Revision, Permissions: append([]string(nil), item.Permissions...)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].DisplayName < out[j].DisplayName })
 	return out, nil
@@ -102,6 +109,26 @@ func (s *WorkspaceStore) SetEnabled(workspaceID string, enabled bool) error {
 	for i := range registry.Workspaces {
 		if registry.Workspaces[i].WorkspaceID == workspaceID {
 			registry.Workspaces[i].Enabled = enabled
+			registry.Workspaces[i].Revision++
+			registry.Workspaces[i].UpdatedAt = time.Now().UTC()
+			return s.save(registry)
+		}
+	}
+	return ErrWorkspaceNotFound
+}
+
+func (s *WorkspaceStore) SetPermissions(workspaceID string, permissions []string) error {
+	normalized, err := normalizeWorkspacePermissions(permissions)
+	if err != nil {
+		return err
+	}
+	registry, err := s.load()
+	if err != nil {
+		return err
+	}
+	for i := range registry.Workspaces {
+		if registry.Workspaces[i].WorkspaceID == workspaceID {
+			registry.Workspaces[i].Permissions = normalized
 			registry.Workspaces[i].Revision++
 			registry.Workspaces[i].UpdatedAt = time.Now().UTC()
 			return s.save(registry)
@@ -155,6 +182,11 @@ func (s *WorkspaceStore) load() (workspaceRegistryFile, error) {
 	if registry.Version != 1 {
 		return workspaceRegistryFile{}, fmt.Errorf("unsupported workspace registry version %d", registry.Version)
 	}
+	for i := range registry.Workspaces {
+		if len(registry.Workspaces[i].Permissions) == 0 {
+			registry.Workspaces[i].Permissions = []string{WorkspacePermissionRead}
+		}
+	}
 	return registry, nil
 }
 
@@ -180,6 +212,38 @@ func (s *WorkspaceStore) save(registry workspaceRegistryFile) error {
 		return err
 	}
 	return nil
+}
+
+func (r WorkspaceRecord) Allows(permission string) bool {
+	for _, item := range r.Permissions {
+		if item == permission {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeWorkspacePermissions(input []string) ([]string, error) {
+	seen := map[string]bool{}
+	for _, item := range input {
+		item = strings.TrimSpace(strings.ToLower(item))
+		switch item {
+		case WorkspacePermissionRead, WorkspacePermissionWrite, WorkspacePermissionShell:
+			seen[item] = true
+		case "":
+		default:
+			return nil, fmt.Errorf("unsupported workspace permission %q", item)
+		}
+	}
+	if !seen[WorkspacePermissionRead] {
+		seen[WorkspacePermissionRead] = true
+	}
+	out := make([]string, 0, len(seen))
+	for item := range seen {
+		out = append(out, item)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func samePath(a, b string) bool {

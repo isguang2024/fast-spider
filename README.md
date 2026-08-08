@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 它通过长期部署在公网服务器上的 Hub，将 GPT、Claude、Codex、Web Console、CLI 或其他自动化客户端的请求，安全路由到用户明确授权的 Windows、Linux，未来也包括 macOS 节点。Node 只主动建立 HTTPS/WSS 443 出站连接，不默认开放局域网或公网端口。
 
-> 当前状态：Phase 2 只读开发闭环已落地。除 Phase 1 的设备身份、配对、WSS 控制通道和机器目录外，Node 已支持本机 Workspace 授权/禁用/删除、opaque workspaceId、路径边界校验、UTF-8 分段读取和受限代码搜索；远程 MCP 已增加 `workspace_list` / `file_read` / `code_search`。Shell、文件写入、Git 写操作仍未开放。
+> 当前状态：Phase 3 核心开发闭环已落地。除 Phase 1/2 的设备身份、WSS、Workspace、文件读取和代码搜索外，Node 已支持本机显式授权的精确文件编辑、乐观并发校验、非交互 Shell Job、stdout/stderr 事件游标、幂等启动、超时和完整进程树取消。Workspace 默认仍为只读，`write` / `shell` 必须在 Node 本机单独开启；Git 写操作仍未开放。
 
 ## 核心定位
 
@@ -90,7 +90,7 @@ Fast Spider 不是远程桌面，也不是通用内网穿透软件：
 - MVP 不引入 Kubernetes、Redis、NATS、Kafka 或复杂消息队列。
 - 不做长期双协议、双写或兼容层堆叠；版本升级使用明确窗口与迁移规则。
 
-## Phase 1/2 本地运行
+## Phase 1/2/3 本地运行
 
 要求 Go 1.26+。
 
@@ -126,8 +126,9 @@ go run ./cmd/node workspace-add \
   --path 'V:/repos/GitHub/example' \
   --name example
 
-# 7. 本机可查看/禁用/重新启用/删除授权
+# 7. 新 Workspace 默认只有 read；需要远程编辑/Shell 时必须在 Node 本机显式授权
 # go run ./cmd/node workspace-list
+# go run ./cmd/node workspace-permission --workspace '<workspaceId>' --allow read,write,shell
 # go run ./cmd/node workspace-disable --workspace '<workspaceId>'
 # go run ./cmd/node workspace-enable  --workspace '<workspaceId>'
 # go run ./cmd/node workspace-remove  --workspace '<workspaceId>'
@@ -141,9 +142,9 @@ go run ./cmd/spiderctl machine-list \
   --allow-insecure
 ```
 
-远程 MCP 当前固定工具面为：`machine_list`、`machine_get`、`capability_list`、`workspace_list`、`file_read`、`code_search`。远程文件工具只接受 `machineId + workspaceId + 相对路径`，不会接受或返回 Node 本机授权目录的绝对路径。
+远程 MCP 当前固定工具面为：`machine_list`、`machine_get`、`capability_list`、`workspace_list`、`file_read`、`code_search`、`file_edit`、`shell_run`、`job_watch`、`job_cancel`。远程文件工具只接受 `machineId + workspaceId + 相对路径`，不会接受或返回 Node 本机授权目录的绝对路径。`file_edit` 必须携带 `file_read` 返回的完整文件 SHA-256；`shell_run` 只接受显式 argv 数组并要求 idempotency key，不做隐式命令字符串拼接，同时默认只继承基础系统/工具链环境变量，不把任意 API Key/Token 传给子进程。
 
-本机 HTTP/WS 仅用于开发验证；生产仍按文档要求使用 HTTPS/WSS 443，并建议 Hub 只监听 loopback，由 TLS 反向代理暴露公网入口。
+本机 HTTP/WS 仅用于开发验证；生产仍按文档要求使用 HTTPS/WSS 443，并建议 Hub 只监听 loopback，由 TLS 反向代理暴露公网入口。需要注意：Phase 3 的 `shell` 是以 Node 普通 OS 用户权限启动受控进程，并不是 chroot/container 文件系统沙箱；启用 `shell` 权限意味着该进程仍可能访问该 OS 用户本来就能读取的其他本机资源，因此默认保持关闭并要求本机显式授权。
 
 ## 开发验证
 
@@ -153,8 +154,8 @@ go test ./... -count=1
 go build ./cmd/hub ./cmd/node ./cmd/spiderctl ./cmd/contractgen
 ```
 
-当前 E2E 覆盖 Owner bootstrap → enrollment → Node 上线 → MCP `machine_list` → `workspace_list` → `file_read` → `code_search` → Node 吊销。核心测试同时覆盖 enrollment 并发幂等、token 重放拒绝、设备 token 签名和吊销失效，以及 `../`、绝对路径、符号链接逃逸、禁用 Workspace、二进制/非法 UTF-8 和超大读取拒绝。
+当前 E2E 覆盖 Owner bootstrap → enrollment → Node 上线 → `workspace_list` → `file_read` → `code_search` → 本机提升 Workspace 权限 → `file_edit` → `shell_run` → `job_watch` → 长任务 `job_cancel` → Node 吊销。核心测试还覆盖并发 enrollment/Shell 幂等、token 重放、路径/符号链接逃逸、禁用 Workspace、UTF-8 分块、二进制拒绝、编辑 revision 冲突，以及撤销 `shell` 权限后运行中 Job 自动终止。
 
 ## 仓库状态
 
-Phase 0 文档仍是设计基线；Phase 1 已完成节点身份、注册、出站控制连接和机器目录，Phase 2 当前完成 Workspace 授权、只读文件与代码搜索闭环。下一阶段按路线图进入原子编辑、Shell Job、事件游标和完整取消，不提前引入复杂队列或微服务。
+Phase 0 文档仍是设计基线；Phase 1 已完成节点身份与控制通道，Phase 2 已完成 Workspace/只读文件/搜索，Phase 3 已完成精确编辑、Shell Job、事件游标和完整取消。下一阶段按路线图进入 Git、构建/测试 Profile 与 Artifact，继续保持单进程 Hub/Node，不引入复杂队列或微服务。

@@ -109,12 +109,13 @@
     "WorkspaceSummary": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["workspaceId", "displayName", "enabled", "revision"],
+      "required": ["workspaceId", "displayName", "enabled", "revision", "permissions"],
       "properties": {
         "workspaceId": {"type": "string", "pattern": "^ws_[A-Za-z0-9_-]{20,64}$"},
         "displayName": {"type": "string", "minLength": 1, "maxLength": 128},
         "enabled": {"type": "boolean"},
-        "revision": {"type": "integer", "minimum": 1}
+        "revision": {"type": "integer", "minimum": 1},
+        "permissions": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 8}
       }
     },
     "CapabilityRequest": {
