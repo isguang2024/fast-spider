@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fast-spider.local/contracts/v1/control.schema.json",
+  "title": "Fast Spider Phase 1 Control Contract",
+  "type": "object",
+  "$defs": {
+    "CapabilityDescriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["capabilityId", "version", "actions"],
+      "properties": {
+        "capabilityId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+        "actions": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 64}, "maxItems": 64}
+      }
+    },
+    "Machine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["machineId", "displayName", "status", "online", "os", "arch", "nodeVersion", "generation"],
+      "properties": {
+        "machineId": {"type": "string", "pattern": "^mach_[A-Za-z0-9_-]{20,64}$"},
+        "displayName": {"type": "string", "minLength": 1, "maxLength": 128},
+        "status": {"type": "string", "enum": ["active", "revoked", "disabled"]},
+        "online": {"type": "boolean"},
+        "os": {"type": "string", "maxLength": 64},
+        "arch": {"type": "string", "maxLength": 64},
+        "nodeVersion": {"type": "string", "maxLength": 64},
+        "generation": {"type": "integer", "minimum": 0},
+        "lastSeenAt": {"type": "string", "format": "date-time"},
+        "capabilities": {"type": "array", "items": {"$ref": "#/$defs/CapabilityDescriptor"}, "maxItems": 128}
+      }
+    },
+    "ServerHello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["messageType", "protocolVersions", "challenge", "hubPublicKey", "hubFingerprint", "serverSignature", "timestamp"],
+      "properties": {
+        "messageType": {"const": "server.hello"},
+        "protocolVersions": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 8},
+        "challenge": {"type": "string", "minLength": 20, "maxLength": 256},
+        "hubPublicKey": {"type": "string", "minLength": 20, "maxLength": 256},
+        "hubFingerprint": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "serverSignature": {"type": "string", "minLength": 20, "maxLength": 256},
+        "timestamp": {"type": "string", "format": "date-time"}
+      }
+    },
+    "ClientHello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["messageType", "machineId", "protocolVersions", "challengeSignature", "capabilities", "nodeVersion", "os", "arch", "timestamp"],
+      "properties": {
+        "messageType": {"const": "client.hello"},
+        "machineId": {"type": "string"},
+        "protocolVersions": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 8},
+        "challengeSignature": {"type": "string", "minLength": 20, "maxLength": 256},
+        "capabilities": {"type": "array", "items": {"$ref": "#/$defs/CapabilityDescriptor"}, "maxItems": 128},
+        "nodeVersion": {"type": "string", "maxLength": 64},
+        "os": {"type": "string", "maxLength": 64},
+        "arch": {"type": "string", "maxLength": 64},
+        "timestamp": {"type": "string", "format": "date-time"}
+      }
+    },
+    "SessionEstablished": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["messageType", "connectionId", "generation", "protocolVersion", "heartbeatSeconds", "timestamp"],
+      "properties": {
+        "messageType": {"const": "session.established"},
+        "connectionId": {"type": "string"},
+        "generation": {"type": "integer", "minimum": 1},
+        "protocolVersion": {"type": "string"},
+        "heartbeatSeconds": {"type": "integer", "minimum": 5, "maximum": 300},
+        "timestamp": {"type": "string", "format": "date-time"}
+      }
+    },
+    "NodeReady": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["messageType", "status", "timestamp"],
+      "properties": {
+        "messageType": {"const": "node.ready"},
+        "status": {"type": "string", "enum": ["ready", "busy"]},
+        "timestamp": {"type": "string", "format": "date-time"}
+      }
+    },
+    "Heartbeat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["messageType", "sequence", "status", "timestamp"],
+      "properties": {
+        "messageType": {"type": "string", "enum": ["heartbeat", "heartbeat.ack"]},
+        "sequence": {"type": "integer", "minimum": 0},
+        "status": {"type": "string", "enum": ["ready", "busy"]},
+        "timestamp": {"type": "string", "format": "date-time"}
+      }
+    },
+    "ConnectionClose": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["messageType", "code", "reason", "timestamp"],
+      "properties": {
+        "messageType": {"const": "connection.close"},
+        "code": {"type": "string", "maxLength": 64},
+        "reason": {"type": "string", "maxLength": 256},
+        "timestamp": {"type": "string", "format": "date-time"}
+      }
+    },
+    "ProtocolError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1, "maxLength": 64},
+        "message": {"type": "string", "minLength": 1, "maxLength": 512},
+        "retryable": {"type": "boolean"}
+      }
+    }
+  }
+}

@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 它通过长期部署在公网服务器上的 Hub，将 GPT、Claude、Codex、Web Console、CLI 或其他自动化客户端的请求，安全路由到用户明确授权的 Windows、Linux，未来也包括 macOS 节点。Node 只主动建立 HTTPS/WSS 443 出站连接，不默认开放局域网或公网端口。
 
-> 当前状态：Phase 0（产品定义、架构、协议、安全模型与实施规划）。本仓库此阶段不包含业务实现、云资源或付费依赖。
+> 当前状态：Phase 1 开发中。已落地 Go Hub/Node/CLI、Contract v1、SQLite WAL、Owner bootstrap、一次性 enrollment、设备 Ed25519 身份、Node→Hub WebSocket 控制通道、心跳/在线状态、机器列表/吊销，以及固定 MCP `machine_list` / `machine_get` / `capability_list`。尚未进入 Workspace、文件、Shell、Git 等 Phase 2+ 能力。
 
 ## 核心定位
 
@@ -90,6 +90,58 @@ Fast Spider 不是远程桌面，也不是通用内网穿透软件：
 - MVP 不引入 Kubernetes、Redis、NATS、Kafka 或复杂消息队列。
 - 不做长期双协议、双写或兼容层堆叠；版本升级使用明确窗口与迁移规则。
 
+## Phase 1 本地运行
+
+要求 Go 1.26+。
+
+```bash
+# 1. 启动 Hub；默认仅监听 127.0.0.1:8787
+go run ./cmd/hub --data-dir ./data
+
+# 2. 首次 Owner bootstrap
+# Hub 会在 ./data/bootstrap-token 写入一次性 bootstrap token
+go run ./cmd/spiderctl bootstrap \
+  --hub http://127.0.0.1:8787 \
+  --allow-insecure \
+  --bootstrap-token-file ./data/bootstrap-token
+
+# 3. 保存上一步只返回一次的 ownerToken
+export FAST_SPIDER_OWNER_TOKEN='<owner token>'
+
+# 4. 创建 Node enrollment token
+go run ./cmd/spiderctl enrollment-create \
+  --hub http://127.0.0.1:8787 \
+  --allow-insecure \
+  --name dev-node
+
+# 5. 在 Node 机器执行一次性配对
+go run ./cmd/node enroll \
+  --hub http://127.0.0.1:8787 \
+  --allow-insecure \
+  --token '<enrollment token>' \
+  --name dev-node
+
+# 6. 启动 Node；本地 HTTP 验证必须再次显式允许明文 Hub
+go run ./cmd/node run --allow-insecure
+
+# 7. 查看机器
+go run ./cmd/spiderctl machine-list \
+  --hub http://127.0.0.1:8787 \
+  --allow-insecure
+```
+
+本机 HTTP/WS 仅用于开发验证；生产仍按文档要求使用 HTTPS/WSS 443，并建议 Hub 只监听 loopback，由 TLS 反向代理暴露公网入口。
+
+## 开发验证
+
+```bash
+go vet ./...
+go test ./... -count=1
+go build ./cmd/hub ./cmd/node ./cmd/spiderctl ./cmd/contractgen
+```
+
+当前 E2E 覆盖 Owner bootstrap → enrollment → Node 上线 → MCP 列出机器 → Node 吊销；核心测试同时覆盖 enrollment 并发幂等、token 重放拒绝、设备 token 签名和吊销失效。
+
 ## 仓库状态
 
-当前仓库仅包含 Phase 0 文档和决策记录。编码开始条件见 [开放问题](docs/20-open-questions.md) 中的“编码前必须决定”。
+Phase 0 文档仍是设计基线；Phase 1 实现严格限制在节点身份、注册、出站控制连接、机器目录和最小 MCP，不提前进入 Phase 2。后续实施顺序见 [路线图](docs/19-roadmap.md)。
