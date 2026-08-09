@@ -250,9 +250,12 @@ func TestOAuthAuthorizationPKCETokenRotationAndMCP(t *testing.T) {
 		t.Fatalf("authorization-code-only client refresh status=%d body=%s", subsetRefreshStatus, subsetRefreshBody)
 	}
 	assertOAuthError(t, subsetRefreshBody, "unauthorized_client", true)
-	getStatus, _, getBody := oauthTestRequest(t, client, http.MethodGet, fixture.httpServer.URL+"/oauth/authorize?"+authorizeValues.Encode(), nil)
-	if getStatus != http.StatusOK || !strings.Contains(string(getBody), "<form method=\"post\">") || !strings.Contains(string(getBody), "允许连接") {
+	getStatus, getHeaders, getBody := oauthTestRequest(t, client, http.MethodGet, fixture.httpServer.URL+"/oauth/authorize?"+authorizeValues.Encode(), nil)
+	if getStatus != http.StatusOK || !strings.Contains(string(getBody), "<form method=\"post\" action=\"/fast-spider/oauth/authorize\">") || !strings.Contains(string(getBody), "允许连接") {
 		t.Fatalf("authorization GET status=%d body=%s", getStatus, getBody)
+	}
+	if csp := getHeaders.Get("Content-Security-Policy"); !strings.Contains(csp, "form-action 'self' https://chatgpt.com;") {
+		t.Fatalf("authorization GET CSP does not allow validated callback origin: %q", csp)
 	}
 	if strings.Contains(string(getBody), "Owner Token") {
 		t.Fatal("authorization GET exposed retired Owner Token UI")

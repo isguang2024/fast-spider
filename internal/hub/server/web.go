@@ -665,6 +665,9 @@ func (s *Server) renderOAuthAuthorizePage(
 	}
 	scopeLabel := "MCP 访问"
 	description := "客户端获得授权后，可以通过 Fast Spider MCP 使用当前账户下的设备和 Workspace 能力。"
+	if callbackOrigin := oauthAuthorizeCallbackOrigin(values.Get("redirect_uri")); callbackOrigin != "" {
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self' "+callbackOrigin+"; script-src 'self'; style-src 'self'")
+	}
 	s.renderWebPage(w, "authorize", authorizePageData{
 		BasePath:    s.publicBasePath(r),
 		DisplayName: session.DisplayName,
@@ -676,6 +679,14 @@ func (s *Server) renderOAuthAuthorizePage(
 		Error:       errorMessage,
 		Fields:      fields,
 	})
+}
+
+func oauthAuthorizeCallbackOrigin(raw string) string {
+	callback, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || callback.Host == "" || (callback.Scheme != "http" && callback.Scheme != "https") {
+		return ""
+	}
+	return callback.Scheme + "://" + callback.Host
 }
 
 func (s *Server) publicBaseURL(r *http.Request) string {

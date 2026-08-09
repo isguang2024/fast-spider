@@ -20,7 +20,7 @@
         <p>{{.ScopeLabel}} · {{.ClientID}}</p>
       </div>
     </section>
-    <form method="post">
+    <form method="post" action="{{.BasePath}}/oauth/authorize">
       {{range .Fields}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
       <div class="button-row">
