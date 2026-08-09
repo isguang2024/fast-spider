@@ -24,6 +24,8 @@ machineId + jobId
 
 stdout/stderr/state 等事件按 sequence 排序并设置容量上限。输出超限时截断或转 Artifact，不能无限堆内存/磁盘。
 
+Windows 子进程若输出当前控制台/OEM 代码页而不是 UTF-8，Node 在事件层转换为 UTF-8 后再发送；只有无法识别的字节才做替换并产生 warning，避免中文系统错误信息变成乱码。
+
 ## Shell 边界
 
 Shell/Build 的 cwd 必须是绝对本机目录，命令以运行 Fast Spider Node 的 OS 用户身份启动。取消、timeout、Hub/Node shutdown 都必须清理进程树。

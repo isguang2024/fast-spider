@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/isguang2024/fast-spider/internal/security"
 )
@@ -434,10 +433,9 @@ func (j *Job) captureStream(eventType string, reader interface{ Read([]byte) (in
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), maxScannerTokenSize)
 	for scanner.Scan() {
-		text := scanner.Text()
-		if !utf8.ValidString(text) {
-			text = strings.ToValidUTF8(text, "�")
-			j.appendEvent("warning", eventType+" contained invalid UTF-8 and was normalized")
+		text, normalizationNote := normalizeProcessOutput(scanner.Bytes())
+		if normalizationNote != "" {
+			j.appendEvent("warning", eventType+" "+normalizationNote)
 		}
 		j.appendEvent(eventType, text+"\n")
 	}

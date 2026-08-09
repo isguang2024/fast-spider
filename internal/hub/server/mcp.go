@@ -48,7 +48,7 @@ type fileEditInput struct {
 
 type shellRunInput struct {
 	MachineID      string   `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	Argv           []string `json:"argv" jsonschema:"explicit executable and arguments; no implicit shell interpolation"`
+	Argv           []string `json:"argv" jsonschema:"explicit executable and arguments; no implicit shell interpolation. Windows cmd example: [\"cmd.exe\",\"/d\",\"/s\",\"/c\",\"mkdir\",\"V:\\\\target\"]"`
 	Cwd            string   `json:"cwd" jsonschema:"absolute working directory on the Node machine"`
 	TimeoutSeconds int64    `json:"timeoutSeconds,omitempty" jsonschema:"0 uses the default; maximum 1800 seconds"`
 	IdempotencyKey string   `json:"idempotencyKey" jsonschema:"12-128 character key preventing duplicate process starts on retries"`
