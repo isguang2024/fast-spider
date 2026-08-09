@@ -28,15 +28,14 @@ type agentControlParams struct {
 }
 
 type AgentManager struct {
-	dataDir string
-	codex   *CodexAdapter
+	codex *CodexAdapter
 }
 
-func New(dataDir string, logger *slog.Logger) *AgentManager {
+func New(_ string, logger *slog.Logger) *AgentManager {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &AgentManager{dataDir: dataDir, codex: NewCodexAdapter(logger)}
+	return &AgentManager{codex: NewCodexAdapter(logger)}
 }
 
 func (m *AgentManager) Close(ctx context.Context) error {
@@ -46,7 +45,7 @@ func (m *AgentManager) Close(ctx context.Context) error {
 	return m.codex.Close(ctx)
 }
 
-func (m *AgentManager) Control(ctx context.Context, workspaceID, action string, params map[string]any) (map[string]any, error) {
+func (m *AgentManager) Control(ctx context.Context, action string, params map[string]any) (map[string]any, error) {
 	if m == nil || m.codex == nil {
 		return nil, node.ErrAgentProviderUnavailable
 	}
@@ -67,42 +66,24 @@ func (m *AgentManager) Control(ctx context.Context, workspaceID, action string, 
 		return m.providers(ctx), nil
 	case "models.list":
 		return m.models(ctx)
-	case "projects.list":
-		return m.projects()
 	case "session.list":
-		workspace, err := m.resolveWorkspace(workspaceID)
+		root, err := optionalAgentDirectory(input.WorkingDirectory)
 		if err != nil {
 			return nil, err
 		}
-		return m.sessionList(ctx, workspace, input.Limit)
+		return m.sessionList(ctx, root, input.Limit)
 	case "session.get":
-		workspace, err := m.resolveWorkspace(workspaceID)
-		if err != nil {
-			return nil, err
-		}
-		thread, err := m.authorizedThread(ctx, workspace, input.SessionID)
+		thread, err := m.authorizedThread(ctx, input.SessionID)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{"session": normalizeCodexThread(thread)}, nil
 	case "session.create":
-		workspace, err := m.resolveWorkspace(workspaceID)
-		if err != nil {
-			return nil, err
-		}
-		return m.sessionCreate(ctx, workspace, input)
+		return m.sessionCreate(ctx, input)
 	case "session.send":
-		workspace, err := m.resolveWorkspace(workspaceID)
-		if err != nil {
-			return nil, err
-		}
-		return m.sessionSend(ctx, workspace, input)
+		return m.sessionSend(ctx, input)
 	case "session.watch":
-		workspace, err := m.resolveWorkspace(workspaceID)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := m.authorizedThread(ctx, workspace, input.SessionID); err != nil {
+		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
 			return nil, err
 		}
 		if input.WaitSeconds < 0 || input.WaitSeconds > 15 {
@@ -114,11 +95,7 @@ func (m *AgentManager) Control(ctx context.Context, workspaceID, action string, 
 		}
 		return map[string]any{"sessionId": input.SessionID, "events": events, "nextCursor": next, "truncatedBefore": truncatedBefore}, nil
 	case "session.cancel":
-		workspace, err := m.resolveWorkspace(workspaceID)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := m.authorizedThread(ctx, workspace, input.SessionID); err != nil {
+		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
 			return nil, err
 		}
 		if err := m.codex.InterruptTurn(ctx, input.SessionID, input.TurnID); err != nil {
@@ -126,21 +103,13 @@ func (m *AgentManager) Control(ctx context.Context, workspaceID, action string, 
 		}
 		return map[string]any{"sessionId": input.SessionID, "turnId": input.TurnID, "cancelRequested": true}, nil
 	case "session.result":
-		workspace, err := m.resolveWorkspace(workspaceID)
-		if err != nil {
-			return nil, err
-		}
-		thread, err := m.authorizedThread(ctx, workspace, input.SessionID)
+		thread, err := m.authorizedThread(ctx, input.SessionID)
 		if err != nil {
 			return nil, err
 		}
 		return normalizeCodexResult(thread), nil
 	case "session.rename":
-		workspace, err := m.resolveWorkspace(workspaceID)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := m.authorizedThread(ctx, workspace, input.SessionID); err != nil {
+		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
 			return nil, err
 		}
 		if strings.TrimSpace(input.Name) == "" || len(input.Name) > 128 {
@@ -151,11 +120,7 @@ func (m *AgentManager) Control(ctx context.Context, workspaceID, action string, 
 		}
 		return map[string]any{"sessionId": input.SessionID, "name": input.Name}, nil
 	case "session.archive":
-		workspace, err := m.resolveWorkspace(workspaceID)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := m.authorizedThread(ctx, workspace, input.SessionID); err != nil {
+		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
 			return nil, err
 		}
 		if err := m.codex.ArchiveThread(ctx, input.SessionID); err != nil {
@@ -207,25 +172,8 @@ func (m *AgentManager) models(ctx context.Context) (map[string]any, error) {
 	return map[string]any{"models": models}, nil
 }
 
-func (m *AgentManager) projects() (map[string]any, error) {
-	items, err := node.NewWorkspaceStore(m.dataDir).List()
-	if err != nil {
-		return nil, err
-	}
-	projects := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		projects = append(projects, map[string]any{
-			"projectId":   item.WorkspaceId,
-			"workspaceId": item.WorkspaceId,
-			"displayName": item.DisplayName,
-			"enabled":     item.Enabled,
-		})
-	}
-	return map[string]any{"projects": projects}, nil
-}
-
-func (m *AgentManager) sessionList(ctx context.Context, workspace node.WorkspaceRecord, limit int) (map[string]any, error) {
-	result, err := m.codex.ListThreads(ctx, workspace.Root, limit)
+func (m *AgentManager) sessionList(ctx context.Context, root string, limit int) (map[string]any, error) {
+	result, err := m.codex.ListThreads(ctx, root, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -236,20 +184,13 @@ func (m *AgentManager) sessionList(ctx context.Context, workspace node.Workspace
 		if len(thread) == 0 {
 			continue
 		}
-		cwd := mapString(thread, "cwd")
-		if cwd != "" && !node.PathWithin(workspace.Root, cwd) {
-			continue
-		}
 		sessions = append(sessions, normalizeCodexThread(thread))
 	}
 	return map[string]any{"sessions": sessions}, nil
 }
 
-func (m *AgentManager) sessionCreate(ctx context.Context, workspace node.WorkspaceRecord, input agentControlParams) (map[string]any, error) {
-	if !workspace.Allows(node.WorkspacePermissionShell) || !workspace.Allows(node.WorkspacePermissionWrite) {
-		return nil, node.ErrPermissionDenied
-	}
-	workingDirectory, err := agentWorkingDirectory(workspace.Root, input.WorkingDirectory)
+func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlParams) (map[string]any, error) {
+	workingDirectory, err := requiredAgentDirectory(input.WorkingDirectory)
 	if err != nil {
 		return nil, err
 	}
@@ -257,7 +198,7 @@ func (m *AgentManager) sessionCreate(ctx context.Context, workspace node.Workspa
 	if err != nil {
 		return nil, err
 	}
-	threadResult, err := m.codex.StartThread(ctx, workspace.Root, selectedModel, input.Thinking)
+	threadResult, err := m.codex.StartThread(ctx, workingDirectory, selectedModel, input.Thinking)
 	if err != nil {
 		return nil, err
 	}
@@ -266,14 +207,13 @@ func (m *AgentManager) sessionCreate(ctx context.Context, workspace node.Workspa
 		return nil, fmt.Errorf("Codex did not return a session ID")
 	}
 	out := map[string]any{
-		"projectId":       workspace.WorkspaceID,
-		"workspaceId":     workspace.WorkspaceID,
-		"sessionId":       sessionID,
-		"executionMode":   "bridge_owned",
-		"model":           selectedModel,
-		"owner":           "node_agent_bridge",
-		"phase":           "ready",
-		"realtimeChannel": "session.watch",
+		"workingDirectory": workingDirectory,
+		"sessionId":        sessionID,
+		"executionMode":    "bridge_owned",
+		"model":            selectedModel,
+		"owner":            "node_agent_bridge",
+		"phase":            "ready",
+		"realtimeChannel":  "session.watch",
 	}
 	if strings.TrimSpace(input.Prompt) == "" {
 		return out, nil
@@ -289,20 +229,20 @@ func (m *AgentManager) sessionCreate(ctx context.Context, workspace node.Workspa
 	return out, nil
 }
 
-func (m *AgentManager) sessionSend(ctx context.Context, workspace node.WorkspaceRecord, input agentControlParams) (map[string]any, error) {
-	if !workspace.Allows(node.WorkspacePermissionShell) || !workspace.Allows(node.WorkspacePermissionWrite) {
-		return nil, node.ErrPermissionDenied
-	}
-	thread, err := m.authorizedThread(ctx, workspace, input.SessionID)
+func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams) (map[string]any, error) {
+	thread, err := m.authorizedThread(ctx, input.SessionID)
 	if err != nil {
 		return nil, err
 	}
 	if threadHasActiveTurn(thread) || m.codex.ActiveTurn(input.SessionID) != "" {
 		return nil, node.ErrAgentSessionBusy
 	}
-	workingDirectory, err := agentWorkingDirectory(workspace.Root, input.WorkingDirectory)
-	if err != nil {
-		return nil, err
+	workingDirectory := mapString(thread, "cwd")
+	if strings.TrimSpace(input.WorkingDirectory) != "" {
+		workingDirectory, err = requiredAgentDirectory(input.WorkingDirectory)
+		if err != nil {
+			return nil, err
+		}
 	}
 	selectedModel := strings.TrimSpace(input.Model)
 	if selectedModel != "" {
@@ -362,14 +302,7 @@ func (m *AgentManager) resolveModel(ctx context.Context, requested string) (stri
 	return first, nil
 }
 
-func (m *AgentManager) resolveWorkspace(workspaceID string) (node.WorkspaceRecord, error) {
-	if strings.TrimSpace(workspaceID) == "" {
-		return node.WorkspaceRecord{}, fmt.Errorf("workspaceId is required")
-	}
-	return node.NewWorkspaceStore(m.dataDir).Resolve(workspaceID)
-}
-
-func (m *AgentManager) authorizedThread(ctx context.Context, workspace node.WorkspaceRecord, sessionID string) (map[string]any, error) {
+func (m *AgentManager) authorizedThread(ctx context.Context, sessionID string) (map[string]any, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return nil, fmt.Errorf("sessionId is required")
 	}
@@ -381,18 +314,21 @@ func (m *AgentManager) authorizedThread(ctx context.Context, workspace node.Work
 	if len(thread) == 0 {
 		return nil, node.ErrAgentSessionNotFound
 	}
-	cwd := mapString(thread, "cwd")
-	if cwd == "" || !node.PathWithin(workspace.Root, cwd) {
-		return nil, node.ErrAgentSessionNotFound
-	}
 	return thread, nil
 }
 
-func agentWorkingDirectory(root, relative string) (string, error) {
-	if strings.TrimSpace(relative) == "" || relative == "." {
-		return root, nil
+func requiredAgentDirectory(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", fmt.Errorf("absolute workingDirectory is required")
 	}
-	path, err := node.ResolveWorkspacePath(root, relative)
+	return optionalAgentDirectory(raw)
+}
+
+func optionalAgentDirectory(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", nil
+	}
+	path, err := node.ResolveMachinePath(raw)
 	if err != nil {
 		return "", err
 	}

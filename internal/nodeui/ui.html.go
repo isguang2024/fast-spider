@@ -10,10 +10,10 @@ const localUIHTML = `<!doctype html>
   <style>
     :root{color-scheme:light;--bg:#f4f4f1;--panel:#fff;--line:#deded8;--text:#171717;--muted:#6d6d67;--soft:#f8f8f5;--ok:#1d7a45;--warn:#a45a00;--bad:#b42318;--accent:#171717}
     *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
-    button,input{font:inherit;min-height:44px} button{cursor:pointer}button:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid #4f4f49;outline-offset:2px}.shell{width:min(1100px,calc(100% - 28px));margin:24px auto 50px}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.brand{display:flex;align-items:center;gap:12px}.logo{width:38px;height:38px;border-radius:11px;background:#171717;color:#fff;display:grid;place-items:center;font-weight:800}.brand h1{font-size:18px;margin:0}.brand small{display:block;color:var(--muted);margin-top:1px}.top-actions{display:flex;align-items:center;gap:8px}.status{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--panel);padding:8px 12px;border-radius:999px}.dot{width:8px;height:8px;border-radius:50%;background:#999}.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
-    .layout{display:grid;grid-template-columns:190px minmax(0,1fr);gap:16px}.nav,.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px}.nav{padding:10px;height:max-content;position:sticky;top:18px}.nav button{width:100%;border:0;background:transparent;text-align:left;padding:10px 12px;border-radius:10px;color:var(--muted);margin:2px 0}.nav button.active{background:#171717;color:#fff}.content{min-width:0}.panel{padding:22px;margin-bottom:16px}.panel h2{font-size:18px;margin:0 0 5px}.copy{color:var(--muted);margin:0 0 18px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{display:grid;gap:6px}.field.full{grid-column:1/-1}.field span{font-weight:650}.field input{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:#fff;outline:none}.field input:focus{border-color:#777}.secret-row{display:grid;grid-template-columns:1fr auto;gap:8px}.secondary,.primary,.danger{border-radius:10px;padding:9px 13px;border:1px solid var(--line);background:#fff}.primary{background:#171717;border-color:#171717;color:#fff}.danger{color:var(--bad)}.actions{display:flex;align-items:center;gap:10px;margin-top:16px;flex-wrap:wrap}.hint{color:var(--muted);font-size:12px}.message{display:none;margin:0 0 16px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}.message.show{display:block}.message.error{border-color:#f0b7b2;color:var(--bad);background:#fff7f6}
-    .facts{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:18px}.fact{border:1px solid var(--line);background:var(--soft);border-radius:12px;padding:12px}.fact span{display:block;color:var(--muted);font-size:12px}.fact strong{display:block;margin-top:3px;word-break:break-all}.section{display:none}.section.active{display:block}.switch{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:var(--soft)}.switch input{width:18px;height:18px}.workspace-add{display:grid;grid-template-columns:1fr 200px auto;gap:8px;margin-bottom:16px}.workspace-list{display:grid;gap:10px}.workspace{border:1px solid var(--line);border-radius:12px;padding:14px}.workspace-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.workspace-title strong{display:block}.workspace-title small{color:var(--muted);word-break:break-all}.perm{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}.perm label{display:flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:8px;padding:5px 8px;background:var(--soft);font-size:12px}.workspace-actions{display:flex;gap:7px;margin-top:12px;flex-wrap:wrap}.origin-row{display:grid;grid-template-columns:1fr auto;gap:7px;margin-top:10px}.origin-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.origin-chip{display:flex;gap:6px;align-items:center;border:1px solid var(--line);border-radius:999px;padding:4px 8px;font-size:12px;background:var(--soft)}.origin-chip button{border:0;background:transparent;color:var(--bad);padding:0}.empty{border:1px dashed var(--line);border-radius:12px;padding:20px;text-align:center;color:var(--muted)}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.advanced{margin-top:14px}.advanced summary{cursor:pointer;color:var(--muted)}
-    @media(max-width:760px){body{font-size:16px}.layout{grid-template-columns:1fr}.nav{position:static;display:flex;gap:6px}.nav button{text-align:center}.grid,.facts{grid-template-columns:1fr}.workspace-add{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}.top-actions{width:100%;flex-wrap:wrap}.status{flex:1;justify-content:center}}
+    button,input,textarea{font:inherit}button,input{min-height:44px}button{cursor:pointer}button:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible{outline:2px solid #4f4f49;outline-offset:2px}.shell{width:min(1100px,calc(100% - 28px));margin:24px auto 50px}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.brand{display:flex;align-items:center;gap:12px}.logo{width:38px;height:38px;border-radius:11px;background:#171717;color:#fff;display:grid;place-items:center;font-weight:800}.brand h1{font-size:18px;margin:0}.brand small{display:block;color:var(--muted);margin-top:1px}.top-actions{display:flex;align-items:center;gap:8px}.status{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--panel);padding:8px 12px;border-radius:999px}.dot{width:8px;height:8px;border-radius:50%;background:#999}.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
+    .layout{display:grid;grid-template-columns:190px minmax(0,1fr);gap:16px}.nav,.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px}.nav{padding:10px;height:max-content;position:sticky;top:18px}.nav button{width:100%;border:0;background:transparent;text-align:left;padding:10px 12px;border-radius:10px;color:var(--muted);margin:2px 0}.nav button.active{background:#171717;color:#fff}.content{min-width:0}.panel{padding:22px;margin-bottom:16px}.panel h2{font-size:18px;margin:0 0 5px}.copy{color:var(--muted);margin:0 0 18px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{display:grid;gap:6px}.field.full{grid-column:1/-1}.field span{font-weight:650}.field input,.field textarea{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:#fff;outline:none}.field textarea{min-height:150px;resize:vertical;line-height:1.55}.field input:focus,.field textarea:focus{border-color:#777}.secret-row{display:grid;grid-template-columns:1fr auto;gap:8px}.secondary,.primary,.danger{border-radius:10px;padding:9px 13px;border:1px solid var(--line);background:#fff}.primary{background:#171717;border-color:#171717;color:#fff}.danger{color:var(--bad)}.actions{display:flex;align-items:center;gap:10px;margin-top:16px;flex-wrap:wrap}.hint{color:var(--muted);font-size:12px}.message{display:none;margin:0 0 16px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}.message.show{display:block}.message.error{border-color:#f0b7b2;color:var(--bad);background:#fff7f6}
+    .facts{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:18px}.fact{border:1px solid var(--line);background:var(--soft);border-radius:12px;padding:12px}.fact span{display:block;color:var(--muted);font-size:12px}.fact strong{display:block;margin-top:3px;word-break:break-all}.section{display:none}.section.active{display:block}.switch{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:var(--soft)}.switch input{width:18px;height:18px}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.advanced{margin-top:14px}.advanced summary{cursor:pointer;color:var(--muted)}
+    @media(max-width:760px){body{font-size:16px}.layout{grid-template-columns:1fr}.nav{position:static;display:flex;gap:6px}.nav button{text-align:center}.grid,.facts{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}.top-actions{width:100%;flex-wrap:wrap}.status{flex:1;justify-content:center}}
   </style>
 </head>
 <body>
@@ -27,7 +27,6 @@ const localUIHTML = `<!doctype html>
       <nav class="nav" aria-label="本地设置">
         <button class="active" data-tab="connect">连接</button>
         <button data-tab="config">本地配置</button>
-        <button data-tab="workspaces">工作区</button>
       </nav>
       <main class="content">
         <section id="tab-connect" class="section active">
@@ -54,6 +53,7 @@ const localUIHTML = `<!doctype html>
               <div class="fact"><span>Machine ID</span><strong id="machine-id">未登记</strong></div>
               <div class="fact"><span>Hub</span><strong id="machine-hub">—</strong></div>
               <div class="fact"><span>Token 是否保存</span><strong>否</strong></div>
+              <div class="fact"><span>文件权限</span><strong>当前系统用户 · 全电脑</strong></div>
               <div class="fact"><span>托盘状态</span><strong id="tray-state">读取中…</strong></div>
             </div>
           </div>
@@ -62,7 +62,7 @@ const localUIHTML = `<!doctype html>
         <section id="tab-config" class="section">
           <div class="panel">
             <h2>本地配置</h2>
-            <p class="copy">这些设置只保存在这台电脑，不同步到 Hub。每个 Node 可以有自己的工作区、权限和本地能力配置。</p>
+            <p class="copy">这些设置只保存在这台电脑，不同步到 Hub。Fast Spider 直接以当前系统用户身份操作本机文件、Shell、Git 和本地能力，不需要额外登记目录。</p>
             <form id="config-form">
               <div class="grid">
                 <label class="field full"><span>默认 Hub 地址（连接/重新登记时使用）</span><input id="config-hub" type="url" maxlength="2048"></label>
@@ -89,18 +89,6 @@ const localUIHTML = `<!doctype html>
           </div>
         </section>
 
-        <section id="tab-workspaces" class="section">
-          <div class="panel">
-            <h2>工作区与权限</h2>
-            <p class="copy">路径和权限只存在本机。MCP 只能看到 opaque workspaceId，不会得到本机绝对路径。</p>
-            <form id="workspace-add" class="workspace-add">
-              <input id="workspace-path" placeholder="本机目录，例如 V:\repos\GitHub\project" maxlength="4096" required>
-              <input id="workspace-name" placeholder="显示名称（可选）" maxlength="128">
-              <button class="primary" type="submit">添加工作区</button>
-            </form>
-            <div id="workspace-list" class="workspace-list"></div>
-          </div>
-        </section>
       </main>
     </div>
   </div>
@@ -108,7 +96,6 @@ const localUIHTML = `<!doctype html>
 (() => {
   const token = document.querySelector('meta[name="ui-token"]').content;
   const $ = (id) => document.getElementById(id);
-  const perms = ['read','write','shell','git-write','git-network','git-hooks','build'];
   let current = null;
   let busy = false;
   let configDirty = false;
@@ -164,7 +151,6 @@ const localUIHTML = `<!doctype html>
     $('config-autostart').disabled = !status.autoStartSupported;
     $('component-root').textContent = '组件目录：' + (status.componentRoot || '—');
     renderUpdate(status.update || {});
-    renderWorkspaces(status.workspaces || []);
   }
 
   function renderUpdate(update) {
@@ -180,61 +166,6 @@ const localUIHTML = `<!doctype html>
     $('update-time').textContent = update.error ? update.error : (update.lastCheckedAt ? '上次检查：' + update.lastCheckedAt : '');
     $('update-install').disabled = !update.available || update.checking;
     $('update-check').disabled = !!update.checking;
-  }
-
-  function workspaceAction(body, success) {
-    return api('/api/workspaces/action', {method:'POST', body:JSON.stringify(body)}).then(data => {
-      renderStatus(data);
-      message(success || '已保存');
-    });
-  }
-
-  function renderWorkspaces(items) {
-    const root = $('workspace-list');
-    root.replaceChildren();
-    if (!items.length) {
-      const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = '还没有本地工作区。'; root.appendChild(empty); return;
-    }
-    items.forEach(item => {
-      const card = document.createElement('div'); card.className = 'workspace';
-      const head = document.createElement('div'); head.className = 'workspace-head';
-      const title = document.createElement('div'); title.className = 'workspace-title';
-      const strong = document.createElement('strong'); strong.textContent = item.displayName;
-      const small = document.createElement('small'); small.textContent = item.root + ' · ' + item.workspaceId;
-      title.append(strong, small);
-      const toggle = document.createElement('button'); toggle.className = 'secondary'; toggle.type = 'button'; toggle.textContent = item.enabled ? '已启用' : '已停用';
-      toggle.addEventListener('click', () => workspaceAction({action:'set_enabled',workspaceId:item.workspaceId,enabled:!item.enabled}, item.enabled ? '工作区已停用' : '工作区已启用').catch(e => message(e.message,true)));
-      head.append(title, toggle); card.appendChild(head);
-
-      const permBox = document.createElement('div'); permBox.className = 'perm';
-      const checked = new Set(item.permissions || []);
-      perms.forEach(permission => {
-        const label = document.createElement('label'); const input = document.createElement('input'); input.type = 'checkbox'; input.value = permission; input.checked = checked.has(permission); input.disabled = permission === 'read';
-        const text = document.createElement('span'); text.textContent = permission; label.append(input,text); permBox.appendChild(label);
-      });
-      card.appendChild(permBox);
-
-      const actions = document.createElement('div'); actions.className = 'workspace-actions';
-      const save = document.createElement('button'); save.className='secondary'; save.type='button'; save.textContent='保存权限';
-      save.addEventListener('click', () => {
-        const values = Array.from(permBox.querySelectorAll('input:checked')).map(x => x.value);
-        workspaceAction({action:'set_permissions',workspaceId:item.workspaceId,permissions:values}, '权限已保存').catch(e => message(e.message,true));
-      });
-      const remove = document.createElement('button'); remove.className='danger'; remove.type='button'; remove.textContent='移除';
-      remove.addEventListener('click', () => { if (confirm('只从 Fast Spider 本地配置移除这个工作区，不会删除目录。继续？')) workspaceAction({action:'remove',workspaceId:item.workspaceId}, '工作区已移除').catch(e => message(e.message,true)); });
-      actions.append(save, remove); card.appendChild(actions);
-
-      const originRow = document.createElement('div'); originRow.className='origin-row';
-      const originInput = document.createElement('input'); originInput.placeholder='允许浏览器访问的本机/私网 Origin，例如 http://127.0.0.1:3000'; originInput.maxLength=2048;
-      const originAdd = document.createElement('button'); originAdd.className='secondary'; originAdd.type='button'; originAdd.textContent='添加 Origin';
-      originAdd.addEventListener('click', () => workspaceAction({action:'browser_allow',workspaceId:item.workspaceId,origin:originInput.value}, 'Origin 已保存').catch(e => message(e.message,true)));
-      originRow.append(originInput, originAdd); card.appendChild(originRow);
-      const originList = document.createElement('div'); originList.className='origin-list';
-      (item.browserOrigins || []).forEach(origin => {
-        const chip = document.createElement('span'); chip.className='origin-chip'; const text = document.createElement('span'); text.textContent=origin.origin; const del=document.createElement('button'); del.type='button'; del.textContent='×'; del.title='移除'; del.addEventListener('click',()=>workspaceAction({action:'browser_remove',workspaceId:item.workspaceId,origin:origin.origin},'Origin 已移除').catch(e=>message(e.message,true))); chip.append(text,del); originList.appendChild(chip);
-      });
-      card.appendChild(originList); root.appendChild(card);
-    });
   }
 
   async function refresh() {
@@ -288,14 +219,6 @@ const localUIHTML = `<!doctype html>
     const prompt = ownsRuntime ? '真正退出 Fast Spider Node？关闭浏览器页面不会退出；这里确认后会结束托盘和设备连接，MCP 将无法访问这台设备。' : '关闭本地界面？旧的无界面 Node 进程会继续运行。';
     if (!confirm(prompt)) return;
     try { await api('/api/exit',{method:'POST',body:'{}'}); document.body.textContent=ownsRuntime ? 'Fast Spider Node 已退出，可以关闭此窗口。' : '本地界面已关闭；旧的无界面 Node 仍在运行。'; } catch(e) { message(e.message,true); }
-  });
-
-  $('workspace-add').addEventListener('submit', async event => {
-    event.preventDefault(); if (busy) return; busy=true; const submit = event.currentTarget.querySelector('button[type="submit"]'); submit.disabled=true;
-    try {
-      const data=await api('/api/workspaces',{method:'POST',body:JSON.stringify({path:$('workspace-path').value,name:$('workspace-name').value})});
-      $('workspace-path').value=''; $('workspace-name').value=''; renderStatus(data.status); message('工作区已添加，默认只有 read 权限。');
-    } catch(e){message(e.message,true);} finally{busy=false;submit.disabled=false;}
   });
 
   refresh(); setInterval(refresh, 2000);

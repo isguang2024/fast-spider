@@ -21,24 +21,10 @@ func TestLocalBridgeCodexProductE2E(t *testing.T) {
 	if os.Getenv("FAST_SPIDER_CODEX_E2E") != "1" {
 		t.Skip("set FAST_SPIDER_CODEX_E2E=1 to run the real Local Bridge to Codex product E2E")
 	}
-
 	base := t.TempDir()
 	dataDir := filepath.Join(base, "data")
-	root := filepath.Join(base, "workspace")
+	root := filepath.Join(base, "project")
 	if err := os.MkdirAll(root, 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	workspaceStore := node.NewWorkspaceStore(dataDir)
-	workspace, err := workspaceStore.Add(root, "product-e2e")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := workspaceStore.SetPermissions(workspace.WorkspaceID, []string{
-		node.WorkspacePermissionRead,
-		node.WorkspacePermissionWrite,
-		node.WorkspacePermissionShell,
-	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -54,7 +40,6 @@ func TestLocalBridgeCodexProductE2E(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
 	bridgeDone := make(chan error, 1)
 	go func() { bridgeDone <- localbridge.Run(bridgeCtx, dataDir, client.HandleLocalCapability) }()
@@ -72,46 +57,37 @@ func TestLocalBridgeCodexProductE2E(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	providers := callAgent(t, ctx, dataDir, "", "providers.list", map[string]any{})
+	providers := callAgent(t, ctx, dataDir, "providers.list", map[string]any{})
 	if providers["providers"] == nil {
-		t.Fatalf("providers.list returned %#v", providers)
+		t.Fatalf("providers.list=%#v", providers)
 	}
-
-	created := callAgent(t, ctx, dataDir, workspace.WorkspaceID, "session.create", map[string]any{
-		"prompt": "只回复 OK，不调用任何工具。",
-	})
+	created := callAgent(t, ctx, dataDir, "session.create", map[string]any{"workingDirectory": root, "prompt": "只回复 OK，不调用任何工具。"})
 	sessionID, _ := created["sessionId"].(string)
 	turnID, _ := created["turnId"].(string)
 	model, _ := created["model"].(string)
 	if sessionID == "" || turnID == "" || model == "" {
-		t.Fatalf("session.create incomplete result %#v", created)
+		t.Fatalf("session.create=%#v", created)
 	}
 	defer func() {
 		archiveCtx, archiveCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer archiveCancel()
-		if _, err := callAgentResult(archiveCtx, dataDir, workspace.WorkspaceID, "session.archive", map[string]any{"sessionId": sessionID}); err != nil {
+		if _, err := callAgentResult(archiveCtx, dataDir, "session.archive", map[string]any{"sessionId": sessionID}); err != nil {
 			t.Errorf("archive session: %v", err)
 		}
 	}()
 
 	var final string
-waitForCompletion:
 	for ctx.Err() == nil {
-		result := callAgent(t, ctx, dataDir, workspace.WorkspaceID, "session.result", map[string]any{"sessionId": sessionID})
+		result := callAgent(t, ctx, dataDir, "session.result", map[string]any{"sessionId": sessionID})
 		status, _ := result["status"].(string)
 		final, _ = result["finalAgentMessage"].(string)
-		switch status {
-		case "completed":
-			break waitForCompletion
-		case "failed", "canceled":
+		if status == "completed" {
+			break
+		}
+		if status == "failed" || status == "canceled" {
 			t.Fatalf("turn ended %s: %#v", status, result)
 		}
-		timer := time.NewTimer(250 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-		case <-timer.C:
-		}
+		time.Sleep(250 * time.Millisecond)
 	}
 	if ctx.Err() != nil {
 		t.Fatal(ctx.Err())
@@ -119,33 +95,24 @@ waitForCompletion:
 	if !strings.Contains(strings.ToUpper(final), "OK") {
 		t.Fatalf("unexpected final message %q", final)
 	}
-	watch := callAgent(t, ctx, dataDir, workspace.WorkspaceID, "session.watch", map[string]any{
-		"sessionId": sessionID,
-		"cursor":    0,
-	})
+	watch := callAgent(t, ctx, dataDir, "session.watch", map[string]any{"sessionId": sessionID, "cursor": 0})
 	if watch["events"] == nil {
-		t.Fatalf("session.watch returned %#v", watch)
+		t.Fatalf("session.watch=%#v", watch)
 	}
 	t.Logf("PRODUCT_E2E_OK model=%s sessionId=%s turnId=%s final=%q", model, sessionID, turnID, final)
 }
 
-func callAgent(t *testing.T, ctx context.Context, dataDir, workspaceID, action string, params map[string]any) map[string]any {
+func callAgent(t *testing.T, ctx context.Context, dataDir, action string, params map[string]any) map[string]any {
 	t.Helper()
-	result, err := callAgentResult(ctx, dataDir, workspaceID, action, params)
+	result, err := callAgentResult(ctx, dataDir, action, params)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return result
 }
-
-func callAgentResult(ctx context.Context, dataDir, workspaceID, action string, params map[string]any) (map[string]any, error) {
+func callAgentResult(ctx context.Context, dataDir, action string, params map[string]any) (map[string]any, error) {
 	for {
-		response, err := localbridge.Call(ctx, dataDir, protocolv1.CapabilityRequest{
-			WorkspaceId: workspaceID,
-			Capability:  "agent.control",
-			Action:      action,
-			Params:      params,
-		})
+		response, err := localbridge.Call(ctx, dataDir, protocolv1.CapabilityRequest{Capability: "agent.control", Action: action, Params: params})
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, err

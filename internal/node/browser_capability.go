@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-func (c *Client) browserControl(ctx context.Context, workspaceID, action string, params map[string]any) (map[string]any, error) {
+func (c *Client) browserControl(ctx context.Context, action string, params map[string]any) (map[string]any, error) {
 	if c.browser == nil {
 		return nil, ErrBrowserUnavailable
 	}
@@ -14,10 +14,10 @@ func (c *Client) browserControl(ctx context.Context, workspaceID, action string,
 		return nil, err
 	}
 	if action != "screenshot" {
-		return c.browser.Execute(ctx, workspaceID, action, safeParams)
+		return c.browser.Execute(ctx, action, safeParams)
 	}
-	return c.browser.ExecuteScreenshot(ctx, workspaceID, safeParams, func(path, logicalName, contentType string) (map[string]any, error) {
-		artifact, err := c.uploadArtifactPath(ctx, workspaceID, "", logicalName, contentType, path)
+	return c.browser.ExecuteScreenshot(ctx, safeParams, func(path, logicalName, contentType string) (map[string]any, error) {
+		artifact, err := c.uploadArtifactPath(ctx, "", logicalName, contentType, path)
 		if err != nil {
 			return nil, err
 		}

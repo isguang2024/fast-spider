@@ -51,10 +51,7 @@ type windowSummary struct {
 	ExpiresAt time.Time `json:"expiresAt"`
 }
 
-func (c *Client) screenshotCapture(ctx context.Context, workspaceID, action string, params map[string]any) (map[string]any, error) {
-	if _, err := NewWorkspaceStore(c.cfg.DataDir).Resolve(workspaceID); err != nil {
-		return nil, err
-	}
+func (c *Client) screenshotCapture(ctx context.Context, action string, params map[string]any) (map[string]any, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -79,7 +76,7 @@ func (c *Client) screenshotCapture(ctx context.Context, workspaceID, action stri
 		items := make([]windowSummary, 0, len(windows))
 		for _, window := range windows {
 			items = append(items, windowSummary{
-				WindowID: makeWindowToken(c.windowTokenKey, workspaceID, window.Handle, windowIdentity(window), now), Title: window.Title,
+				WindowID: makeWindowToken(c.windowTokenKey, window.Handle, windowIdentity(window), now), Title: window.Title,
 				X: window.Bounds.Min.X, Y: window.Bounds.Min.Y, Width: window.Bounds.Dx(), Height: window.Bounds.Dy(), ExpiresAt: now.Add(windowTokenTTL),
 			})
 		}
@@ -89,7 +86,7 @@ func (c *Client) screenshotCapture(ctx context.Context, workspaceID, action stri
 		if err := decodeParams(params, &input); err != nil {
 			return nil, fmt.Errorf("invalid screenshot params: %w", err)
 		}
-		handle, expectedIdentity, err := parseWindowToken(c.windowTokenKey, workspaceID, input.WindowID, time.Now().UTC())
+		handle, expectedIdentity, err := parseWindowToken(c.windowTokenKey, input.WindowID, time.Now().UTC())
 		if err != nil {
 			return nil, err
 		}
@@ -100,7 +97,7 @@ func (c *Client) screenshotCapture(ctx context.Context, workspaceID, action stri
 		if windowIdentity(info) != expectedIdentity {
 			return nil, ErrWindowTokenInvalid
 		}
-		return c.captureWindowArtifact(ctx, workspaceID, input, info)
+		return c.captureWindowArtifact(ctx, input, info)
 	case "desktop", "display":
 		var input screenshotCaptureParams
 		if err := decodeParams(params, &input); err != nil {
@@ -122,13 +119,13 @@ func (c *Client) screenshotCapture(ctx context.Context, workspaceID, action stri
 				bounds = bounds.Union(display)
 			}
 		}
-		return c.captureRectArtifact(ctx, workspaceID, action, input, bounds)
+		return c.captureRectArtifact(ctx, action, input, bounds)
 	default:
 		return nil, fmt.Errorf("unsupported screenshot action")
 	}
 }
 
-func (c *Client) captureWindowArtifact(ctx context.Context, workspaceID string, input screenshotCaptureParams, window nativeWindowInfo) (map[string]any, error) {
+func (c *Client) captureWindowArtifact(ctx context.Context, input screenshotCaptureParams, window nativeWindowInfo) (map[string]any, error) {
 	select {
 	case c.screenshotSem <- struct{}{}:
 		defer func() { <-c.screenshotSem }()
@@ -229,11 +226,11 @@ func (c *Client) captureWindowArtifact(ctx context.Context, workspaceID string, 
 			return nil, ErrScreenshotTooLarge
 		}
 	}
-	artifact, err := c.uploadArtifactPath(ctx, workspaceID, "", filepath.Base(finalPath), contentType, finalPath)
+	artifact, err := c.uploadArtifactPath(ctx, "", filepath.Base(finalPath), contentType, finalPath)
 	if err != nil {
 		return nil, err
 	}
-	c.cfg.Logger.Info("window screenshot captured", "workspaceId", workspaceID, "windowId", input.WindowID, "width", config.Width, "height", config.Height, "artifactId", artifact.ArtifactID)
+	c.cfg.Logger.Info("window screenshot captured", "windowId", input.WindowID, "width", config.Width, "height", config.Height, "artifactId", artifact.ArtifactID)
 	return map[string]any{
 		"target": "window", "windowId": input.WindowID, "title": window.Title,
 		"x": window.Bounds.Min.X, "y": window.Bounds.Min.Y, "width": config.Width, "height": config.Height,
@@ -257,7 +254,7 @@ func activeDisplays() ([]image.Rectangle, error) {
 	return out, nil
 }
 
-func (c *Client) captureRectArtifact(ctx context.Context, workspaceID, target string, input screenshotCaptureParams, bounds image.Rectangle) (map[string]any, error) {
+func (c *Client) captureRectArtifact(ctx context.Context, target string, input screenshotCaptureParams, bounds image.Rectangle) (map[string]any, error) {
 	select {
 	case c.screenshotSem <- struct{}{}:
 		defer func() { <-c.screenshotSem }()
@@ -338,11 +335,11 @@ func (c *Client) captureRectArtifact(ctx context.Context, workspaceID, target st
 	if info.Size() <= 0 || info.Size() > maxDesktopScreenshotBytes {
 		return nil, ErrScreenshotTooLarge
 	}
-	artifact, err := c.uploadArtifactPath(ctx, workspaceID, "", filepath.Base(path), contentType, path)
+	artifact, err := c.uploadArtifactPath(ctx, "", filepath.Base(path), contentType, path)
 	if err != nil {
 		return nil, err
 	}
-	c.cfg.Logger.Info("desktop screenshot captured", "workspaceId", workspaceID, "target", target, "width", bounds.Dx(), "height", bounds.Dy(), "artifactId", artifact.ArtifactID)
+	c.cfg.Logger.Info("desktop screenshot captured", "target", target, "width", bounds.Dx(), "height", bounds.Dy(), "artifactId", artifact.ArtifactID)
 	return map[string]any{
 		"target":      target,
 		"x":           bounds.Min.X,

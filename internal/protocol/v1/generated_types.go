@@ -16,7 +16,6 @@ type CapabilityRequest struct {
 	Params      map[string]any `json:"params"`
 	RequestId   string         `json:"requestId"`
 	Timestamp   string         `json:"timestamp"`
-	WorkspaceId string         `json:"workspaceId,omitempty"`
 }
 
 type CapabilityResponse struct {
@@ -97,12 +96,4 @@ type SessionEstablished struct {
 	MessageType      string `json:"messageType"`
 	ProtocolVersion  string `json:"protocolVersion"`
 	Timestamp        string `json:"timestamp"`
-}
-
-type WorkspaceSummary struct {
-	DisplayName string   `json:"displayName"`
-	Enabled     bool     `json:"enabled"`
-	Permissions []string `json:"permissions"`
-	Revision    int64    `json:"revision"`
-	WorkspaceId string   `json:"workspaceId"`
 }

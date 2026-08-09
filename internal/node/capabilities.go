@@ -92,41 +92,39 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 	var result any
 	var err error
 	switch req.Capability + "/" + req.Action {
-	case "workspace.registry/list":
-		result, err = c.workspaceList()
 	case "file.read/read":
-		result, err = c.fileRead(ctx, req.WorkspaceId, req.Params)
+		result, err = c.fileRead(ctx, req.Params)
 	case "file.write/edit":
-		result, err = c.fileEdit(ctx, req.WorkspaceId, req.Params)
+		result, err = c.fileEdit(ctx, req.Params)
 	case "code.search/search":
-		result, err = c.codeSearch(ctx, req.WorkspaceId, req.Params)
+		result, err = c.codeSearch(ctx, req.Params)
 	case "shell.exec/run":
-		result, err = c.shellRun(ctx, req.WorkspaceId, req.Params)
+		result, err = c.shellRun(ctx, req.Params)
 	case "job.control/watch":
-		result, err = c.jobWatch(ctx, req.WorkspaceId, req.Params)
+		result, err = c.jobWatch(ctx, req.Params)
 	case "job.control/cancel":
-		result, err = c.jobCancel(ctx, req.WorkspaceId, req.Params)
+		result, err = c.jobCancel(ctx, req.Params)
 	case "git.repository/status", "git.repository/diff", "git.repository/stagedDiff", "git.repository/log", "git.repository/show", "git.repository/branches", "git.repository/currentBranch", "git.repository/worktrees", "git.repository/add", "git.repository/commit", "git.repository/fetch", "git.repository/pull", "git.repository/push", "git.repository/createWorktree", "git.repository/deleteWorktree":
 		params := cloneParams(req.Params)
 		params["action"] = req.Action
-		result, err = c.gitControl(ctx, req.WorkspaceId, params)
-	case "build.profile/list", "build.profile/run":
+		result, err = c.gitControl(ctx, params)
+	case "build.exec/run":
 		params := cloneParams(req.Params)
 		params["action"] = req.Action
-		result, err = c.buildControl(ctx, req.WorkspaceId, params)
+		result, err = c.buildControl(ctx, params)
 	case "artifact.store/uploadFile":
-		result, err = c.artifactUploadFile(ctx, req.WorkspaceId, req.Params)
+		result, err = c.artifactUploadFile(ctx, req.Params)
 	case "artifact.store/uploadJobLog":
-		result, err = c.artifactUploadJobLog(ctx, req.WorkspaceId, req.Params)
+		result, err = c.artifactUploadJobLog(ctx, req.Params)
 	case "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/page.close", "browser.automation/pages.list", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/wait", "browser.automation/snapshot", "browser.automation/screenshot", "browser.automation/events":
-		result, err = c.browserControl(ctx, req.WorkspaceId, req.Action, req.Params)
+		result, err = c.browserControl(ctx, req.Action, req.Params)
 	case "screenshot.capture/listDisplays", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/listWindows", "screenshot.capture/window":
-		result, err = c.screenshotCapture(ctx, req.WorkspaceId, req.Action, req.Params)
+		result, err = c.screenshotCapture(ctx, req.Action, req.Params)
 	case "agent.control/providers.list", "agent.control/models.list", "agent.control/projects.list", "agent.control/session.list", "agent.control/session.get", "agent.control/session.create", "agent.control/session.send", "agent.control/session.watch", "agent.control/session.cancel", "agent.control/session.result", "agent.control/session.rename", "agent.control/session.archive":
 		if c.agent == nil {
 			err = ErrAgentProviderUnavailable
 		} else {
-			result, err = c.agent.Control(ctx, req.WorkspaceId, req.Action, req.Params)
+			result, err = c.agent.Control(ctx, req.Action, req.Params)
 		}
 	default:
 		response.Error = protocolError("UNSUPPORTED_CAPABILITY", "capability or action is not available", false)
@@ -147,15 +145,7 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 	return response
 }
 
-func (c *Client) workspaceList() (map[string]any, error) {
-	workspaces, err := NewWorkspaceStore(c.cfg.DataDir).List()
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{"workspaces": workspaces}, nil
-}
-
-func (c *Client) fileRead(ctx context.Context, workspaceID string, params map[string]any) (fileReadResult, error) {
+func (c *Client) fileRead(ctx context.Context, params map[string]any) (fileReadResult, error) {
 	if err := ctx.Err(); err != nil {
 		return fileReadResult{}, err
 	}
@@ -175,11 +165,7 @@ func (c *Client) fileRead(ctx context.Context, workspaceID string, params map[st
 	if input.Limit > maxFileReadBytes {
 		return fileReadResult{}, ErrReadLimit
 	}
-	workspace, err := NewWorkspaceStore(c.cfg.DataDir).Resolve(workspaceID)
-	if err != nil {
-		return fileReadResult{}, err
-	}
-	target, err := resolveWorkspacePath(workspace.Root, input.Path)
+	target, err := ResolveMachinePath(input.Path)
 	if err != nil {
 		return fileReadResult{}, err
 	}
@@ -251,13 +237,13 @@ func (c *Client) fileRead(ctx context.Context, workspaceID string, params map[st
 		fileSHA256 = sha256String(all)
 	}
 	return fileReadResult{
-		Path: filepath.ToSlash(filepath.Clean(input.Path)), Content: string(buf), Offset: input.Offset,
+		Path: filepath.Clean(target), Content: string(buf), Offset: input.Offset,
 		BytesRead: int64(len(buf)), Size: info.Size(), Truncated: truncated || input.Offset+int64(len(buf)) < info.Size(),
 		ChunkSHA256: "sha256:" + hex.EncodeToString(sum[:]), FileSHA256: fileSHA256, Encoding: "utf-8",
 	}, nil
 }
 
-func (c *Client) codeSearch(ctx context.Context, workspaceID string, params map[string]any) (codeSearchResult, error) {
+func (c *Client) codeSearch(ctx context.Context, params map[string]any) (codeSearchResult, error) {
 	var input codeSearchParams
 	if err := decodeParams(params, &input); err != nil {
 		return codeSearchResult{}, fmt.Errorf("invalid params: %w", err)
@@ -272,16 +258,12 @@ func (c *Client) codeSearch(ctx context.Context, workspaceID string, params map[
 	if input.Limit < 1 || input.Limit > maxSearchLimit {
 		return codeSearchResult{}, fmt.Errorf("limit must be between 1 and %d", maxSearchLimit)
 	}
-	workspace, err := NewWorkspaceStore(c.cfg.DataDir).Resolve(workspaceID)
+	if strings.TrimSpace(input.Path) == "" {
+		return codeSearchResult{}, fmt.Errorf("absolute search path is required")
+	}
+	searchRoot, err := ResolveMachinePath(input.Path)
 	if err != nil {
 		return codeSearchResult{}, err
-	}
-	searchRoot := workspace.Root
-	if input.Path != "" && input.Path != "." {
-		searchRoot, err = resolveWorkspacePath(workspace.Root, input.Path)
-		if err != nil {
-			return codeSearchResult{}, err
-		}
 	}
 	info, err := os.Stat(searchRoot)
 	if err != nil {
@@ -320,7 +302,7 @@ func (c *Client) codeSearch(ctx context.Context, workspaceID string, params map[
 			return nil
 		}
 		result.ScannedFiles++
-		matches, binary, err := searchFile(path, workspace.Root, matcher, input.Limit-len(result.Matches))
+		matches, binary, err := searchFile(path, searchRoot, matcher, input.Limit-len(result.Matches))
 		if err != nil || binary {
 			return nil
 		}
@@ -477,18 +459,14 @@ func capabilityError(err error) *protocolv1.ProtocolError {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		return protocolError("DEADLINE_EXCEEDED", "request deadline exceeded or canceled", true)
-	case errors.Is(err, ErrWorkspaceNotFound):
-		return protocolError("WORKSPACE_NOT_FOUND", "workspace was not found", false)
-	case errors.Is(err, ErrWorkspaceDisabled):
-		return protocolError("WORKSPACE_DISABLED", "workspace is disabled", false)
-	case errors.Is(err, ErrPathOutsideWorkspace):
-		return protocolError("PATH_OUTSIDE_WORKSPACE", "path is outside the authorized workspace", false)
+	case errors.Is(err, ErrAbsolutePathRequired):
+		return protocolError("ABSOLUTE_PATH_REQUIRED", "an absolute local path is required", false)
 	case errors.Is(err, os.ErrNotExist):
 		return protocolError("NOT_FOUND", "path was not found", false)
 	case errors.Is(err, ErrReadLimit):
 		return protocolError("OUTPUT_LIMIT", "requested operation exceeds the allowed size limit", false)
 	case errors.Is(err, ErrPermissionDenied):
-		return protocolError("PERMISSION_DENIED", "workspace does not allow this operation", false)
+		return protocolError("PERMISSION_DENIED", "the operating system denied this operation", false)
 	case errors.Is(err, ErrRevisionConflict):
 		return protocolError("REVISION_CONFLICT", "file changed since it was read", false)
 	case errors.Is(err, ErrEditNotUnique):
@@ -506,23 +484,19 @@ func capabilityError(err error) *protocolv1.ProtocolError {
 	case errors.Is(err, ErrGitNotFound):
 		return protocolError("GIT_NOT_FOUND", "system Git is not available", false)
 	case errors.Is(err, ErrNotRepository):
-		return protocolError("NOT_A_REPOSITORY", "workspace root is not a Git repository", false)
+		return protocolError("NOT_A_REPOSITORY", "repositoryPath is not a Git repository root", false)
 	case errors.Is(err, ErrGitHooksDenied):
 		return protocolError("GIT_HOOKS_DISABLED", "active Git hooks or executable Git filters require local git-hooks permission", false)
 	case errors.Is(err, ErrGitOutputTooLarge):
 		return protocolError("OUTPUT_LIMIT", "Git output exceeds the inline limit", false)
 	case errors.Is(err, ErrBrowserUnavailable):
 		return protocolError("BROWSER_UNAVAILABLE", "browser sidecar or managed browser runtime is not installed", false)
-	case errors.Is(err, ErrBrowserOriginDenied), errors.Is(err, ErrBrowserOriginUnsafe):
-		return protocolError("BROWSER_NETWORK_DENIED", "browser origin is not authorized by local policy", false)
-	case errors.Is(err, ErrBrowserDNSChanged):
-		return protocolError("BROWSER_DNS_CHANGED", "browser origin DNS no longer matches the locally pinned addresses", false)
 	case errors.Is(err, ErrWindowTokenInvalid):
 		return protocolError("WINDOW_NOT_FOUND", "window ID is invalid or expired", false)
 	case errors.Is(err, ErrAgentProviderUnavailable):
 		return protocolError("AGENT_PROVIDER_UNAVAILABLE", "agent provider is unavailable on this Node", true)
 	case errors.Is(err, ErrAgentSessionNotFound):
-		return protocolError("AGENT_SESSION_NOT_FOUND", "agent session was not found in this Workspace", false)
+		return protocolError("AGENT_SESSION_NOT_FOUND", "agent session was not found on this Node", false)
 	case errors.Is(err, ErrAgentSessionBusy):
 		return protocolError("AGENT_SESSION_BUSY", "agent session already has an active run", true)
 	case errors.Is(err, ErrScreenshotUnavailable):

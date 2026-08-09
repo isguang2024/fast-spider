@@ -8,7 +8,7 @@ import (
 // AgentController is the narrow provider boundary used by the Node capability
 // dispatcher. The provider implementation lives outside this package.
 type AgentController interface {
-	Control(context.Context, string, string, map[string]any) (map[string]any, error)
+	Control(context.Context, string, map[string]any) (map[string]any, error)
 	Close(context.Context) error
 }
 

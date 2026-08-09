@@ -108,18 +108,6 @@
         "timestamp": {"type": "string", "format": "date-time"}
       }
     },
-    "WorkspaceSummary": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["workspaceId", "displayName", "enabled", "revision", "permissions"],
-      "properties": {
-        "workspaceId": {"type": "string", "pattern": "^ws_[A-Za-z0-9_-]{20,64}$"},
-        "displayName": {"type": "string", "minLength": 1, "maxLength": 128},
-        "enabled": {"type": "boolean"},
-        "revision": {"type": "integer", "minimum": 1},
-        "permissions": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 8}
-      }
-    },
     "CapabilityRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -129,7 +117,6 @@
         "requestId": {"type": "string", "minLength": 12, "maxLength": 128},
         "capability": {"type": "string", "minLength": 1, "maxLength": 128},
         "action": {"type": "string", "minLength": 1, "maxLength": 64},
-        "workspaceId": {"type": "string", "maxLength": 128},
         "params": {"type": "object"},
         "deadline": {"type": "string", "format": "date-time"},
         "timestamp": {"type": "string", "format": "date-time"}

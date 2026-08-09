@@ -2,7 +2,6 @@ package node
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -23,7 +22,7 @@ func TestShellConcurrentIdempotentStart(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			result, err := jobs.StartShell("ws_test", cwd, argv, 20*time.Second, key, nil)
+			result, err := jobs.StartShell(cwd, argv, 20*time.Second, key)
 			results <- result
 			errs <- err
 		}()
@@ -59,20 +58,17 @@ func TestShellConcurrentIdempotentStart(t *testing.T) {
 	}
 }
 
-func TestJobWorkspaceScopeRejectsCrossWorkspaceWatchAndCancel(t *testing.T) {
+func TestJobWatchAndCancelUseJobIDOnly(t *testing.T) {
 	jobs := NewJobManager()
 	defer func() { _ = jobs.CancelAll(context.Background()) }()
-	job, err := jobs.StartShell("workspace-a", t.TempDir(), shellSleepArgv(), 20*time.Second, "idem_workspace_scope_001", nil)
+	job, err := jobs.StartShell(t.TempDir(), shellSleepArgv(), 20*time.Second, "idem_job_scope_001")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := jobs.WatchWorkspace(context.Background(), "workspace-b", job.JobID, 0, 0); !errors.Is(err, ErrJobNotFound) {
-		t.Fatalf("cross-workspace watch error=%v", err)
+	if _, err := jobs.Watch(context.Background(), job.JobID, 0, 0); err != nil {
+		t.Fatalf("watch error=%v", err)
 	}
-	if _, err := jobs.CancelWorkspace(context.Background(), "workspace-b", job.JobID); !errors.Is(err, ErrJobNotFound) {
-		t.Fatalf("cross-workspace cancel error=%v", err)
-	}
-	if _, err := jobs.WatchWorkspace(context.Background(), "workspace-a", job.JobID, 0, 0); err != nil {
-		t.Fatalf("authorized workspace watch error=%v", err)
+	if _, err := jobs.Cancel(context.Background(), job.JobID); err != nil {
+		t.Fatalf("cancel error=%v", err)
 	}
 }

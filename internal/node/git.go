@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 	"github.com/isguang2024/fast-spider/internal/security"
 )
 
@@ -30,26 +29,27 @@ var (
 )
 
 type gitControlParams struct {
-	Action              string   `json:"action"`
-	Revision            string   `json:"revision,omitempty"`
-	Paths               []string `json:"paths,omitempty"`
-	Message             string   `json:"message,omitempty"`
-	Remote              string   `json:"remote,omitempty"`
-	Branch              string   `json:"branch,omitempty"`
-	WorktreeWorkspaceID string   `json:"worktreeWorkspaceId,omitempty"`
-	IdempotencyKey      string   `json:"idempotencyKey,omitempty"`
+	Action         string   `json:"action"`
+	RepositoryPath string   `json:"repositoryPath"`
+	Revision       string   `json:"revision,omitempty"`
+	Paths          []string `json:"paths,omitempty"`
+	Message        string   `json:"message,omitempty"`
+	Remote         string   `json:"remote,omitempty"`
+	Branch         string   `json:"branch,omitempty"`
+	WorktreePath   string   `json:"worktreePath,omitempty"`
+	IdempotencyKey string   `json:"idempotencyKey,omitempty"`
 }
 
 type gitControlResult struct {
-	Action           string                       `json:"action"`
-	Output           string                       `json:"output,omitempty"`
-	Truncated        bool                         `json:"truncated,omitempty"`
-	ArtifactID       string                       `json:"artifactId,omitempty"`
-	Job              *JobSnapshot                 `json:"job,omitempty"`
-	ManagedWorkspace *protocolv1.WorkspaceSummary `json:"managedWorkspace,omitempty"`
+	Action       string       `json:"action"`
+	Output       string       `json:"output,omitempty"`
+	Truncated    bool         `json:"truncated,omitempty"`
+	ArtifactID   string       `json:"artifactId,omitempty"`
+	Job          *JobSnapshot `json:"job,omitempty"`
+	WorktreePath string       `json:"worktreePath,omitempty"`
 }
 
-func (c *Client) gitControl(ctx context.Context, workspaceID string, params map[string]any) (gitControlResult, error) {
+func (c *Client) gitControl(ctx context.Context, params map[string]any) (gitControlResult, error) {
 	var input gitControlParams
 	if err := decodeParams(params, &input); err != nil {
 		return gitControlResult{}, fmt.Errorf("invalid params: %w", err)
@@ -58,24 +58,26 @@ func (c *Client) gitControl(ctx context.Context, workspaceID string, params map[
 	if input.Action == "" {
 		return gitControlResult{}, fmt.Errorf("action is required")
 	}
-	store := NewWorkspaceStore(c.cfg.DataDir)
-	workspace, err := store.Resolve(workspaceID)
+	if input.RepositoryPath == "" {
+		return gitControlResult{}, fmt.Errorf("absolute repositoryPath is required")
+	}
+	repositoryPath, err := ResolveMachinePath(input.RepositoryPath)
 	if err != nil {
 		return gitControlResult{}, err
 	}
-	if err := ensureGitRepository(ctx, workspace.Root); err != nil {
+	if err := ensureGitRepository(ctx, repositoryPath); err != nil {
 		return gitControlResult{}, err
 	}
 
 	switch input.Action {
 	case "status":
-		return c.runGitRead(ctx, workspaceID, workspace.Root, input.Action, []string{"status", "--short", "--branch", "--untracked-files=normal"})
+		return c.runGitRead(ctx, repositoryPath, input.Action, []string{"status", "--short", "--branch", "--untracked-files=normal"})
 	case "diff":
-		return c.runGitRead(ctx, workspaceID, workspace.Root, input.Action, []string{"diff", "--no-ext-diff", "--no-textconv", "--no-color", "--"})
+		return c.runGitRead(ctx, repositoryPath, input.Action, []string{"diff", "--no-ext-diff", "--no-textconv", "--no-color", "--"})
 	case "stagedDiff":
-		return c.runGitRead(ctx, workspaceID, workspace.Root, input.Action, []string{"diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-color", "--"})
+		return c.runGitRead(ctx, repositoryPath, input.Action, []string{"diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-color", "--"})
 	case "log":
-		return c.runGitRead(ctx, workspaceID, workspace.Root, input.Action, []string{"log", "-n", "50", "--date=iso-strict", "--pretty=format:%H%x09%aI%x09%an%x09%s"})
+		return c.runGitRead(ctx, repositoryPath, input.Action, []string{"log", "-n", "50", "--date=iso-strict", "--pretty=format:%H%x09%aI%x09%an%x09%s"})
 	case "show":
 		revision := input.Revision
 		if revision == "" {
@@ -84,17 +86,14 @@ func (c *Client) gitControl(ctx context.Context, workspaceID string, params map[
 		if err := validateGitRef(revision); err != nil {
 			return gitControlResult{}, err
 		}
-		return c.runGitRead(ctx, workspaceID, workspace.Root, input.Action, []string{"show", "--no-ext-diff", "--no-textconv", "--no-color", "--format=fuller", "--stat", "--patch", revision, "--"})
+		return c.runGitRead(ctx, repositoryPath, input.Action, []string{"show", "--no-ext-diff", "--no-textconv", "--no-color", "--format=fuller", "--stat", "--patch", revision, "--"})
 	case "branches":
-		return c.runGitRead(ctx, workspaceID, workspace.Root, input.Action, []string{"branch", "--format=%(refname:short)%09%(objectname:short)%09%(upstream:short)"})
+		return c.runGitRead(ctx, repositoryPath, input.Action, []string{"branch", "--format=%(refname:short)%09%(objectname:short)%09%(upstream:short)"})
 	case "currentBranch":
-		return c.runGitRead(ctx, workspaceID, workspace.Root, input.Action, []string{"branch", "--show-current"})
+		return c.runGitRead(ctx, repositoryPath, input.Action, []string{"branch", "--show-current"})
 	case "worktrees":
-		return c.runGitRead(ctx, workspaceID, workspace.Root, input.Action, []string{"worktree", "list", "--porcelain"})
+		return c.runGitRead(ctx, repositoryPath, input.Action, []string{"worktree", "list", "--porcelain"})
 	case "add":
-		if !workspace.Allows(WorkspacePermissionGitWrite) {
-			return gitControlResult{}, ErrPermissionDenied
-		}
 		paths, err := validateGitPaths(input.Paths)
 		if err != nil {
 			return gitControlResult{}, err
@@ -102,78 +101,19 @@ func (c *Client) gitControl(ctx context.Context, workspaceID string, params map[
 		if len(paths) == 0 {
 			return gitControlResult{}, fmt.Errorf("paths are required for git add")
 		}
-		if !workspace.Allows(WorkspacePermissionGitHooks) {
-			usesFilters, err := gitPathsUseFilters(ctx, workspace.Root, paths)
-			if err != nil {
-				return gitControlResult{}, err
-			}
-			if usesFilters {
-				return gitControlResult{}, ErrGitHooksDenied
-			}
-		}
-		args := append([]string{"add", "--"}, paths...)
-		return c.runGitWrite(ctx, workspace.Root, input.Action, args)
+		return c.runGitWrite(ctx, repositoryPath, input.Action, append([]string{"add", "--"}, paths...))
 	case "commit":
-		if !workspace.Allows(WorkspacePermissionGitWrite) {
-			return gitControlResult{}, ErrPermissionDenied
-		}
 		message := strings.TrimSpace(input.Message)
 		if message == "" || len(message) > 4096 {
 			return gitControlResult{}, fmt.Errorf("commit message is required and must be at most 4096 bytes")
 		}
-		if !workspace.Allows(WorkspacePermissionGitHooks) {
-			hasHooks, err := activeGitHooks(ctx, workspace.Root)
-			if err != nil {
-				return gitControlResult{}, err
-			}
-			hasTransforms, err := hasExecutableGitFilters(ctx, workspace.Root)
-			if err != nil {
-				return gitControlResult{}, err
-			}
-			if hasHooks || hasTransforms {
-				return gitControlResult{}, ErrGitHooksDenied
-			}
-		}
-		return c.runGitWrite(ctx, workspace.Root, input.Action, []string{"commit", "--no-gpg-sign", "-m", message})
+		return c.runGitWrite(ctx, repositoryPath, input.Action, []string{"commit", "--no-gpg-sign", "-m", message})
 	case "fetch", "pull", "push":
-		if !workspace.Allows(WorkspacePermissionGitNetwork) {
-			return gitControlResult{}, ErrPermissionDenied
-		}
-		if input.Action == "pull" && !workspace.Allows(WorkspacePermissionGitWrite) {
-			return gitControlResult{}, ErrPermissionDenied
-		}
-		if (input.Action == "pull" || input.Action == "push") && !workspace.Allows(WorkspacePermissionGitHooks) {
-			hasHooks, err := activeGitHooks(ctx, workspace.Root)
-			if err != nil {
-				return gitControlResult{}, err
-			}
-			if hasHooks {
-				return gitControlResult{}, ErrGitHooksDenied
-			}
-			if input.Action == "pull" {
-				hasFilters, err := hasExecutableGitFilters(ctx, workspace.Root)
-				if err != nil {
-					return gitControlResult{}, err
-				}
-				if hasFilters {
-					return gitControlResult{}, ErrGitHooksDenied
-				}
-			}
-		}
 		if input.IdempotencyKey == "" || input.Remote == "" {
 			return gitControlResult{}, fmt.Errorf("remote and idempotencyKey are required for git network actions")
 		}
-		if err := validateConfiguredRemote(ctx, workspace.Root, input.Remote, c.cfg.DataDir); err != nil {
+		if err := validateConfiguredRemote(ctx, repositoryPath, input.Remote, c.cfg.DataDir); err != nil {
 			return gitControlResult{}, err
-		}
-		if !workspace.Allows(WorkspacePermissionGitHooks) {
-			hasExecConfig, err := hasExecutableGitNetworkConfig(ctx, workspace.Root, input.Remote)
-			if err != nil {
-				return gitControlResult{}, err
-			}
-			if hasExecConfig {
-				return gitControlResult{}, ErrGitHooksDenied
-			}
 		}
 		args := []string{input.Action, input.Remote}
 		if input.Branch != "" {
@@ -183,103 +123,66 @@ func (c *Client) gitControl(ctx context.Context, workspaceID string, params map[
 			args = append(args, input.Branch)
 		}
 		gitArgv := append([]string{"git", "-c", "color.ui=false", "-c", "core.pager=cat", "-c", "core.fsmonitor=false", "-c", "diff.external=", "-c", "interactive.diffFilter="}, args...)
-		job, err := c.jobs.StartShell(workspaceID, workspace.Root, gitArgv, gitNetworkTimeout, input.IdempotencyKey, func() bool {
-			current, err := store.Resolve(workspaceID)
-			if err != nil || !current.Allows(WorkspacePermissionGitNetwork) {
-				return false
-			}
-			return input.Action != "pull" || current.Allows(WorkspacePermissionGitWrite)
-		})
+		job, err := c.jobs.StartShell(repositoryPath, gitArgv, gitNetworkTimeout, input.IdempotencyKey)
 		if err != nil {
 			return gitControlResult{}, err
 		}
 		return gitControlResult{Action: input.Action, Job: &job}, nil
 	case "createWorktree":
-		if !workspace.Allows(WorkspacePermissionGitWrite) {
-			return gitControlResult{}, ErrPermissionDenied
-		}
-		if !workspace.Allows(WorkspacePermissionGitHooks) {
-			hasHooks, err := activeGitHooks(ctx, workspace.Root)
-			if err != nil {
-				return gitControlResult{}, err
-			}
-			hasFilters, filterErr := hasExecutableGitFilters(ctx, workspace.Root)
-			if filterErr != nil {
-				return gitControlResult{}, filterErr
-			}
-			if hasHooks || hasFilters {
-				return gitControlResult{}, ErrGitHooksDenied
-			}
-		}
 		if input.Branch == "" {
 			return gitControlResult{}, fmt.Errorf("branch is required")
 		}
 		if err := validateGitRef(input.Branch); err != nil {
 			return gitControlResult{}, err
 		}
-		folderID, err := security.RandomOpaque("wt_")
-		if err != nil {
-			return gitControlResult{}, err
-		}
-		managedRoot := filepath.Join(c.cfg.DataDir, "worktrees", workspaceID)
-		if err := os.MkdirAll(managedRoot, 0o700); err != nil {
-			return gitControlResult{}, err
-		}
-		entries, err := os.ReadDir(managedRoot)
-		if err != nil {
-			return gitControlResult{}, err
-		}
-		managedCount := 0
-		for _, entry := range entries {
-			if entry.IsDir() {
-				managedCount++
+		target := strings.TrimSpace(input.WorktreePath)
+		if target == "" {
+			folderID, err := security.RandomOpaque("wt_")
+			if err != nil {
+				return gitControlResult{}, err
 			}
+			managedRoot := filepath.Join(c.cfg.DataDir, "worktrees")
+			if err := os.MkdirAll(managedRoot, 0o700); err != nil {
+				return gitControlResult{}, err
+			}
+			target = filepath.Join(managedRoot, folderID)
+		} else {
+			if !filepath.IsAbs(target) || strings.IndexByte(target, 0) >= 0 {
+				return gitControlResult{}, ErrAbsolutePathRequired
+			}
+			target = filepath.Clean(target)
+			parent, err := ResolveMachinePath(filepath.Dir(target))
+			if err != nil {
+				return gitControlResult{}, err
+			}
+			target = filepath.Join(parent, filepath.Base(target))
 		}
-		if managedCount >= 16 {
-			return gitControlResult{}, fmt.Errorf("managed worktree limit reached")
-		}
-		target := filepath.Join(managedRoot, folderID)
-		created, err := c.runGitWrite(ctx, workspace.Root, input.Action, []string{"worktree", "add", target, input.Branch})
+		created, err := c.runGitWrite(ctx, repositoryPath, input.Action, []string{"worktree", "add", target, input.Branch})
 		if err != nil {
 			return gitControlResult{}, err
 		}
-		registered, err := store.Add(target, "worktree:"+input.Branch)
-		if err != nil {
-			_, _ = c.runGitWrite(context.Background(), workspace.Root, "deleteWorktree", []string{"worktree", "remove", target})
-			_ = os.RemoveAll(target)
-			return gitControlResult{}, err
-		}
-		created.ManagedWorkspace = &protocolv1.WorkspaceSummary{WorkspaceId: registered.WorkspaceID, DisplayName: registered.DisplayName, Enabled: registered.Enabled, Revision: registered.Revision, Permissions: append([]string(nil), registered.Permissions...)}
+		created.WorktreePath = target
 		return created, nil
 	case "deleteWorktree":
-		if !workspace.Allows(WorkspacePermissionGitWrite) {
-			return gitControlResult{}, ErrPermissionDenied
+		if strings.TrimSpace(input.WorktreePath) == "" {
+			return gitControlResult{}, fmt.Errorf("absolute worktreePath is required")
 		}
-		if input.WorktreeWorkspaceID == "" {
-			return gitControlResult{}, fmt.Errorf("worktreeWorkspaceId is required")
-		}
-		targetWorkspace, err := store.Lookup(input.WorktreeWorkspaceID)
+		target, err := ResolveMachinePath(input.WorktreePath)
 		if err != nil {
 			return gitControlResult{}, err
 		}
-		managedRoot := filepath.Join(c.cfg.DataDir, "worktrees", workspaceID)
-		if !pathWithin(managedRoot, targetWorkspace.Root) {
-			return gitControlResult{}, ErrPermissionDenied
-		}
-		removed, err := c.runGitWrite(ctx, workspace.Root, input.Action, []string{"worktree", "remove", targetWorkspace.Root})
+		removed, err := c.runGitWrite(ctx, repositoryPath, input.Action, []string{"worktree", "remove", target})
 		if err != nil {
 			return gitControlResult{}, err
 		}
-		if err := store.Remove(input.WorktreeWorkspaceID); err != nil {
-			return gitControlResult{}, err
-		}
+		removed.WorktreePath = target
 		return removed, nil
 	default:
 		return gitControlResult{}, fmt.Errorf("unsupported git action %q", input.Action)
 	}
 }
 
-func (c *Client) runGitRead(ctx context.Context, workspaceID, root, action string, args []string) (gitControlResult, error) {
+func (c *Client) runGitRead(ctx context.Context, root, action string, args []string) (gitControlResult, error) {
 	commandCtx, cancel := context.WithTimeout(ctx, gitReadTimeout)
 	defer cancel()
 	captureFull := action == "diff" || action == "stagedDiff" || action == "show"
@@ -316,7 +219,7 @@ func (c *Client) runGitRead(ctx context.Context, workspaceID, root, action strin
 	result := gitControlResult{Action: action, Output: output, Truncated: truncated}
 	if truncated && captureFull {
 		logicalName := "git-" + strings.ToLower(action) + "-" + time.Now().UTC().Format("20060102T150405Z") + ".txt"
-		artifact, err := c.uploadArtifactPath(ctx, workspaceID, "", logicalName, "text/plain; charset=utf-8", spoolPath)
+		artifact, err := c.uploadArtifactPath(ctx, "", logicalName, "text/plain; charset=utf-8", spoolPath)
 		if err != nil {
 			return gitControlResult{}, err
 		}
@@ -394,7 +297,7 @@ func ensureGitRepository(ctx context.Context, root string) error {
 		return err
 	}
 	if !samePath(realTop, realRoot) {
-		return fmt.Errorf("git repository root must equal the authorized workspace root")
+		return fmt.Errorf("repositoryPath must point to the Git repository root")
 	}
 	return nil
 }

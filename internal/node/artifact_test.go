@@ -15,11 +15,6 @@ import (
 func TestArtifactCompleteRetryDoesNotReuploadChunk(t *testing.T) {
 	dataDir := t.TempDir()
 	root := t.TempDir()
-	workspaceStore := NewWorkspaceStore(dataDir)
-	workspace, err := workspaceStore.Add(root, "artifact-retry")
-	if err != nil {
-		t.Fatal(err)
-	}
 	payload := []byte("artifact retry payload")
 	if err := os.WriteFile(filepath.Join(root, "payload.txt"), payload, 0o600); err != nil {
 		t.Fatal(err)
@@ -77,7 +72,7 @@ func TestArtifactCompleteRetryDoesNotReuploadChunk(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := client.artifactUploadFile(context.Background(), workspace.WorkspaceID, map[string]any{"path": "payload.txt", "logicalName": "payload.txt", "contentType": "text/plain"})
+	result, err := client.artifactUploadFile(context.Background(), map[string]any{"path": filepath.Join(root, "payload.txt"), "logicalName": "payload.txt", "contentType": "text/plain"})
 	if err != nil {
 		t.Fatal(err)
 	}

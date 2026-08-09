@@ -57,27 +57,26 @@ type App struct {
 }
 
 type statusResponse struct {
-	Version              string                       `json:"version"`
-	DataDir              string                       `json:"dataDir"`
-	Registered           bool                         `json:"registered"`
-	MachineID            string                       `json:"machineId,omitempty"`
-	HubURL               string                       `json:"hubUrl,omitempty"`
-	HubFingerprint       string                       `json:"hubFingerprint,omitempty"`
-	RegistrationMode     string                       `json:"registrationMode"`
-	ConfigurationScope   string                       `json:"configurationScope"`
-	RuntimeCredential    string                       `json:"runtimeCredential"`
-	ConnectionTokenSaved bool                         `json:"connectionTokenSaved"`
-	RuntimeOwned         bool                         `json:"runtimeOwned"`
-	RuntimeStatus        string                       `json:"runtimeStatus"`
-	RuntimeError         string                       `json:"runtimeError,omitempty"`
-	AutoStartSupported   bool                         `json:"autoStartSupported"`
-	AutoStartEnabled     bool                         `json:"autoStartEnabled"`
-	TraySupported        bool                         `json:"traySupported"`
-	TrayActive           bool                         `json:"trayActive"`
-	ComponentRoot        string                       `json:"componentRoot"`
-	Update               updateStatusResponse         `json:"update"`
-	Config               LocalConfig                  `json:"config"`
-	Workspaces           []node.LocalWorkspaceSummary `json:"workspaces"`
+	Version              string               `json:"version"`
+	DataDir              string               `json:"dataDir"`
+	Registered           bool                 `json:"registered"`
+	MachineID            string               `json:"machineId,omitempty"`
+	HubURL               string               `json:"hubUrl,omitempty"`
+	HubFingerprint       string               `json:"hubFingerprint,omitempty"`
+	RegistrationMode     string               `json:"registrationMode"`
+	ConfigurationScope   string               `json:"configurationScope"`
+	RuntimeCredential    string               `json:"runtimeCredential"`
+	ConnectionTokenSaved bool                 `json:"connectionTokenSaved"`
+	RuntimeOwned         bool                 `json:"runtimeOwned"`
+	RuntimeStatus        string               `json:"runtimeStatus"`
+	RuntimeError         string               `json:"runtimeError,omitempty"`
+	AutoStartSupported   bool                 `json:"autoStartSupported"`
+	AutoStartEnabled     bool                 `json:"autoStartEnabled"`
+	TraySupported        bool                 `json:"traySupported"`
+	TrayActive           bool                 `json:"trayActive"`
+	ComponentRoot        string               `json:"componentRoot"`
+	Update               updateStatusResponse `json:"update"`
+	Config               LocalConfig          `json:"config"`
 }
 
 type connectRequest struct {
@@ -96,21 +95,8 @@ type configRequest struct {
 	AllowInsecureLocalHub bool   `json:"allowInsecureLocalHub"`
 }
 
-type workspaceAddRequest struct {
-	Path string `json:"path"`
-	Name string `json:"name"`
-}
-
 type componentEnsureRequest struct {
 	ComponentID string `json:"componentId"`
-}
-
-type workspaceActionRequest struct {
-	Action      string   `json:"action"`
-	WorkspaceID string   `json:"workspaceId"`
-	Enabled     bool     `json:"enabled"`
-	Permissions []string `json:"permissions"`
-	Origin      string   `json:"origin"`
 }
 
 func New(opts Options) (*App, error) {
@@ -258,8 +244,6 @@ func (a *App) handler() http.Handler {
 	mux.HandleFunc("POST /api/update/install", a.apiOnly(a.handleUpdateInstall))
 	mux.HandleFunc("POST /api/components/ensure", a.apiOnly(a.handleComponentEnsure))
 	mux.HandleFunc("POST /api/exit", a.apiOnly(a.handleExit))
-	mux.HandleFunc("POST /api/workspaces", a.apiOnly(a.handleWorkspaceAdd))
-	mux.HandleFunc("POST /api/workspaces/action", a.apiOnly(a.handleWorkspaceAction))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -446,59 +430,6 @@ func (a *App) handleComponentEnsure(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"component": installed, "status": a.snapshot()})
 }
 
-func (a *App) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
-	var req workspaceAddRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, err)
-		return
-	}
-	if len(req.Path) > 4096 || len(req.Name) > 128 {
-		writeAPIError(w, http.StatusBadRequest, errors.New("工作区参数过长"))
-		return
-	}
-	record, err := node.NewWorkspaceStore(a.opts.DataDir).Add(req.Path, req.Name)
-	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"workspace": record, "status": a.snapshot()})
-}
-
-func (a *App) handleWorkspaceAction(w http.ResponseWriter, r *http.Request) {
-	var req workspaceActionRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, err)
-		return
-	}
-	if len(req.WorkspaceID) > 256 || len(req.Origin) > 2048 || len(req.Permissions) > 16 {
-		writeAPIError(w, http.StatusBadRequest, errors.New("工作区参数无效"))
-		return
-	}
-	store := node.NewWorkspaceStore(a.opts.DataDir)
-	var err error
-	switch req.Action {
-	case "set_enabled":
-		err = store.SetEnabled(req.WorkspaceID, req.Enabled)
-	case "set_permissions":
-		err = store.SetPermissions(req.WorkspaceID, req.Permissions)
-	case "remove":
-		err = store.Remove(req.WorkspaceID)
-	case "browser_allow":
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-		_, err = store.AuthorizeBrowserOrigin(ctx, req.WorkspaceID, req.Origin)
-		cancel()
-	case "browser_remove":
-		err = store.RevokeBrowserOrigin(req.WorkspaceID, req.Origin)
-	default:
-		err = errors.New("unknown workspace action")
-	}
-	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, a.snapshot())
-}
-
 func (a *App) snapshot() statusResponse {
 	a.mu.Lock()
 	cfg := a.config
@@ -532,10 +463,6 @@ func (a *App) snapshot() statusResponse {
 		response.MachineID = state.MachineID
 		response.HubURL = state.HubURL
 		response.HubFingerprint = state.HubFingerprint
-	}
-	workspaces, err := node.NewWorkspaceStore(a.opts.DataDir).ListLocal()
-	if err == nil {
-		response.Workspaces = workspaces
 	}
 	return response
 }

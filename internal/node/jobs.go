@@ -85,7 +85,6 @@ type Job struct {
 	stop            chan string
 	done            chan struct{}
 	stopReason      string
-	workspaceID     string
 	logPath         string
 	logFile         *os.File
 	logBytes        int64
@@ -116,14 +115,14 @@ func NewJobManager(dataDirs ...string) *JobManager {
 	return manager
 }
 
-func (m *JobManager) StartShell(workspaceID, cwd string, argv []string, timeout time.Duration, idempotencyKey string, permissionGuard func() bool) (JobSnapshot, error) {
+func (m *JobManager) StartShell(cwd string, argv []string, timeout time.Duration, idempotencyKey string) (JobSnapshot, error) {
 	if err := validateShellSpec(argv, timeout, idempotencyKey); err != nil {
 		return JobSnapshot{}, err
 	}
 	if timeout == 0 {
 		timeout = defaultJobTimeout
 	}
-	specHash := shellSpecHash(workspaceID, cwd, argv, timeout)
+	specHash := shellSpecHash(cwd, argv, timeout)
 
 	m.mu.Lock()
 	if previous, ok := m.idempotency[idempotencyKey]; ok {
@@ -191,7 +190,7 @@ func (m *JobManager) StartShell(workspaceID, cwd string, argv []string, timeout 
 	}
 	now := time.Now().UTC()
 	job := &Job{
-		id: jobID, idempotencyKey: idempotencyKey, state: "running", startedAt: now, workspaceID: workspaceID,
+		id: jobID, idempotencyKey: idempotencyKey, state: "running", startedAt: now,
 		notify: make(chan struct{}), cmd: cmd, stop: make(chan string, 1), done: make(chan struct{}), logPath: logPath, logFile: logFile,
 	}
 	job.appendEvent("started", "process started")
@@ -201,12 +200,12 @@ func (m *JobManager) StartShell(workspaceID, cwd string, argv []string, timeout 
 	m.idempotency[idempotencyKey] = idempotencyRecord{JobID: jobID, SpecHash: specHash}
 	m.mu.Unlock()
 
-	go m.runJob(job, stdout, stderr, timeout, permissionGuard)
+	go m.runJob(job, stdout, stderr, timeout)
 	snapshot, _ := job.snapshotAfter(0)
 	return snapshot, nil
 }
 
-func (m *JobManager) runJob(job *Job, stdout, stderr interface{ Read([]byte) (int, error) }, timeout time.Duration, permissionGuard func() bool) {
+func (m *JobManager) runJob(job *Job, stdout, stderr interface{ Read([]byte) (int, error) }, timeout time.Duration) {
 	var streams sync.WaitGroup
 	streams.Add(2)
 	go func() {
@@ -219,8 +218,6 @@ func (m *JobManager) runJob(job *Job, stdout, stderr interface{ Read([]byte) (in
 	}()
 
 	timer := time.NewTimer(timeout)
-	permissionTicker := time.NewTicker(2 * time.Second)
-	defer permissionTicker.Stop()
 	watchDone := make(chan struct{})
 	go func() {
 		defer close(watchDone)
@@ -234,12 +231,6 @@ func (m *JobManager) runJob(job *Job, stdout, stderr interface{ Read([]byte) (in
 				job.setStopReason("timeout")
 				_ = killProcessTree(job.cmd)
 				return
-			case <-permissionTicker.C:
-				if permissionGuard != nil && !permissionGuard() {
-					job.setStopReason("permission_revoked")
-					_ = killProcessTree(job.cmd)
-					return
-				}
 			case <-job.done:
 				return
 			}
@@ -258,13 +249,6 @@ func (m *JobManager) runJob(job *Job, stdout, stderr interface{ Read([]byte) (in
 	<-watchDone
 	job.finish(waitErr)
 	<-m.semaphore
-}
-
-func (m *JobManager) WatchWorkspace(ctx context.Context, workspaceID, jobID string, cursor int64, wait time.Duration) (JobSnapshot, error) {
-	if !m.jobBelongsToWorkspace(jobID, workspaceID) {
-		return JobSnapshot{}, ErrJobNotFound
-	}
-	return m.Watch(ctx, jobID, cursor, wait)
 }
 
 func (m *JobManager) Watch(ctx context.Context, jobID string, cursor int64, wait time.Duration) (JobSnapshot, error) {
@@ -302,13 +286,6 @@ func (m *JobManager) Watch(ctx context.Context, jobID string, cursor int64, wait
 	}
 }
 
-func (m *JobManager) CancelWorkspace(ctx context.Context, workspaceID, jobID string) (JobSnapshot, error) {
-	if !m.jobBelongsToWorkspace(jobID, workspaceID) {
-		return JobSnapshot{}, ErrJobNotFound
-	}
-	return m.Cancel(ctx, jobID)
-}
-
 func (m *JobManager) Cancel(ctx context.Context, jobID string) (JobSnapshot, error) {
 	m.mu.RLock()
 	job := m.jobs[jobID]
@@ -336,18 +313,6 @@ func (m *JobManager) Cancel(ctx context.Context, jobID string) (JobSnapshot, err
 		case <-notify:
 		}
 	}
-}
-
-func (m *JobManager) jobBelongsToWorkspace(jobID, workspaceID string) bool {
-	m.mu.RLock()
-	job := m.jobs[jobID]
-	m.mu.RUnlock()
-	if job == nil || workspaceID == "" {
-		return false
-	}
-	job.mu.Lock()
-	defer job.mu.Unlock()
-	return job.workspaceID == workspaceID
 }
 
 func (m *JobManager) CancelAll(ctx context.Context) error {
@@ -400,22 +365,22 @@ func (m *JobManager) StartMaintenance(ctx context.Context) {
 	}
 }
 
-func (m *JobManager) JobLog(jobID string) (workspaceID, path string, size int64, truncated bool, err error) {
+func (m *JobManager) JobLog(jobID string) (path string, size int64, truncated bool, err error) {
 	m.mu.RLock()
 	job := m.jobs[jobID]
 	m.mu.RUnlock()
 	if job == nil {
-		return "", "", 0, false, ErrJobNotFound
+		return "", 0, false, ErrJobNotFound
 	}
 	job.mu.Lock()
 	defer job.mu.Unlock()
 	if !isTerminalJobState(job.state) {
-		return "", "", 0, false, ErrJobNotComplete
+		return "", 0, false, ErrJobNotComplete
 	}
 	if job.logPath == "" || job.logErr != "" {
-		return "", "", 0, job.logTruncated, ErrJobLogUnavailable
+		return "", 0, job.logTruncated, ErrJobLogUnavailable
 	}
-	return job.workspaceID, job.logPath, job.logBytes, job.logTruncated, nil
+	return job.logPath, job.logBytes, job.logTruncated, nil
 }
 
 func (m *JobManager) cleanupOldJobLogs(now time.Time) {
@@ -547,7 +512,7 @@ func (j *Job) finish(waitErr error) {
 			j.state = "completed"
 		} else {
 			j.state = "canceled"
-			j.errText = "workspace permission revoked"
+			j.errText = "operation permission revoked"
 		}
 	case "timeout":
 		if waitErr == nil {
@@ -617,8 +582,8 @@ func validateShellSpec(argv []string, timeout time.Duration, idempotencyKey stri
 	return nil
 }
 
-func shellSpecHash(workspaceID, cwd string, argv []string, timeout time.Duration) string {
-	raw, _ := json.Marshal(map[string]any{"workspaceId": workspaceID, "cwd": cwd, "argv": argv, "timeout": timeout.String()})
+func shellSpecHash(cwd string, argv []string, timeout time.Duration) string {
+	raw, _ := json.Marshal(map[string]any{"cwd": cwd, "argv": argv, "timeout": timeout.String()})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }

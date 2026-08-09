@@ -125,7 +125,6 @@ func (s *localBridgeServer) handleLine(parent context.Context, connectionID stri
 	s.logger.Debug("local bridge capability call",
 		"connectionId", connectionID,
 		"requestId", req.RequestId,
-		"workspaceId", req.WorkspaceId,
 		"capability", req.Capability,
 		"action", req.Action,
 		"ok", response.Error == nil,

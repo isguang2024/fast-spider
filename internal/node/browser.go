@@ -33,7 +33,6 @@ func (e *BrowserActionError) Error() string {
 
 type browserSessionRecord struct {
 	BrowserSessionID string
-	WorkspaceID      string
 	SessionDir       string
 	ScreenshotDir    string
 	CreatedAt        time.Time
@@ -42,7 +41,6 @@ type browserSessionRecord struct {
 
 type BrowserManager struct {
 	dataDir string
-	store   *WorkspaceStore
 	sidecar *BrowserSidecar
 	logger  *slog.Logger
 
@@ -58,7 +56,6 @@ func NewBrowserManager(dataDir, sidecarDir string, logger *slog.Logger) *Browser
 	}
 	return &BrowserManager{
 		dataDir: dataDir,
-		store:   NewWorkspaceStore(dataDir),
 		sidecar: NewBrowserSidecar(sidecarDir, logger),
 		logger:  logger,
 	}
@@ -68,28 +65,25 @@ func (m *BrowserManager) Available() error {
 	return m.sidecar.Available()
 }
 
-func (m *BrowserManager) Execute(ctx context.Context, workspaceID, action string, params map[string]any) (map[string]any, error) {
+func (m *BrowserManager) Execute(ctx context.Context, action string, params map[string]any) (map[string]any, error) {
 	m.actionMu.Lock()
 	defer m.actionMu.Unlock()
-	return m.executeLocked(ctx, workspaceID, action, params)
+	return m.executeLocked(ctx, action, params)
 }
 
-func (m *BrowserManager) executeLocked(ctx context.Context, workspaceID, action string, params map[string]any) (map[string]any, error) {
+func (m *BrowserManager) executeLocked(ctx context.Context, action string, params map[string]any) (map[string]any, error) {
 	if action == "launch" {
-		if _, err := m.store.Resolve(workspaceID); err != nil {
-			return nil, err
-		}
-		return m.launch(ctx, workspaceID, params)
+		return m.launch(ctx, params)
 	}
 	switch action {
 	case "close", "page.open", "page.navigate", "page.close", "pages.list", "click", "type", "press", "wait", "snapshot", "screenshot", "events":
-		return m.executeSessionAction(ctx, workspaceID, action, params)
+		return m.executeSessionAction(ctx, action, params)
 	default:
 		return nil, &BrowserActionError{Code: "INVALID_REQUEST", Message: "unsupported browser action", Retryable: false}
 	}
 }
 
-func (m *BrowserManager) launch(ctx context.Context, workspaceID string, params map[string]any) (map[string]any, error) {
+func (m *BrowserManager) launch(ctx context.Context, params map[string]any) (map[string]any, error) {
 	m.mu.Lock()
 	if m.session != nil || m.launching {
 		m.mu.Unlock()
@@ -103,10 +97,6 @@ func (m *BrowserManager) launch(ctx context.Context, workspaceID string, params 
 		m.mu.Unlock()
 	}()
 
-	origins, err := m.store.ActiveBrowserOrigins(workspaceID)
-	if err != nil {
-		return nil, err
-	}
 	browserSessionID, err := security.RandomOpaque("brs_")
 	if err != nil {
 		return nil, err
@@ -125,14 +115,7 @@ func (m *BrowserManager) launch(ctx context.Context, workspaceID string, params 
 		launchParams["viewport"] = viewport
 	}
 	launchParams["screenshotDir"] = screenshotDir
-	allowed := make([]map[string]any, 0, len(origins))
-	for _, origin := range origins {
-		allowed = append(allowed, map[string]any{
-			"origin":    origin.Origin,
-			"pinnedIps": append([]string(nil), origin.PinnedIPs...),
-		})
-	}
-	launchParams["allowedOrigins"] = allowed
+	launchParams["allowPrivateNetwork"] = true
 
 	result, err := m.sidecar.Call(ctx, "launch", launchParams)
 	if err != nil {
@@ -143,7 +126,6 @@ func (m *BrowserManager) launch(ctx context.Context, workspaceID string, params 
 	m.mu.Lock()
 	m.session = &browserSessionRecord{
 		BrowserSessionID: browserSessionID,
-		WorkspaceID:      workspaceID,
 		SessionDir:       sessionDir,
 		ScreenshotDir:    screenshotDir,
 		CreatedAt:        now,
@@ -153,31 +135,17 @@ func (m *BrowserManager) launch(ctx context.Context, workspaceID string, params 
 	return result, nil
 }
 
-func (m *BrowserManager) executeSessionAction(ctx context.Context, workspaceID, action string, params map[string]any) (map[string]any, error) {
+func (m *BrowserManager) executeSessionAction(ctx context.Context, action string, params map[string]any) (map[string]any, error) {
 	browserSessionID, _ := params["browserSessionId"].(string)
 	if browserSessionID == "" {
 		return nil, &BrowserActionError{Code: "INVALID_REQUEST", Message: "browserSessionId is required", Retryable: false}
 	}
-	session, err := m.sessionFor(workspaceID, browserSessionID)
+	session, err := m.sessionFor(browserSessionID)
 	if err != nil {
 		return nil, err
 	}
-	if action != "close" {
-		if _, err := m.store.Resolve(workspaceID); err != nil {
-			m.clearSession(session)
-			return nil, err
-		}
-	}
 
 	callParams := cloneMap(params)
-	if action == "page.open" || action == "page.navigate" {
-		rawURL, _ := callParams["url"].(string)
-		validated, err := m.store.ValidateBrowserURL(ctx, workspaceID, rawURL)
-		if err != nil {
-			return nil, err
-		}
-		callParams["url"] = validated
-	}
 
 	result, err := m.sidecar.Call(ctx, action, callParams)
 	if err != nil {
@@ -199,16 +167,16 @@ func (m *BrowserManager) executeSessionAction(ctx context.Context, workspaceID, 
 	return result, nil
 }
 
-func (m *BrowserManager) ExecuteScreenshot(ctx context.Context, workspaceID string, params map[string]any, consume func(path, logicalName, contentType string) (map[string]any, error)) (map[string]any, error) {
+func (m *BrowserManager) ExecuteScreenshot(ctx context.Context, params map[string]any, consume func(path, logicalName, contentType string) (map[string]any, error)) (map[string]any, error) {
 	m.actionMu.Lock()
 	defer m.actionMu.Unlock()
-	result, err := m.executeLocked(ctx, workspaceID, "screenshot", params)
+	result, err := m.executeLocked(ctx, "screenshot", params)
 	if err != nil {
 		return nil, err
 	}
 	browserSessionID, _ := params["browserSessionId"].(string)
 	rawPath, _ := result["path"].(string)
-	managedPath, err := m.ManagedScreenshotPath(workspaceID, browserSessionID, rawPath)
+	managedPath, err := m.ManagedScreenshotPath(browserSessionID, rawPath)
 	if err != nil {
 		return nil, err
 	}
@@ -230,17 +198,17 @@ func (m *BrowserManager) ExecuteScreenshot(ctx context.Context, workspaceID stri
 	return out, nil
 }
 
-func (m *BrowserManager) sessionFor(workspaceID, browserSessionID string) (browserSessionRecord, error) {
+func (m *BrowserManager) sessionFor(browserSessionID string) (browserSessionRecord, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.session == nil || m.session.BrowserSessionID != browserSessionID || m.session.WorkspaceID != workspaceID {
+	if m.session == nil || m.session.BrowserSessionID != browserSessionID {
 		return browserSessionRecord{}, &BrowserActionError{Code: "BROWSER_SESSION_NOT_FOUND", Message: "browser session was not found", Retryable: false}
 	}
 	return *m.session, nil
 }
 
-func (m *BrowserManager) ManagedScreenshotPath(workspaceID, browserSessionID, rawPath string) (string, error) {
-	session, err := m.sessionFor(workspaceID, browserSessionID)
+func (m *BrowserManager) ManagedScreenshotPath(browserSessionID, rawPath string) (string, error) {
+	session, err := m.sessionFor(browserSessionID)
 	if err != nil {
 		return "", err
 	}

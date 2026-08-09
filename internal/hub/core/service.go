@@ -354,7 +354,7 @@ func (s *Service) CapabilityCatalog() []protocolv1.CapabilityDescriptor {
 	return out
 }
 
-func (s *Service) CallCapability(ctx context.Context, ownerID, machineID, workspaceID, capability, action string, params any) (map[string]any, error) {
+func (s *Service) CallCapability(ctx context.Context, ownerID, machineID, capability, action string, params any) (map[string]any, error) {
 	record, err := s.store.GetMachine(ctx, ownerID, machineID)
 	if err != nil {
 		return nil, err
@@ -385,7 +385,6 @@ func (s *Service) CallCapability(ctx context.Context, ownerID, machineID, worksp
 		RequestId:   requestID,
 		Capability:  capability,
 		Action:      action,
-		WorkspaceId: workspaceID,
 		Params:      normalized,
 		Deadline:    protocolv1.Timestamp(deadline),
 		Timestamp:   protocolv1.Timestamp(s.now()),
@@ -398,12 +397,12 @@ func (s *Service) CallCapability(ctx context.Context, ownerID, machineID, worksp
 	}
 	if response.Error != nil {
 		if shouldAuditCapability(capability, action) {
-			_ = s.audit(ctx, store.AuditEntry{OwnerID: ownerID, MachineID: machineID, ActorType: "owner", ActorID: ownerID, Action: capability + "." + action, Result: "rejected", Detail: map[string]any{"workspaceId": workspaceID, "errorCode": response.Error.Code}, CreatedAt: s.now().UTC()})
+			_ = s.audit(ctx, store.AuditEntry{OwnerID: ownerID, MachineID: machineID, ActorType: "owner", ActorID: ownerID, Action: capability + "." + action, Result: "rejected", Detail: map[string]any{"errorCode": response.Error.Code}, CreatedAt: s.now().UTC()})
 		}
 		return nil, &CapabilityCallError{Code: response.Error.Code, Message: response.Error.Message, Retryable: response.Error.Retryable}
 	}
 	if shouldAuditCapability(capability, action) {
-		_ = s.audit(ctx, store.AuditEntry{OwnerID: ownerID, MachineID: machineID, ActorType: "owner", ActorID: ownerID, Action: capability + "." + action, Result: "success", Detail: map[string]any{"workspaceId": workspaceID}, CreatedAt: s.now().UTC()})
+		_ = s.audit(ctx, store.AuditEntry{OwnerID: ownerID, MachineID: machineID, ActorType: "owner", ActorID: ownerID, Action: capability + "." + action, Result: "success", CreatedAt: s.now().UTC()})
 	}
 	return response.Result, nil
 }

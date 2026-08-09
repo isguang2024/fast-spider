@@ -30,7 +30,6 @@ const (
 var artifactUploadMu sync.Mutex
 
 type ArtifactCreateRequest struct {
-	WorkspaceID string `json:"workspaceId,omitempty"`
 	JobID       string `json:"jobId,omitempty"`
 	LogicalName string `json:"logicalName"`
 	ContentType string `json:"contentType"`
@@ -71,11 +70,11 @@ func (s *Service) CreateArtifactUpload(ctx context.Context, session store.Device
 	if _, _, err := mime.ParseMediaType(req.ContentType); err != nil {
 		return ArtifactCreateResult{}, store.ErrConflict
 	}
-	if len(req.WorkspaceID) > 128 || len(req.JobID) > 128 {
+	if len(req.JobID) > 128 {
 		return ArtifactCreateResult{}, store.ErrConflict
 	}
 	now := s.now().UTC()
-	if resumable, ok, err := s.store.FindResumableArtifactUpload(ctx, session.OwnerID, session.MachineID, strings.TrimSpace(req.WorkspaceID), strings.TrimSpace(req.JobID), req.LogicalName, req.ContentType, req.SizeBytes, req.SHA256, now); err != nil {
+	if resumable, ok, err := s.store.FindResumableArtifactUpload(ctx, session.OwnerID, session.MachineID, strings.TrimSpace(req.JobID), req.LogicalName, req.ContentType, req.SizeBytes, req.SHA256, now); err != nil {
 		return ArtifactCreateResult{}, err
 	} else if ok {
 		partPath := s.artifactUploadPath(resumable.ID)
@@ -103,7 +102,7 @@ func (s *Service) CreateArtifactUpload(ctx context.Context, session store.Device
 	uploadExpires := now.Add(artifactUploadTTL)
 	artifact := store.ArtifactRecord{
 		ID: artifactID, OwnerID: session.OwnerID, MachineID: session.MachineID,
-		WorkspaceID: strings.TrimSpace(req.WorkspaceID), JobID: strings.TrimSpace(req.JobID),
+		JobID:       strings.TrimSpace(req.JobID),
 		LogicalName: req.LogicalName, ContentType: req.ContentType, SizeBytes: req.SizeBytes, SHA256: req.SHA256,
 		Status: "uploading", CreatedAt: now, ExpiresAt: now.Add(artifactRetention),
 	}
@@ -118,7 +117,7 @@ func (s *Service) CreateArtifactUpload(ctx context.Context, session store.Device
 		_ = s.store.AbortArtifactUpload(ctx, session.MachineID, uploadID)
 		return ArtifactCreateResult{}, err
 	}
-	_ = s.audit(ctx, store.AuditEntry{OwnerID: session.OwnerID, MachineID: session.MachineID, ActorType: "node", ActorID: session.MachineID, Action: "artifact.create", Result: "success", Detail: map[string]any{"artifactId": artifactID, "workspaceId": artifact.WorkspaceID, "sizeBytes": artifact.SizeBytes}, CreatedAt: now})
+	_ = s.audit(ctx, store.AuditEntry{OwnerID: session.OwnerID, MachineID: session.MachineID, ActorType: "node", ActorID: session.MachineID, Action: "artifact.create", Result: "success", Detail: map[string]any{"artifactId": artifactID, "sizeBytes": artifact.SizeBytes}, CreatedAt: now})
 	return ArtifactCreateResult{ArtifactID: artifactID, UploadID: uploadID, ChunkBytes: MaxArtifactChunkBytes, ReceivedBytes: 0, ExpiresAt: uploadExpires}, nil
 }
 

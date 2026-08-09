@@ -56,7 +56,7 @@ func TestArtifactUploadIntegrityAndCleanup(t *testing.T) {
 		}
 	}
 
-	good, err := service.CreateArtifactUpload(ctx, session, ArtifactCreateRequest{WorkspaceID: "ws_test", JobID: "job_test", LogicalName: "good.log", ContentType: "text/plain; charset=utf-8", SizeBytes: int64(len(data)), SHA256: correctHash})
+	good, err := service.CreateArtifactUpload(ctx, session, ArtifactCreateRequest{JobID: "job_test", LogicalName: "good.log", ContentType: "text/plain; charset=utf-8", SizeBytes: int64(len(data)), SHA256: correctHash})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestArtifactUploadIntegrityAndCleanup(t *testing.T) {
 	if received, err := service.UploadArtifactChunk(ctx, session.MachineID, good.UploadID, 0, data[:half]); err != nil || received != int64(half) {
 		t.Fatalf("first chunk received=%d err=%v", received, err)
 	}
-	resumed, err := service.CreateArtifactUpload(ctx, session, ArtifactCreateRequest{WorkspaceID: "ws_test", JobID: "job_test", LogicalName: "good.log", ContentType: "text/plain; charset=utf-8", SizeBytes: int64(len(data)), SHA256: correctHash})
+	resumed, err := service.CreateArtifactUpload(ctx, session, ArtifactCreateRequest{JobID: "job_test", LogicalName: "good.log", ContentType: "text/plain; charset=utf-8", SizeBytes: int64(len(data)), SHA256: correctHash})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +176,7 @@ func TestArtifactResumeReuseQuotaAndLifecycle(t *testing.T) {
 	session, ownerID := artifactTestSession(t, ctx, service)
 
 	data := []byte("resumable-artifact")
-	req := ArtifactCreateRequest{WorkspaceID: "ws_resume", JobID: "job_resume", LogicalName: "resume.txt", ContentType: "text/plain", SizeBytes: int64(len(data)), SHA256: artifactTestSHA(data)}
+	req := ArtifactCreateRequest{JobID: "job_resume", LogicalName: "resume.txt", ContentType: "text/plain", SizeBytes: int64(len(data)), SHA256: artifactTestSHA(data)}
 	first, err := service.CreateArtifactUpload(ctx, session, req)
 	if err != nil {
 		t.Fatal(err)

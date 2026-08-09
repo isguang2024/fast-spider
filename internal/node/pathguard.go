@@ -2,47 +2,39 @@ package node
 
 import (
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
-var ErrPathOutsideWorkspace = errors.New("path outside workspace")
+var ErrAbsolutePathRequired = errors.New("absolute path is required")
 
-// ResolveWorkspacePath exposes the existing workspace path guard to the
-// provider adapter without duplicating its symlink and traversal checks.
-func ResolveWorkspacePath(root, relative string) (string, error) {
-	return resolveWorkspacePath(root, relative)
-}
-
-// PathWithin exposes the existing real-path containment check to the provider
-// adapter without duplicating its security logic.
-func PathWithin(root, target string) bool { return pathWithin(root, target) }
-
-func resolveWorkspacePath(root, relative string) (string, error) {
-	if strings.IndexByte(relative, 0) >= 0 || filepath.IsAbs(relative) || filepath.VolumeName(relative) != "" {
-		return "", ErrPathOutsideWorkspace
+// ResolveMachinePath resolves an absolute path through the local filesystem.
+// In personal-use mode, the operating-system account running Fast Spider Node
+// is the filesystem permission boundary.
+func ResolveMachinePath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" || strings.IndexByte(path, 0) >= 0 || !filepath.IsAbs(path) {
+		return "", ErrAbsolutePathRequired
 	}
-	clean := filepath.Clean(relative)
-	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", ErrPathOutsideWorkspace
-	}
-	rootReal, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return "", fmt.Errorf("resolve workspace root: %w", err)
-	}
-	target := filepath.Join(rootReal, clean)
-	targetReal, err := filepath.EvalSymlinks(target)
+	real, err := filepath.EvalSymlinks(filepath.Clean(path))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", os.ErrNotExist
 		}
 		return "", err
 	}
-	rel, err := filepath.Rel(rootReal, targetReal)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return "", ErrPathOutsideWorkspace
+	return filepath.Clean(real), nil
+}
+
+func samePath(a, b string) bool {
+	ca, errA := filepath.Abs(a)
+	cb, errB := filepath.Abs(b)
+	if errA != nil || errB != nil {
+		return false
 	}
-	return targetReal, nil
+	if filepath.Separator == '\\' {
+		return strings.EqualFold(filepath.Clean(ca), filepath.Clean(cb))
+	}
+	return filepath.Clean(ca) == filepath.Clean(cb)
 }

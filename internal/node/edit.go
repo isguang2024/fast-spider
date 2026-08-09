@@ -20,7 +20,7 @@ const (
 )
 
 var (
-	ErrPermissionDenied = errors.New("workspace permission denied")
+	ErrPermissionDenied = errors.New("permission denied")
 	ErrRevisionConflict = errors.New("file revision conflict")
 	ErrEditNotUnique    = errors.New("edit target must match exactly once")
 )
@@ -41,7 +41,7 @@ type fileEditResult struct {
 	DiffTruncated bool   `json:"diffTruncated"`
 }
 
-func (c *Client) fileEdit(ctx context.Context, workspaceID string, params map[string]any) (fileEditResult, error) {
+func (c *Client) fileEdit(ctx context.Context, params map[string]any) (fileEditResult, error) {
 	if err := ctx.Err(); err != nil {
 		return fileEditResult{}, err
 	}
@@ -55,14 +55,7 @@ func (c *Client) fileEdit(ctx context.Context, workspaceID string, params map[st
 	if len(input.OldText) > maxEditTextBytes || len(input.NewText) > maxEditTextBytes {
 		return fileEditResult{}, fmt.Errorf("edit text exceeds limit")
 	}
-	workspace, err := NewWorkspaceStore(c.cfg.DataDir).Resolve(workspaceID)
-	if err != nil {
-		return fileEditResult{}, err
-	}
-	if !workspace.Allows(WorkspacePermissionWrite) {
-		return fileEditResult{}, ErrPermissionDenied
-	}
-	target, err := resolveWorkspacePath(workspace.Root, input.Path)
+	target, err := ResolveMachinePath(input.Path)
 	if err != nil {
 		return fileEditResult{}, err
 	}
@@ -97,9 +90,9 @@ func (c *Client) fileEdit(ctx context.Context, workspaceID string, params map[st
 	if err := writeAtomicFile(target, after, info.Mode(), beforeHash); err != nil {
 		return fileEditResult{}, err
 	}
-	diff, truncated := exactReplaceDiff(filepath.ToSlash(filepath.Clean(input.Path)), input.OldText, input.NewText)
+	diff, truncated := exactReplaceDiff(filepath.Clean(target), input.OldText, input.NewText)
 	return fileEditResult{
-		Path:          filepath.ToSlash(filepath.Clean(input.Path)),
+		Path:          filepath.Clean(target),
 		BeforeSHA256:  beforeHash,
 		AfterSHA256:   sha256String(after),
 		Bytes:         int64(len(after)),

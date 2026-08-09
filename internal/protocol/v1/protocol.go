@@ -34,7 +34,7 @@ var ScreenshotCapability = CapabilityDescriptor{
 
 var AgentCapability = CapabilityDescriptor{
 	CapabilityId: "agent.control", Version: "1.0",
-	Actions: []string{"providers.list", "models.list", "projects.list", "session.list", "session.get", "session.create", "session.send", "session.watch", "session.cancel", "session.result", "session.rename", "session.archive"},
+	Actions: []string{"providers.list", "models.list", "session.list", "session.get", "session.create", "session.send", "session.watch", "session.cancel", "session.result", "session.rename", "session.archive"},
 }
 
 func ScreenshotCapabilityForOS(goos string) CapabilityDescriptor {
@@ -49,14 +49,13 @@ func ScreenshotCapabilityForOS(goos string) CapabilityDescriptor {
 
 var NodeCapabilities = []CapabilityDescriptor{
 	{CapabilityId: "machine.status", Version: "1.0", Actions: []string{"report"}},
-	{CapabilityId: "workspace.registry", Version: "1.0", Actions: []string{"list"}},
 	{CapabilityId: "file.read", Version: "1.0", Actions: []string{"read"}},
 	{CapabilityId: "file.write", Version: "1.0", Actions: []string{"edit"}},
 	{CapabilityId: "code.search", Version: "1.0", Actions: []string{"search"}},
 	{CapabilityId: "shell.exec", Version: "1.0", Actions: []string{"run"}},
 	{CapabilityId: "job.control", Version: "1.0", Actions: []string{"watch", "cancel"}},
 	{CapabilityId: "git.repository", Version: "1.0", Actions: []string{"status", "diff", "stagedDiff", "log", "show", "branches", "currentBranch", "worktrees", "add", "commit", "fetch", "pull", "push", "createWorktree", "deleteWorktree"}},
-	{CapabilityId: "build.profile", Version: "1.0", Actions: []string{"list", "run"}},
+	{CapabilityId: "build.exec", Version: "1.0", Actions: []string{"run"}},
 	{CapabilityId: "artifact.store", Version: "1.0", Actions: []string{"uploadFile", "uploadJobLog"}},
 	AgentCapability,
 }

@@ -664,7 +664,7 @@ func (s *Server) renderOAuthAuthorizePage(
 		fields = append(fields, hiddenField{Name: name, Value: values.Get(name)})
 	}
 	scopeLabel := "MCP 访问"
-	description := "客户端获得授权后，可以通过 Fast Spider MCP 使用当前账户下的设备和 Workspace 能力。"
+	description := "客户端获得授权后，可以通过 Fast Spider MCP 使用当前账户下的设备及其本机能力。"
 	if callbackOrigin := oauthAuthorizeCallbackOrigin(values.Get("redirect_uri")); callbackOrigin != "" {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self' "+callbackOrigin+"; script-src 'self'; style-src 'self'")
 	}

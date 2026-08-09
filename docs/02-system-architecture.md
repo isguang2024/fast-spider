@@ -2,14 +2,14 @@
 
 ## 1. 架构结论
 
-Fast Spider MVP 采用 **Hub + Node + Adapter** 架构：
+Fast Spider 采用 **Hub + Node + Adapter** 架构：
 
-- **Hub**：一个 Go 模块化单体，负责公网入口、身份、策略、连接注册、路由、Job/Event、审批、审计、Artifact 元数据和 Web Console。
-- **Node**：一个 Go 后台应用，负责 Workspace Registry、Capability Engine、Job Manager、平台适配和可选 Local Bridge。
-- **Contracts**：与传输和 MCP 解耦的版本化契约，是 Request、Event、Error、Job、Approval、Artifact 和 Capability 的唯一模型来源。
-- **Adapters**：MCP、REST、WebSocket、Web Console、CLI 和 Local Bridge 只做协议转换与身份绑定，不重复实现业务能力。
+- **Hub**：Go 模块化单体，负责公网入口、身份、Machine 归属、路由、Job/Event、审计、Artifact 元数据和 Web Console。
+- **Node**：Go 后台应用，负责当前 OS 用户上下文中的 Capability Engine、Job Manager、平台适配和可选 Local Bridge。
+- **Contracts**：与传输和 MCP 解耦的版本化契约，是 Request、Event、Error、Job、Artifact 和 Capability 的唯一模型来源。
+- **Adapters**：MCP、REST、WebSocket、Web Console、CLI 和 Local Bridge 只做协议转换与身份绑定。
 
-MVP 不拆微服务，不引入独立消息队列、Redis、对象存储或 Kubernetes。
+0.3.0 的远程边界只有 Machine。Node 不维护目录注册表、目录授权、路径白名单或目录 ID 映射。
 
 ## 2. 系统上下文图
 
@@ -24,7 +24,7 @@ flowchart LR
     NodeL[Linux Node]
     LocalAI[Local Codex / AI Provider]
     Browser[Managed Browser]
-    FS[Workspace / Git / Shell]
+    FS[全电脑文件系统 / Git / Shell]
 
     Owner --> Web
     MCP -->|HTTPS + MCP| Hub
@@ -44,31 +44,29 @@ flowchart LR
 
 ### 3.1 Hub 控制面
 
-Hub 可以决定“请求是否有资格被路由”，但不能决定“本机资源是否最终允许执行”。它保存逻辑机器和 Workspace 信息，不保存 Node 真实路径作为远程授权字段。
+Hub 决定请求是否有资格路由到某个 Machine，但不代替 Node 判断 OS 是否允许实际操作。Hub 保存 Machine、Job、Event、审计和 Artifact 控制面事实，不保存目录授权映射。
 
 Hub 的职责：
 
 1. 验证用户、OAuth Client 和会话。
-2. 解析 machineId/workspaceId。
-3. 检查 Capability/Action 策略、短期授权和审批状态。
-4. 创建或查询 Job，生成 requestId、traceId 和 deadline。
-5. 将请求路由到当前拥有该 Node 连接的连接会话。
-6. 接收事件并持久化必要索引和审计。
-7. 管理 Artifact 上传授权和元数据。
+2. 解析 `machineId`，确认 Machine 属于当前 Owner 且在线。
+3. 校验 Capability/Action、参数、大小、deadline 和幂等键。
+4. 创建或查询 Job，生成 request/trace 标识并路由到 Node。
+5. 接收事件并持久化必要索引、结果和审计。
+6. 管理 Artifact 上传授权和元数据。
 
 ### 3.2 Node 执行面
 
-Node 对所有本地资源进行二次校验并拥有最终拒绝权：
+Node 是 Machine 的唯一执行边界：
 
-1. 验证 Hub/设备会话和消息签名上下文。
-2. 验证 machineId 与本设备一致。
-3. 从本地 Workspace Registry 解析 workspaceId。
-4. 重新计算路径并阻止符号链接、junction 和重解析点逃逸。
-5. 检查本地策略、用户确认、并发和资源限额。
-6. 调用 Capability Engine 执行。
-7. 产生有序事件、结果、Diff 和 Artifact。
+1. 验证 Hub/设备会话和消息上下文。
+2. 验证 `machineId` 与本设备一致。
+3. 按能力要求校验绝对 `path`、`cwd`、`repositoryPath` 或 `workingDirectory`。
+4. 使用当前 OS 用户的文件系统、进程和网络权限执行，不自动提权。
+5. 应用参数、网络、并发、大小、deadline、取消和资源限制。
+6. 产生有序事件、结果、Diff 和 Artifact。
 
-Hub 被攻破时，Node 仍不能被要求越过本机已授权边界。
+Hub 被攻破时，Node 仍不会获得超出自身设备身份和 OS 用户权限以外的能力；Node 被攻破时，Hub 仍应限制其对其他 Machine 的伪造和污染。
 
 ## 4. 远程与本地调用链
 
@@ -76,17 +74,17 @@ Hub 被攻破时，Node 仍不能被要求越过本机已授权边界。
 sequenceDiagram
     participant C as MCP/REST Client
     participant H as Hub Adapter
-    participant P as Hub Policy
+    participant P as Hub Machine Policy
     participant R as Node Router
-    participant N as Node Policy
+    participant N as Node
     participant E as Capability Engine
 
-    C->>H: tool/API request
-    H->>P: bind identity + authorize
+    C->>H: tool request(machineId, absolute target)
+    H->>P: bind identity + check Machine
     P-->>H: allow / deny
     H->>R: CapabilityRequest
-    R->>N: route over existing WSS
-    N->>N: workspace/path/action recheck
+    R->>N: route over WSS
+    N->>N: OS user + argument/resource checks
     N->>E: execute
     E-->>N: events + result
     N-->>R: ordered events
@@ -98,68 +96,27 @@ sequenceDiagram
 flowchart LR
     LC[Local Codex / AI Client]
     LB[Node Local Bridge<br/>AF_UNIX / UDS]
-    LI[Current OS User + Existing Policy]
+    OS[Current OS User Permissions]
     CE[Same Capability Engine]
-    Res[Workspace / Shell / Git / Browser / Agent]
+    Res[Files / Shell / Git / Browser / Agent]
 
-    LC --> LB --> LI --> CE --> Res
+    LC --> LB --> OS --> CE --> Res
 ```
 
-Local Bridge 不经过 Hub；当前个人模式直接以当前 OS 用户作为本机信任边界，并复用同一 Workspace、危险本机权限、审计和限额，不再维护独立 Local Client 身份系统。
+Local Bridge 不经过 Hub；它使用当前 OS 用户作为本机信任边界，与远程入口共用 Machine、Capability、Job、资源限制和审计语义。
 
-## 5. Hub 内部模块图
-
-```mermaid
-flowchart TB
-    subgraph Adapters
-      MCP[MCP Adapter]
-      REST[REST/WSS Adapter]
-      CONSOLE[Embedded Web Console]
-    end
-
-    APP[Application Services]
-    AUTH[Identity & OAuth]
-    POLICY[Policy / Resource Boundary]
-    JOBS[Job & Event Service]
-    ROUTER[Node Connection Registry & Router]
-    AUDIT[Audit Service]
-    ART[Artifact Service]
-    STORE[(SQLite WAL)]
-    FILES[(Artifact Files)]
-
-    MCP --> APP
-    REST --> APP
-    CONSOLE --> APP
-    APP --> AUTH
-    APP --> POLICY
-    APP --> JOBS
-    APP --> ROUTER
-    APP --> AUDIT
-    APP --> ART
-    AUTH --> STORE
-    POLICY --> STORE
-    JOBS --> STORE
-    AUDIT --> STORE
-    ART --> STORE
-    ART --> FILES
-    ROUTER <-->|WSS| NODE[Nodes]
-```
-
-Adapter 只能依赖应用服务接口，不能直接操作数据库或 Node 连接。
-
-## 6. Node 内部模块图
+## 5. Node 内部模块图
 
 ```mermaid
 flowchart TB
     CONN[Hub Connection Manager]
     LOCAL[Optional Local Bridge]
     DISPATCH[Request Dispatcher]
-    POLICY[Local Policy / Resource Boundary]
-    WS[Workspace Registry & Path Guard]
     JOB[Job Manager]
     CAP[Capability Engine]
     FILE[File/Search]
     SHELL[Shell/Process]
+    BUILD[Build/Test]
     GIT[Git]
     BROWSER[Browser/Screenshot]
     AGENT[Agent Provider Adapters]
@@ -168,50 +125,46 @@ flowchart TB
 
     CONN --> DISPATCH
     LOCAL --> DISPATCH
-    DISPATCH --> POLICY
-    POLICY --> WS
-    POLICY --> JOB
+    DISPATCH --> JOB
     JOB --> CAP
     CAP --> FILE
     CAP --> SHELL
+    CAP --> BUILD
     CAP --> GIT
     CAP --> BROWSER
     CAP --> AGENT
     FILE --> PLATFORM
     SHELL --> PLATFORM
+    BUILD --> PLATFORM
     BROWSER --> PLATFORM
-    WS --> STATE
     JOB --> STATE
 ```
 
-Capability 模块不感知 MCP；文件和 Shell 模块不感知具体 AI Provider。
-
-## 7. 部署拓扑
+## 6. 部署拓扑
 
 ```mermaid
 flowchart TB
     Internet[Internet Clients]
-    RP[Reverse Proxy / TLS<br/>optional]
+    RP[Reverse Proxy / TLS]
     Hub[fast-spider-hub<br/>single process]
     DB[(SQLite WAL)]
     AF[(Artifact Directory)]
     Backup[(Backup Target)]
 
-    subgraph WindowsMachine[Windows Development Machine]
+    subgraph WindowsMachine[Windows Machine]
       NW[fast-spider-node]
       Pipe[AF_UNIX Local Bridge]
       Codex[Codex / Local AI]
-      WorkW[Authorized Workspaces]
+      FilesW[OS-user-accessible files and processes]
     end
 
-    subgraph LinuxMachine[Linux Development Machine]
+    subgraph LinuxMachine[Linux Machine]
       NL[fast-spider-node]
       UDS[Unix Domain Socket]
-      WorkL[Authorized Workspaces]
+      FilesL[OS-user-accessible files and processes]
     end
 
-    Internet -->|HTTPS 443| RP
-    RP --> Hub
+    Internet -->|HTTPS 443| RP --> Hub
     Hub --> DB
     Hub --> AF
     DB -. backup .-> Backup
@@ -219,94 +172,8 @@ flowchart TB
     NW -->|Outbound WSS 443| RP
     NL -->|Outbound WSS 443| RP
     Codex --> Pipe --> NW
-    NW --> WorkW
-    NL --> WorkL
+    NW --> FilesW
+    NL --> FilesL
 ```
 
-反向代理不是必须组件；Hub 可以直接终止 TLS。部署文档必须只给出一个生产推荐路径，避免脚本、安装包和临时启动方式并存造成运维混乱。
-
-## 8. 仓库结构
-
-MVP 采用单 Go Module，语言和边界清晰：
-
-```text
-fast-spider/
-├─ cmd/
-│  ├─ hub/
-│  └─ node/
-├─ internal/
-│  ├─ hub/
-│  │  ├─ app/
-│  │  ├─ identity/
-│  │  ├─ policy/
-│  │  ├─ routing/
-│  │  ├─ jobs/
-│  │  ├─ artifacts/
-│  │  ├─ audit/
-│  │  └─ storage/
-│  ├─ node/
-│  │  ├─ connection/
-│  │  ├─ workspace/
-│  │  ├─ policy/
-│  │  ├─ jobs/
-│  │  └─ platform/
-│  ├─ localbridge/
-│  ├─ agent/
-│  ├─ capabilities/
-│  │  ├─ files/
-│  │  ├─ search/
-│  │  ├─ shell/
-│  │  ├─ git/
-│  │  ├─ browser/
-│  │  ├─ screenshot/
-│  │  └─ agent/
-│  ├─ protocol/
-│  └─ observability/
-├─ contracts/
-│  ├─ schema/
-│  ├─ examples/
-│  └─ generated/
-├─ web/
-├─ native/
-│  └─ windows/
-├─ packaging/
-│  ├─ windows/
-│  └─ linux/
-├─ docs/
-├─ tests/
-└─ README.md
-```
-
-`native/` 只允许窄接口平台能力，不能承载策略、任务或协议逻辑。
-
-## 9. 依赖方向
-
-允许的依赖方向：
-
-```text
-Adapters -> Application Services -> Domain/Contracts -> Ports
-Infrastructure/Platform -> Ports
-```
-
-禁止：
-
-- Adapter 直接读写数据库。
-- 文件能力调用 MCP 类型。
-- Hub 业务层依赖 Node 平台代码。
-- Node 文件模块直接调用具体 Codex Provider。
-- 通过全局单例绕过策略、审计和 Job Manager。
-
-## 10. MVP 与目标架构的区分
-
-### MVP
-
-- 单 Hub 实例。
-- SQLite WAL。
-- 单机 Artifact 目录。
-- Hub 进程内连接注册表和事件扇出。
-- WSS + JSON + 二进制块。
-- Owner 单用户模式。
-
-### 后续目标
-
-只有达到以下触发条件才进入多实例设计：单 Hub 资源不足、需要无中断升级、多个地理入口或多用户隔离要求显著提高。届时才引入 PostgreSQL、连接归属租约、跨实例事件总线和 S3 兼容存储。该目标架构不进入 MVP 代码路径，不提前维护抽象过度的分布式一致性逻辑。
+MVP 不拆微服务，不引入独立消息队列、Redis、对象存储或 Kubernetes。

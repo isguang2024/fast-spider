@@ -30,7 +30,7 @@
 | Apache Guacamole | 浏览器端 RDP/VNC/SSH 网关；Java/C/JS | Apache-2.0 | 成熟；服务端跨平台、浏览器客户端 | 多协议远程访问面；大 | 很高 | 非目标。参考协议隔离/网关思路，不引入 guacd/完整栈 |
 | noVNC | 浏览器 VNC Client；JavaScript | MPL-2.0 | 活跃；现代浏览器 | 依赖 VNC/RFB 远控面；中 | 中 | 当前无实时桌面需求，不直接依赖；未来若改变产品边界需新 ADR |
 
-结论：Fast Spider 不应以“裁剪一个远程桌面项目”起步。现有系统可帮助理解设备连接、会话和安全提示，但它们都围绕连续桌面/通用远控，和本项目的结构化 Capability、Workspace 与 Job 模型不同。
+结论：Fast Spider 不应以“裁剪一个远程桌面项目”起步。现有系统可帮助理解设备连接、会话和安全提示，但它们都围绕连续桌面/通用远控，和本项目的结构化 Capability、Machine 与 Job 模型不同。
 
 ## 4. 浏览器自动化
 

@@ -172,7 +172,7 @@ async function assertRequestAllowed(session, rawURL) {
   if (current.some(address => blockListContains(dangerousIPs, address))) {
     throw new SidecarError('BROWSER_NETWORK_DENIED', `origin ${origin} resolves to a blocked address`);
   }
-  if (!current.some(address => blockListContains(privateIPs, address))) return;
+  if (!current.some(address => blockListContains(privateIPs, address)) || session.allowPrivateNetwork) return;
   const rule = session.allowedOrigins.find(item => item.origin === origin);
   if (!rule) throw new SidecarError('BROWSER_NETWORK_DENIED', `local/private origin ${origin} is not authorized`);
   if (!sameSet(current, rule.pinnedIps)) {
@@ -269,6 +269,7 @@ async function launch(params) {
   if ((params?.allowedOrigins?.length || 0) > 32) {
     throw new SidecarError('INVALID_REQUEST', 'allowed origin limit exceeded');
   }
+  const allowPrivateNetwork = params?.allowPrivateNetwork === true;
   const allowedOrigins = (params?.allowedOrigins || []).map(item => ({
     origin: requireString(item.origin, 'allowedOrigin.origin', 512),
     pinnedIps: Array.isArray(item.pinnedIps) ? item.pinnedIps.map(ip => requireString(ip, 'allowedOrigin.pinnedIp', 128)) : [],
@@ -315,6 +316,7 @@ async function launch(params) {
     context,
     pages: new Map(),
     allowedOrigins,
+    allowPrivateNetwork,
     screenshotDir,
     events: [],
     eventSequence: 0,

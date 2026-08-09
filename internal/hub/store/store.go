@@ -117,7 +117,6 @@ type ArtifactRecord struct {
 	ID          string     `json:"artifactId"`
 	OwnerID     string     `json:"-"`
 	MachineID   string     `json:"machineId"`
-	WorkspaceID string     `json:"workspaceId,omitempty"`
 	JobID       string     `json:"jobId,omitempty"`
 	LogicalName string     `json:"logicalName"`
 	ContentType string     `json:"contentType"`
@@ -626,15 +625,15 @@ func (s *Store) DeleteMachine(ctx context.Context, ownerID, machineID string, no
 	return nil
 }
 
-func (s *Store) FindResumableArtifactUpload(ctx context.Context, ownerID, machineID, workspaceID, jobID, logicalName, contentType string, sizeBytes int64, sha256 string, now time.Time) (ArtifactUploadRecord, bool, error) {
+func (s *Store) FindResumableArtifactUpload(ctx context.Context, ownerID, machineID, jobID, logicalName, contentType string, sizeBytes int64, sha256 string, now time.Time) (ArtifactUploadRecord, bool, error) {
 	var rec ArtifactUploadRecord
 	var expires int64
 	err := s.db.QueryRowContext(ctx, `SELECT u.id, u.artifact_id, u.machine_id, u.expected_size, u.expected_sha256, u.received_size, u.status, u.expires_at
 		FROM artifact_uploads u JOIN artifacts a ON a.id = u.artifact_id
-		WHERE a.owner_id = ? AND a.machine_id = ? AND COALESCE(a.workspace_id,'') = ? AND COALESCE(a.job_id,'') = ?
+		WHERE a.owner_id = ? AND a.machine_id = ? AND COALESCE(a.job_id,'') = ?
 		AND a.logical_name = ? AND a.content_type = ? AND a.size_bytes = ? AND a.sha256 = ?
 		AND a.status = 'uploading' AND u.status = 'active' AND u.expires_at > ?
-		ORDER BY u.created_at DESC LIMIT 1`, ownerID, machineID, workspaceID, jobID, logicalName, contentType, sizeBytes, sha256, now.Unix()).
+		ORDER BY u.created_at DESC LIMIT 1`, ownerID, machineID, jobID, logicalName, contentType, sizeBytes, sha256, now.Unix()).
 		Scan(&rec.ID, &rec.ArtifactID, &rec.MachineID, &rec.ExpectedSize, &rec.ExpectedSHA256, &rec.ReceivedSize, &rec.Status, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ArtifactUploadRecord{}, false, nil
@@ -684,8 +683,8 @@ func (s *Store) CreateArtifactUpload(ctx context.Context, artifact ArtifactRecor
 		return ErrUnauthorized
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO artifacts(
-		id, owner_id, machine_id, workspace_id, job_id, logical_name, content_type, size_bytes, sha256, status, created_at, expires_at
-	) VALUES(?,?,?,?,?,?,?,?,?,'uploading',?,?)`, artifact.ID, artifact.OwnerID, artifact.MachineID, nullString(artifact.WorkspaceID), nullString(artifact.JobID), artifact.LogicalName, artifact.ContentType, artifact.SizeBytes, artifact.SHA256, artifact.CreatedAt.Unix(), artifact.ExpiresAt.Unix()); err != nil {
+		id, owner_id, machine_id, job_id, logical_name, content_type, size_bytes, sha256, status, created_at, expires_at
+	) VALUES(?,?,?,?,?,?,?,?,'uploading',?,?)`, artifact.ID, artifact.OwnerID, artifact.MachineID, nullString(artifact.JobID), artifact.LogicalName, artifact.ContentType, artifact.SizeBytes, artifact.SHA256, artifact.CreatedAt.Unix(), artifact.ExpiresAt.Unix()); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO artifact_uploads(
@@ -811,12 +810,12 @@ func (s *Store) getArtifact(ctx context.Context, scopeColumn, scopeID, artifactI
 	if scopeColumn != "owner_id" && scopeColumn != "machine_id" {
 		return ArtifactRecord{}, ErrUnauthorized
 	}
-	query := `SELECT id, owner_id, machine_id, COALESCE(workspace_id,''), COALESCE(job_id,''), logical_name, content_type, size_bytes, sha256, COALESCE(storage_key,''), status, created_at, completed_at, expires_at
+	query := `SELECT id, owner_id, machine_id, COALESCE(job_id,''), logical_name, content_type, size_bytes, sha256, COALESCE(storage_key,''), status, created_at, completed_at, expires_at
 		FROM artifacts WHERE id = ? AND ` + scopeColumn + ` = ?`
 	var rec ArtifactRecord
 	var created, expires int64
 	var completed sql.NullInt64
-	if err := s.db.QueryRowContext(ctx, query, artifactID, scopeID).Scan(&rec.ID, &rec.OwnerID, &rec.MachineID, &rec.WorkspaceID, &rec.JobID, &rec.LogicalName, &rec.ContentType, &rec.SizeBytes, &rec.SHA256, &rec.StorageKey, &rec.Status, &created, &completed, &expires); err != nil {
+	if err := s.db.QueryRowContext(ctx, query, artifactID, scopeID).Scan(&rec.ID, &rec.OwnerID, &rec.MachineID, &rec.JobID, &rec.LogicalName, &rec.ContentType, &rec.SizeBytes, &rec.SHA256, &rec.StorageKey, &rec.Status, &created, &completed, &expires); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ArtifactRecord{}, ErrNotFound
 		}

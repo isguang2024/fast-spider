@@ -22,32 +22,25 @@ type capabilityListInput struct {
 	MachineID string `json:"machineId,omitempty" jsonschema:"optional machine ID; omit for the Hub capability catalog"`
 }
 
-type workspaceListInput struct {
-	MachineID string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-}
-
 type fileReadInput struct {
-	MachineID   string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	WorkspaceID string `json:"workspaceId" jsonschema:"opaque Node-authorized workspace ID"`
-	Path        string `json:"path" jsonschema:"relative path inside the authorized workspace; absolute paths are rejected"`
-	Offset      int64  `json:"offset,omitempty" jsonschema:"byte offset, default 0"`
-	Limit       int64  `json:"limit,omitempty" jsonschema:"maximum bytes to return, default and maximum 131072; use offset for larger files"`
+	MachineID string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	Path      string `json:"path" jsonschema:"absolute file path on the Node machine"`
+	Offset    int64  `json:"offset,omitempty" jsonschema:"byte offset, default 0"`
+	Limit     int64  `json:"limit,omitempty" jsonschema:"maximum bytes to return, default and maximum 131072; use offset for larger files"`
 }
 
 type codeSearchInput struct {
-	MachineID   string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	WorkspaceID string `json:"workspaceId" jsonschema:"opaque Node-authorized workspace ID"`
-	Query       string `json:"query" jsonschema:"literal text or regular expression to search"`
-	Path        string `json:"path,omitempty" jsonschema:"optional relative directory inside the workspace"`
-	Regex       bool   `json:"regex,omitempty" jsonschema:"interpret query as a Go regular expression"`
-	IgnoreCase  bool   `json:"ignoreCase,omitempty" jsonschema:"case-insensitive matching"`
-	Limit       int    `json:"limit,omitempty" jsonschema:"maximum matches, default 100 and maximum 200"`
+	MachineID  string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	Query      string `json:"query" jsonschema:"literal text or regular expression to search"`
+	Path       string `json:"path" jsonschema:"absolute directory path to search on the Node machine"`
+	Regex      bool   `json:"regex,omitempty" jsonschema:"interpret query as a Go regular expression"`
+	IgnoreCase bool   `json:"ignoreCase,omitempty" jsonschema:"case-insensitive matching"`
+	Limit      int    `json:"limit,omitempty" jsonschema:"maximum matches, default 100 and maximum 200"`
 }
 
 type fileEditInput struct {
 	MachineID          string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	WorkspaceID        string `json:"workspaceId" jsonschema:"opaque Node-authorized workspace ID"`
-	Path               string `json:"path" jsonschema:"relative path inside the authorized workspace"`
+	Path               string `json:"path" jsonschema:"absolute file path on the Node machine"`
 	OldText            string `json:"oldText" jsonschema:"text that must occur exactly once"`
 	NewText            string `json:"newText" jsonschema:"replacement text"`
 	ExpectedFileSHA256 string `json:"expectedFileSha256" jsonschema:"full file SHA-256 from file_read; required for optimistic concurrency"`
@@ -55,54 +48,51 @@ type fileEditInput struct {
 
 type shellRunInput struct {
 	MachineID      string   `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	WorkspaceID    string   `json:"workspaceId" jsonschema:"opaque Node-authorized workspace ID"`
 	Argv           []string `json:"argv" jsonschema:"explicit executable and arguments; no implicit shell interpolation"`
-	Cwd            string   `json:"cwd,omitempty" jsonschema:"relative working directory inside the workspace"`
+	Cwd            string   `json:"cwd" jsonschema:"absolute working directory on the Node machine"`
 	TimeoutSeconds int64    `json:"timeoutSeconds,omitempty" jsonschema:"0 uses the default; maximum 1800 seconds"`
 	IdempotencyKey string   `json:"idempotencyKey" jsonschema:"12-128 character key preventing duplicate process starts on retries"`
 }
 
 type jobWatchInput struct {
 	MachineID   string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	WorkspaceID string `json:"workspaceId" jsonschema:"workspace that owns the job"`
 	JobID       string `json:"jobId" jsonschema:"opaque job ID returned by shell_run/build_control/git_control"`
 	Cursor      int64  `json:"cursor,omitempty" jsonschema:"last consumed event sequence"`
 	WaitSeconds int64  `json:"waitSeconds,omitempty" jsonschema:"long-poll wait from 0 to 15 seconds"`
 }
 
 type jobCancelInput struct {
-	MachineID   string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	WorkspaceID string `json:"workspaceId" jsonschema:"workspace that owns the job"`
-	JobID       string `json:"jobId" jsonschema:"opaque job ID returned by shell_run/build_control/git_control"`
+	MachineID string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	JobID     string `json:"jobId" jsonschema:"opaque job ID returned by shell_run/build_control/git_control"`
 }
 
 type gitControlInput struct {
-	MachineID           string   `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	WorkspaceID         string   `json:"workspaceId" jsonschema:"opaque Node-authorized workspace ID"`
-	Action              string   `json:"action" jsonschema:"one of status,diff,stagedDiff,log,show,branches,currentBranch,worktrees,add,commit,fetch,pull,push,createWorktree,deleteWorktree"`
-	Revision            string   `json:"revision,omitempty" jsonschema:"revision for show"`
-	Paths               []string `json:"paths,omitempty" jsonschema:"relative paths for add"`
-	Message             string   `json:"message,omitempty" jsonschema:"commit message"`
-	Remote              string   `json:"remote,omitempty" jsonschema:"configured remote name for network actions"`
-	Branch              string   `json:"branch,omitempty" jsonschema:"branch or ref for network/worktree actions"`
-	WorktreeWorkspaceID string   `json:"worktreeWorkspaceId,omitempty" jsonschema:"managed worktree workspace ID for deleteWorktree"`
-	IdempotencyKey      string   `json:"idempotencyKey,omitempty" jsonschema:"required for network actions"`
+	MachineID      string   `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	RepositoryPath string   `json:"repositoryPath" jsonschema:"absolute path to the Git repository on the Node machine"`
+	Action         string   `json:"action" jsonschema:"one of status,diff,stagedDiff,log,show,branches,currentBranch,worktrees,add,commit,fetch,pull,push,createWorktree,deleteWorktree"`
+	Revision       string   `json:"revision,omitempty" jsonschema:"revision for show"`
+	Paths          []string `json:"paths,omitempty" jsonschema:"repository-relative paths for add"`
+	Message        string   `json:"message,omitempty" jsonschema:"commit message"`
+	Remote         string   `json:"remote,omitempty" jsonschema:"configured remote name for network actions"`
+	Branch         string   `json:"branch,omitempty" jsonschema:"branch or ref for network/worktree actions"`
+	WorktreePath   string   `json:"worktreePath,omitempty" jsonschema:"absolute managed worktree path for create/deleteWorktree; create may omit to use the Fast Spider managed directory"`
+	IdempotencyKey string   `json:"idempotencyKey,omitempty" jsonschema:"required for network actions"`
 }
 
 type buildControlInput struct {
-	MachineID      string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	WorkspaceID    string `json:"workspaceId" jsonschema:"opaque Node-authorized workspace ID"`
-	Action         string `json:"action" jsonschema:"list or run"`
-	ProfileID      string `json:"profileId,omitempty" jsonschema:"locally configured profile ID for run"`
-	IdempotencyKey string `json:"idempotencyKey,omitempty" jsonschema:"required for run"`
+	MachineID      string   `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	Action         string   `json:"action" jsonschema:"run"`
+	Argv           []string `json:"argv" jsonschema:"build executable and arguments"`
+	Cwd            string   `json:"cwd" jsonschema:"absolute working directory on the Node machine"`
+	TimeoutSeconds int64    `json:"timeoutSeconds,omitempty" jsonschema:"0 uses the default; maximum 1800 seconds"`
+	IdempotencyKey string   `json:"idempotencyKey" jsonschema:"12-128 character idempotency key"`
 }
 
 type artifactGetInput struct {
 	Action      string `json:"action" jsonschema:"get, uploadFile, or uploadJobLog"`
 	ArtifactID  string `json:"artifactId,omitempty" jsonschema:"artifact ID for get"`
 	MachineID   string `json:"machineId,omitempty" jsonschema:"machine ID for upload actions"`
-	WorkspaceID string `json:"workspaceId,omitempty" jsonschema:"workspace ID for upload actions"`
-	Path        string `json:"path,omitempty" jsonschema:"relative workspace file path for uploadFile"`
+	Path        string `json:"path,omitempty" jsonschema:"absolute Node file path for uploadFile"`
 	JobID       string `json:"jobId,omitempty" jsonschema:"terminal job ID for uploadJobLog"`
 	LogicalName string `json:"logicalName,omitempty" jsonschema:"artifact display file name"`
 	ContentType string `json:"contentType,omitempty" jsonschema:"optional MIME type for uploadFile"`
@@ -120,7 +110,6 @@ type browserLocatorInput struct {
 
 type browserControlInput struct {
 	MachineID        string               `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	WorkspaceID      string               `json:"workspaceId" jsonschema:"enabled Node-authorized workspace; local/private browser origins are configured locally when needed"`
 	Action           string               `json:"action" jsonschema:"launch,close,page.open,page.navigate,page.close,pages.list,click,type,press,wait,snapshot,screenshot,events"`
 	BrowserSessionID string               `json:"browserSessionId,omitempty" jsonschema:"opaque managed browser session ID"`
 	PageID           string               `json:"pageId,omitempty" jsonschema:"opaque managed page ID"`
@@ -128,7 +117,7 @@ type browserControlInput struct {
 	Headed           bool                 `json:"headed,omitempty" jsonschema:"show the isolated managed browser window instead of headless mode"`
 	ViewportWidth    int                  `json:"viewportWidth,omitempty" jsonschema:"viewport width from 320 to 2560"`
 	ViewportHeight   int                  `json:"viewportHeight,omitempty" jsonschema:"viewport height from 240 to 1600"`
-	URL              string               `json:"url,omitempty" jsonschema:"http(s) URL; public targets work directly, local/private targets require a locally configured persistent origin"`
+	URL              string               `json:"url,omitempty" jsonschema:"http(s) URL; the Node may access public, localhost and private-network targets available to the current OS user"`
 	WaitUntil        string               `json:"waitUntil,omitempty" jsonschema:"load,domcontentloaded,networkidle, or commit"`
 	Locator          *browserLocatorInput `json:"locator,omitempty" jsonschema:"structured locator for click/type/press/wait"`
 	Text             string               `json:"text,omitempty" jsonschema:"text for type"`
@@ -143,7 +132,6 @@ type browserControlInput struct {
 
 type screenshotTakeInput struct {
 	MachineID    string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	WorkspaceID  string `json:"workspaceId" jsonschema:"enabled workspace used to scope the request and resulting Artifact"`
 	Action       string `json:"action" jsonschema:"listDisplays, desktop, display, listWindows, or window"`
 	DisplayIndex int    `json:"displayIndex,omitempty" jsonschema:"zero-based active display index for action=display"`
 	WindowID     string `json:"windowId,omitempty" jsonschema:"opaque short-lived window ID returned by listWindows for action=window"`
@@ -153,13 +141,12 @@ type screenshotTakeInput struct {
 
 type aiControlInput struct {
 	MachineID        string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	WorkspaceID      string `json:"workspaceId,omitempty" jsonschema:"workspace for project/session actions; omit for providers/models/projects discovery"`
-	Action           string `json:"action" jsonschema:"providers.list,models.list,projects.list,session.list,session.get,session.create,session.send,session.watch,session.cancel,session.result,session.rename,session.archive"`
+	Action           string `json:"action" jsonschema:"providers.list,models.list,session.list,session.get,session.create,session.send,session.watch,session.cancel,session.result,session.rename,session.archive"`
 	ProviderID       string `json:"providerId,omitempty" jsonschema:"provider ID; defaults to codex"`
 	SessionID        string `json:"sessionId,omitempty" jsonschema:"opaque provider session ID"`
 	TurnID           string `json:"turnId,omitempty" jsonschema:"active turn ID for cancel when known"`
 	Prompt           string `json:"prompt,omitempty" jsonschema:"prompt for session.create/session.send"`
-	WorkingDirectory string `json:"workingDirectory,omitempty" jsonschema:"relative directory inside the authorized Workspace"`
+	WorkingDirectory string `json:"workingDirectory,omitempty" jsonschema:"absolute working directory on the Node machine; required for session.create and recommended for session.list/session.send"`
 	Model            string `json:"model,omitempty" jsonschema:"optional provider model ID"`
 	Thinking         string `json:"thinking,omitempty" jsonschema:"optional provider reasoning effort"`
 	Cursor           int64  `json:"cursor,omitempty" jsonschema:"last consumed normalized event sequence"`
@@ -201,10 +188,6 @@ type machineGetOutput struct {
 
 type capabilityListOutput struct {
 	Capabilities []protocolv1.CapabilityDescriptor `json:"capabilities"`
-}
-
-type workspaceListOutput struct {
-	Workspaces []protocolv1.WorkspaceSummary `json:"workspaces"`
 }
 
 type fileReadOutput struct {
@@ -334,27 +317,11 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
-		Name:        "workspace_list",
-		Description: "List Node-authorized workspaces by opaque workspaceId. Local absolute paths are never returned through this remote tool.",
-		Annotations: toolAnnotations(true, false, true, false),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input workspaceListInput) (*mcp.CallToolResult, workspaceListOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "", "workspace.registry", "list", map[string]any{})
-		if err != nil {
-			return nil, workspaceListOutput{}, err
-		}
-		var out workspaceListOutput
-		if err := decodeCapabilityResult(result, &out); err != nil {
-			return nil, workspaceListOutput{}, err
-		}
-		return nil, out, nil
-	})
-
-	mcp.AddTool(server, &mcp.Tool{
 		Name:        "file_read",
-		Description: "Read UTF-8 text from a relative path inside a Node-authorized workspace. Absolute paths and workspace escapes are rejected by the Node.",
+		Description: "Read UTF-8 text from an absolute path on the selected Node. Access is limited only by the operating-system account running Fast Spider Node.",
 		Annotations: toolAnnotations(true, false, true, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input fileReadInput) (*mcp.CallToolResult, fileReadOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "file.read", "read", map[string]any{"path": input.Path, "offset": input.Offset, "limit": input.Limit})
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "file.read", "read", map[string]any{"path": input.Path, "offset": input.Offset, "limit": input.Limit})
 		if err != nil {
 			return nil, fileReadOutput{}, err
 		}
@@ -367,10 +334,10 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "code_search",
-		Description: "Search text files inside a Node-authorized workspace with bounded files, file sizes, matches and request deadline.",
+		Description: "Search text files below an absolute directory on the selected Node with bounded files, file sizes, matches and request deadline.",
 		Annotations: toolAnnotations(true, false, true, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input codeSearchInput) (*mcp.CallToolResult, codeSearchOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "code.search", "search", map[string]any{"query": input.Query, "path": input.Path, "regex": input.Regex, "ignoreCase": input.IgnoreCase, "limit": input.Limit})
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "code.search", "search", map[string]any{"query": input.Query, "path": input.Path, "regex": input.Regex, "ignoreCase": input.IgnoreCase, "limit": input.Limit})
 		if err != nil {
 			return nil, codeSearchOutput{}, err
 		}
@@ -383,10 +350,10 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "file_edit",
-		Description: "Perform one exact optimistic-concurrency text replacement inside a Node-authorized workspace. Write permission must be enabled locally on the Node.",
+		Description: "Perform one exact optimistic-concurrency text replacement on an absolute Node file path. Access follows the operating-system account running Fast Spider Node.",
 		Annotations: toolAnnotations(false, true, false, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input fileEditInput) (*mcp.CallToolResult, fileEditOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "file.write", "edit", map[string]any{"path": input.Path, "oldText": input.OldText, "newText": input.NewText, "expectedFileSha256": input.ExpectedFileSHA256})
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "file.write", "edit", map[string]any{"path": input.Path, "oldText": input.OldText, "newText": input.NewText, "expectedFileSha256": input.ExpectedFileSHA256})
 		if err != nil {
 			return nil, fileEditOutput{}, err
 		}
@@ -399,10 +366,10 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "shell_run",
-		Description: "Start a bounded non-interactive process in a Node-authorized workspace using an explicit argv array. Shell permission must be enabled locally on the Node.",
+		Description: "Start a bounded non-interactive process on the selected Node using an explicit argv array and absolute cwd. The process runs as the same OS user as Fast Spider Node.",
 		Annotations: toolAnnotations(false, true, false, true),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input shellRunInput) (*mcp.CallToolResult, jobOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "shell.exec", "run", map[string]any{"argv": input.Argv, "cwd": input.Cwd, "timeoutSeconds": input.TimeoutSeconds, "idempotencyKey": input.IdempotencyKey})
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "shell.exec", "run", map[string]any{"argv": input.Argv, "cwd": input.Cwd, "timeoutSeconds": input.TimeoutSeconds, "idempotencyKey": input.IdempotencyKey})
 		if err != nil {
 			return nil, jobOutput{}, err
 		}
@@ -418,7 +385,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		Description: "Read bounded stdout/stderr/status events for one Node job after a cursor, optionally long-polling for up to 15 seconds.",
 		Annotations: toolAnnotations(true, false, true, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input jobWatchInput) (*mcp.CallToolResult, jobOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "job.control", "watch", map[string]any{"jobId": input.JobID, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds})
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "job.control", "watch", map[string]any{"jobId": input.JobID, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds})
 		if err != nil {
 			return nil, jobOutput{}, err
 		}
@@ -434,7 +401,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		Description: "Cancel one active Node job and terminate its process tree. Repeated cancellation of a terminal job is safe.",
 		Annotations: toolAnnotations(false, true, true, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input jobCancelInput) (*mcp.CallToolResult, jobOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "job.control", "cancel", map[string]any{"jobId": input.JobID})
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "job.control", "cancel", map[string]any{"jobId": input.JobID})
 		if err != nil {
 			return nil, jobOutput{}, err
 		}
@@ -447,12 +414,12 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "git_control",
-		Description: "Run one allowlisted system-Git action inside an authorized repository. Git write, network, and hook execution are separately controlled by local Node permissions.",
+		Description: "Run one allowlisted system-Git action in an absolute repository path on the selected Node. It runs with the same OS-user permissions as Fast Spider Node.",
 		Annotations: toolAnnotations(false, true, false, true),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input gitControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "git.repository", input.Action, map[string]any{
-			"revision": input.Revision, "paths": input.Paths, "message": input.Message, "remote": input.Remote,
-			"branch": input.Branch, "worktreeWorkspaceId": input.WorktreeWorkspaceID, "idempotencyKey": input.IdempotencyKey,
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "git.repository", input.Action, map[string]any{
+			"repositoryPath": input.RepositoryPath, "revision": input.Revision, "paths": input.Paths, "message": input.Message, "remote": input.Remote,
+			"branch": input.Branch, "worktreePath": input.WorktreePath, "idempotencyKey": input.IdempotencyKey,
 		})
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
@@ -462,10 +429,10 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "build_control",
-		Description: "List or run a build/test profile that was configured locally on the Node. Remote callers cannot supply an arbitrary build command.",
+		Description: "Run one bounded build/test command on the selected Node using an explicit argv array and absolute cwd.",
 		Annotations: toolAnnotations(false, true, false, true),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input buildControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "build.profile", input.Action, map[string]any{"profileId": input.ProfileID, "idempotencyKey": input.IdempotencyKey})
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "build.exec", input.Action, map[string]any{"argv": input.Argv, "cwd": input.Cwd, "timeoutSeconds": input.TimeoutSeconds, "idempotencyKey": input.IdempotencyKey})
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
@@ -474,11 +441,11 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "browser_control",
-		Description: "Control one Node-managed isolated Chromium session with fixed actions. Public web targets work directly; local/private targets use a Node-local persistent origin allowlist. It never attaches to the user's normal browser profile or exposes raw CDP/Playwright execution.",
+		Description: "Control one Node-managed isolated Chromium session with fixed actions. Public, localhost and private-network targets are allowed; it never attaches to the user's normal browser profile or exposes raw CDP/Playwright execution.",
 		Annotations: toolAnnotations(false, true, false, true),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input browserControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		params := browserControlParams(input)
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "browser.automation", input.Action, params)
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "browser.automation", input.Action, params)
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
@@ -487,11 +454,11 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "screenshot_take",
-		Description: "Capture a one-time desktop, display, or window image on a Node for an enabled workspace. Use listDisplays/listWindows for targets; results are Hub Artifacts and never local paths.",
+		Description: "Capture a one-time desktop, display, or window image on the selected Node. Use listDisplays/listWindows for targets; results are Hub Artifacts and never local paths.",
 		Annotations: toolAnnotations(false, false, false, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input screenshotTakeInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		params := map[string]any{"displayIndex": input.DisplayIndex, "windowId": input.WindowID, "format": input.Format, "quality": input.Quality}
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "screenshot.capture", input.Action, params)
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "screenshot.capture", input.Action, params)
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
@@ -500,7 +467,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ai_control",
-		Description: "Discover local AI providers/models/projects and control provider sessions through the Node. Phase 6 currently implements bridge-owned Codex sessions only; it reuses the authorized Workspace and never sends provider credentials to Hub.",
+		Description: "Discover local AI providers/models and control provider sessions through the Node. Codex sessions use an absolute workingDirectory on the same machine; provider credentials remain local.",
 		Annotations: toolAnnotations(false, true, false, true),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input aiControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		params := map[string]any{
@@ -509,7 +476,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 			"thinking": input.Thinking, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds,
 			"limit": input.Limit, "name": input.Name,
 		}
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "agent.control", input.Action, params)
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "agent.control", input.Action, params)
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
@@ -518,13 +485,13 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "artifact_get",
-		Description: "Get Artifact metadata/content or ask a Node to upload an authorized workspace file or terminal Job log into Hub Artifact storage. Raw chunk upload remains an internal Node protocol.",
+		Description: "Get Artifact metadata/content or ask a Node to upload an absolute-path file or terminal Job log into Hub Artifact storage. Raw chunk upload remains an internal Node protocol.",
 		Annotations: toolAnnotations(false, false, false, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input artifactGetInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		switch input.Action {
 		case "uploadFile", "uploadJobLog":
 			params := map[string]any{"path": input.Path, "jobId": input.JobID, "logicalName": input.LogicalName, "contentType": input.ContentType}
-			result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, input.WorkspaceID, "artifact.store", input.Action, params)
+			result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "artifact.store", input.Action, params)
 			if err != nil {
 				return nil, genericCapabilityOutput{}, err
 			}

@@ -22,21 +22,19 @@ func windowTokenKey(privateKey []byte) [32]byte {
 	return out
 }
 
-func makeWindowToken(key [32]byte, workspaceID string, handle uint64, identity [8]byte, now time.Time) string {
+func makeWindowToken(key [32]byte, handle uint64, identity [8]byte, now time.Time) string {
 	payload := make([]byte, 24)
 	binary.BigEndian.PutUint64(payload[0:8], handle)
 	binary.BigEndian.PutUint64(payload[8:16], uint64(now.UTC().Add(windowTokenTTL).Unix()))
 	copy(payload[16:24], identity[:])
 	mac := hmac.New(sha256.New, key[:])
-	_, _ = mac.Write([]byte(workspaceID))
-	_, _ = mac.Write([]byte{0})
 	_, _ = mac.Write(payload)
 	tag := mac.Sum(nil)[:16]
 	raw := append(payload, tag...)
 	return "win_" + base64.RawURLEncoding.EncodeToString(raw)
 }
 
-func parseWindowToken(key [32]byte, workspaceID, token string, now time.Time) (uint64, [8]byte, error) {
+func parseWindowToken(key [32]byte, token string, now time.Time) (uint64, [8]byte, error) {
 	var identity [8]byte
 	if len(token) < 5 || token[:4] != "win_" {
 		return 0, identity, ErrWindowTokenInvalid
@@ -47,8 +45,6 @@ func parseWindowToken(key [32]byte, workspaceID, token string, now time.Time) (u
 	}
 	payload, tag := raw[:24], raw[24:]
 	mac := hmac.New(sha256.New, key[:])
-	_, _ = mac.Write([]byte(workspaceID))
-	_, _ = mac.Write([]byte{0})
 	_, _ = mac.Write(payload)
 	if !hmac.Equal(tag, mac.Sum(nil)[:16]) {
 		return 0, identity, ErrWindowTokenInvalid

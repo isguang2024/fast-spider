@@ -536,11 +536,11 @@ func (a *CodexAdapter) ListThreads(ctx context.Context, root string, limit int) 
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	return a.request(ctx, "thread/list", map[string]any{
-		"limit":    limit,
-		"cwd":      []string{root},
-		"archived": false,
-	})
+	params := map[string]any{"limit": limit, "archived": false}
+	if strings.TrimSpace(root) != "" {
+		params["cwd"] = []string{root}
+	}
+	return a.request(ctx, "thread/list", params)
 }
 
 func (a *CodexAdapter) ReadThread(ctx context.Context, sessionID string) (map[string]any, error) {

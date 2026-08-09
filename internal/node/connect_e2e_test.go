@@ -1,10 +1,8 @@
 package node_test
 
 import (
-	"bytes"
 	"context"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -141,21 +139,11 @@ func TestConnectionTokenCanRegisterMultipleIndependentNodes(t *testing.T) {
 	}
 }
 
-func TestNodeReconnectAfterRevokedMachinePreservesWorkspaceRegistry(t *testing.T) {
+func TestNodeReconnectAfterRevokedMachineCreatesFreshMachineIdentity(t *testing.T) {
 	fixture := newNodeConnectFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	nodeDataDir := t.TempDir()
-	workspaceRoot := t.TempDir()
-	workspace, err := node.NewWorkspaceStore(nodeDataDir).Add(workspaceRoot, "persistent workspace")
-	if err != nil {
-		t.Fatal(err)
-	}
-	workspacePath := filepath.Join(nodeDataDir, "workspaces.json")
-	before, err := os.ReadFile(workspacePath)
-	if err != nil {
-		t.Fatal(err)
-	}
 	token, err := fixture.service.CreateConnectionToken(ctx, fixture.account.OwnerID, "Reconnect Token", 90*24*time.Hour, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
@@ -177,20 +165,6 @@ func TestNodeReconnectAfterRevokedMachinePreservesWorkspaceRegistry(t *testing.T
 	}
 	if second.MachineID == "" || second.MachineID == first.MachineID {
 		t.Fatalf("reconnect did not create a new machine ID: first=%q second=%q", first.MachineID, second.MachineID)
-	}
-	after, err := os.ReadFile(workspacePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(before, after) {
-		t.Fatal("workspaces.json changed during revoked-machine reconnect")
-	}
-	retained, err := node.NewWorkspaceStore(nodeDataDir).Lookup(workspace.WorkspaceID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if retained.WorkspaceID != workspace.WorkspaceID || retained.Root != workspace.Root {
-		t.Fatalf("workspace identity was not retained: before=%+v after=%+v", workspace, retained)
 	}
 }
 

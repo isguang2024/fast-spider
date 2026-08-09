@@ -53,22 +53,15 @@ type artifactUploadResult struct {
 	JobLogTruncated bool   `json:"jobLogTruncated,omitempty"`
 }
 
-func (c *Client) artifactUploadFile(ctx context.Context, workspaceID string, params map[string]any) (artifactUploadResult, error) {
+func (c *Client) artifactUploadFile(ctx context.Context, params map[string]any) (artifactUploadResult, error) {
 	var input artifactControlParams
 	if err := decodeParams(params, &input); err != nil {
 		return artifactUploadResult{}, fmt.Errorf("invalid params: %w", err)
 	}
-	workspace, err := NewWorkspaceStore(c.cfg.DataDir).Resolve(workspaceID)
-	if err != nil {
-		return artifactUploadResult{}, err
-	}
-	if !workspace.Allows(WorkspacePermissionRead) {
-		return artifactUploadResult{}, ErrPermissionDenied
-	}
 	if input.Path == "" {
 		return artifactUploadResult{}, fmt.Errorf("path is required")
 	}
-	path, err := resolveWorkspacePath(workspace.Root, input.Path)
+	path, err := ResolveMachinePath(input.Path)
 	if err != nil {
 		return artifactUploadResult{}, err
 	}
@@ -90,11 +83,11 @@ func (c *Client) artifactUploadFile(ctx context.Context, workspaceID string, par
 			contentType = "application/octet-stream"
 		}
 	}
-	result, err := c.uploadArtifactPath(ctx, workspaceID, "", name, contentType, path)
+	result, err := c.uploadArtifactPath(ctx, "", name, contentType, path)
 	return result, err
 }
 
-func (c *Client) artifactUploadJobLog(ctx context.Context, workspaceID string, params map[string]any) (artifactUploadResult, error) {
+func (c *Client) artifactUploadJobLog(ctx context.Context, params map[string]any) (artifactUploadResult, error) {
 	var input artifactControlParams
 	if err := decodeParams(params, &input); err != nil {
 		return artifactUploadResult{}, fmt.Errorf("invalid params: %w", err)
@@ -102,30 +95,20 @@ func (c *Client) artifactUploadJobLog(ctx context.Context, workspaceID string, p
 	if input.JobID == "" {
 		return artifactUploadResult{}, fmt.Errorf("jobId is required")
 	}
-	jobWorkspaceID, path, _, truncated, err := c.jobs.JobLog(input.JobID)
+	path, _, truncated, err := c.jobs.JobLog(input.JobID)
 	if err != nil {
 		return artifactUploadResult{}, err
-	}
-	if jobWorkspaceID != workspaceID {
-		return artifactUploadResult{}, ErrPermissionDenied
-	}
-	workspace, err := NewWorkspaceStore(c.cfg.DataDir).Resolve(workspaceID)
-	if err != nil {
-		return artifactUploadResult{}, err
-	}
-	if !workspace.Allows(WorkspacePermissionRead) {
-		return artifactUploadResult{}, ErrPermissionDenied
 	}
 	name := input.LogicalName
 	if name == "" {
 		name = input.JobID + ".log"
 	}
-	result, err := c.uploadArtifactPath(ctx, workspaceID, input.JobID, name, "text/plain; charset=utf-8", path)
+	result, err := c.uploadArtifactPath(ctx, input.JobID, name, "text/plain; charset=utf-8", path)
 	result.JobLogTruncated = truncated
 	return result, err
 }
 
-func (c *Client) uploadArtifactPath(ctx context.Context, workspaceID, jobID, logicalName, contentType, path string) (artifactUploadResult, error) {
+func (c *Client) uploadArtifactPath(ctx context.Context, jobID, logicalName, contentType, path string) (artifactUploadResult, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return artifactUploadResult{}, err
@@ -166,7 +149,7 @@ func (c *Client) uploadArtifactPath(ctx context.Context, workspaceID, jobID, log
 	}
 	var created artifactCreateResponse
 	if err := c.postJSON(ctx, state.HubURL+"/node/v1/artifacts", deviceToken.DeviceToken, map[string]any{
-		"workspaceId": workspaceID, "jobId": jobID, "logicalName": logicalName, "contentType": contentType,
+		"jobId": jobID, "logicalName": logicalName, "contentType": contentType,
 		"sizeBytes": info.Size(), "sha256": sha,
 	}, &created); err != nil {
 		return artifactUploadResult{}, err
