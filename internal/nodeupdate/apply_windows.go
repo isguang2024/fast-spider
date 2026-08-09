@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 func StartApply(stagedPath, targetPath, dataDir string, background bool) error {
@@ -67,7 +69,12 @@ func ApplyHelper(targetPath, dataDir string, oldPID int, background bool) error 
 	if err := copyFile(selfPath, newPath); err != nil {
 		return err
 	}
-	deadline := time.Now().Add(60 * time.Second)
+	if err := waitForProcessExit(oldPID, 60*time.Second); err != nil {
+		_ = os.Remove(newPath)
+		return err
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
 		_ = os.Remove(previousPath)
@@ -100,6 +107,40 @@ func ApplyHelper(targetPath, dataDir string, oldPID int, background bool) error 
 	}
 	_ = os.Remove(newPath)
 	return fmt.Errorf("timed out waiting for old process %d to release executable: %w", oldPID, lastErr)
+}
+
+func waitForProcessExit(pid int, timeout time.Duration) error {
+	if pid <= 0 {
+		return errors.New("process id is invalid")
+	}
+	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
+	if err != nil {
+		if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+			return nil
+		}
+		return fmt.Errorf("open old process %d: %w", pid, err)
+	}
+	defer windows.CloseHandle(handle)
+
+	milliseconds := timeout.Milliseconds()
+	if milliseconds <= 0 {
+		milliseconds = 1
+	}
+	if milliseconds > int64(^uint32(0)-1) {
+		milliseconds = int64(^uint32(0) - 1)
+	}
+	status, err := windows.WaitForSingleObject(handle, uint32(milliseconds))
+	if err != nil {
+		return fmt.Errorf("wait for old process %d: %w", pid, err)
+	}
+	switch status {
+	case windows.WAIT_OBJECT_0:
+		return nil
+	case uint32(windows.WAIT_TIMEOUT):
+		return fmt.Errorf("timed out waiting for old process %d to exit", pid)
+	default:
+		return fmt.Errorf("unexpected wait status %d for old process %d", status, pid)
+	}
 }
 
 func copyFile(source, destination string) error {
