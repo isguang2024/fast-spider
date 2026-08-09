@@ -20,7 +20,7 @@ func LoadState(path string) (State, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return State{}, ErrNotEnrolled
+			return State{}, ErrNotRegistered
 		}
 		return State{}, fmt.Errorf("read node state: %w", err)
 	}

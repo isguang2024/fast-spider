@@ -21,7 +21,7 @@ import (
 	"github.com/isguang2024/fast-spider/internal/security"
 )
 
-var ErrNotEnrolled = errors.New("node is not enrolled")
+var ErrNotRegistered = errors.New("node is not registered")
 
 const maxHTTPResponseBytes = 1 << 20
 

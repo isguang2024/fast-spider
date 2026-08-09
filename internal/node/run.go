@@ -46,7 +46,7 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 	normalizedHubURL, err := c.normalizeHubURL(state.HubURL)
 	if err != nil {
-		return fmt.Errorf("validate enrolled hub URL: %w", err)
+		return fmt.Errorf("validate registered hub URL: %w", err)
 	}
 	state.HubURL = normalizedHubURL
 	backoff := 500 * time.Millisecond
@@ -281,7 +281,7 @@ func (c *Client) verifyServerHello(state State, hello protocolv1.ServerHello) er
 		return errors.New("hub protocol is incompatible")
 	}
 	if hello.HubPublicKey != state.HubPublicKey || hello.HubFingerprint != state.HubFingerprint {
-		return errors.New("hub identity changed; explicit re-enrollment is required")
+		return errors.New("hub identity changed; explicit re-registration is required")
 	}
 	publicKey, err := security.DecodePublicKey(hello.HubPublicKey)
 	if err != nil {

@@ -155,7 +155,7 @@ func (c *Client) uploadArtifactPath(ctx context.Context, workspaceID, jobID, log
 	}
 	normalizedHubURL, err := c.normalizeHubURL(state.HubURL)
 	if err != nil {
-		return artifactUploadResult{}, fmt.Errorf("validate enrolled hub URL: %w", err)
+		return artifactUploadResult{}, fmt.Errorf("validate registered hub URL: %w", err)
 	}
 	state.HubURL = normalizedHubURL
 	tokenCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
