@@ -64,12 +64,11 @@ const localUIHTML = `<!doctype html>
             <form id="config-form">
               <div class="grid">
                 <label class="field"><span>客户端名称</span><input id="config-name" maxlength="128" required><small class="hint">保存后会自动同步到 Hub；管理员备注只在 Web 后台维护。</small></label>
-                <label class="field"><span>浏览器 Sidecar 目录</span><input id="config-browser" maxlength="4096" placeholder="留空使用默认目录"></label>
                 <label class="switch"><input id="config-bridge" type="checkbox"><span><strong>Local Bridge</strong><br><small class="hint">允许当前系统用户的本地 AI 客户端调用 Node。</small></span></label>
                 <label class="switch"><input id="config-autostart" type="checkbox"><span><strong>登录 Windows 后自动启动</strong><br><small class="hint">登录后隐藏启动到系统托盘，不弹出配置页面；仍然是同一个 EXE。</small></span></label>
                 <label class="switch"><input id="config-autoupdate" type="checkbox"><span><strong>自动更新</strong><br><small class="hint">后台检查并下载新版本；下次启动时自动完成替换。</small></span></label>
               </div>
-              <details class="advanced"><summary>开发环境选项</summary><label class="switch" style="margin-top:10px"><input id="config-insecure" type="checkbox"><span><strong>允许本机开发 HTTP Hub</strong><br><small class="hint">正式环境保持关闭，只使用 HTTPS。</small></span></label></details>
+              <details class="advanced"><summary>高级 / 开发环境选项</summary><div class="grid" style="margin-top:10px"><label class="field full"><span>浏览器 Sidecar 目录</span><input id="config-browser" maxlength="4096" placeholder="正常无需填写，Browser 组件安装后会自动配置"><small class="hint">只在本地开发或自定义 Sidecar 时手工设置。</small></label><label class="switch full"><input id="config-insecure" type="checkbox"><span><strong>允许本机开发 HTTP Hub</strong><br><small class="hint">正式环境保持关闭，只使用 HTTPS。</small></span></label></div></details>
               <div class="actions"><button class="primary" type="submit">保存本地配置</button><span id="data-dir" class="hint mono"></span></div>
             </form>
           </div>
@@ -82,6 +81,7 @@ const localUIHTML = `<!doctype html>
               <div class="fact"><span>更新状态</span><strong id="update-state">尚未检查</strong></div>
             </div>
             <div class="actions"><button id="update-check" class="secondary" type="button">检查更新</button><button id="update-install" class="primary" type="button" disabled>立即升级</button><span id="update-time" class="hint"></span></div>
+            <div class="actions"><button id="browser-install" class="secondary" type="button">安装 / 更新 Browser</button><span id="browser-status" class="hint">按需安装，不影响基础 Node。</span></div>
             <p class="hint mono" id="component-root"></p>
           </div>
         </section>
@@ -208,6 +208,15 @@ const localUIHTML = `<!doctype html>
     busy=true; message('正在下载并校验新版本…');
     try { const data=await api('/api/update/install',{method:'POST',body:'{}'}); if(data.restarting){document.body.textContent='更新已校验完成，正在替换 Fast Spider Node 并重新启动…';} else {renderStatus(data.status); message('当前已经是最新版本。');} }
     catch(e){message(e.message,true);busy=false;}
+  });
+
+  $('browser-install').addEventListener('click', async () => {
+    if (busy) return; busy=true; $('browser-install').disabled=true; $('browser-status').textContent='正在下载并校验 Browser 组件…'; message('正在安装 Browser 组件…');
+    try {
+      const data=await api('/api/components/ensure',{method:'POST',body:JSON.stringify({componentId:'browser'})});
+      renderStatus(data.status); $('browser-status').textContent='Browser ' + data.component.version + ' 已安装'; message('Browser 组件已安装并接入 Node，运行时正在刷新能力。');
+    } catch(e) { $('browser-status').textContent='Browser 安装失败'; message(e.message,true); }
+    finally { busy=false; $('browser-install').disabled=false; }
   });
 
   $('exit-app').addEventListener('click', async () => {

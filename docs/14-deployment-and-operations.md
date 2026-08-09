@@ -24,7 +24,9 @@ Hub data-dir 与 release-dir 分离：数据库/密钥/Artifact 进入备份，W
 
 Hub 发布签名 Node manifest。Node 验证签名、SHA-256 和大小。手动升级可立即替换；自动更新可检查/预下载。Windows 替换助手等待旧 PID 真正退出后替换原 EXE，再按原模式重启。
 
-大型组件按需安装到 Node data-dir 的 `components/<id>/<version>`，缓存位于 `cache/`。
+大型组件按需安装到 Node data-dir 的 `components/<id>/<version>`，缓存位于 `cache/`。Browser 组件通过本地 UI 的“安装 / 更新 Browser”下载；安装完成后自动写入 Sidecar 路径并重启 Node 运行时，不需要用户手填目录。
+
+Windows Browser 组件发布包使用 `cmd/browserpack` 生成，组件根目录必须包含 Sidecar、Playwright、当前 Chromium/headless shell/ffmpeg 浏览器缓存以及 `node.exe`。Hub 发布路径为 `release-dir/components/browser/windows-amd64/component.zip` 和同目录 `version.txt`；Hub 会动态生成签名 manifest。
 
 ## 备份
 

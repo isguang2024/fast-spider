@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/isguang2024/fast-spider/internal/componentmgr"
 	"github.com/isguang2024/fast-spider/internal/hub/core"
 	"github.com/isguang2024/fast-spider/internal/hub/registry"
 	"github.com/isguang2024/fast-spider/internal/hub/server"
@@ -110,6 +111,9 @@ func TestLocalUIRegisteredViewDoesNotPromptForConnectionTokenAgain(t *testing.T)
 	if !strings.Contains(localUIHTML, "以后打开 Fast Spider 会自动连接 Hub，不需要再次输入连接密钥") {
 		t.Fatal("registered state does not explain automatic device-key reconnect")
 	}
+	if !strings.Contains(localUIHTML, `id="browser-install"`) || !strings.Contains(localUIHTML, "/api/components/ensure") {
+		t.Fatal("local UI is missing the managed Browser component install flow")
+	}
 }
 
 func TestLocalUIConfigPreservesRegistrationHubWhenHubFieldIsOmitted(t *testing.T) {
@@ -133,6 +137,22 @@ func TestLocalUIConfigPreservesRegistrationHubWhenHubFieldIsOmitted(t *testing.T
 	}
 	if app.config.HubURL != "https://custom.example/fast-spider" || app.config.MachineName != "Renamed Node" {
 		t.Fatalf("config lost registration state: %+v", app.config)
+	}
+}
+
+func TestConfigureInstalledBrowserComponentUpdatesSidecarPath(t *testing.T) {
+	cfg := defaultLocalConfig("Test Node")
+	installed := componentmgr.Installed{ID: "browser", Platform: "windows-amd64", Version: "1.62.0", Path: `C:\\FastSpider\\browser-component`}
+	next, changed := configureInstalledComponent(cfg, installed)
+	if !changed {
+		t.Fatal("browser component did not update local config")
+	}
+	if next.BrowserSidecarDir != installed.Path {
+		t.Fatalf("browser sidecar dir=%q want=%q", next.BrowserSidecarDir, installed.Path)
+	}
+	again, changed := configureInstalledComponent(next, installed)
+	if changed || again.BrowserSidecarDir != installed.Path {
+		t.Fatalf("same browser component should be idempotent: changed=%v cfg=%+v", changed, again)
 	}
 }
 

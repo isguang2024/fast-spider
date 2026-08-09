@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -84,27 +85,54 @@ func NewBrowserSidecar(dir string, logger *slog.Logger) *BrowserSidecar {
 	return &BrowserSidecar{dir: ResolveBrowserSidecarDir(dir), logger: logger, pending: make(map[string]chan browserSidecarResponse)}
 }
 
+func (s *BrowserSidecar) nodeExecutable() (string, error) {
+	if s.dir != "" {
+		candidates := []string{filepath.Join(s.dir, "node")}
+		if runtime.GOOS == "windows" {
+			candidates = []string{filepath.Join(s.dir, "node.exe")}
+		} else {
+			candidates = append(candidates, filepath.Join(s.dir, "bin", "node"))
+		}
+		for _, candidate := range candidates {
+			if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() {
+				return candidate, nil
+			}
+		}
+	}
+	path, err := exec.LookPath("node")
+	if err != nil {
+		return "", fmt.Errorf("%w: node executable not found", ErrBrowserUnavailable)
+	}
+	return path, nil
+}
+
+func browserSidecarEnvironment(dir string) []string {
+	env := safeShellEnvironment()
+	browserRoot := filepath.Join(dir, "browsers")
+	if info, err := os.Stat(browserRoot); err == nil && info.IsDir() {
+		env = append(env, "PLAYWRIGHT_BROWSERS_PATH="+browserRoot)
+	}
+	return env
+}
+
 func (s *BrowserSidecar) Available() error {
 	if s.dir == "" {
 		return fmt.Errorf("%w: sidecar directory is not configured", ErrBrowserUnavailable)
 	}
-	if _, err := exec.LookPath("node"); err != nil {
-		return fmt.Errorf("%w: node executable not found", ErrBrowserUnavailable)
+	nodePath, err := s.nodeExecutable()
+	if err != nil {
+		return err
 	}
 	for _, required := range []string{"package.json", "index.mjs", filepath.Join("node_modules", "playwright", "package.json")} {
 		if info, err := os.Stat(filepath.Join(s.dir, required)); err != nil || (required == "index.mjs" && !info.Mode().IsRegular()) {
 			return fmt.Errorf("%w: missing %s", ErrBrowserUnavailable, required)
 		}
 	}
-	nodePath, err := exec.LookPath("node")
-	if err != nil {
-		return fmt.Errorf("%w: node executable not found", ErrBrowserUnavailable)
-	}
 	probeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	probe := exec.CommandContext(probeCtx, nodePath, "--input-type=module", "-e", `import fs from 'node:fs'; import { chromium } from 'playwright'; process.exit(fs.existsSync(chromium.executablePath()) ? 0 : 2)`)
 	probe.Dir = s.dir
-	probe.Env = safeShellEnvironment()
+	probe.Env = browserSidecarEnvironment(s.dir)
 	if err := probe.Run(); err != nil {
 		return fmt.Errorf("%w: managed Chromium is not installed", ErrBrowserUnavailable)
 	}
@@ -187,13 +215,13 @@ func (s *BrowserSidecar) ensureStarted(ctx context.Context) error {
 	if err := s.Available(); err != nil {
 		return err
 	}
-	nodePath, err := exec.LookPath("node")
+	nodePath, err := s.nodeExecutable()
 	if err != nil {
-		return fmt.Errorf("%w: node executable not found", ErrBrowserUnavailable)
+		return err
 	}
 	cmd := exec.Command(nodePath, filepath.Join(s.dir, "index.mjs"))
 	cmd.Dir = s.dir
-	cmd.Env = safeShellEnvironment()
+	cmd.Env = browserSidecarEnvironment(s.dir)
 	configureProcessTree(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

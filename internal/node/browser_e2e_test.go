@@ -205,6 +205,13 @@ document.querySelector('#submit').addEventListener('click',()=>{status.textConte
 
 func realBrowserSidecarDir(t *testing.T) string {
 	t.Helper()
+	if explicit := strings.TrimSpace(os.Getenv("FAST_SPIDER_BROWSER_SIDECAR_DIR")); explicit != "" {
+		absolute, err := filepath.Abs(explicit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return absolute
+	}
 	_, sourceFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("could not locate browser E2E test source")

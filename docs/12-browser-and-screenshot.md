@@ -11,6 +11,7 @@ Fast Spider 的浏览器能力用于开发页面验证、自动化测试、结�
 ## 2. 当前实现
 
 - Go `BrowserManager` + 私有 Playwright Chromium Sidecar。
+- Browser 作为签名可选组件按需安装；Windows 组件自带 Sidecar、Playwright、Chromium/headless shell、ffmpeg 和 `node.exe`，不要求用户另装 Node.js。安装完成后本地 UI 自动把组件路径接入 Node 并刷新运行时能力。
 - Sidecar 只通过 Node 子进程 stdio 通信，不监听 TCP/CDP 端口。
 - 每个 Node 最多一个受管 Browser Session、最多 8 个页面；Session 空闲 10 分钟自动关闭。
 - Browser 的远程边界是 Machine；不叠加目录授权或 Origin 白名单。

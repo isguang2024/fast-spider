@@ -99,6 +99,18 @@ type componentEnsureRequest struct {
 	ComponentID string `json:"componentId"`
 }
 
+func configureInstalledComponent(cfg LocalConfig, installed componentmgr.Installed) (LocalConfig, bool) {
+	switch installed.ID {
+	case "browser":
+		path := strings.TrimSpace(installed.Path)
+		if path != "" && filepath.Clean(cfg.BrowserSidecarDir) != filepath.Clean(path) {
+			cfg.BrowserSidecarDir = path
+			return cfg, true
+		}
+	}
+	return cfg, false
+}
+
 func New(opts Options) (*App, error) {
 	if strings.TrimSpace(opts.DataDir) == "" {
 		return nil, errors.New("node UI data directory is required")
@@ -424,6 +436,20 @@ func (a *App) handleComponentEnsure(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, err)
 		return
+	}
+	a.mu.Lock()
+	current := a.config
+	a.mu.Unlock()
+	next, changed := configureInstalledComponent(current, installed)
+	if changed {
+		if err := saveLocalConfig(a.opts.DataDir, next); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, err)
+			return
+		}
+		a.mu.Lock()
+		a.config = next
+		a.mu.Unlock()
+		a.restartRuntime()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"component": installed, "status": a.snapshot()})
 }
