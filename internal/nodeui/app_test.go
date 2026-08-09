@@ -92,6 +92,9 @@ func TestLocalUIAPIRequiresUISecretAndReportsConnectionModel(t *testing.T) {
 	if status.RegistrationMode != "connection_token" || status.ConfigurationScope != "local_node" || status.RuntimeCredential != "device_key" || status.ConnectionTokenSaved {
 		t.Fatalf("unexpected connection model: %+v", status)
 	}
+	if status.TraySupported != (runtime.GOOS == "windows") || status.TrayActive {
+		t.Fatalf("unexpected tray status before App.Run: %+v", status)
+	}
 }
 
 func TestLocalUIConnectRejectsWhenCLIInstanceOwnsRuntime(t *testing.T) {

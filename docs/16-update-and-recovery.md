@@ -154,7 +154,7 @@ GET 已签名 latest manifest
 生产环境每个组件只保留一个正式进程：
 
 - Hub：一个 `fast-spider-hub` 进程；Linux 推荐由一个 systemd unit 管理。
-- Node：一台机器一个当前用户 `fast-spider-node` 进程；桌面模式为 `ui`，自启动为 `ui --background`。
+- Node：一台机器一个当前用户 `fast-spider-node` 进程；Windows 桌面模式为 `ui`（打开 Edge app window + 驻留托盘），自启动为 `ui --background`（不弹窗口、直接驻留托盘）。
 - Local Bridge 与 Codex stdio 都由 Node 自己管理，不单独启动 helper/daemon。
 - 升级替换阶段会短暂出现下载好的新版 `fast-spider-node.exe`，只负责等待旧进程退出并替换文件，完成后退出，不是常驻 updater。
 
@@ -179,7 +179,7 @@ GET 已签名 latest manifest
 
 - 独立 Release Key/Root Key 与密钥轮换体系（当前复用已固定的 Hub Ed25519 身份）；
 - Windows Authenticode 发布流水线；
-- 托盘更新 UI；
+- 把版本检查/安装按钮直接塞进托盘菜单（当前托盘只负责打开本地 UI 与真正退出）；
 - minimumSafeVersion / emergency revoke；
 - 多版本 `current/previous` 目录状态机；
 - 自动数据库降级；

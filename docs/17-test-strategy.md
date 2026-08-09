@@ -317,6 +317,8 @@ Provider 不可用时返回结构化状态，不阻塞文件/Shell能力。
 - Hub 手工升级后的 `/livez`、`/readyz`、Node 重连和关键 smoke。
 - Windows Node latest manifest 必须通过固定 Hub 公钥签名校验，下载文件继续核对 size + SHA-256；错误签名必须拒绝。
 - 组件 ZIP 验证签名/摘要后只能解压到受管 `components/<id>/<version>`，拒绝路径逃逸和特殊文件类型。
+- Windows `ui` 启动后系统托盘必须 active；关闭 Edge app window 后 Node/托盘继续存活，托盘可重新打开界面，右键“退出 Fast Spider”才结束进程。
+- Windows `ui --background` 不主动打开 Edge app window，但必须直接进入托盘；HKCU 自动启动项只指向同一个 EXE。
 - 正式运行保持一个 Hub/每机一个 Node；自更新替换阶段可短暂运行下载好的同一个新版 EXE，但不出现长期 updater/helper/重复启动入口。
 
 ## 19. 安全测试与 Fuzz

@@ -98,7 +98,7 @@
 ### 范围
 
 - 单 Owner、单 Hub、SQLite WAL。
-- Windows/Linux Node 单进程模式；Windows 当前已提供轻量本地控制 UI，安装包/托盘服务仍后置。
+- Windows/Linux Node 单进程模式；Windows 当前已提供轻量本地控制 UI和同进程系统托盘，安装包/独立托盘服务仍后置。
 - WSS JSON 控制消息。
 - Node status/capability discovery。
 - 基础 Web/CLI 管理设备登记和吊销。
@@ -414,7 +414,7 @@ Workspace 默认只读，可整体关闭 `file.system`/`code.search`。Node 保�
 ### 范围
 
 - Hub 正式入口固定为一个构建后二进制；Linux 可由一个 systemd unit 管理。
-- Node 正式入口固定为一个当前用户 `fast-spider-node run` 进程。
+- Node 正式运行保持每机一个当前用户 `fast-spider-node` 进程；Windows 桌面模式为 `ui`/`ui --background`，Linux 服务器可继续使用 `run`。
 - Hub/Node/CLI 版本查询。
 - `spiderctl backup / backup-verify / restore`。
 - Hub `hub.db + secrets + artifacts` 单 data-dir 备份边界。
@@ -423,7 +423,7 @@ Workspace 默认只读，可整体关闭 `file.system`/`code.search`。Node 保�
 
 ### 非目标
 
-- Windows 安装包、托盘 UI、SYSTEM service。
+- Windows 安装包、独立托盘程序/服务、SYSTEM service；Windows Node 同进程原生系统托盘已经落地。
 - 独立常驻 updater 服务和自动提权。
 - Release Key/Root Key 轮换状态机（当前 Node 更新复用 Hub Ed25519 签名 manifest）。
 - Recovery Mode 常驻恢复器。

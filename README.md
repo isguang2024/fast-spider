@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 它通过长期部署在公网服务器上的 Hub，将 GPT、Claude、Codex、Web Console、CLI 或其他自动化客户端的请求，安全路由到用户明确授权的 Windows、Linux，未来也包括 macOS 节点。Node 只主动建立 HTTPS/WSS 443 出站连接，不默认开放局域网或公网端口。
 
-> 当前状态：Phase 1–8 已形成完整可运行闭环。Windows Node 默认双击打开一个轻量本地控制界面，连接、每机配置和 Workspace/权限都在本机管理；Local Bridge 仍使用当前用户 AF_UNIX/UDS，不建立本地 Client 注册/Grant。Node 对 Hub 只主动出站，唯一 TCP 监听是 `127.0.0.1` 本地 UI，不承载 MCP/Capability。Codex 直接使用本机 `codex app-server --stdio`。运维主线保持版本检查和 `spiderctl backup / backup-verify / restore`，不引入 Electron、托盘服务或自动更新状态机。
+> 当前状态：Phase 1–8 已形成完整可运行闭环。Windows Node 默认双击打开一个轻量本地控制界面，并由同一个 Node 进程驻留系统托盘；关闭界面不会停止 Node，右键托盘“退出 Fast Spider”才真正退出。连接、每机配置和 Workspace/权限都在本机管理；Local Bridge 仍使用当前用户 AF_UNIX/UDS，不建立本地 Client 注册/Grant。Node 对 Hub 只主动出站，唯一 TCP 监听是 `127.0.0.1` 本地 UI，不承载 MCP/Capability。Codex 直接使用本机 `codex app-server --stdio`。运维主线保持版本检查和 `spiderctl backup / backup-verify / restore`，不引入 Electron、独立托盘服务或复杂自动更新状态机。
 
 ## 核心定位
 
@@ -37,7 +37,7 @@ Fast Spider 不是远程桌面，也不是通用内网穿透软件：
 | Hub 数据库 | SQLite WAL，预留 PostgreSQL 迁移接口 |
 | Artifact | Hub 本地内容寻址文件存储，元数据入库 |
 | Web Console | 静态资源嵌入 Hub |
-| Node 本地 UI | 同一 Go Node 内置 loopback 管理页；Windows 用 Edge app window 打开 |
+| Node 本地 UI | 同一 Go Node 内置 loopback 管理页；Windows 用 Edge app window 打开，并由同一 Node 进程提供原生系统托盘 |
 | Local Bridge | Windows/Linux 统一 AF_UNIX socket；不使用本地 HTTP/MCP |
 | 浏览器 | 隔离 Profile，优先 Playwright Adapter |
 | MCP | 固定常用工具 + 动态能力发现的混合模式 |
@@ -147,9 +147,10 @@ go run ./cmd/node workspace-add \
 # npx playwright install chromium
 # cd ../..
 #
-# Node 本地客户端会在登记成功后自动进入运行状态，关闭 UI 窗口也可继续常驻；
-# 再次双击会重新打开已有本地界面。Local Bridge 默认启用，可在“本地配置”页关闭。
-# Windows 可在“本地配置”开启登录后自动启动；同一个 EXE 以后台模式启动，不增加 Windows Service。
+# Node 本地客户端会在登记成功后自动进入运行状态；Windows 同一个 Node 进程会驻留系统托盘。
+# 关闭 UI 窗口只关闭 Edge app window，不会停止 Node；双击托盘或右键“打开 Fast Spider”可重新打开界面，
+# 右键托盘“退出 Fast Spider”才真正结束 Node。Local Bridge 默认启用，可在“本地配置”页关闭。
+# Windows 可在“本地配置”开启登录后自动启动；同一个 EXE 用 `ui --background` 隐藏启动到托盘，不弹配置页面，也不增加 Windows Service。
 # “版本与扩展组件”支持手动检查/升级；自动更新开启后后台下载已签名的新 EXE，并在下次干净启动时自动替换。
 # 大型能力使用 <data-dir>/components/<id>/<version> 按需安装，下载缓存位于 <data-dir>/cache，不打进主 EXE。
 # Codex AI 能力直接探测本机 codex CLI；无需单独启动 daemon/agent-service。

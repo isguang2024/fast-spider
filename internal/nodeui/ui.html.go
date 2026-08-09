@@ -33,7 +33,7 @@ const localUIHTML = `<!doctype html>
         <section id="tab-connect" class="section active">
           <div class="panel">
             <h2>连接这台电脑</h2>
-            <p class="copy">连接密钥只用来确认这台设备归属哪个后台用户。一个有效密钥可以给同一账户下多台客户端重复使用；客户端不会保存密钥。</p>
+            <p class="copy">连接密钥只用来确认这台设备归属哪个后台用户。一个有效密钥可以给同一账户下多台客户端重复使用；客户端不会保存密钥。Windows 下关闭这个页面不会退出 Node，客户端会继续驻留系统托盘。</p>
             <form id="connect-form">
               <div class="grid">
                 <label class="field full"><span>Hub 地址</span><input id="connect-hub" type="url" maxlength="2048" placeholder="https://sharedservices.example.com/fast-spider" required></label>
@@ -54,6 +54,7 @@ const localUIHTML = `<!doctype html>
               <div class="fact"><span>Machine ID</span><strong id="machine-id">未登记</strong></div>
               <div class="fact"><span>Hub</span><strong id="machine-hub">—</strong></div>
               <div class="fact"><span>Token 是否保存</span><strong>否</strong></div>
+              <div class="fact"><span>托盘状态</span><strong id="tray-state">读取中…</strong></div>
             </div>
           </div>
         </section>
@@ -68,7 +69,7 @@ const localUIHTML = `<!doctype html>
                 <label class="field"><span>客户端名称</span><input id="config-name" maxlength="128" required><small class="hint">保存后会在下一次连接时同步到后台；管理员备注与这里完全独立。</small></label>
                 <label class="field"><span>浏览器 Sidecar 目录</span><input id="config-browser" maxlength="4096" placeholder="留空使用默认目录"></label>
                 <label class="switch"><input id="config-bridge" type="checkbox"><span><strong>Local Bridge</strong><br><small class="hint">允许当前系统用户的本地 AI 客户端调用 Node。</small></span></label>
-                <label class="switch"><input id="config-autostart" type="checkbox"><span><strong>登录 Windows 后自动启动</strong><br><small class="hint">后台启动同一个 EXE，不额外安装服务或常驻 updater。</small></span></label>
+                <label class="switch"><input id="config-autostart" type="checkbox"><span><strong>登录 Windows 后自动启动</strong><br><small class="hint">登录后隐藏启动到系统托盘，不弹出配置页面；仍然是同一个 EXE。</small></span></label>
                 <label class="switch"><input id="config-autoupdate" type="checkbox"><span><strong>自动更新</strong><br><small class="hint">后台检查并下载新版本；下次启动时自动完成替换。</small></span></label>
               </div>
               <details class="advanced"><summary>开发环境选项</summary><label class="switch" style="margin-top:10px"><input id="config-insecure" type="checkbox"><span><strong>允许本机开发 HTTP Hub</strong><br><small class="hint">正式环境保持关闭，只使用 HTTPS。</small></span></label></details>
@@ -141,6 +142,7 @@ const localUIHTML = `<!doctype html>
     $('fact-scope').textContent = status.configurationScope;
     $('machine-id').textContent = status.machineId || '未登记';
     $('machine-hub').textContent = status.hubUrl || '—';
+    $('tray-state').textContent = status.traySupported ? (status.trayActive ? '已驻留 · 右键可退出' : '未启动') : '当前系统不支持';
     $('data-dir').textContent = '配置目录：' + status.dataDir;
     $('exit-app').textContent = status.runtimeOwned ? '退出客户端' : '关闭界面';
     if (status.runtimeStatus === 'external_running' && status.runtimeError) message(status.runtimeError);
@@ -283,7 +285,7 @@ const localUIHTML = `<!doctype html>
 
   $('exit-app').addEventListener('click', async () => {
     const ownsRuntime = current && current.runtimeOwned;
-    const prompt = ownsRuntime ? '退出 Fast Spider Node？退出后 MCP 将无法访问这台设备。' : '关闭本地界面？旧的无界面 Node 进程会继续运行。';
+    const prompt = ownsRuntime ? '真正退出 Fast Spider Node？关闭浏览器页面不会退出；这里确认后会结束托盘和设备连接，MCP 将无法访问这台设备。' : '关闭本地界面？旧的无界面 Node 进程会继续运行。';
     if (!confirm(prompt)) return;
     try { await api('/api/exit',{method:'POST',body:'{}'}); document.body.textContent=ownsRuntime ? 'Fast Spider Node 已退出，可以关闭此窗口。' : '本地界面已关闭；旧的无界面 Node 仍在运行。'; } catch(e) { message(e.message,true); }
   });

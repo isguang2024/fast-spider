@@ -53,6 +53,7 @@ type App struct {
 	updateStatus   updateStatusResponse
 	updateArtifact string
 	updateRunning  bool
+	trayActive     bool
 }
 
 type statusResponse struct {
@@ -71,6 +72,8 @@ type statusResponse struct {
 	RuntimeError         string                       `json:"runtimeError,omitempty"`
 	AutoStartSupported   bool                         `json:"autoStartSupported"`
 	AutoStartEnabled     bool                         `json:"autoStartEnabled"`
+	TraySupported        bool                         `json:"traySupported"`
+	TrayActive           bool                         `json:"trayActive"`
 	ComponentRoot        string                       `json:"componentRoot"`
 	Update               updateStatusResponse         `json:"update"`
 	Config               LocalConfig                  `json:"config"`
@@ -175,6 +178,27 @@ func (a *App) Run(ctx context.Context) error {
 		a.runtimeError = "检测到同一数据目录已有无界面 Node 实例运行；当前界面不会启动第二个设备连接"
 	}
 	a.mu.Unlock()
+
+	uiURL := "http://" + defaultListenAddress + "/"
+	trayStop, trayErr := startTray(runCtx, func() {
+		if err := openLocalUI(uiURL); err != nil {
+			a.opts.Logger.Warn("open local Node UI from tray failed", "url", uiURL, "error", err)
+		}
+	}, runCancel, a.opts.Logger)
+	if trayErr != nil {
+		a.opts.Logger.Warn("start Windows tray failed", "error", trayErr)
+	} else {
+		a.mu.Lock()
+		a.trayActive = traySupported()
+		a.mu.Unlock()
+		defer func() {
+			trayStop()
+			a.mu.Lock()
+			a.trayActive = false
+			a.mu.Unlock()
+		}()
+	}
+
 	if lease != nil {
 		a.startRuntime()
 	}
@@ -196,7 +220,6 @@ func (a *App) Run(ctx context.Context) error {
 		serveErr <- nil
 	}()
 
-	uiURL := "http://" + defaultListenAddress + "/"
 	if !a.opts.NoOpenWindow {
 		if err := openLocalUI(uiURL); err != nil {
 			a.opts.Logger.Warn("open local Node UI failed", "url", uiURL, "error", err)
@@ -497,6 +520,8 @@ func (a *App) snapshot() statusResponse {
 		RuntimeError:         runtimeError,
 		AutoStartSupported:   autostartSupported(),
 		AutoStartEnabled:     autoStartEnabled,
+		TraySupported:        traySupported(),
+		TrayActive:           a.trayActive,
 		ComponentRoot:        filepath.Join(a.opts.DataDir, "components"),
 		Update:               a.updateSnapshot(),
 		Config:               cfg,

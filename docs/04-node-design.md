@@ -15,15 +15,15 @@ Node 默认：
 
 ## 2. 进程模型
 
-MVP 仍使用单 Node 进程，但已经提供一个很薄的本地控制 UI。UI 不使用 Electron/Wails，也不启动第二套 Agent：Node 只在 loopback 提供本地管理页面，Windows 用 Edge `--app` 窗口承载。页面和 CLI 共用同一 Node 状态、Workspace Registry 与权限逻辑。
+MVP 仍使用单 Node 进程，但已经提供一个很薄的本地控制 UI。UI 不使用 Electron/Wails，也不启动第二套 Agent：Node 只在 loopback 提供本地管理页面，Windows 用 Edge `--app` 窗口承载，并由同一个 Node 进程提供原生系统托盘。页面、托盘和 CLI 共用同一 Node 状态、Workspace Registry 与权限逻辑。
 
 ### Windows
 
 - 当前只维护普通用户启动的单 Node 进程，不提供第二套 Windows Service/SYSTEM 模式。
 - 同一 data-dir 使用一个轻量跨进程运行锁，保证同一设备身份只有一个 Hub 运行实例；`ui`、`run`、`connect` 共用该边界。
-- 双击 `fast-spider-node.exe` 默认打开本地应用窗口；第二次双击只重新打开已有 UI，不启动第二个 Hub 运行实例。若迁移时旧 `run` 仍占用运行锁，UI 只打开管理界面并明确提示旧实例仍在运行，不会争抢 generation。
-- 关闭应用窗口不会隐式杀掉由该 UI 持有的 Node；需要停止时使用“退出客户端”。若是旧 CLI `run` 持有运行锁，UI 的按钮只关闭界面，不会假装停止外部进程。无界面服务器仍可直接运行 `fast-spider-node run`。
-- 需要开机启动时使用当前用户启动项或任务计划运行同一个客户端，不改变权限语义。
+- 双击 `fast-spider-node.exe` 默认打开本地应用窗口并驻留系统托盘；第二次双击只重新打开已有 UI，不启动第二个 Hub 运行实例。若迁移时旧 `run` 仍占用运行锁，UI 只打开管理界面并明确提示旧实例仍在运行，不会争抢 generation。
+- 关闭 Edge `--app` 窗口只关闭界面，不结束 Node。双击托盘图标或右键“打开 Fast Spider”可重新打开本地界面；右键“退出 Fast Spider”才真正结束当前 UI-owned Node。页面中的“退出客户端”执行同样的真正退出语义。若是旧 CLI `run` 持有运行锁，UI 的按钮只关闭界面，不会假装停止外部进程。无界面服务器仍可直接运行 `fast-spider-node run`。
+- 需要登录后自动启动时由当前用户 `HKCU Run` 启动同一个 `fast-spider-node.exe ui --background`；该模式不弹 Edge 窗口，只隐藏驻留系统托盘，不改变权限语义。
 
 ### Linux
 
@@ -35,7 +35,7 @@ MVP 仍使用单 Node 进程，但已经提供一个很薄的本地控制 UI。U
 
 | 模块 | 责任 |
 |---|---|
-| Local UI | loopback-only 连接页、本地配置、Workspace/权限管理；不承载远程 Capability |
+| Local UI | loopback-only 连接页、本地配置、Workspace/权限管理；Windows 同进程系统托盘负责打开界面/真正退出；不承载远程 Capability |
 | Connection Manager | Hub 信任、认证、WSS、重连、心跳、协议协商 |
 | Workspace Registry | 本地路径、opaque workspaceId、权限与生命周期 |
 | Path Guard | 规范化、打开时校验、symlink/junction/reparse point 防护 |

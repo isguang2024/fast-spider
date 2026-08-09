@@ -104,13 +104,13 @@ fast-spider-node run --data-dir <node-data-dir>
 
 Local Bridge 默认随 Node 启动；桌面客户端可在“本地配置”页直接关闭。无界面模式仍支持 `--disable-local-bridge`。
 
-Windows “本地配置”同时提供登录后自动启动。它只在当前用户 `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run` 登记同一个 `fast-spider-node.exe ui --background`，不安装 Windows Service，也没有第二个常驻启动器。移动 EXE 后再次保存配置/启动客户端会刷新该路径。
+Windows “本地配置”同时提供登录后自动启动。它只在当前用户 `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run` 登记同一个 `fast-spider-node.exe ui --background`，不安装 Windows Service，也没有第二个常驻启动器。`--background` 不打开 Edge app window，但同一个 Node 进程仍创建系统托盘图标，因此登录后直接隐藏到托盘；从托盘可重新打开本地界面。移动 EXE 后再次保存配置/启动客户端会刷新该路径。
 
 Node 支持自更新：Hub 从独立 release-dir（生产默认 `/var/lib/fast-spider-releases/node/windows-amd64/`）发布最新 EXE 与 `version.txt`，manifest 由 Hub 当前 Ed25519 身份实时签名；Node 先验证已固定的 Hub 公钥签名，再验证 SHA-256 和大小。手动升级会下载到 `<node-data-dir>/updates/<version>/`，随后由下载好的**同一个新版 EXE**临时负责等待旧进程退出、替换目标文件并重新启动；不会安装长期 updater.exe。自动更新只在后台检查和预下载，下一次干净启动时自动完成替换，避免运行中强制打断 Job。
 
 大型扩展能力不打进主 EXE。Hub 可从 `<release-dir>/components/<component>/<platform>/` 发布签名组件 ZIP；Node 的组件管理器按需下载到 `<node-data-dir>/components/<component>/<version>/`，缓存位于 `<node-data-dir>/cache/components/`。当前没有需要常驻的组件守护进程。
 
-本地控制 UI 不引入 Electron、Wails、托盘服务或第二套 Agent。Windows 使用当前 Node 进程在 `127.0.0.1` 提供只面向本机的管理页面，并用 Edge application window 打开。同一 data-dir 的 `ui/run/connect` 共用轻量运行锁，避免两个进程用同一设备密钥争抢 Hub generation；重复双击只重新打开已有 UI。迁移时如果旧 CLI `run` 仍在，UI 可以打开但不会启动第二条设备连接，并会提示先停止旧进程。关闭窗口不等于退出由 UI 持有的 Node，需要停止时使用“退出客户端”。Windows 自启动如果实际需要，可由当前用户登录启动项/任务计划管理同一个客户端；Linux Node 可继续用 user-level systemd 运行 `fast-spider-node run`。模板不覆盖 PATH 或 umask。
+本地控制 UI 不引入 Electron、Wails、独立托盘服务或第二套 Agent。Windows 使用当前 Node 进程在 `127.0.0.1` 提供只面向本机的管理页面，用 Edge application window 打开，并由**同一个 Node 进程**通过原生 Windows `Shell_NotifyIcon` 驻留系统托盘。同一 data-dir 的 `ui/run/connect` 共用轻量运行锁，避免两个进程用同一设备密钥争抢 Hub generation；重复双击只重新打开已有 UI。关闭 Edge app window 只关闭界面，Node 和托盘继续运行；双击托盘图标或右键“打开 Fast Spider”可重新打开，右键“退出 Fast Spider”才真正结束 Node。迁移时如果旧 CLI `run` 仍在，UI 可以打开但不会启动第二条设备连接，并会提示先停止旧进程。Linux Node 可继续用 user-level systemd 运行 `fast-spider-node run`。模板不覆盖 PATH 或 umask。
 
 ## 5. 数据目录
 
@@ -286,7 +286,7 @@ Windows Node 则由本地 UI 的“检查更新 / 立即升级 / 自动更新”
 - Docker/Kubernetes 主路径；
 - Windows SYSTEM service + 每用户进程两套方式；
 - MSI/EXE 安装器与脚本安装器并存；
-- 托盘常驻 UI；
+- 独立托盘程序/托盘服务（当前 Windows 托盘由同一个 Node 进程直接提供）；
 - 独立 agent-service/daemon；
 - 独立常驻 updater 服务；
 - 多 Hub 实例、共享数据库或分布式锁。
