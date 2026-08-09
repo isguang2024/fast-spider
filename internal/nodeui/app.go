@@ -133,39 +133,33 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
+	uiURL := "http://" + defaultListenAddress + "/"
+	lease, leaseErr := nodeinstance.Acquire()
+	if leaseErr != nil {
+		if errors.Is(leaseErr, nodeinstance.ErrAlreadyRunning) {
+			return openExistingUI(ctx, uiURL)
+		}
+		return leaseErr
+	}
+	defer lease.Close()
+	if applied, err := a.applyReadyUpdateOnStartup(); err != nil {
+		a.opts.Logger.Warn("apply staged update on startup failed", "error", err)
+	} else if applied {
+		return nil
+	}
+
 	listener, err := net.Listen("tcp", defaultListenAddress)
 	if err != nil {
-		if existingUIHealthy() {
-			return openLocalUI("http://" + defaultListenAddress + "/")
-		}
 		return fmt.Errorf("listen on local UI %s: %w", defaultListenAddress, err)
 	}
 	defer listener.Close()
 
-	lease, leaseErr := nodeinstance.Acquire(a.opts.DataDir)
-	if leaseErr != nil && !errors.Is(leaseErr, nodeinstance.ErrAlreadyRunning) {
-		return leaseErr
-	}
-	if lease != nil {
-		defer lease.Close()
-		if applied, err := a.applyReadyUpdateOnStartup(); err != nil {
-			a.opts.Logger.Warn("apply staged update on startup failed", "error", err)
-		} else if applied {
-			return nil
-		}
-	}
-
 	a.mu.Lock()
 	a.ctx = runCtx
 	a.cancel = runCancel
-	a.runtimeOwned = lease != nil
-	if lease == nil {
-		a.runtimeStatus = "external_running"
-		a.runtimeError = "检测到同一数据目录已有无界面 Node 实例运行；当前界面不会启动第二个设备连接"
-	}
+	a.runtimeOwned = true
 	a.mu.Unlock()
 
-	uiURL := "http://" + defaultListenAddress + "/"
 	trayStop, trayErr := startTray(runCtx, func() {
 		if err := openLocalUI(uiURL); err != nil {
 			a.opts.Logger.Warn("open local Node UI from tray failed", "url", uiURL, "error", err)
@@ -360,9 +354,16 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, err)
 		return
 	}
+	a.mu.Lock()
+	old := a.config
+	a.mu.Unlock()
+	hubURL := strings.TrimSpace(req.HubURL)
+	if hubURL == "" {
+		hubURL = old.HubURL
+	}
 	next := LocalConfig{
 		Version:               localConfigVersion,
-		HubURL:                strings.TrimSpace(req.HubURL),
+		HubURL:                hubURL,
 		MachineName:           strings.TrimSpace(req.MachineName),
 		BrowserSidecarDir:     strings.TrimSpace(req.BrowserSidecarDir),
 		LocalBridgeEnabled:    req.LocalBridgeEnabled,
@@ -374,9 +375,6 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, errors.New("设备名称不能为空"))
 		return
 	}
-	a.mu.Lock()
-	old := a.config
-	a.mu.Unlock()
 	if !autostartSupported() && next.AutoStartEnabled {
 		writeAPIError(w, http.StatusBadRequest, errors.New("当前系统暂不支持开机自动启动"))
 		return
@@ -595,6 +593,20 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func writeAPIError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]any{"error": err.Error()})
+}
+
+func openExistingUI(ctx context.Context, uiURL string) error {
+	for attempt := 0; attempt < 20; attempt++ {
+		if existingUIHealthy() {
+			return openLocalUI(uiURL)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	return nodeinstance.ErrAlreadyRunning
 }
 
 func existingUIHealthy() bool {

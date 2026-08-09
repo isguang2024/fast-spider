@@ -2,18 +2,23 @@ package nodeinstance
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 )
 
 func TestLeaseIsExclusiveAndReacquirable(t *testing.T) {
-	dataDir := t.TempDir()
-	first, err := Acquire(dataDir)
+	oldResolver := instanceLockPath
+	lockDir := t.TempDir()
+	instanceLockPath = func() (string, error) { return filepath.Join(lockDir, "node.lock"), nil }
+	t.Cleanup(func() { instanceLockPath = oldResolver })
+
+	first, err := Acquire()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer first.Close()
 
-	second, err := Acquire(dataDir)
+	second, err := Acquire()
 	if !errors.Is(err, ErrAlreadyRunning) {
 		if second != nil {
 			_ = second.Close()
@@ -24,7 +29,7 @@ func TestLeaseIsExclusiveAndReacquirable(t *testing.T) {
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
 	}
-	third, err := Acquire(dataDir)
+	third, err := Acquire()
 	if err != nil {
 		t.Fatalf("Acquire after release: %v", err)
 	}

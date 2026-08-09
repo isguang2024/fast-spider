@@ -9,7 +9,10 @@ import (
 	"strings"
 )
 
-const localConfigVersion = 2
+const (
+	localConfigVersion = 2
+	defaultHubURL      = "https://sharedservices.tibbs.app/fast-spider"
+)
 
 type LocalConfig struct {
 	Version               int    `json:"version"`
@@ -25,6 +28,7 @@ type LocalConfig struct {
 func defaultLocalConfig(machineName string) LocalConfig {
 	return LocalConfig{
 		Version:            localConfigVersion,
+		HubURL:             defaultHubURL,
 		MachineName:        strings.TrimSpace(machineName),
 		LocalBridgeEnabled: true,
 	}
@@ -47,6 +51,9 @@ func loadLocalConfig(dataDir, machineName string) (LocalConfig, error) {
 		cfg.Version = localConfigVersion
 	} else if cfg.Version != localConfigVersion {
 		return LocalConfig{}, fmt.Errorf("unsupported local config version %d", cfg.Version)
+	}
+	if strings.TrimSpace(cfg.HubURL) == "" {
+		cfg.HubURL = defaultHubURL
 	}
 	if strings.TrimSpace(cfg.MachineName) == "" {
 		cfg.MachineName = strings.TrimSpace(machineName)

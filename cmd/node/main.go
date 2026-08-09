@@ -86,7 +86,7 @@ func runConnect(logger *slog.Logger, args []string) {
 	if *hubURL == "" || *token == "" {
 		fatalIf(errors.New("connect requires --hub and --token"))
 	}
-	lease, err := nodeinstance.Acquire(*dataDir)
+	lease, err := nodeinstance.Acquire()
 	fatalIf(err)
 	defer lease.Close()
 	client, err := node.New(node.Config{
@@ -123,7 +123,7 @@ func runNode(logger *slog.Logger, args []string) {
 	browserSidecarDir := fs.String("browser-sidecar-dir", "", "optional Playwright sidecar directory; defaults to FAST_SPIDER_BROWSER_SIDECAR_DIR or ./sidecar/browser")
 	disableLocalBridge := fs.Bool("disable-local-bridge", false, "disable the current-user AF_UNIX Local Bridge")
 	_ = fs.Parse(args)
-	lease, err := nodeinstance.Acquire(*dataDir)
+	lease, err := nodeinstance.Acquire()
 	fatalIf(err)
 	defer lease.Close()
 	runNodeLocked(logger, nodeRunOptions{

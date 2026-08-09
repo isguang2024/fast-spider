@@ -97,6 +97,45 @@ func TestLocalUIAPIRequiresUISecretAndReportsConnectionModel(t *testing.T) {
 	}
 }
 
+func TestLocalUIRegisteredViewDoesNotPromptForConnectionTokenAgain(t *testing.T) {
+	if !strings.Contains(localUIHTML, `id="registration-panel"`) || !strings.Contains(localUIHTML, `id="registered-panel"`) {
+		t.Fatal("local UI is missing separate registration/registered states")
+	}
+	if strings.Contains(localUIHTML, `id="config-hub"`) {
+		t.Fatal("Hub URL is duplicated in local configuration")
+	}
+	if strings.Contains(localUIHTML, "Token 是否保存") {
+		t.Fatal("local UI still exposes the confusing connection-token saved card")
+	}
+	if !strings.Contains(localUIHTML, "以后打开 Fast Spider 会自动连接 Hub，不需要再次输入连接密钥") {
+		t.Fatal("registered state does not explain automatic device-key reconnect")
+	}
+}
+
+func TestLocalUIConfigPreservesRegistrationHubWhenHubFieldIsOmitted(t *testing.T) {
+	dataDir := t.TempDir()
+	app, err := New(Options{DataDir: dataDir, Version: "ui-test", MachineName: "Test Node", Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.config.HubURL = "https://custom.example/fast-spider"
+	body, err := json.Marshal(configRequest{MachineName: "Renamed Node", LocalBridgeEnabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/config", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Fast-Spider-UI-Token", app.uiToken)
+	response := httptest.NewRecorder()
+	app.handler().ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("config status=%d body=%s", response.Code, response.Body.String())
+	}
+	if app.config.HubURL != "https://custom.example/fast-spider" || app.config.MachineName != "Renamed Node" {
+		t.Fatalf("config lost registration state: %+v", app.config)
+	}
+}
+
 func TestLocalUIConnectRejectsWhenCLIInstanceOwnsRuntime(t *testing.T) {
 	app, err := New(Options{DataDir: t.TempDir(), Version: "ui-test", MachineName: "Test Node", Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {

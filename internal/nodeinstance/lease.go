@@ -7,21 +7,23 @@ import (
 	"path/filepath"
 )
 
-var ErrAlreadyRunning = errors.New("another Fast Spider Node instance is already running for this data directory")
+var ErrAlreadyRunning = errors.New("another Fast Spider Node instance is already running for this OS user")
 
 type Lease struct {
 	file *os.File
 }
 
-func Acquire(dataDir string) (*Lease, error) {
-	if dataDir == "" {
-		return nil, errors.New("node data directory is required")
+var instanceLockPath = defaultInstanceLockPath
+
+func Acquire() (*Lease, error) {
+	path, err := instanceLockPath()
+	if err != nil {
+		return nil, err
 	}
-	runDir := filepath.Join(dataDir, "run")
+	runDir := filepath.Dir(path)
 	if err := os.MkdirAll(runDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create Node run directory: %w", err)
 	}
-	path := filepath.Join(runDir, "node.lock")
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open Node instance lock: %w", err)
@@ -34,6 +36,17 @@ func Acquire(dataDir string) (*Lease, error) {
 		return nil, fmt.Errorf("lock Node instance: %w", err)
 	}
 	return &Lease{file: file}, nil
+}
+
+func defaultInstanceLockPath() (string, error) {
+	base, err := os.UserCacheDir()
+	if err != nil || base == "" {
+		base, err = os.UserConfigDir()
+		if err != nil || base == "" {
+			return "", fmt.Errorf("resolve current-user directory for Node instance lock: %w", err)
+		}
+	}
+	return filepath.Join(base, "FastSpider", "run", "node.lock"), nil
 }
 
 func (l *Lease) Close() error {

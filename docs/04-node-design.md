@@ -16,6 +16,8 @@ Node 默认：
 
 MVP 使用单 Node 进程。Windows 的 Edge app window、系统托盘、CLI 和 Node 本地控制 UI 都由同一进程提供；Linux 可用当前用户的 systemd unit。Local Bridge、Browser sidecar 和 Codex `app-server --stdio` 都由 Node 管理。
 
+同一 OS 用户只能持有一个 Fast Spider Node 主实例。实例锁与 data-dir 无关，因此复制 EXE、修改启动目录或切换 `--data-dir` 都不能建立第二个 Node；重复 UI 启动会短暂等待现有本地 UI 上线，打开已有界面后立即退出新进程。
+
 ## 3. 模块
 
 | 模块 | 责任 |
