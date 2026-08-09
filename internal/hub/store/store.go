@@ -21,7 +21,11 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const auditRetention = 30 * 24 * time.Hour
+const (
+	auditRetention                     = 30 * 24 * time.Hour
+	oauthAuthorizationHistoryRetention = 90 * 24 * time.Hour
+	oauthClientOrphanRetention         = 30 * time.Minute
+)
 
 var (
 	ErrNotFound     = errors.New("not found")
@@ -256,12 +260,22 @@ func (s *Store) EnsureBootstrapToken(ctx context.Context, id, tokenHash string, 
 	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM owners").Scan(&owners); err != nil {
 		return false, err
 	}
-	if owners > 0 {
-		return false, tx.Commit()
+	if owners > 1 {
+		return false, fmt.Errorf("unexpected owner count %d", owners)
 	}
-	// Before the first Owner exists, each Hub restart rotates the bootstrap
-	// secret. This guarantees the plaintext file and the database digest can
-	// never drift after a crash.
+	if owners == 1 {
+		var username, passwordHash sql.NullString
+		if err := tx.QueryRowContext(ctx, "SELECT username, password_hash FROM owners LIMIT 1").Scan(&username, &passwordHash); err != nil {
+			return false, err
+		}
+		if username.Valid && username.String != "" && passwordHash.Valid && passwordHash.String != "" {
+			return false, tx.Commit()
+		}
+	}
+	// Until the single Owner has browser-login credentials, each Hub restart
+	// rotates the one-time setup secret. This covers both a fresh install and
+	// an upgrade from the legacy Owner-token-only setup without creating a
+	// second recovery-token system.
 	if _, err := tx.ExecContext(ctx, "DELETE FROM bootstrap_tokens"); err != nil {
 		return false, err
 	}
@@ -305,7 +319,7 @@ func (s *Store) BootstrapOwner(ctx context.Context, bootstrapHash, ownerID, disp
 	if _, err := tx.ExecContext(ctx, "INSERT INTO owners(id, display_name, created_at) VALUES(?,?,?)", ownerID, displayName, now.Unix()); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO owner_api_tokens(id, owner_id, token_hash, created_at) VALUES(?,?,?,?)", apiTokenID, ownerID, apiTokenHash, now.Unix()); err != nil {
+	if _, err := tx.ExecContext(ctx, "INSERT INTO owner_api_tokens(id, owner_id, token_hash, label, created_at) VALUES(?,?,?,?,?)", apiTokenID, ownerID, apiTokenHash, "Bootstrap CLI token", now.Unix()); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE bootstrap_tokens SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL", now.Unix(), id); err != nil {
@@ -315,10 +329,12 @@ func (s *Store) BootstrapOwner(ctx context.Context, bootstrapHash, ownerID, disp
 }
 
 func (s *Store) AuthenticateOwnerToken(ctx context.Context, tokenHash string, now time.Time) (string, error) {
-	var ownerID string
-	var expires sql.NullInt64
-	var revoked sql.NullInt64
-	err := s.db.QueryRowContext(ctx, "SELECT owner_id, expires_at, revoked_at FROM owner_api_tokens WHERE token_hash = ?", tokenHash).Scan(&ownerID, &expires, &revoked)
+	var tokenID, ownerID string
+	var expires, revoked, lastUsed sql.NullInt64
+	err := s.db.QueryRowContext(ctx,
+		"SELECT id, owner_id, expires_at, revoked_at, last_used_at FROM owner_api_tokens WHERE token_hash = ?",
+		tokenHash,
+	).Scan(&tokenID, &ownerID, &expires, &revoked, &lastUsed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrUnauthorized
 	}
@@ -330,6 +346,12 @@ func (s *Store) AuthenticateOwnerToken(ctx context.Context, tokenHash string, no
 	}
 	if expires.Valid && expires.Int64 <= now.Unix() {
 		return "", ErrExpired
+	}
+	if !lastUsed.Valid || now.Unix()-lastUsed.Int64 >= 300 {
+		_, _ = s.db.ExecContext(ctx,
+			"UPDATE owner_api_tokens SET last_used_at = ? WHERE id = ? AND revoked_at IS NULL",
+			now.Unix(), tokenID,
+		)
 	}
 	return ownerID, nil
 }
@@ -606,6 +628,33 @@ func (s *Store) Capabilities(ctx context.Context, machineID string) ([]protocolv
 			return nil, fmt.Errorf("decode capability actions: %w", err)
 		}
 		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) CapabilitiesByOwner(ctx context.Context, ownerID string) (map[string][]protocolv1.CapabilityDescriptor, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		mc.machine_id, mc.capability_id, mc.version, mc.actions_json
+	FROM machine_capabilities mc
+	JOIN machines m ON m.id = mc.machine_id
+	WHERE m.owner_id = ?
+	ORDER BY mc.machine_id, mc.capability_id`, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string][]protocolv1.CapabilityDescriptor)
+	for rows.Next() {
+		var machineID string
+		var item protocolv1.CapabilityDescriptor
+		var actions string
+		if err := rows.Scan(&machineID, &item.CapabilityId, &item.Version, &actions); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(actions), &item.Actions); err != nil {
+			return nil, fmt.Errorf("decode capability actions: %w", err)
+		}
+		out[machineID] = append(out[machineID], item)
 	}
 	return out, rows.Err()
 }
@@ -924,10 +973,34 @@ func (s *Store) CleanupExpired(ctx context.Context, now time.Time) error {
 		"DELETE FROM bootstrap_tokens WHERE expires_at <= ?",
 		"DELETE FROM oauth_access_tokens WHERE expires_at <= ?",
 		"DELETE FROM oauth_refresh_tokens WHERE expires_at <= ?",
+		"DELETE FROM web_sessions WHERE expires_at <= ? OR revoked_at IS NOT NULL",
 	} {
 		if _, err := tx.ExecContext(ctx, stmt, now.Unix()); err != nil {
 			return err
 		}
+	}
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM oauth_authorizations WHERE (revoked_at IS NOT NULL AND revoked_at <= ?) OR expires_at <= ?",
+		now.Add(-oauthAuthorizationHistoryRetention).Unix(),
+		now.Add(-oauthAuthorizationHistoryRetention).Unix(),
+	); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_clients
+		WHERE created_at <= ?
+		AND NOT EXISTS (SELECT 1 FROM oauth_authorizations a WHERE a.client_id = oauth_clients.client_id)
+		AND NOT EXISTS (SELECT 1 FROM oauth_access_tokens t WHERE t.client_id = oauth_clients.client_id)
+		AND NOT EXISTS (SELECT 1 FROM oauth_refresh_tokens t WHERE t.client_id = oauth_clients.client_id)`,
+		now.Add(-oauthClientOrphanRetention).Unix(),
+	); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM owner_api_tokens WHERE (revoked_at IS NOT NULL AND revoked_at <= ?) OR (expires_at IS NOT NULL AND expires_at <= ?)",
+		now.Add(-oauthAuthorizationHistoryRetention).Unix(),
+		now.Add(-oauthAuthorizationHistoryRetention).Unix(),
+	); err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM audit_entries WHERE created_at <= ?", now.Add(-auditRetention).Unix()); err != nil {
 		return err

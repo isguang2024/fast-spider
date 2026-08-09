@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"net/http"
 	"net/url"
 	"slices"
@@ -21,10 +20,12 @@ import (
 )
 
 const (
-	oauthScope           = "fast-spider"
-	oauthCodeTTL         = 5 * time.Minute
-	oauthAccessTokenTTL  = time.Hour
-	oauthRefreshTokenTTL = 30 * 24 * time.Hour
+	oauthScope              = "fast-spider"
+	oauthDeviceConnectScope = "fast-spider:device-connect"
+	oauthCodeTTL            = 5 * time.Minute
+	oauthMaxPendingCodes    = 1024
+	oauthAccessTokenTTL     = time.Hour
+	oauthRefreshTokenTTL    = 30 * 24 * time.Hour
 )
 
 var defaultOAuthRedirectHosts = []string{"chatgpt.com", "localhost", "127.0.0.1", "::1"}
@@ -68,7 +69,7 @@ type oauthTokenResponse struct {
 	AccessToken  string `json:"access_token"`
 	TokenType    string `json:"token_type"`
 	ExpiresIn    int64  `json:"expires_in"`
-	RefreshToken string `json:"refresh_token"`
+	RefreshToken string `json:"refresh_token,omitempty"`
 	Scope        string `json:"scope"`
 }
 
@@ -79,6 +80,14 @@ type oauthErrorResponse struct {
 
 func newOAuthState() *oauthState {
 	return &oauthState{codes: make(map[string]oauthAuthorizationCode)}
+}
+
+func (o *oauthState) pruneExpiredLocked(now time.Time) {
+	for code, record := range o.codes {
+		if !record.ExpiresAt.After(now) {
+			delete(o.codes, code)
+		}
+	}
 }
 
 func (s *Server) oauthBaseURL(r *http.Request) (*url.URL, error) {
@@ -103,18 +112,35 @@ func (s *Server) oauthBaseURL(r *http.Request) (*url.URL, error) {
 
 func oauthURL(base *url.URL, suffix string) string {
 	u := *base
-	u.Path = strings.TrimRight(base.Path, "/") + suffix
-	u.RawQuery = ""
+	parsed, err := url.Parse(suffix)
+	if err == nil && strings.HasPrefix(parsed.Path, "/") {
+		u.Path = strings.TrimRight(base.Path, "/") + parsed.Path
+		u.RawQuery = parsed.RawQuery
+	} else {
+		u.Path = strings.TrimRight(base.Path, "/") + suffix
+		u.RawQuery = ""
+	}
 	u.Fragment = ""
 	return u.String()
 }
 
 func (s *Server) oauthResourceURL(r *http.Request) (string, error) {
+	return s.oauthResourceForScope(r, oauthScope)
+}
+
+func (s *Server) oauthResourceForScope(r *http.Request, scope string) (string, error) {
 	base, err := s.oauthBaseURL(r)
 	if err != nil {
 		return "", err
 	}
-	return oauthURL(base, "/mcp"), nil
+	switch scope {
+	case oauthScope:
+		return oauthURL(base, "/mcp"), nil
+	case oauthDeviceConnectScope:
+		return oauthURL(base, "/api/v1/enrollment-tokens"), nil
+	default:
+		return "", fmt.Errorf("unsupported OAuth scope")
+	}
 }
 
 func (s *Server) oauthResourceMetadataURL(r *http.Request) (string, error) {
@@ -160,7 +186,7 @@ func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, r *http.R
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"token_endpoint_auth_methods_supported": []string{"none"},
-		"scopes_supported":                      []string{oauthScope},
+		"scopes_supported":                      []string{oauthScope, oauthDeviceConnectScope},
 	})
 }
 
@@ -179,15 +205,21 @@ func (s *Server) handleOAuthRegister(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "only public PKCE clients are supported")
 		return
 	}
-	if !allOAuthValuesSupported(req.GrantTypes, "authorization_code", "refresh_token") {
+	grantTypes := normalizeOAuthValues(req.GrantTypes, []string{"authorization_code", "refresh_token"})
+	if !allOAuthValuesSupported(grantTypes, "authorization_code", "refresh_token") || !slices.Contains(grantTypes, "authorization_code") {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "unsupported grant type")
 		return
 	}
-	if !allOAuthValuesSupported(req.ResponseTypes, "code") {
+	responseTypes := normalizeOAuthValues(req.ResponseTypes, []string{"code"})
+	if !allOAuthValuesSupported(responseTypes, "code") || !slices.Contains(responseTypes, "code") {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "unsupported response type")
 		return
 	}
-	if req.Scope != "" && !scopeAllowed(req.Scope) {
+	clientScope := strings.TrimSpace(req.Scope)
+	if clientScope == "" {
+		clientScope = oauthScope
+	}
+	if !scopeAllowed(clientScope) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "unsupported scope")
 		return
 	}
@@ -212,15 +244,26 @@ func (s *Server) handleOAuthRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now().UTC()
 	if err := s.service.Store().RegisterOAuthClient(r.Context(), store.OAuthClientRecord{
-		ClientID: clientID, ClientName: name, RedirectURIs: req.RedirectURIs, CreatedAt: now,
+		ClientID:      clientID,
+		ClientName:    name,
+		RedirectURIs:  req.RedirectURIs,
+		GrantTypes:    grantTypes,
+		ResponseTypes: responseTypes,
+		Scope:         clientScope,
+		CreatedAt:     now,
 	}); err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "failed to register client")
 		return
 	}
 	writeJSON(w, http.StatusCreated, oauthClientRegistrationResponse{
-		ClientID: clientID, ClientIDIssuedAt: now.Unix(), ClientName: name, RedirectURIs: req.RedirectURIs,
-		TokenEndpointAuthMethod: "none", GrantTypes: []string{"authorization_code", "refresh_token"},
-		ResponseTypes: []string{"code"}, Scope: oauthScope,
+		ClientID:                clientID,
+		ClientIDIssuedAt:        now.Unix(),
+		ClientName:              name,
+		RedirectURIs:            req.RedirectURIs,
+		TokenEndpointAuthMethod: "none",
+		GrantTypes:              grantTypes,
+		ResponseTypes:           responseTypes,
+		Scope:                   clientScope,
 	})
 }
 
@@ -241,14 +284,22 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return
 	}
-	if r.Method == http.MethodGet {
-		writeOAuthAuthorizeForm(w, client.ClientName, values, "")
+	session, err := s.currentWebSession(r)
+	if err != nil {
+		returnTo := s.publicURL(r, "/oauth/authorize") + "?" + oauthAuthorizationQuery(values).Encode()
+		loginURL := s.publicURL(r, "/login") + "?return_to=" + url.QueryEscape(returnTo)
+		http.Redirect(w, r, loginURL, http.StatusSeeOther)
 		return
 	}
-	ownerToken := r.PostForm.Get("owner_token")
-	ownerID, err := s.service.AuthenticateOwner(r.Context(), ownerToken)
-	if err != nil {
-		writeOAuthAuthorizeForm(w, client.ClientName, values, "Owner Token was not accepted.")
+	if r.Method == http.MethodGet {
+		s.renderOAuthAuthorizePage(w, r, session, client, values, "")
+		return
+	}
+	if !s.verifyCSRF(w, r, session.CSRFToken) {
+		return
+	}
+	if r.PostForm.Get("decision") == "deny" {
+		redirectOAuthAuthorizationError(w, r, values, "access_denied")
 		return
 	}
 	code, err := security.RandomOpaque("code_")
@@ -256,17 +307,52 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "failed to create authorization code")
 		return
 	}
+	now := time.Now().UTC()
 	record := oauthAuthorizationCode{
-		ClientID: client.ClientID, OwnerID: ownerID, RedirectURI: values.Get("redirect_uri"),
+		ClientID: client.ClientID, OwnerID: session.OwnerID, RedirectURI: values.Get("redirect_uri"),
 		CodeChallenge: values.Get("code_challenge"), Scope: scope, Resource: resource,
-		ExpiresAt: time.Now().UTC().Add(oauthCodeTTL),
+		ExpiresAt: now.Add(oauthCodeTTL),
 	}
 	s.oauth.mu.Lock()
+	s.oauth.pruneExpiredLocked(now)
+	if len(s.oauth.codes) >= oauthMaxPendingCodes {
+		s.oauth.mu.Unlock()
+		writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "too many pending authorization requests")
+		return
+	}
 	s.oauth.codes[code] = record
 	s.oauth.mu.Unlock()
 	redirect, _ := url.Parse(record.RedirectURI)
 	query := redirect.Query()
 	query.Set("code", code)
+	if state := values.Get("state"); state != "" {
+		query.Set("state", state)
+	}
+	redirect.RawQuery = query.Encode()
+	http.Redirect(w, r, redirect.String(), http.StatusFound)
+}
+
+func oauthAuthorizationQuery(values url.Values) url.Values {
+	result := make(url.Values)
+	for _, name := range []string{
+		"response_type", "client_id", "redirect_uri", "code_challenge",
+		"code_challenge_method", "scope", "state", "resource",
+	} {
+		if value := values.Get(name); value != "" {
+			result.Set(name, value)
+		}
+	}
+	return result
+}
+
+func redirectOAuthAuthorizationError(w http.ResponseWriter, r *http.Request, values url.Values, code string) {
+	redirect, err := url.Parse(values.Get("redirect_uri"))
+	if err != nil {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "invalid redirect URI")
+		return
+	}
+	query := redirect.Query()
+	query.Set("error", code)
 	if state := values.Get("state"); state != "" {
 		query.Set("state", state)
 	}
@@ -282,6 +368,9 @@ func (s *Server) validateOAuthAuthorizationRequest(ctx context.Context, r *http.
 	if err != nil {
 		return store.OAuthClientRecord{}, "", "", fmt.Errorf("unknown client")
 	}
+	if !slices.Contains(client.ResponseTypes, "code") {
+		return store.OAuthClientRecord{}, "", "", fmt.Errorf("client did not register the code response type")
+	}
 	if !slices.Contains(client.RedirectURIs, values.Get("redirect_uri")) {
 		return store.OAuthClientRecord{}, "", "", fmt.Errorf("redirect_uri is not registered")
 	}
@@ -290,12 +379,12 @@ func (s *Server) validateOAuthAuthorizationRequest(ctx context.Context, r *http.
 	}
 	scope := strings.TrimSpace(values.Get("scope"))
 	if scope == "" {
-		scope = oauthScope
+		scope = client.Scope
 	}
-	if !scopeAllowed(scope) {
+	if !scopeAllowed(scope) || !scopeSubset(strings.Fields(scope), strings.Fields(client.Scope)) {
 		return store.OAuthClientRecord{}, "", "", fmt.Errorf("unsupported scope")
 	}
-	resource, err := s.oauthResourceURL(r)
+	resource, err := s.oauthResourceForScope(r, scope)
 	if err != nil {
 		return store.OAuthClientRecord{}, "", "", err
 	}
@@ -317,23 +406,29 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusUnauthorized, "invalid_client", "unknown client")
 		return
 	}
-	_ = client
-	switch r.PostForm.Get("grant_type") {
+	grantType := r.PostForm.Get("grant_type")
+	if !slices.Contains(client.GrantTypes, grantType) {
+		writeOAuthError(w, http.StatusBadRequest, "unauthorized_client", "client did not register this grant type")
+		return
+	}
+	switch grantType {
 	case "authorization_code":
-		s.handleOAuthAuthorizationCodeExchange(w, r, clientID)
+		s.handleOAuthAuthorizationCodeExchange(w, r, client)
 	case "refresh_token":
-		s.handleOAuthRefreshExchange(w, r, clientID)
+		s.handleOAuthRefreshExchange(w, r, client)
 	default:
 		writeOAuthError(w, http.StatusBadRequest, "unsupported_grant_type", "unsupported grant type")
 	}
 }
 
-func (s *Server) handleOAuthAuthorizationCodeExchange(w http.ResponseWriter, r *http.Request, clientID string) {
+func (s *Server) handleOAuthAuthorizationCodeExchange(w http.ResponseWriter, r *http.Request, client store.OAuthClientRecord) {
 	code := r.PostForm.Get("code")
+	now := time.Now().UTC()
 	s.oauth.mu.Lock()
+	s.oauth.pruneExpiredLocked(now)
 	record, ok := s.oauth.codes[code]
 	failure := ""
-	if !ok || record.ExpiresAt.Before(time.Now().UTC()) || record.ClientID != clientID {
+	if !ok || record.ClientID != client.ClientID {
 		failure = "invalid authorization code"
 	} else if redirectURI := r.PostForm.Get("redirect_uri"); redirectURI != "" && redirectURI != record.RedirectURI {
 		failure = "redirect_uri does not match"
@@ -349,13 +444,13 @@ func (s *Server) handleOAuthAuthorizationCodeExchange(w http.ResponseWriter, r *
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", failure)
 		return
 	}
-	s.issueOAuthTokens(w, r, record.OwnerID, clientID, record.Scope, record.Resource, "")
+	s.issueOAuthTokens(w, r, record.OwnerID, client, record.Scope, record.Resource, "", "")
 }
 
-func (s *Server) handleOAuthRefreshExchange(w http.ResponseWriter, r *http.Request, clientID string) {
+func (s *Server) handleOAuthRefreshExchange(w http.ResponseWriter, r *http.Request, client store.OAuthClientRecord) {
 	refresh := r.PostForm.Get("refresh_token")
 	record, err := s.service.Store().GetOAuthRefreshToken(r.Context(), security.HashToken(refresh), time.Now().UTC())
-	if err != nil || record.ClientID != clientID {
+	if err != nil || record.ClientID != client.ClientID {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "invalid refresh token")
 		return
 	}
@@ -371,25 +466,64 @@ func (s *Server) handleOAuthRefreshExchange(w http.ResponseWriter, r *http.Reque
 		writeOAuthError(w, http.StatusBadRequest, "invalid_scope", "refresh token cannot grant requested scope")
 		return
 	}
-	s.issueOAuthTokens(w, r, record.OwnerID, clientID, scope, record.Resource, security.HashToken(refresh))
+	s.issueOAuthTokens(w, r, record.OwnerID, client, scope, record.Resource, record.AuthorizationID, security.HashToken(refresh))
 }
 
-func (s *Server) issueOAuthTokens(w http.ResponseWriter, r *http.Request, ownerID, clientID, scope, resource, consumedRefreshHash string) {
+func (s *Server) issueOAuthTokens(w http.ResponseWriter, r *http.Request, ownerID string, client store.OAuthClientRecord, scope, resource, authorizationID, consumedRefreshHash string) {
 	access, err := security.RandomOpaque("oat_")
 	if err != nil {
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "failed to issue access token")
 		return
 	}
-	refresh, err := security.RandomOpaque("ort_")
-	if err != nil {
-		writeOAuthError(w, http.StatusInternalServerError, "server_error", "failed to issue refresh token")
-		return
-	}
 	now := time.Now().UTC()
+	accessExpires := now.Add(oauthAccessTokenTTL)
+	refreshExpires := now.Add(oauthRefreshTokenTTL)
+	refresh := ""
+	refreshHash := ""
+	if slices.Contains(client.GrantTypes, "refresh_token") {
+		refresh, err = security.RandomOpaque("ort_")
+		if err != nil {
+			writeOAuthError(w, http.StatusInternalServerError, "server_error", "failed to issue refresh token")
+			return
+		}
+		refreshHash = security.HashToken(refresh)
+	}
+	authorizationExpires := accessExpires
+	if refresh != "" {
+		authorizationExpires = refreshExpires
+	}
 	scopes := strings.Fields(scope)
-	if err := s.service.Store().SaveOAuthTokenPair(r.Context(), security.HashToken(access), security.HashToken(refresh), store.OAuthTokenRecord{
-		OwnerID: ownerID, ClientID: clientID, Scopes: scopes, Resource: resource,
-	}, now.Add(oauthAccessTokenTTL), now.Add(oauthRefreshTokenTTL), consumedRefreshHash, now); err != nil {
+	createdAuthorization := false
+	if authorizationID == "" {
+		authorizationID, err = security.RandomOpaque("authz_")
+		if err != nil {
+			writeOAuthError(w, http.StatusInternalServerError, "server_error", "failed to create authorization")
+			return
+		}
+		if err := s.service.Store().CreateOAuthAuthorization(r.Context(), store.OAuthAuthorizationRecord{
+			AuthorizationID: authorizationID,
+			OwnerID:         ownerID,
+			ClientID:        client.ClientID,
+			Scopes:          scopes,
+			Resource:        resource,
+			CreatedAt:       now,
+			ExpiresAt:       authorizationExpires,
+		}); err != nil {
+			writeOAuthError(w, http.StatusInternalServerError, "server_error", "failed to persist authorization")
+			return
+		}
+		createdAuthorization = true
+	}
+	if err := s.service.Store().SaveOAuthTokenPair(r.Context(), security.HashToken(access), refreshHash, store.OAuthTokenRecord{
+		AuthorizationID: authorizationID,
+		OwnerID:         ownerID,
+		ClientID:        client.ClientID,
+		Scopes:          scopes,
+		Resource:        resource,
+	}, accessExpires, refreshExpires, consumedRefreshHash, now); err != nil {
+		if createdAuthorization {
+			_ = s.service.Store().RevokeOAuthAuthorization(r.Context(), ownerID, authorizationID, now)
+		}
 		if consumedRefreshHash != "" && errors.Is(err, store.ErrUnauthorized) {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "invalid refresh token")
 		} else {
@@ -398,8 +532,11 @@ func (s *Server) issueOAuthTokens(w http.ResponseWriter, r *http.Request, ownerI
 		return
 	}
 	writeJSON(w, http.StatusOK, oauthTokenResponse{
-		AccessToken: access, TokenType: "Bearer", ExpiresIn: int64(oauthAccessTokenTTL.Seconds()),
-		RefreshToken: refresh, Scope: strings.Join(scopes, " "),
+		AccessToken:  access,
+		TokenType:    "Bearer",
+		ExpiresIn:    int64(oauthAccessTokenTTL.Seconds()),
+		RefreshToken: refresh,
+		Scope:        strings.Join(scopes, " "),
 	})
 }
 
@@ -411,7 +548,7 @@ func (s *Server) handleOAuthRevoke(w http.ResponseWriter, r *http.Request) {
 	}
 	token := strings.TrimSpace(r.PostForm.Get("token"))
 	if token != "" {
-		_ = s.service.Store().RevokeOAuthToken(r.Context(), security.HashToken(token))
+		_ = s.service.Store().RevokeOAuthToken(r.Context(), security.HashToken(token), time.Now().UTC())
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -420,15 +557,17 @@ func (s *Server) mcpTokenVerifier(ctx context.Context, token string, req *http.R
 	if ownerID, err := s.service.AuthenticateOwner(ctx, token); err == nil {
 		return &auth.TokenInfo{Scopes: []string{oauthScope}, Expiration: time.Now().UTC().Add(24 * time.Hour), UserID: ownerID}, nil
 	}
-	record, err := s.service.Store().AuthenticateOAuthAccessToken(ctx, security.HashToken(token), time.Now().UTC())
-	if err != nil {
+	now := time.Now().UTC()
+	record, err := s.service.Store().AuthenticateOAuthAccessToken(ctx, security.HashToken(token), now)
+	if err != nil || !slices.Contains(record.Scopes, oauthScope) {
 		return nil, fmt.Errorf("%w: invalid bearer token", auth.ErrInvalidToken)
 	}
 	resource, err := s.oauthResourceURL(req)
 	if err != nil || record.Resource != resource {
 		return nil, fmt.Errorf("%w: OAuth resource mismatch", auth.ErrInvalidToken)
 	}
-	return &auth.TokenInfo{Scopes: record.Scopes, Expiration: record.ExpiresAt, UserID: record.OwnerID, Extra: map[string]any{"clientId": record.ClientID, "resource": record.Resource}}, nil
+	_ = s.service.Store().TouchOAuthAuthorization(ctx, record.AuthorizationID, now)
+	return &auth.TokenInfo{Scopes: record.Scopes, Expiration: record.ExpiresAt, UserID: record.OwnerID, Extra: map[string]any{"clientId": record.ClientID, "resource": record.Resource, "authorizationId": record.AuthorizationID}}, nil
 }
 
 func validOAuthRedirectURI(raw string, allowedHosts []string) bool {
@@ -450,6 +589,20 @@ func validOAuthRedirectURI(raw string, allowedHosts []string) bool {
 	return u.Scheme == "https"
 }
 
+func normalizeOAuthValues(values, defaults []string) []string {
+	if len(values) == 0 {
+		return append([]string(nil), defaults...)
+	}
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" && !slices.Contains(result, value) {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
 func allOAuthValuesSupported(values []string, supported ...string) bool {
 	for _, value := range values {
 		if !slices.Contains(supported, value) {
@@ -461,7 +614,7 @@ func allOAuthValuesSupported(values []string, supported ...string) bool {
 
 func scopeAllowed(scope string) bool {
 	fields := strings.Fields(scope)
-	return len(fields) == 1 && fields[0] == oauthScope
+	return len(fields) == 1 && (fields[0] == oauthScope || fields[0] == oauthDeviceConnectScope)
 }
 
 func scopeSubset(requested, existing []string) bool {
@@ -479,20 +632,6 @@ func verifyPKCE(challenge, verifier string) bool {
 	}
 	sum := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(sum[:]) == challenge
-}
-
-func writeOAuthAuthorizeForm(w http.ResponseWriter, clientName string, values url.Values, errorMessage string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	field := func(name string) string {
-		return `<input type="hidden" name="` + html.EscapeString(name) + `" value="` + html.EscapeString(values.Get(name)) + `">`
-	}
-	errorHTML := ""
-	if errorMessage != "" {
-		errorHTML = `<p><strong>` + html.EscapeString(errorMessage) + `</strong></p>`
-	}
-	_, _ = fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect Fast Spider</title></head><body><main><h1>Connect Fast Spider</h1><p>Approve only if you are connecting your own MCP client to your Fast Spider Hub.</p>%s<p>Client: <strong>%s</strong></p><form method="post">%s%s%s%s%s%s%s%s<label>Owner Token <input name="owner_token" type="password" autocomplete="current-password" required autofocus></label><button type="submit">Authorize Fast Spider</button></form></main></body></html>`,
-		errorHTML, html.EscapeString(clientName), field("response_type"), field("client_id"), field("redirect_uri"), field("code_challenge"), field("code_challenge_method"), field("scope"), field("state"), field("resource"))
 }
 
 func writeOAuthError(w http.ResponseWriter, status int, code, description string) {

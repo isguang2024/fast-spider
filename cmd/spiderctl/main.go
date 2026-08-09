@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -30,6 +31,9 @@ func main() {
 	}
 	command := os.Args[1]
 	switch command {
+	case "setup-url":
+		setupURL(os.Args[2:])
+		return
 	case "backup":
 		backup(os.Args[2:])
 		return
@@ -60,6 +64,26 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+}
+
+func setupURL(args []string) {
+	fs := flag.NewFlagSet("setup-url", flag.ExitOnError)
+	publicURL := fs.String("public-url", "", "public Hub base URL, for example https://host/fast-spider")
+	bootstrapTokenFile := fs.String("bootstrap-token-file", "", "path to Hub bootstrap-token file")
+	allowInsecure := fs.Bool("allow-insecure", false, "allow an http setup URL only for local development")
+	_ = fs.Parse(args)
+	if *publicURL == "" || *bootstrapTokenFile == "" {
+		fatalf("--public-url and --bootstrap-token-file are required")
+	}
+	base, err := url.Parse(strings.TrimSpace(*publicURL))
+	fatalIf(err)
+	if (base.Scheme != "https" && !(*allowInsecure && base.Scheme == "http")) || base.Host == "" || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
+		fatalf("--public-url must be an https base URL without credentials, query or fragment; http requires --allow-insecure")
+	}
+	base.Path = strings.TrimRight(base.Path, "/") + "/setup"
+	base.Fragment = "code=" + readSecret(*bootstrapTokenFile)
+	fmt.Println(base.String())
+	fmt.Fprintln(os.Stderr, "This one-time setup URL contains the bootstrap secret. Open it directly and do not store or share it.")
 }
 
 func bootstrap(ctx context.Context, args []string) {
@@ -252,5 +276,5 @@ func fatalf(format string, args ...any) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: spiderctl <bootstrap|enrollment-create|machine-list|machine-get|machine-revoke|backup|backup-verify|restore|version> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: spiderctl <setup-url|bootstrap|enrollment-create|machine-list|machine-get|machine-revoke|backup|backup-verify|restore|version> [flags]")
 }

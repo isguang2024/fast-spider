@@ -18,8 +18,8 @@ Hub 进行身份与资源归属判断；Node 使用本地 Workspace 和运行时
 
 | 实体 | 标识 | 认证方式 | 说明 |
 |---|---|---|---|
-| Owner | `ownerId` | 首次 bootstrap 后签发的 Owner API Token | 当前实例唯一的人类控制主体 |
-| OAuth Client / MCP Client | `clientId` | OAuth Authorization Code + PKCE Token | 映射回同一 Owner，不形成第二套用户权限 |
+| Owner Account | `ownerId` | 本地用户名/密码 + Web Session | 当前实例唯一的人类控制主体 |
+| OAuth Client / MCP Client | `clientId` | OAuth Authorization Code + PKCE Token | 经 Owner 登录批准后映射回同一 Owner，不形成第二套用户权限 |
 | Machine | `machineId` | 设备密钥/凭据 | 逻辑设备，不等于连接 |
 | Device Credential | `credentialId` | 私钥证明，可选 mTLS | 每台设备可轮换多个凭据 |
 | Node Connection | `connectionId` | 认证后的短期连接上下文 | 带 generation，不持久充当设备身份 |
@@ -42,27 +42,32 @@ Hub 进行身份与资源归属判断；Node 使用本地 Workspace 和运行时
 
 ## 4. 认证域
 
-### 4.1 Owner
+### 4.1 Owner Account
 
-- 首次启动时 Hub 生成短时一次性 `bootstrap-token`；Owner bootstrap 成功后签发 Owner API Token。
-- Owner API Token 只存哈希，可直接用于管理 API/MCP，也作为 MCP OAuth 授权页的一次所有者证明。
-- 当前不实现 Web 登录账户、密码系统或外部 OIDC Provider；出现真实 Web Console 登录需求后再设计。
+- 首次启动时 Hub 生成短时一次性 `bootstrap-token`。`spiderctl setup-url` 把它放入 `/setup#code=...` 的 URL fragment，浏览器自动填入，值不会进入普通 HTTP/Nginx 请求日志。
+- 首次设置页面创建当前实例唯一的本地管理员用户名和密码；密码使用随机盐 PBKDF2-SHA256 哈希，数据库不保存明文。
+- 登录后 Hub 签发独立 HttpOnly、SameSite Web Session Cookie，并对后台写操作校验 CSRF；登录失败按真实客户端 IP 做小型内存限速，不引入账户锁定表。
+- 后台可以创建 Personal Access Token 供脚本/CLI 兼容使用：明文只展示一次，数据库只保存哈希，可设置有效期、查看最近使用并随时撤销。GPT 与 Node 的正常连接不需要手工 Token。
+- 修改管理员密码会保留当前浏览器、撤销该 Owner 的其他 Web Session，但不误删已经明确批准的 OAuth Authorization。
+- 旧 Owner API Token 只保留为恢复/兼容入口，不再用于日常登录、OAuth 授权页或 Node 配对交互。
+- 当前不实现多用户、密码找回邮件或外部 OIDC；个人自托管实例通过备份恢复。出现真实多人需求后再扩展。
 
 ### 4.2 MCP Client
 
 - 公网 MCP 使用 Authorization Code + PKCE S256，并支持 Dynamic Client Registration。
 - Redirect URI 必须来自已注册精确 URI，注册阶段又受本机配置的 redirect host allowlist 约束；公网 redirect 必须 HTTPS。
+- authorize endpoint 复用 Owner Web Session：未登录先跳转登录，登录后显示客户端并点击允许/取消，不输入 Token。
 - Access Token 1 小时；Refresh Token 30 天并轮换；数据库只保存 Token 哈希。
-- OAuth Token 绑定 `clientId + ownerId + resource + scope`，其中当前 resource 是公开 `/mcp` URL，scope 固定为 `fast-spider`。
-- OAuth 只适配 MCP Client 认证，不替代 Node Workspace/危险能力权限，也不扩散到 Node WSS 设备认证。
+- 每次批准形成稳定 Authorization 记录，绑定 `clientId + ownerId + resource + scope`。后台可查看创建、最近使用、到期和撤销状态；撤销会使该授权下所有 Access/Refresh Token 失效。
+- OAuth 只适配客户端认证，不替代 Node Workspace/危险能力权限，也不扩散为长期 Node WSS 设备认证。
 
 ### 4.3 Node
 
-- enrollment token 只用于首次配对，不能作为长期认证。
-- Node 本机生成设备私钥；Hub 仅保存公钥/证书信息。
-- 每次连接进行设备证明，绑定 challenge、Hub 身份、machineId 和连接 generation。
-- 凭据支持轮换、短 overlap、立即吊销和最后使用时间。
-- 设备私钥不能经 Hub、MCP 或普通日志传输。
+- 用户首次执行 `fast-spider-node login`；Node 动态注册 loopback redirect、生成 PKCE、打开系统浏览器并等待 Owner 登录批准。
+- 登录批准后 Node 临时用独立 `fast-spider:device-connect` scope 的 OAuth Access Token 请求一次 enrollment，完成配对后立即撤销临时 OAuth Authorization；用户不复制 enrollment token，临时 DCR/授权也不混入 MCP 授权列表。
+- enrollment token 仍作为 Hub 与 Node 内部的一次性交换材料存在，但不进入日常用户界面、命令参数或日志。
+- Node 本机生成设备私钥；Hub 仅保存公钥/证书信息。后续连接使用设备证明，绑定 challenge、Hub 身份、machineId 和连接 generation。
+- 凭据支持轮换、立即吊销和最后使用时间；设备私钥不能经 Hub、MCP 或普通日志传输。设备被后台撤销后，再执行同一个 `login` 会先验证旧登记确已失效，再自动重新配对，不要求删除本机 Workspace 配置。
 
 ### 4.4 本机 Local Bridge
 
@@ -82,7 +87,7 @@ MVP 不实现通用 Grant 表、策略 DSL、Capability Lease 或逐 Action Appr
 - 每个 Capability 仍执行自己的参数白名单、路径限制、URL/SSRF、并发、大小、deadline 和幂等检查。
 - Node 永远可以拒绝请求；Hub 不能绕过 Node 本地边界。
 
-这套模型的目标是让个人机器“配置一次就正常用”，而不是每次操作都弹确认或维护短期授权。
+这套模型的目标是让个人机器“登录一次、配置一次就正常用”，而不是复制 Token、每次操作都弹确认或维护短期授权。
 
 ## 6. 未来多人模式
 
@@ -172,7 +177,8 @@ UI 中的“已打开 Workspace”不是新的权限对象。
 
 | 事件 | 立即影响 |
 |---|---|
-| 用户/Client 吊销 | Token 和新请求失效；运行 Job 按策略取消 |
+| OAuth Authorization 吊销 | 该授权下所有 Access/Refresh Token 和新请求立即失效；运行 Job 按策略取消 |
+| Web Session 退出/失效 | 后台登录态失效，不直接替代或延长已签发 OAuth Token |
 | Machine 吊销 | 关闭连接，拒绝重连和新事件 |
 | Device Credential 吊销 | 对应凭据失效；machine 可用新凭据重连 |
 | Workspace 禁用/删除 | 新请求立即拒绝；运行中的相关能力按各自取消/清理规则结束 |

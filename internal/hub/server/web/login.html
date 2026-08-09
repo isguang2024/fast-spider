@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>登录 Fast Spider</title>
+  <link rel="stylesheet" href="{{.BasePath}}/assets/app.css">
+</head>
+<body class="auth-page">
+  <main class="auth-card">
+    <div class="brand-mark">FS</div>
+    <p class="eyebrow">Shared Services</p>
+    <h1>登录 Fast Spider</h1>
+    <p class="muted">登录后可以管理设备、OAuth 客户端和已授权连接。</p>
+    {{if .Error}}<div class="alert" role="alert">{{.Error}}</div>{{end}}
+    <form method="post">
+      <input type="hidden" name="return_to" value="{{.ReturnTo}}">
+      <label>用户名
+        <input name="username" value="{{.Username}}" maxlength="64" autocomplete="username" required autofocus>
+      </label>
+      <label>密码
+        <input name="password" type="password" maxlength="256" autocomplete="current-password" required>
+      </label>
+      <button class="primary" type="submit">登录</button>
+    </form>
+  </main>
+</body>
+</html>

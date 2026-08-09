@@ -132,12 +132,12 @@ func (s *Service) Store() *store.Store               { return s.store }
 func (s *Service) DataDir() string                   { return s.dataDir }
 
 func (s *Service) EnsureBootstrap(ctx context.Context) (string, error) {
-	hasOwner, err := s.store.HasOwner(ctx)
+	hasOwnerAccount, err := s.store.HasOwnerAccount(ctx)
 	if err != nil {
 		return "", err
 	}
 	path := filepath.Join(s.dataDir, "bootstrap-token")
-	if hasOwner {
+	if hasOwnerAccount {
 		_ = os.Remove(path)
 		return "", nil
 	}
@@ -185,6 +185,12 @@ func (s *Service) BootstrapOwner(ctx context.Context, bootstrapToken, displayNam
 	}
 	_ = os.Remove(filepath.Join(s.dataDir, "bootstrap-token"))
 	_ = s.audit(ctx, store.AuditEntry{OwnerID: ownerID, ActorType: "bootstrap", ActorID: ownerID, Action: "owner.bootstrap", Result: "success", RemoteAddr: remoteAddr, CreatedAt: now})
+	// The legacy bootstrap API creates an Owner API token but no browser
+	// credentials. Immediately rotate a new local setup code so the same Owner
+	// can add a Web account without resetting identity or database state.
+	if _, err := s.EnsureBootstrap(ctx); err != nil {
+		return BootstrapResult{}, err
+	}
 	return BootstrapResult{OwnerID: ownerID, OwnerToken: apiToken}, nil
 }
 
@@ -302,13 +308,13 @@ func (s *Service) ListMachines(ctx context.Context, ownerID string) ([]MachineVi
 	if err != nil {
 		return nil, err
 	}
+	capabilities, err := s.store.CapabilitiesByOwner(ctx, ownerID)
+	if err != nil {
+		return nil, err
+	}
 	views := make([]MachineView, 0, len(records))
 	for _, rec := range records {
-		view, err := s.machineView(ctx, rec)
-		if err != nil {
-			return nil, err
-		}
-		views = append(views, view)
+		views = append(views, s.machineViewWithCapabilities(rec, capabilities[rec.ID]))
 	}
 	sort.Slice(views, func(i, j int) bool {
 		if views[i].Online != views[j].Online {
@@ -328,10 +334,19 @@ func (s *Service) GetMachine(ctx context.Context, ownerID, machineID string) (Ma
 }
 
 func (s *Service) machineView(ctx context.Context, rec store.MachineRecord) (MachineView, error) {
+	caps, err := s.store.Capabilities(ctx, rec.ID)
+	if err != nil {
+		return MachineView{}, err
+	}
+	return s.machineViewWithCapabilities(rec, caps), nil
+}
+
+func (s *Service) machineViewWithCapabilities(rec store.MachineRecord, capabilities []protocolv1.CapabilityDescriptor) MachineView {
 	view := MachineView{
 		MachineID: rec.ID, DisplayName: rec.DisplayName, Status: rec.Status,
 		OS: rec.OS, Arch: rec.Arch, NodeVersion: rec.NodeVersion,
 		Generation: rec.LastConnectionGeneration, LastSeenAt: rec.LastSeenAt,
+		Capabilities: capabilities,
 	}
 	if snap, ok := s.registry.Get(rec.ID); ok && rec.Status == "active" {
 		view.Online = true
@@ -340,14 +355,8 @@ func (s *Service) machineView(ctx context.Context, rec store.MachineRecord) (Mac
 		last := snap.LastSeenAt.UTC()
 		view.LastSeenAt = &last
 		view.Capabilities = snap.Capabilities
-		return view, nil
 	}
-	caps, err := s.store.Capabilities(ctx, rec.ID)
-	if err != nil {
-		return MachineView{}, err
-	}
-	view.Capabilities = caps
-	return view, nil
+	return view
 }
 
 func (s *Service) RevokeMachine(ctx context.Context, ownerID, machineID, remoteAddr string) error {

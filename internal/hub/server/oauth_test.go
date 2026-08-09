@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
@@ -23,13 +24,17 @@ import (
 const oauthTestPublicBaseURL = "https://sharedservices.tibbs.app/fast-spider"
 
 type oauthTestFixture struct {
-	httpServer *httptest.Server
-	ownerToken string
+	httpServer      *httptest.Server
+	ownerToken      string
+	webSessionToken string
+	csrfToken       string
 }
 
 type oauthClientResponse struct {
 	ClientID     string   `json:"client_id"`
 	RedirectURIs []string `json:"redirect_uris"`
+	GrantTypes   []string `json:"grant_types"`
+	Scope        string   `json:"scope"`
 }
 
 type oauthTokenResponse struct {
@@ -61,18 +66,30 @@ func newOAuthTestFixture(t *testing.T) oauthTestFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := service.SetOwnerAccountCredentials(ctx, owner.OwnerID, "oauth-test", "oauth-test-password"); err != nil {
+		t.Fatal(err)
+	}
+	webSession, err := service.CreateWebSession(ctx, owner.OwnerID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	hub := server.New(service, server.Config{
 		PublicBaseURL:      oauthTestPublicBaseURL + "/",
 		OAuthRedirectHosts: []string{"chatgpt.com", "localhost", "127.0.0.1"},
 	})
 	httpServer := httptest.NewServer(hub.Handler())
 	t.Cleanup(httpServer.Close)
-	return oauthTestFixture{httpServer: httpServer, ownerToken: owner.OwnerToken}
+	return oauthTestFixture{
+		httpServer:      httpServer,
+		ownerToken:      owner.OwnerToken,
+		webSessionToken: webSession.Token,
+		csrfToken:       webSession.CSRFToken,
+	}
 }
 
 func TestOAuthAuthorizationPKCETokenRotationAndMCP(t *testing.T) {
 	fixture := newOAuthTestFixture(t)
-	client := newOAuthTestHTTPClient()
+	client := newOAuthTestHTTPClient(fixture.httpServer.URL, fixture.webSessionToken)
 	ctx := context.Background()
 	resource := oauthTestPublicBaseURL + "/mcp"
 
@@ -151,6 +168,12 @@ func TestOAuthAuthorizationPKCETokenRotationAndMCP(t *testing.T) {
 	if subsetRegistration.ClientID == "" {
 		t.Fatalf("supported DCR subset omitted client_id: %s", subsetBody)
 	}
+	if len(subsetRegistration.GrantTypes) != 1 || subsetRegistration.GrantTypes[0] != "authorization_code" {
+		t.Fatalf("DCR subset was expanded unexpectedly: %s", subsetBody)
+	}
+	if subsetRegistration.Scope != "fast-spider" {
+		t.Fatalf("unexpected default DCR scope: %s", subsetBody)
+	}
 	for _, testCase := range []struct {
 		name          string
 		grantTypes    []string
@@ -200,19 +223,52 @@ func TestOAuthAuthorizationPKCETokenRotationAndMCP(t *testing.T) {
 		"resource":              {resource},
 		"state":                 {"oauth-state-1"},
 	}
+
+	subsetVerifier := strings.Repeat("s", 43)
+	subsetValues := cloneOAuthValues(authorizeValues)
+	subsetValues.Set("client_id", subsetRegistration.ClientID)
+	subsetValues.Set("code_challenge", oauthPKCEChallenge(subsetVerifier))
+	subsetValues.Set("state", "oauth-state-subset")
+	subsetCode := obtainOAuthCode(t, client, fixture.httpServer.URL+"/oauth/authorize", subsetValues, fixture.csrfToken)
+	subsetTokenStatus, _, subsetTokenBody := oauthTestRequest(t, client, http.MethodPost, fixture.httpServer.URL+"/oauth/token", url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {subsetRegistration.ClientID},
+		"code":          {subsetCode},
+		"redirect_uri":  {redirectURI},
+		"resource":      {resource},
+		"code_verifier": {subsetVerifier},
+	})
+	if subsetTokenStatus != http.StatusOK {
+		t.Fatalf("subset authorization_code exchange status=%d body=%s", subsetTokenStatus, subsetTokenBody)
+	}
+	var subsetTokens oauthTokenResponse
+	decodeOAuthJSON(t, subsetTokenBody, &subsetTokens)
+	if subsetTokens.AccessToken == "" || subsetTokens.RefreshToken != "" {
+		t.Fatalf("authorization-code-only client received unexpected token response: %s", subsetTokenBody)
+	}
+	subsetRefreshStatus, _, subsetRefreshBody := oauthTestRequest(t, client, http.MethodPost, fixture.httpServer.URL+"/oauth/token", url.Values{
+		"grant_type":    {"refresh_token"},
+		"client_id":     {subsetRegistration.ClientID},
+		"refresh_token": {"not-issued"},
+	})
+	if subsetRefreshStatus != http.StatusBadRequest {
+		t.Fatalf("authorization-code-only client refresh status=%d body=%s", subsetRefreshStatus, subsetRefreshBody)
+	}
+	assertOAuthError(t, subsetRefreshBody, "unauthorized_client", true)
 	getStatus, _, getBody := oauthTestRequest(t, client, http.MethodGet, fixture.httpServer.URL+"/oauth/authorize?"+authorizeValues.Encode(), nil)
-	if getStatus != http.StatusOK || !strings.Contains(string(getBody), "<form method=\"post\">") || !strings.Contains(string(getBody), "Owner Token") {
+	if getStatus != http.StatusOK || !strings.Contains(string(getBody), "<form method=\"post\">") || !strings.Contains(string(getBody), "允许连接") {
 		t.Fatalf("authorization GET status=%d body=%s", getStatus, getBody)
 	}
-	if strings.Contains(string(getBody), fixture.ownerToken) {
-		t.Fatal("authorization GET leaked the Owner Token")
+	if strings.Contains(string(getBody), "Owner Token") || strings.Contains(string(getBody), fixture.ownerToken) {
+		t.Fatal("authorization GET exposed legacy Owner Token UI or token material")
 	}
 
-	badOwner := cloneOAuthValues(authorizeValues)
-	badOwner.Set("owner_token", "owner-token-does-not-match")
-	badOwnerStatus, badOwnerHeaders, badOwnerBody := oauthTestRequest(t, client, http.MethodPost, fixture.httpServer.URL+"/oauth/authorize", badOwner)
-	if badOwnerStatus != http.StatusOK || badOwnerHeaders.Get("Location") != "" || !strings.Contains(string(badOwnerBody), "Owner Token was not accepted") {
-		t.Fatalf("bad Owner authorization status=%d location=%q body=%s", badOwnerStatus, badOwnerHeaders.Get("Location"), badOwnerBody)
+	badCSRF := cloneOAuthValues(authorizeValues)
+	badCSRF.Set("decision", "approve")
+	badCSRF.Set("csrf_token", "not-the-session-csrf-token")
+	badCSRFStatus, badCSRFHeaders, badCSRFBody := oauthTestRequest(t, client, http.MethodPost, fixture.httpServer.URL+"/oauth/authorize", badCSRF)
+	if badCSRFStatus != http.StatusForbidden || badCSRFHeaders.Get("Location") != "" {
+		t.Fatalf("bad CSRF authorization status=%d location=%q body=%s", badCSRFStatus, badCSRFHeaders.Get("Location"), badCSRFBody)
 	}
 
 	for _, testCase := range []struct {
@@ -235,7 +291,7 @@ func TestOAuthAuthorizationPKCETokenRotationAndMCP(t *testing.T) {
 		})
 	}
 
-	code := obtainOAuthCode(t, client, fixture.httpServer.URL+"/oauth/authorize", authorizeValues, fixture.ownerToken)
+	code := obtainOAuthCode(t, client, fixture.httpServer.URL+"/oauth/authorize", authorizeValues, fixture.csrfToken)
 	tokenStatus, _, tokenBody := oauthTestRequest(t, client, http.MethodPost, fixture.httpServer.URL+"/oauth/token", url.Values{
 		"grant_type":    {"authorization_code"},
 		"client_id":     {clientID},
@@ -255,7 +311,7 @@ func TestOAuthAuthorizationPKCETokenRotationAndMCP(t *testing.T) {
 
 	badPKCEValues := cloneOAuthValues(authorizeValues)
 	badPKCEValues.Set("state", "oauth-state-bad-pkce")
-	badPKCECode := obtainOAuthCode(t, client, fixture.httpServer.URL+"/oauth/authorize", badPKCEValues, fixture.ownerToken)
+	badPKCECode := obtainOAuthCode(t, client, fixture.httpServer.URL+"/oauth/authorize", badPKCEValues, fixture.csrfToken)
 	badPKCEStatus, _, badPKCEBody := oauthTestRequest(t, client, http.MethodPost, fixture.httpServer.URL+"/oauth/token", url.Values{
 		"grant_type":    {"authorization_code"},
 		"client_id":     {clientID},
@@ -271,7 +327,7 @@ func TestOAuthAuthorizationPKCETokenRotationAndMCP(t *testing.T) {
 
 	wrongResourceValues := cloneOAuthValues(authorizeValues)
 	wrongResourceValues.Set("state", "oauth-state-wrong-resource")
-	wrongResourceCode := obtainOAuthCode(t, client, fixture.httpServer.URL+"/oauth/authorize", wrongResourceValues, fixture.ownerToken)
+	wrongResourceCode := obtainOAuthCode(t, client, fixture.httpServer.URL+"/oauth/authorize", wrongResourceValues, fixture.csrfToken)
 	wrongResourceStatus, _, wrongResourceBody := oauthTestRequest(t, client, http.MethodPost, fixture.httpServer.URL+"/oauth/token", url.Values{
 		"grant_type":    {"authorization_code"},
 		"client_id":     {clientID},
@@ -332,6 +388,49 @@ func TestOAuthAuthorizationPKCETokenRotationAndMCP(t *testing.T) {
 	}
 }
 
+func TestWebOAuthClientsExcludeOrphanDCR(t *testing.T) {
+	fixture := newOAuthTestFixture(t)
+	client := newOAuthTestHTTPClient(fixture.httpServer.URL, fixture.webSessionToken)
+	redirectURI := "https://chatgpt.com/oauth/callback"
+	orphanID, _ := registerOAuthClient(t, client, fixture.httpServer.URL+"/oauth/register", []string{redirectURI}, "")
+	authorizedID, _ := registerOAuthClient(t, client, fixture.httpServer.URL+"/oauth/register", []string{redirectURI}, "")
+	resource := oauthTestPublicBaseURL + "/mcp"
+	verifier := strings.Repeat("o", 43)
+	values := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {authorizedID},
+		"redirect_uri":          {redirectURI},
+		"code_challenge":        {oauthPKCEChallenge(verifier)},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"fast-spider"},
+		"resource":              {resource},
+		"state":                 {"owner-client-scope"},
+	}
+	code := obtainOAuthCode(t, client, fixture.httpServer.URL+"/oauth/authorize", values, fixture.csrfToken)
+	status, _, body := oauthTestRequest(t, client, http.MethodPost, fixture.httpServer.URL+"/oauth/token", url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {authorizedID},
+		"code":          {code},
+		"redirect_uri":  {redirectURI},
+		"resource":      {resource},
+		"code_verifier": {verifier},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("authorized client token exchange status=%d body=%s", status, body)
+	}
+
+	status, _, body = oauthTestRequest(t, client, http.MethodGet, fixture.httpServer.URL+"/app", nil)
+	if status != http.StatusOK {
+		t.Fatalf("dashboard status=%d body=%s", status, body)
+	}
+	if !strings.Contains(string(body), authorizedID) {
+		t.Fatalf("dashboard omitted current owner's authorized client %q: %s", authorizedID, body)
+	}
+	if strings.Contains(string(body), orphanID) {
+		t.Fatalf("dashboard exposed orphan DCR client %q: %s", orphanID, body)
+	}
+}
+
 func registerOAuthClient(t *testing.T, client *http.Client, endpoint string, redirects []string, scope string) (string, oauthClientResponse) {
 	t.Helper()
 	status, _, body := registerOAuthClientRaw(t, client, endpoint, redirects, scope)
@@ -380,10 +479,11 @@ func registerOAuthClientRawWithMetadata(t *testing.T, client *http.Client, endpo
 	return resp.StatusCode, resp.Header, raw
 }
 
-func obtainOAuthCode(t *testing.T, client *http.Client, endpoint string, values url.Values, ownerToken string) string {
+func obtainOAuthCode(t *testing.T, client *http.Client, endpoint string, values url.Values, csrfToken string) string {
 	t.Helper()
 	postValues := cloneOAuthValues(values)
-	postValues.Set("owner_token", ownerToken)
+	postValues.Set("decision", "approve")
+	postValues.Set("csrf_token", csrfToken)
 	status, headers, body := oauthTestRequest(t, client, http.MethodPost, endpoint, postValues)
 	if status != http.StatusFound {
 		t.Fatalf("authorization POST status=%d location=%q body=%s", status, headers.Get("Location"), body)
@@ -424,10 +524,22 @@ func oauthTestRequest(t *testing.T, client *http.Client, method, endpoint string
 	return resp.StatusCode, resp.Header, raw
 }
 
-func newOAuthTestHTTPClient() *http.Client {
-	return &http.Client{CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-		return http.ErrUseLastResponse
-	}}
+func newOAuthTestHTTPClient(serverURL, sessionToken string) *http.Client {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		panic(err)
+	}
+	parsed, err := url.Parse(serverURL)
+	if err != nil {
+		panic(err)
+	}
+	jar.SetCookies(parsed, []*http.Cookie{{Name: "fast_spider_session", Value: sessionToken, Path: "/"}})
+	return &http.Client{
+		Jar: jar,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 func cloneOAuthValues(values url.Values) url.Values {

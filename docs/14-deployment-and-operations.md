@@ -71,7 +71,18 @@ FAST_SPIDER_OAUTH_REDIRECT_HOSTS=chatgpt.com,localhost,127.0.0.1,::1
 
 ## 4. Node 唯一入口
 
-Windows/Linux Node 的实际运行命令都是：
+Windows/Linux Node 首次连接使用网页登录：
+
+```bash
+fast-spider-node login \
+  --hub https://sharedservices.example.com/fast-spider \
+  --name <machine-display-name> \
+  --data-dir <node-data-dir>
+```
+
+Node 自动创建 loopback OAuth callback、打开系统浏览器并等待管理员登录/允许，随后内部完成一次性设备 enrollment。默认在成功后直接进入运行状态，不要求用户复制任何 Token。
+
+后续启动命令仍只有：
 
 ```bash
 fast-spider-node run --data-dir <node-data-dir>
@@ -128,16 +139,25 @@ Node data-dir 不应放到多人共享网络盘。
 
 最小流程：
 
-1. 启动 Hub。
-2. 使用 Hub data-dir 中的一次性 `bootstrap-token` 完成 Owner bootstrap。
-3. 保存一次性返回的 Owner Token。
-4. 创建 enrollment token。
-5. 在 Node 本机执行 `fast-spider-node enroll`。
-6. 在 Node 本机添加 Workspace 和所需危险权限。
-7. 启动 `fast-spider-node run`。
-8. 检查 Hub `/livez`、`/readyz` 和机器列表。
+1. 启动 Hub，并确认 `/livez`、`/readyz`。
+2. 在服务器本机生成一次性设置链接：
 
-任何 Token 都不写进仓库或普通日志。
+   ```bash
+   spiderctl setup-url \
+     --public-url https://sharedservices.example.com/fast-spider \
+     --bootstrap-token-file /var/lib/fast-spider/bootstrap-token
+   ```
+
+3. 直接在浏览器打开输出的 `/setup#code=...` 链接，创建管理员用户名和密码；fragment 不会进入普通 HTTP/Nginx access log，设置完成后 bootstrap code 立即失效并删除。
+4. 打开 `/app` 后台，确认 Hub 状态。
+5. 在 Node 本机执行 `fast-spider-node login --hub <public-base-url> --name <display-name>`，浏览器登录并点击允许。
+6. Node 内部完成一次性 enrollment 后自动上线；后台设备列表出现该机器。
+7. 在 Node 本机添加 Workspace 和所需危险权限。
+8. 后续只运行 `fast-spider-node run`，或由当前用户登录启动项/systemd user unit 启动同一进程。设备被后台撤销后，直接再次执行 `login` 即可重新配对；Workspace Registry 不需要删除或重建。
+
+后台 `/app` 管理设备、MCP OAuth 授权、已授权客户端、Personal Access Token 和账户密码。PAT 明文只在创建页展示一次；GPT/Node 正常连接使用网页登录而不是 PAT。修改密码会注销其他 Web Session，但保留当前会话和已批准的 OAuth 授权。旧 `spiderctl bootstrap`、`enrollment-create` 和 `fast-spider-node enroll` 仅保留为受保护的恢复/兼容入口，不是日常流程。任何 Token、密码或 Session Cookie 都不写进仓库或普通日志。
+
+从旧 `58da571` 或更早的 Owner-Token-only 数据库升级时，migration `004_web_accounts.sql` 不创建第二个 Owner。Hub 重启后会为原 ownerId 生成新的短时一次性 setup code；完成 `/setup` 后旧机器、Workspace 归属和旧兼容 Owner Token 保持原关系，`bootstrap-token` 文件随即删除。
 
 ## 7. 健康检查
 
@@ -162,7 +182,7 @@ Hub/Node 当前输出结构化日志到 stdout/stderr。长期运行时交给 sy
 原则：
 
 - 不再额外写一套无限增长的应用日志文件；
-- 不记录 Owner/Enrollment/Provider Token；
+- 不记录密码、Web Session Cookie、OAuth Access/Refresh Token、Owner/Enrollment/Provider Token；
 - 不记录 Node 未脱敏绝对路径到公网接口；
 - Debug 日志只在排障时开启；
 - 日志保留/轮转由现有系统日志设施负责。
@@ -177,7 +197,7 @@ Hub 主机：
 - `/node/v1/connect` 允许 WebSocket upgrade，idle timeout 不应过短；
 - 带 path-prefix 的 MCP OAuth 额外代理两个标准 discovery 路径：`/.well-known/oauth-protected-resource/<prefix>/mcp` 与 `/.well-known/oauth-authorization-server/<prefix>`；
 - 不缓存认证、OAuth、MCP、Node WSS 或私有 Artifact 响应；
-- Access log 脱敏 Authorization、Cookie 和敏感 query。
+- Access log 脱敏 Authorization、Cookie 和敏感 query；首次设置 code 使用 URL fragment，不进入服务器请求行。
 
 Node：
 
@@ -220,7 +240,7 @@ spiderctl restore --file /srv/backups/fast-spider.zip --data-dir /var/lib/fast-s
 
 详细一致性规则见 [16-update-and-recovery.md](16-update-and-recovery.md)。
 
-Node 的 Workspace Registry/设备状态体积较小；当前 Phase 7 不另外建设 Node 云备份。Node 丢失时可重新 enrollment 和重新授权 Workspace。真正需要保存 Node data-dir 时直接使用操作系统现有备份工具即可。
+Node 的 Workspace Registry/设备状态体积较小；当前 Phase 7 不另外建设 Node 云备份。Node 丢失时重新执行网页登录并重新授权 Workspace 即可，内部 enrollment 过程不需要用户处理 Token。真正需要保存 Node data-dir 时直接使用操作系统现有备份工具即可。
 
 ## 13. 升级
 

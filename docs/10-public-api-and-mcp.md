@@ -261,7 +261,7 @@ MVP 支持两种读取方式：
 
 ## 12. OAuth 与公开入口
 
-当前公网 MCP 支持两种 Bearer：原有 Owner Token（CLI/兼容入口）和 MCP OAuth Access Token。OAuth 不建立第二套 Fast Spider 用户体系；授权页验证现有 Owner Token，成功后把 OAuth Client 映射回同一个 ownerId。
+当前公网 MCP 以标准 OAuth Access Token 为日常认证方式。Hub 仍保留旧 Owner Bearer 作为受保护的恢复/兼容入口，但后台、GPT 连接和 Node 首次配对均不要求用户查看或复制它。OAuth 不建立第二套 Fast Spider 用户体系；浏览器登录会话映射回同一个 `ownerId`。
 
 当前 OAuth 流程：
 
@@ -269,13 +269,15 @@ MVP 支持两种读取方式：
 2. Authorization Server Metadata 暴露 authorize/token/register/revoke endpoint。
 3. MCP Client 通过 Dynamic Client Registration 注册 redirect URI；只接受允许 host，公网 redirect 必须 HTTPS。
 4. Authorization Code 流程强制 PKCE S256；授权码有效期 5 分钟。
-5. Access Token 有效期 1 小时；Refresh Token 有效期 30 天并在刷新时轮换。
-6. Access/Refresh Token、Client 和 MCP resource 绑定；当前 scope 固定为 `fast-spider`。
-7. Owner Token 仍可直接访问 `/mcp`，便于 CLI、调试和迁移，不影响 OAuth Client 使用。
+5. 未登录时 authorize endpoint 跳转 `/login`；登录后展示客户端名称并由用户点击允许或取消，不出现 Owner Token 输入框。
+6. Access Token 有效期 1 小时；Refresh Token 有效期 30 天并在刷新时轮换。
+7. 每次批准形成稳定的 OAuth Authorization 记录，绑定 `clientId + ownerId + resource + scope`；后台列表显示创建时间、最近使用、到期和撤销状态，数据库只保存 Token 哈希。
+8. 撤销一条 Authorization 会同时删除其全部 Access/Refresh Token；刷新只更新同一授权记录，不制造重复列表项。
+9. Node 首次配对使用独立 `fast-spider:device-connect` scope 和 enrollment resource，不获得 MCP 权限，也不签发 Refresh Token；完成 enrollment 后撤销临时授权。失败或取消后遗留的无关联 DCR client 会由维护任务自动清理。
 
 带 path-prefix 的共享域部署要同时支持 MCP 规范的 path-insertion discovery，例如 resource `https://host/fast-spider/mcp` 对应 `/.well-known/oauth-protected-resource/fast-spider/mcp`，issuer `https://host/fast-spider` 对应 `/.well-known/oauth-authorization-server/fast-spider`。反向代理只需把这些 exact well-known 路由交给同一个 Hub，不需要把 Fast Spider 独占整个域名。
 
-设备 WSS 继续使用独立设备认证路径，不接受用户/OAuth Access Token 代替。Web Console 如后续实现登录仍使用独立 Session/CSRF 模型，不把浏览器 Cookie 直接当 MCP Token。认证、MCP、Artifact、Node WSS 的日志都不得记录 Token 内容。
+设备 WSS 继续使用独立设备证明，不把长期 OAuth Token 当设备凭据。Node 首次执行 `login` 时临时使用受限 OAuth 调用现有 enrollment API，完成配对后立即撤销该授权；后续连接仍使用 Node 本地设备私钥。Web Console 使用独立 HttpOnly Session Cookie 与 CSRF，不把浏览器 Cookie 直接当 MCP Token。后台 Personal Access Token 仍是 Owner Bearer 的脚本/兼容入口，明文只创建时返回一次。认证、MCP、Artifact、Node WSS 的日志都不得记录 Token、密码或 Cookie 内容。
 
 ## 13. 错误映射
 

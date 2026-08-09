@@ -8,11 +8,14 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/isguang2024/fast-spider/internal/hub/core"
+	"github.com/isguang2024/fast-spider/internal/hub/store"
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
+	"github.com/isguang2024/fast-spider/internal/security"
 )
 
 const maxControlMessageBytes = 1 << 20
@@ -26,10 +29,11 @@ type Config struct {
 }
 
 type Server struct {
-	service *core.Service
-	config  Config
-	oauth   *oauthState
-	http    *http.Server
+	service      *core.Service
+	config       Config
+	oauth        *oauthState
+	loginLimiter *loginFailureLimiter
+	http         *http.Server
 }
 
 type apiError struct {
@@ -50,12 +54,31 @@ func New(service *core.Service, cfg Config) *Server {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	s := &Server{service: service, config: cfg, oauth: newOAuthState()}
+	s := &Server{
+		service:      service,
+		config:       cfg,
+		oauth:        newOAuthState(),
+		loginLimiter: newLoginFailureLimiter(),
+	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", s.handleWebRoot)
+	mux.HandleFunc("GET /setup", s.handleSetup)
+	mux.HandleFunc("POST /setup", s.handleSetup)
+	mux.HandleFunc("GET /login", s.handleLogin)
+	mux.HandleFunc("POST /login", s.handleLogin)
+	mux.HandleFunc("POST /logout", s.webSessionOnly(s.handleLogout))
+	mux.HandleFunc("GET /app", s.webSessionOnly(s.handleApp))
+	mux.HandleFunc("POST /app/machines/{machineId}/revoke", s.webSessionOnly(s.handleAppMachineRevoke))
+	mux.HandleFunc("POST /app/oauth/authorizations/{authorizationId}/revoke", s.webSessionOnly(s.handleAppAuthorizationRevoke))
+	mux.HandleFunc("POST /app/oauth/clients/{clientId}/delete", s.webSessionOnly(s.handleAppClientDelete))
+	mux.HandleFunc("POST /app/account/password", s.webSessionOnly(s.handleAppPasswordChange))
+	mux.HandleFunc("POST /app/tokens", s.webSessionOnly(s.handleAppTokenCreate))
+	mux.HandleFunc("POST /app/tokens/{tokenId}/revoke", s.webSessionOnly(s.handleAppTokenRevoke))
+	mux.HandleFunc("GET /assets/{file}", s.handleWebAsset)
 	mux.HandleFunc("GET /livez", s.handleLive)
 	mux.HandleFunc("GET /readyz", s.handleReady)
 	mux.HandleFunc("POST /api/v1/bootstrap", s.handleBootstrap)
-	mux.HandleFunc("POST /api/v1/enrollment-tokens", s.ownerOnly(s.handleCreateEnrollment))
+	mux.HandleFunc("POST /api/v1/enrollment-tokens", s.enrollmentIssuerOnly(s.handleCreateEnrollment))
 	mux.HandleFunc("POST /api/v1/enroll", s.handleEnroll)
 	mux.HandleFunc("POST /api/v1/device/token", s.handleDeviceToken)
 	mux.HandleFunc("GET /api/v1/machines", s.ownerOnly(s.handleMachineList))
@@ -68,7 +91,8 @@ func New(service *core.Service, cfg Config) *Server {
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.handleOAuthAuthorizationServer)
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server/{issuerPath...}", s.handleOAuthAuthorizationServer)
 	mux.HandleFunc("POST /oauth/register", s.handleOAuthRegister)
-	mux.HandleFunc("/oauth/authorize", oauthFormMethodOnly(s.handleOAuthAuthorize))
+	mux.HandleFunc("GET /oauth/authorize", s.handleOAuthAuthorize)
+	mux.HandleFunc("POST /oauth/authorize", s.handleOAuthAuthorize)
 	mux.HandleFunc("POST /oauth/token", oauthPostOnly(s.handleOAuthToken))
 	mux.HandleFunc("POST /oauth/revoke", oauthPostOnly(s.handleOAuthRevoke))
 	mux.Handle("/mcp", s.newMCPHandler())
@@ -200,8 +224,40 @@ func (s *Server) ownerOnly(next func(http.ResponseWriter, *http.Request, string)
 	}
 }
 
+func (s *Server) enrollmentIssuerOnly(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ownerID, err := s.authenticateEnrollmentIssuerRequest(r)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		next(w, r, ownerID)
+	}
+}
+
 func (s *Server) authenticateOwnerRequest(r *http.Request) (string, error) {
 	return s.service.AuthenticateOwner(r.Context(), bearerToken(r.Header.Get("Authorization")))
+}
+
+func (s *Server) authenticateEnrollmentIssuerRequest(r *http.Request) (string, error) {
+	token := bearerToken(r.Header.Get("Authorization"))
+	if ownerID, err := s.service.AuthenticateOwner(r.Context(), token); err == nil {
+		return ownerID, nil
+	}
+	now := time.Now().UTC()
+	record, err := s.service.Store().AuthenticateOAuthAccessToken(r.Context(), security.HashToken(token), now)
+	if err != nil {
+		return "", err
+	}
+	if !slices.Contains(record.Scopes, oauthDeviceConnectScope) {
+		return "", store.ErrUnauthorized
+	}
+	resource, err := s.oauthResourceForScope(r, oauthDeviceConnectScope)
+	if err != nil || record.Resource != resource {
+		return "", store.ErrUnauthorized
+	}
+	_ = s.service.Store().TouchOAuthAuthorization(r.Context(), record.AuthorizationID, now)
+	return record.OwnerID, nil
 }
 
 func (s *Server) hostGuard(next http.Handler) http.Handler {
@@ -227,9 +283,10 @@ func (s *Server) hostGuard(next http.Handler) http.Handler {
 func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self'")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -274,9 +331,23 @@ func bearerToken(header string) string {
 }
 
 func remoteIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return host
+	peer := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(peer); err == nil {
+		peer = host
 	}
-	return r.RemoteAddr
+	peerIP := net.ParseIP(strings.TrimSpace(peer))
+	if peerIP == nil || !peerIP.IsLoopback() {
+		return peer
+	}
+	for _, header := range []string{"CF-Connecting-IP", "X-Real-IP"} {
+		if candidate := net.ParseIP(strings.TrimSpace(r.Header.Get(header))); candidate != nil {
+			return candidate.String()
+		}
+	}
+	if forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); forwarded != "" {
+		if candidate := net.ParseIP(forwarded); candidate != nil {
+			return candidate.String()
+		}
+	}
+	return peer
 }

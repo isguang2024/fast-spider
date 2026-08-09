@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Fast Spider 控制台</title>
+  <link rel="stylesheet" href="{{.BasePath}}/assets/app.css">
+  <script src="{{.BasePath}}/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="{{.BasePath}}/app" aria-label="Fast Spider 控制台首页">
+      <span class="brand-mark small">FS</span><span>Fast Spider</span>
+    </a>
+    <nav class="topnav" aria-label="后台导航">
+      <a href="#machines">设备</a>
+      <a href="#oauth">授权</a>
+      <a href="#tokens">访问令牌</a>
+      <a href="#account">账户</a>
+    </nav>
+    <div class="account">
+      <span>{{.DisplayName}}</span>
+      <form method="post" action="{{.BasePath}}/logout">
+        <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+        <button class="text-button action-button" type="submit">退出</button>
+      </form>
+    </div>
+  </header>
+
+  <main class="page-shell" id="main-content">
+    {{if .Notice}}<div class="notice" role="status">{{.Notice}}</div>{{end}}
+    {{if .Error}}<div class="alert" role="alert">{{.Error}}</div>{{end}}
+
+    <section class="hero-panel" aria-labelledby="page-title">
+      <div class="hero-copy">
+        <p class="eyebrow">Shared Services / Fast Spider</p>
+        <h1 id="page-title">设备与授权中心</h1>
+        <p class="muted">设备、GPT 与其他 MCP 客户端统一走账户登录与 OAuth。日常连接无需复制 Token；真正的文件、Shell、Git、Build 与浏览器能力仍由本机 Node 执行。</p>
+        <div class="quick-links" aria-label="快速入口">
+          <a href="#machines">连接本机</a>
+          <a href="#oauth">查看授权</a>
+          <a href="#tokens">脚本令牌</a>
+        </div>
+      </div>
+      <div class="hero-meta" aria-label="Hub 状态">
+        <div><span class="status-dot" aria-hidden="true"></span><strong>Hub 运行中</strong></div>
+        <span class="meta-label">公开地址</span>
+        <code>{{.BaseURL}}</code>
+        <span class="meta-label">MCP</span>
+        <code>{{.MCPURL}}</code>
+      </div>
+    </section>
+
+    <section class="summary-grid" aria-label="状态摘要">
+      <article class="summary-card"><span>设备</span><strong>{{len .Machines}}</strong><small>{{.OnlineMachines}} 台在线</small></article>
+      <article class="summary-card"><span>OAuth 授权</span><strong>{{.ActiveAuthorizations}}</strong><small>当前有效连接</small></article>
+      <article class="summary-card"><span>访问令牌</span><strong>{{.ActiveTokens}}</strong><small>脚本 / 兼容用途</small></article>
+      <article class="summary-card"><span>OAuth 客户端</span><strong>{{len .Clients}}</strong><small>已完成 MCP 授权</small></article>
+    </section>
+
+    <section class="panel" id="machines">
+      <div class="panel-heading">
+        <div><p class="eyebrow">Machines</p><h2>本机与远程设备</h2><p class="section-copy">首次连接只需运行一次网页登录命令；登录成功后 Node 自动完成设备登记并持续连接 Hub。</p></div>
+        <div class="command-box"><span>Windows / Linux / macOS</span><code>fast-spider-node login --hub {{.BaseURL}}</code></div>
+      </div>
+      {{if .Machines}}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>名称</th><th>系统</th><th>状态</th><th>最近在线</th><th class="action-col">操作</th></tr></thead>
+          <tbody>
+          {{range .Machines}}
+            <tr>
+              <td data-label="名称"><strong>{{.DisplayName}}</strong><small>{{.MachineID}}</small></td>
+              <td data-label="系统">{{.OS}} / {{.Arch}}</td>
+              <td data-label="状态">{{if .Online}}<span class="pill success">在线</span>{{else if eq .Status "revoked"}}<span class="pill danger">已撤销</span>{{else}}<span class="pill">离线</span>{{end}}</td>
+              <td data-label="最近在线">{{.LastSeen}}</td>
+              <td data-label="操作" class="action-cell">
+                {{if ne .Status "revoked"}}
+                <form method="post" action="{{$.BasePath}}/app/machines/{{.MachineID}}/revoke" data-confirm="确认撤销这台设备？撤销后它需要重新登录才能连接。">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                  <button class="danger-link action-button" type="submit">撤销设备</button>
+                </form>
+                {{else}}<span class="muted">无需操作</span>{{end}}
+              </td>
+            </tr>
+          {{end}}
+          </tbody>
+        </table>
+      </div>
+      {{else}}
+      <div class="empty-state"><strong>还没有设备</strong><span>在你的电脑运行上方命令，浏览器会自动打开 Fast Spider 登录授权页。</span></div>
+      {{end}}
+    </section>
+
+    <section class="panel" id="oauth">
+      <div class="panel-heading">
+        <div><p class="eyebrow">OAuth Authorizations</p><h2>授权连接</h2><p class="section-copy">GPT 和其他 MCP 客户端完成网页登录后会自动出现在这里。Node 的一次性配对授权会自动清理，只在设备列表保留最终机器状态。</p></div>
+        <div class="command-box"><span>MCP 地址</span><code>{{.MCPURL}}</code></div>
+      </div>
+      {{if .Authorizations}}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>客户端</th><th>范围</th><th>创建</th><th>最近使用</th><th>状态</th><th class="action-col">操作</th></tr></thead>
+          <tbody>
+          {{range .Authorizations}}
+            <tr>
+              <td data-label="客户端"><strong>{{.ClientName}}</strong><small>{{.ClientID}}</small></td>
+              <td data-label="范围"><span class="pill neutral">{{.Scopes}}</span></td>
+              <td data-label="创建">{{.CreatedAt}}</td>
+              <td data-label="最近使用">{{.LastUsedAt}}</td>
+              <td data-label="状态"><span class="pill {{if eq .Status "有效"}}success{{else if eq .Status "已撤销"}}danger{{end}}">{{.Status}}</span></td>
+              <td data-label="操作" class="action-cell">
+                {{if eq .Status "有效"}}
+                <form method="post" action="{{$.BasePath}}/app/oauth/authorizations/{{.AuthorizationID}}/revoke" data-confirm="确认撤销这个 OAuth 授权？客户端需要重新登录后才能继续使用。">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                  <button class="danger-link action-button" type="submit">撤销授权</button>
+                </form>
+                {{else}}<span class="muted">无需操作</span>{{end}}
+              </td>
+            </tr>
+          {{end}}
+          </tbody>
+        </table>
+      </div>
+      {{else}}
+      <div class="empty-state"><strong>还没有 OAuth 授权</strong><span>把 MCP 地址添加到 GPT，或运行 Node 登录后，授权记录会自动出现。</span></div>
+      {{end}}
+    </section>
+
+    <section class="panel" id="tokens">
+      <div class="panel-heading token-heading">
+        <div><p class="eyebrow">Personal Access Tokens</p><h2>访问令牌</h2><p class="section-copy">只给脚本、CLI 兼容或恢复场景使用。Node 与 GPT 的正常登录不需要手工 Token。</p></div>
+        <form class="token-form" method="post" action="{{.BasePath}}/app/tokens">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <label>名称
+            <input name="label" maxlength="80" placeholder="例如：本机维护脚本" required>
+          </label>
+          <label>有效期
+            <select name="expires_days">
+              <option value="90" selected>90 天</option>
+              <option value="30">30 天</option>
+              <option value="365">1 年</option>
+              <option value="0">长期有效</option>
+            </select>
+          </label>
+          <button class="primary" type="submit">生成令牌</button>
+        </form>
+      </div>
+      {{if .Tokens}}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>名称</th><th>创建时间</th><th>最近使用</th><th>到期</th><th>状态</th><th class="action-col">操作</th></tr></thead>
+          <tbody>
+          {{range .Tokens}}
+            <tr>
+              <td data-label="名称"><strong>{{.Label}}</strong><small>{{.ID}}</small></td>
+              <td data-label="创建时间">{{.CreatedAt}}</td>
+              <td data-label="最近使用">{{.LastUsedAt}}</td>
+              <td data-label="到期">{{.ExpiresAt}}</td>
+              <td data-label="状态"><span class="pill {{if eq .Status "有效"}}success{{else if eq .Status "已撤销"}}danger{{end}}">{{.Status}}</span></td>
+              <td data-label="操作" class="action-cell">
+                {{if eq .Status "有效"}}
+                <form method="post" action="{{$.BasePath}}/app/tokens/{{.ID}}/revoke" data-confirm="确认撤销这个访问令牌？使用它的脚本会立即失去访问权限。">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                  <button class="danger-link action-button" type="submit">撤销令牌</button>
+                </form>
+                {{else}}<span class="muted">无需操作</span>{{end}}
+              </td>
+            </tr>
+          {{end}}
+          </tbody>
+        </table>
+      </div>
+      {{else}}
+      <div class="empty-state compact"><strong>没有手工访问令牌</strong><span>这是正常状态。优先使用网页登录，只有脚本需要时再生成。</span></div>
+      {{end}}
+    </section>
+
+    <section class="panel" id="account">
+      <div class="panel-heading account-heading">
+        <div><p class="eyebrow">Account Security</p><h2>账户安全</h2><p class="section-copy">当前登录账户：<strong>{{.Username}}</strong>。修改密码会保留当前浏览器，并立即退出其他 Fast Spider 后台会话；已明确授权的 OAuth 连接不会被误删。</p></div>
+        <form class="password-form" method="post" action="{{.BasePath}}/app/account/password">
+          <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+          <label>当前密码
+            <input name="current_password" type="password" autocomplete="current-password" maxlength="256" required>
+          </label>
+          <label>新密码
+            <input name="new_password" type="password" autocomplete="new-password" minlength="10" maxlength="256" required>
+          </label>
+          <label>确认新密码
+            <input name="password_confirm" type="password" autocomplete="new-password" minlength="10" maxlength="256" required>
+          </label>
+          <button class="primary" type="submit">更新密码</button>
+        </form>
+      </div>
+    </section>
+
+    <section class="panel secondary-panel" id="clients">
+      <div class="panel-heading"><div><p class="eyebrow">OAuth Clients</p><h2>已授权客户端</h2><p class="section-copy">这里只展示已经完成 MCP 授权的客户端。失败或取消的临时登记由 Hub 自动清理，不需要手工维护。</p></div></div>
+      {{if .Clients}}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>名称</th><th>权限范围</th><th>授权模式</th><th>回调地址</th><th>登记时间</th><th class="action-col">操作</th></tr></thead>
+          <tbody>
+          {{range .Clients}}
+            <tr>
+              <td data-label="名称"><strong>{{.ClientName}}</strong><small>{{.ClientID}}</small></td>
+              <td data-label="权限范围"><span class="pill neutral">{{.Scope}}</span></td>
+              <td data-label="授权模式">{{.GrantTypes}}</td>
+              <td data-label="回调地址"><div class="uri-list">{{range .RedirectURIs}}<code>{{.}}</code>{{end}}</div></td>
+              <td data-label="登记时间">{{.CreatedAt}}</td>
+              <td data-label="操作" class="action-cell">
+                <form method="post" action="{{$.BasePath}}/app/oauth/clients/{{.ClientID}}/delete" data-confirm="确认删除这个 OAuth 客户端？关联授权会一并失效。">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                  <button class="danger-link action-button" type="submit">删除客户端</button>
+                </form>
+              </td>
+            </tr>
+          {{end}}
+          </tbody>
+        </table>
+      </div>
+      {{else}}
+      <div class="empty-state compact"><strong>还没有已授权 MCP 客户端</strong><span>把 MCP 地址添加到 GPT 并完成网页登录授权后，这里会自动出现记录。</span></div>
+      {{end}}
+    </section>
+  </main>
+</body>
+</html>

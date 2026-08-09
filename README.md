@@ -98,35 +98,27 @@ Fast Spider 不是远程桌面，也不是通用内网穿透软件：
 # 1. 启动 Hub；默认仅监听 127.0.0.1:8787
 go run ./cmd/hub --data-dir ./data
 
-# 2. 首次 Owner bootstrap
-# Hub 会在 ./data/bootstrap-token 写入一次性 bootstrap token
-go run ./cmd/spiderctl bootstrap \
-  --hub http://127.0.0.1:8787 \
+# 2. 首次设置：生成一次性浏览器链接，然后在页面里创建管理员用户名和密码。
+# setup code 放在 URL fragment 中，不会进入 Hub/Nginx 请求日志。
+go run ./cmd/spiderctl setup-url \
+  --public-url http://127.0.0.1:8787 \
   --allow-insecure \
   --bootstrap-token-file ./data/bootstrap-token
+# 在浏览器打开输出的 /setup#code=... 链接；完成后进入 /app 后台。
 
-# 3. 保存上一步只返回一次的 ownerToken
-export FAST_SPIDER_OWNER_TOKEN='<owner token>'
-
-# 4. 创建 Node enrollment token
-go run ./cmd/spiderctl enrollment-create \
+# 3. Node 使用网页登录自动配对并立即运行。
+# 程序自动注册 OAuth 客户端、打开浏览器、等待登录/允许、内部完成一次性 enrollment；无需复制 Token。
+go run ./cmd/node login \
   --hub http://127.0.0.1:8787 \
   --allow-insecure \
   --name dev-node
 
-# 5. 在 Node 机器执行一次性配对
-go run ./cmd/node enroll \
-  --hub http://127.0.0.1:8787 \
-  --allow-insecure \
-  --token '<enrollment token>' \
-  --name dev-node
-
-# 6. 在 Node 本机授权代码目录；真实绝对路径只保存在 Node 本机
+# 4. 在 Node 本机授权代码目录；真实绝对路径只保存在 Node 本机
 go run ./cmd/node workspace-add \
   --path 'V:/repos/GitHub/example' \
   --name example
 
-# 7. 新 Workspace 默认只有 read；危险能力必须在 Node 本机显式授权
+# 5. 新 Workspace 默认只有 read；危险能力必须在 Node 本机显式授权
 # 本机 workspace-list 会显示真实授权 Root 供用户核对；远程 MCP workspace_list 永远不返回绝对路径。
 # go run ./cmd/node workspace-list
 # 文件编辑 + Shell：
@@ -146,26 +138,24 @@ go run ./cmd/node workspace-add \
 # go run ./cmd/node workspace-enable  --workspace '<workspaceId>'
 # go run ./cmd/node workspace-remove  --workspace '<workspaceId>'
 
-# 8. 可选：安装隔离浏览器 Sidecar（仅需要 browser_control 时）
+# 6. 可选：安装隔离浏览器 Sidecar（仅需要 browser_control 时）
 # cd sidecar/browser
 # npm install --no-package-lock
 # npx playwright install chromium
 # cd ../..
 #
-# 启动 Node；Local Bridge 默认同时启动，不占 TCP 端口。
-# 如明确不需要本机入口，可增加 --disable-local-bridge。
+# Node 首次 login 默认会在授权完成后直接进入运行状态；以后只需：
+# Local Bridge 默认同时启动且不占 TCP 端口；如明确不需要可增加 --disable-local-bridge。
 # Codex AI 能力直接探测本机 codex CLI；无需单独启动 daemon/agent-service。
 go run ./cmd/node run --allow-insecure --browser-sidecar-dir ./sidecar/browser
 #
 # 本机可直接复用同一 Capability Engine，例如读取 Workspace：
 # go run ./cmd/node local-call --workspace '<workspaceId>' --capability file.read --action read --params-json '{"path":"README.md","limit":4096}'
 
-# 9. 查看机器
-go run ./cmd/spiderctl machine-list \
-  --hub http://127.0.0.1:8787 \
-  --allow-insecure
+# 7. 打开 Hub 后台管理设备、OAuth 授权、访问令牌与账户安全：
+# http://127.0.0.1:8787/app
 
-# 10. Hub 运维：备份 → 校验 → 恢复到新的空目录
+# 8. Hub 运维：备份 → 校验 → 恢复到新的空目录
 # 备份包包含 Hub 私钥，请按敏感数据保存。
 go run ./cmd/spiderctl backup --data-dir ./data --out ../fast-spider-backup.zip
 go run ./cmd/spiderctl backup-verify --file ../fast-spider-backup.zip
@@ -179,7 +169,7 @@ go run ./cmd/spiderctl version
 
 远程 MCP 当前固定工具面为 16 个：`machine_list`、`machine_get`、`capability_list`、`workspace_list`、`file_read`、`code_search`、`file_edit`、`shell_run`、`job_watch`、`job_cancel`、`git_control`、`build_control`、`artifact_get`、`browser_control`、`screenshot_take`、`ai_control`。这些都是 Fast Spider MCP Server 的真实能力；GPT、Claude 或其他 MCP Host 只是调用工具，实际文件修改、Shell、Git、Build、Browser 和 AI 执行都发生在 Node，并继续受 Node 本机 Workspace/危险能力边界约束。工具通过标准 MCP annotations 标记 read-only/destructive/idempotent/open-world 语义，不因某个客户端类型主动删减工具。
 
-公网 MCP 同时支持现有 Owner Bearer Token 和标准 OAuth 授权。生产建议配置 `--public-base-url https://host.example/path-prefix`；OAuth 使用动态 Client Registration + Authorization Code + PKCE S256，授权页只要求输入现有 Owner Token，随后签发 1 小时 Access Token 和可轮换的 30 天 Refresh Token。当前单 Owner 模式只使用一个 `fast-spider` scope；OAuth 只是 MCP 客户端认证适配层，不建立第二套用户/权限系统。带 path-prefix 部署时，反向代理还应把标准 `/.well-known/oauth-protected-resource/<resource-path>` 与 `/.well-known/oauth-authorization-server/<issuer-path>` 路由到同一个 Hub。
+公网 MCP 使用标准 OAuth。生产建议配置 `--public-base-url https://host.example/path-prefix`；OAuth 使用动态 Client Registration + Authorization Code + PKCE S256。客户端发起连接后会跳转 Fast Spider 登录页，登录管理员账户并点击“允许连接”即可，不再输入 Owner Token。MCP 使用 `fast-spider` scope，Node 首次网页登录只使用受限的 `fast-spider:device-connect` scope，并在内部完成 enrollment 后撤销临时授权。Hub 为 MCP 签发 1 小时 Access Token 和可轮换的 30 天 Refresh Token；后台 `/app` 以列表显示 MCP 客户端、授权创建时间、最近使用、到期与撤销状态，明文 OAuth Token 不会被重复展示。后台另提供 Personal Access Token 作为脚本/CLI 兼容入口，明文只在创建页展示一次，可设置有效期和随时撤销；GPT 与 Node 的正常连接不需要它。账户页支持修改密码，并会保留当前浏览器、注销其他 Web Session，但不会误删已批准的 OAuth 授权。当前仍是单 Owner，不建立多租户或复杂角色系统。带 path-prefix 部署时，反向代理还应把标准 `/.well-known/oauth-protected-resource/<resource-path>` 与 `/.well-known/oauth-authorization-server/<issuer-path>` 路由到同一个 Hub。
 
 `browser_control` 仍是一个固定工具，通过 action 选择 launch/open/navigate/click/type/press/wait/snapshot/screenshot/events/close；不暴露任意 JavaScript、CDP 或 Playwright API。公网浏览默认可用，本地/私网 Origin 由 Node 本机持久白名单控制。`screenshot_take` 当前开放 `listDisplays/desktop/display/listWindows/window`，不再要求独立截图权限；窗口只需先列出一次拿 opaque `windowId`，结果同样只返回 Artifact。具体 Node 只有在 Sidecar、Playwright npm 包和受管 Chromium 都安装完成时才宣告 `browser.automation`。`ai_control` 当前实现本机 Codex 的 `providers/models/projects/session.*`；创建或继续 Codex Run 复用 Workspace 现有 `write + shell` 权限，不新增单独 `agent` 权限。未指定模型时从当前 `codex model/list` 自动选择可用模型，避免本机默认模型与旧 CLI 不兼容导致 Session 直接失败。
 
@@ -197,7 +187,7 @@ bash scripts/release-gate.sh --full
 
 `core` 会检查 gofmt、Git whitespace、tracked secret pattern、`go mod verify/tidy -diff`、`go vet`、全量 tests、当前/Windows/Linux builds、恢复后 Hub 健康 E2E 和 Local Bridge E2E。`--full` 再运行 3 轮 Node、真实 Chromium、真实 Codex 和 Local Bridge→Codex 产品 smoke；支持的工具链还会跑短时 random fuzz 与 race。当前开发环境是 `windows/386 + CGO=0`，因此 random fuzz/race 会明确显示 `SKIP`，Fuzz seeds 仍随普通 `go test ./...` 执行。
 
-当前验证链覆盖 Owner bootstrap → enrollment → Node 上线 → Workspace/文件/搜索/编辑 → Git/Build/Artifact → Shell/Job → 隔离 Chromium → 页面/桌面/窗口截图 Artifact → Local Bridge → `agent.control` → 本机 Codex Session/Turn → Hub backup/verify/restore → 恢复后真实 Hub health。Phase 8 把这些真实链路收口到同一个 release gate，而不是再增加服务或权限层。
+当前验证链覆盖浏览器首次设置 → 管理员登录会话 → OAuth PKCE 授权 → Node 网页登录与内部自动 enrollment → Node 上线 → Workspace/文件/搜索/编辑 → Git/Build/Artifact → Shell/Job → 隔离 Chromium → 页面/桌面/窗口截图 Artifact → Local Bridge → `agent.control` → 本机 Codex Session/Turn → Hub backup/verify/restore → 恢复后真实 Hub health。旧的命令行 bootstrap/enroll 仅保留为恢复和兼容入口，不再是日常使用流程。
 
 ## 仓库状态
 

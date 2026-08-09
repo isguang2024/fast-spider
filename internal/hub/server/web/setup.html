@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>初始化 Fast Spider</title>
+  <link rel="stylesheet" href="{{.BasePath}}/assets/app.css">
+  <script src="{{.BasePath}}/assets/setup.js" defer></script>
+</head>
+<body class="auth-page">
+  <main class="auth-card">
+    <div class="brand-mark">FS</div>
+    <p class="eyebrow">账户设置</p>
+    <h1>创建管理员登录</h1>
+    <p class="muted">此页面只在尚未创建网页登录账户时有效，也可安全升级旧的 Owner Token 安装。完成后，后台、OAuth 授权和本机设备都统一使用账户登录。</p>
+    {{if .Error}}<div class="alert" role="alert">{{.Error}}</div>{{end}}
+    <form method="post" autocomplete="off">
+      <label>用户名
+        <input name="username" value="{{.Username}}" minlength="3" maxlength="64" pattern="[a-z0-9][a-z0-9._-]{2,63}" required autofocus>
+      </label>
+      <label>显示名称
+        <input name="display_name" value="{{.DisplayName}}" maxlength="128" placeholder="Fast Spider Owner">
+      </label>
+      <label>密码
+        <input name="password" type="password" minlength="10" maxlength="256" autocomplete="new-password" aria-describedby="password-hint" required>
+        <span class="hint" id="password-hint">至少 10 个字符。建议使用密码管理器生成独立密码。</span>
+      </label>
+      <label>确认密码
+        <input name="password_confirm" type="password" minlength="10" maxlength="256" autocomplete="new-password" required>
+      </label>
+      <label id="setup-code-field">首次设置代码
+        <input id="bootstrap-token" name="bootstrap_token" type="password" maxlength="256" autocomplete="off" required>
+        <span class="hint">通过安全的首次设置链接进入时会自动填入，不需要手工复制。</span>
+      </label>
+      <button class="primary" type="submit">创建账户并进入后台</button>
+    </form>
+  </main>
+</body>
+</html>

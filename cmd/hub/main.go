@@ -64,7 +64,7 @@ func main() {
 		fatal(logger, "initialize owner bootstrap", err)
 	}
 	if bootstrapToken != "" {
-		logger.Warn("owner bootstrap required", "tokenFile", filepath.Join(absoluteDataDir, "bootstrap-token"), "expiresIn", "30m")
+		logger.Warn("owner account setup required", "tokenFile", filepath.Join(absoluteDataDir, "bootstrap-token"), "expiresIn", "30m")
 	}
 
 	go service.StartMaintenance(ctx)

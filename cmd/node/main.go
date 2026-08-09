@@ -29,6 +29,8 @@ func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	switch os.Args[1] {
+	case "login":
+		runLogin(logger, os.Args[2:])
 	case "enroll":
 		runEnroll(logger, os.Args[2:])
 	case "run":
@@ -67,6 +69,56 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+}
+
+func runLogin(logger *slog.Logger, args []string) {
+	fs := flag.NewFlagSet("login", flag.ExitOnError)
+	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
+	hubURL := fs.String("hub", "", "Hub base URL, normally https://host")
+	name := fs.String("name", hostname(), "machine display name")
+	allowInsecure := fs.Bool("allow-insecure", false, "allow local-development http/ws Hub URLs")
+	noBrowser := fs.Bool("no-browser", false, "print the authorization URL instead of opening the system browser")
+	noRun := fs.Bool("no-run", false, "finish after login without starting the Node connection")
+	browserSidecarDir := fs.String("browser-sidecar-dir", "", "optional Playwright sidecar directory")
+	disableLocalBridge := fs.Bool("disable-local-bridge", false, "disable the current-user AF_UNIX Local Bridge after login")
+	_ = fs.Parse(args)
+	if *hubURL == "" {
+		fatalIf(errors.New("login requires --hub"))
+	}
+	client, err := node.New(node.Config{
+		DataDir: *dataDir, Version: version.Version, AllowInsecure: *allowInsecure, Logger: logger,
+	})
+	fatalIf(err)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	state, err := client.Login(ctx, node.LoginOptions{
+		HubURL:      *hubURL,
+		DisplayName: *name,
+		OpenBrowser: !*noBrowser,
+		AuthorizationReady: func(target string) {
+			if *noBrowser {
+				fmt.Println(target)
+				return
+			}
+			logger.Info("browser login started")
+		},
+	})
+	fatalIf(err)
+	fmt.Printf("connected machineId=%s hubFingerprint=%s\n", state.MachineID, state.HubFingerprint)
+	if *noRun {
+		return
+	}
+	runArgs := []string{"--data-dir", *dataDir}
+	if *allowInsecure {
+		runArgs = append(runArgs, "--allow-insecure")
+	}
+	if *browserSidecarDir != "" {
+		runArgs = append(runArgs, "--browser-sidecar-dir", *browserSidecarDir)
+	}
+	if *disableLocalBridge {
+		runArgs = append(runArgs, "--disable-local-bridge")
+	}
+	runNode(logger, runArgs)
 }
 
 func runEnroll(logger *slog.Logger, args []string) {
@@ -356,5 +408,5 @@ func fatalIf(err error) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: fast-spider-node <enroll|run|status|local-call|workspace-add|workspace-list|workspace-enable|workspace-disable|workspace-permission|workspace-profile-set|workspace-profile-list|workspace-profile-remove|workspace-browser-allow|workspace-browser-list|workspace-browser-remove|workspace-remove|version> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: fast-spider-node <login|enroll|run|status|local-call|workspace-add|workspace-list|workspace-enable|workspace-disable|workspace-permission|workspace-profile-set|workspace-profile-list|workspace-profile-remove|workspace-browser-allow|workspace-browser-list|workspace-browser-remove|workspace-remove|version> [flags]")
 }

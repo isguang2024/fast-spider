@@ -179,6 +179,88 @@ func TestScreenshotWindowCallDeadlineAndAuditPolicy(t *testing.T) {
 	}
 }
 
+func TestListMachinesLoadsCapabilitiesForOwnerBatch(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	st, err := store.Open(ctx, filepath.Join(dataDir, "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	service, err := New(st, registry.New(), Config{DataDir: dataDir, Version: "capability-batch-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrapToken, err := service.EnsureBootstrap(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := service.BootstrapAccount(ctx, bootstrapToken, "cap-owner", "Capability Owner", "correct horse battery staple", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	wanted := []struct {
+		name string
+		id   string
+	}{
+		{name: "Node A", id: "capability-a"},
+		{name: "Node B", id: "capability-b"},
+	}
+	for i, item := range wanted {
+		enrollment, err := service.CreateEnrollmentToken(ctx, account.OwnerID, item.name, "linux", "127.0.0.1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := service.Enroll(ctx, EnrollRequest{
+			EnrollmentToken: enrollment.EnrollmentToken,
+			IdempotencyKey:  "capability_batch_idempotency_" + string(rune('a'+i)),
+			DisplayName:     item.name,
+			OS:              "linux",
+			Arch:            "amd64",
+			NodeVersion:     "test",
+			PublicKey:       security.EncodePublicKey(publicKey),
+		}, "127.0.0.1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.MachineID == "" {
+			t.Fatalf("enrollment %s returned empty machine ID", item.name)
+		}
+		if err := st.ReplaceCapabilities(ctx, result.MachineID, []protocolv1.CapabilityDescriptor{{
+			CapabilityId: "file.read",
+			Version:      "1.0",
+			Actions:      []string{"read", "list"},
+		}}, time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	byMachine, err := st.CapabilitiesByOwner(ctx, account.OwnerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byMachine) != len(wanted) {
+		t.Fatalf("CapabilitiesByOwner returned %d machines, want %d: %+v", len(byMachine), len(wanted), byMachine)
+	}
+	machines, err := service.ListMachines(ctx, account.OwnerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(machines) != len(wanted) {
+		t.Fatalf("ListMachines returned %d machines, want %d: %+v", len(machines), len(wanted), machines)
+	}
+	for _, machine := range machines {
+		if len(machine.Capabilities) != 1 || machine.Capabilities[0].CapabilityId != "file.read" || len(machine.Capabilities[0].Actions) != 2 {
+			t.Fatalf("machine %s capabilities=%+v", machine.MachineID, machine.Capabilities)
+		}
+	}
+}
+
 func stringJSON(value any) string {
 	raw, _ := json.Marshal(value)
 	return string(raw)

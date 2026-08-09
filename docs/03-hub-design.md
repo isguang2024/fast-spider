@@ -43,40 +43,43 @@ Adapter 不得直接访问 `routing` 内部连接或数据库表，必须经过�
 
 ## 3. Node 注册与配对
 
-### 3.1 Enrollment Token
+### 3.1 浏览器登录与内部 Enrollment Token
 
-一次性配对码由已认证 Owner 创建：
+日常配对入口是 `fast-spider-node login --hub <hub>`。Node 本机生成 PKCE 和 loopback callback，浏览器跳转 Hub 登录/授权页；Owner 登录并允许“设备连接”后，Node 获得仅限 `fast-spider:device-connect` 的短期 OAuth Access Token。
+
+Hub 随后为该受限 OAuth 身份签发内部一次性 enrollment token：
 
 - 随机强度至少 128 bit。
-- 默认有效期 10 分钟。
-- 只允许使用一次。
+- 默认有效期 10 分钟且只允许使用一次。
 - 绑定 Owner、可选节点显示名和预期平台。
 - 数据库仅保存不可逆摘要。
-- 成功或失败达到限制后立即失效。
+- token 只在 Node 与 Hub 内部交换，不进入日常用户界面、复制粘贴流程或普通日志。
 
-Node 在本机生成设备密钥，配对请求包含公钥、Node 版本、OS、架构、随机 nonce 和 enrollment token。Hub 颁发设备身份凭据；MVP 可使用 Hub 签发的短期设备 Token + 长期设备公钥，后续可切换 mTLS 证书而不改变 machineId。
+Node 使用该 token 连同本机设备公钥、Node 版本、OS、架构和随机 nonce 完成 enrollment；成功后立即撤销临时 device-connect OAuth Authorization。后续持续连接只使用设备私钥和短期设备凭据，不依赖 OAuth/PAT。
 
 ### 3.2 注册时序图
 
 ```mermaid
 sequenceDiagram
-    participant O as Owner Web Console
+    participant U as Owner Browser
     participant H as Hub
     participant N as New Node
     participant DB as SQLite
 
-    O->>H: create enrollment token
+    N->>N: generate PKCE + device key pair
+    N-->>U: open Hub OAuth authorize URL
+    U->>H: login + approve device-connect
+    H-->>N: short-lived OAuth authorization code
+    N->>H: exchange PKCE code
+    H-->>N: device-connect access token
+    N->>H: create internal enrollment token
     H->>DB: store token digest + expiry
-    H-->>O: one-time pairing code
-    O->>N: enter/scan code locally
-    N->>N: generate device key pair
-    N->>H: enroll(code, publicKey, nonce, platform)
-    H->>DB: atomically consume token
-    H->>H: validate policy and rate limit
-    H->>DB: create machine + credential
+    H-->>N: one-time enrollment token
+    N->>H: enroll(token, publicKey, nonce, platform)
+    H->>DB: atomically consume token + create machine
     H-->>N: machineId + signed credential + Hub trust info
+    N->>H: revoke temporary OAuth authorization
     N->>H: WSS connect + device proof
-    H->>DB: verify active credential/not revoked
     H-->>N: protocol/capability negotiation
     N-->>H: ready + capability manifest
 ```
