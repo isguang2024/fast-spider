@@ -52,6 +52,11 @@ func TestCheckAndStageSignedNodeUpdate(t *testing.T) {
 		t.Fatalf("unexpected update status: %+v", status)
 	}
 	dataDir := t.TempDir()
+	for _, version := range []string{"0.1.8", "0.1.9", "0.2.1"} {
+		if err := os.MkdirAll(filepath.Join(dataDir, "updates", version), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	stagedStatus, artifactPath, err := nodeupdate.Stage(ctx, dataDir, hub.URL, security.EncodePublicKey(publicKey), "0.1.9", status)
 	if err != nil {
 		t.Fatal(err)
@@ -69,6 +74,55 @@ func TestCheckAndStageSignedNodeUpdate(t *testing.T) {
 	ready, readyPath, err := nodeupdate.Ready(dataDir, security.EncodePublicKey(publicKey), "0.1.9")
 	if err != nil || !ready.Ready || filepath.Clean(readyPath) != filepath.Clean(artifactPath) {
 		t.Fatalf("ready status=%+v path=%q err=%v", ready, readyPath, err)
+	}
+	for _, version := range []string{"0.1.8", "0.2.1"} {
+		if _, err := os.Stat(filepath.Join(dataDir, "updates", version)); !os.IsNotExist(err) {
+			t.Fatalf("stale staged version %s remains: %v", version, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "updates", "0.1.9")); err != nil {
+		t.Fatalf("current version staging directory was removed: %v", err)
+	}
+	ready, readyPath, err = nodeupdate.Ready(dataDir, security.EncodePublicKey(publicKey), "0.2.0")
+	if err != nil || ready.Ready || readyPath != "" {
+		t.Fatalf("stale ready marker status=%+v path=%q err=%v", ready, readyPath, err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "updates", "ready.json")); !os.IsNotExist(err) {
+		t.Fatalf("stale ready marker remains: %v", err)
+	}
+}
+
+func TestCleanupStaleNodeUpdatesKeepsCurrentAndFutureVersions(t *testing.T) {
+	dataDir := t.TempDir()
+	for _, version := range []string{"0.3.0", "0.3.4", "0.3.5"} {
+		path := filepath.Join(dataDir, "updates", version, "node.bin")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(version), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unknown := filepath.Join(dataDir, "updates", "manual", "keep.txt")
+	if err := os.MkdirAll(filepath.Dir(unknown), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unknown, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := nodeupdate.CleanupStale(dataDir, "0.3.4"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "updates", "0.3.0")); !os.IsNotExist(err) {
+		t.Fatalf("old Node update remains: %v", err)
+	}
+	for _, version := range []string{"0.3.4", "0.3.5"} {
+		if _, err := os.Stat(filepath.Join(dataDir, "updates", version, "node.bin")); err != nil {
+			t.Fatalf("kept Node update %s missing: %v", version, err)
+		}
+	}
+	if _, err := os.Stat(unknown); err != nil {
+		t.Fatalf("unknown update directory was removed: %v", err)
 	}
 }
 

@@ -37,6 +37,65 @@ type Status struct {
 
 func Platform() string { return runtime.GOOS + "-" + runtime.GOARCH }
 
+func CleanupStale(dataDir, currentVersion string) error {
+	updatesDir := filepath.Join(dataDir, "updates")
+	entries, err := os.ReadDir(updatesDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var cleanupErr error
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if _, err := releaseinfo.ParseVersion(entry.Name()); err != nil {
+			continue
+		}
+		comparison, err := releaseinfo.Compare(entry.Name(), currentVersion)
+		if err != nil || comparison >= 0 {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(updatesDir, entry.Name())); err != nil {
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
+	}
+	return cleanupErr
+}
+
+func cleanupStagedVersions(dataDir string, keepVersions ...string) error {
+	updatesDir := filepath.Join(dataDir, "updates")
+	entries, err := os.ReadDir(updatesDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	keep := make(map[string]struct{}, len(keepVersions))
+	for _, version := range keepVersions {
+		keep[strings.TrimSpace(version)] = struct{}{}
+	}
+	var cleanupErr error
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if _, ok := keep[entry.Name()]; ok {
+			continue
+		}
+		if _, err := releaseinfo.ParseVersion(entry.Name()); err != nil {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(updatesDir, entry.Name())); err != nil {
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
+	}
+	return cleanupErr
+}
+
 func Check(ctx context.Context, hubURL, encodedHubPublicKey, currentVersion string) (Status, error) {
 	platform := Platform()
 	manifest, err := FetchManifest(ctx, hubURL, encodedHubPublicKey, "/api/v1/node/releases/"+platform+"/latest", "node", "fast-spider-node", platform)
@@ -70,6 +129,9 @@ func Stage(ctx context.Context, dataDir, hubURL, encodedHubPublicKey, currentVer
 	}
 	if status.Manifest.SizeBytes > maxNodeBytes {
 		return status, "", errors.New("node update exceeds size limit")
+	}
+	if err := cleanupStagedVersions(dataDir, currentVersion, status.Manifest.Version); err != nil {
+		return status, "", fmt.Errorf("cleanup stale Node updates: %w", err)
 	}
 	dir := filepath.Join(dataDir, "updates", status.Manifest.Version)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -115,8 +177,12 @@ func Ready(dataDir, encodedHubPublicKey, currentVersion string) (Status, string,
 	}
 	artifact := filepath.Join(dataDir, "updates", manifest.Version, nodeFilename())
 	matches, err := fileMatchesManifest(artifact, manifest)
-	if err != nil || !matches || comparison >= 0 {
-		return Status{CurrentVersion: currentVersion, LatestVersion: manifest.Version, Available: comparison < 0, Platform: Platform()}, "", err
+	if comparison >= 0 {
+		_ = os.Remove(filepath.Join(dataDir, "updates", "ready.json"))
+		return Status{CurrentVersion: currentVersion, LatestVersion: manifest.Version, Available: false, Platform: Platform()}, "", err
+	}
+	if err != nil || !matches {
+		return Status{CurrentVersion: currentVersion, LatestVersion: manifest.Version, Available: true, Platform: Platform()}, "", err
 	}
 	return Status{CurrentVersion: currentVersion, LatestVersion: manifest.Version, Available: true, Ready: true, Platform: Platform(), SizeBytes: manifest.SizeBytes, Manifest: manifest}, artifact, nil
 }

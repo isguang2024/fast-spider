@@ -31,6 +31,80 @@ type Installed struct {
 
 func Root(dataDir string) string { return filepath.Join(dataDir, "components") }
 
+func CleanupConfigured(dataDir, componentID, componentPath string) error {
+	componentID = strings.TrimSpace(componentID)
+	componentPath = strings.TrimSpace(componentPath)
+	if !validID(componentID) || componentPath == "" {
+		return nil
+	}
+	managedRoot, err := filepath.Abs(filepath.Join(Root(dataDir), componentID))
+	if err != nil {
+		return err
+	}
+	configuredPath, err := filepath.Abs(componentPath)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(managedRoot, configuredPath)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || strings.Contains(rel, string(filepath.Separator)) {
+		return nil
+	}
+	raw, err := os.ReadFile(filepath.Join(configuredPath, ".fast-spider-component.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var manifest releaseinfo.Manifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return err
+	}
+	if manifest.Kind != "component" || manifest.ID != componentID || manifest.Version != rel || strings.TrimSpace(manifest.Platform) == "" {
+		return nil
+	}
+	return CleanupInstalled(dataDir, Installed{ID: manifest.ID, Platform: manifest.Platform, Version: manifest.Version, Path: configuredPath})
+}
+
+func CleanupInstalled(dataDir string, installed Installed) error {
+	if !validID(installed.ID) || strings.TrimSpace(installed.Version) == "" || strings.TrimSpace(installed.Platform) == "" {
+		return errors.New("installed component metadata is invalid")
+	}
+	var cleanupErr error
+	cacheDir := filepath.Join(dataDir, "cache", "components")
+	if entries, err := os.ReadDir(cacheDir); err == nil {
+		prefix := installed.ID + "-" + installed.Platform + "-"
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) || !strings.HasSuffix(entry.Name(), ".zip") {
+				continue
+			}
+			if err := os.Remove(filepath.Join(cacheDir, entry.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+				cleanupErr = errors.Join(cleanupErr, err)
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		cleanupErr = errors.Join(cleanupErr, err)
+	}
+
+	componentRoot := filepath.Join(Root(dataDir), installed.ID)
+	if entries, err := os.ReadDir(componentRoot); err == nil {
+		for _, entry := range entries {
+			if entry.Name() == installed.Version {
+				continue
+			}
+			path := filepath.Join(componentRoot, entry.Name())
+			if entry.IsDir() || strings.HasSuffix(entry.Name(), ".tmp") {
+				if err := os.RemoveAll(path); err != nil {
+					cleanupErr = errors.Join(cleanupErr, err)
+				}
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		cleanupErr = errors.Join(cleanupErr, err)
+	}
+	return cleanupErr
+}
+
 func Ensure(ctx context.Context, dataDir, hubURL, encodedHubPublicKey, componentID string) (Installed, error) {
 	componentID = strings.TrimSpace(componentID)
 	if !validID(componentID) {

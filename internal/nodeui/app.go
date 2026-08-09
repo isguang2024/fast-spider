@@ -21,6 +21,7 @@ import (
 	"github.com/isguang2024/fast-spider/internal/localbridge"
 	"github.com/isguang2024/fast-spider/internal/node"
 	"github.com/isguang2024/fast-spider/internal/nodeinstance"
+	"github.com/isguang2024/fast-spider/internal/nodeupdate"
 	"github.com/isguang2024/fast-spider/internal/security"
 )
 
@@ -158,6 +159,15 @@ func (a *App) Run(ctx context.Context) error {
 		a.opts.Logger.Warn("apply staged update on startup failed", "error", err)
 	} else if applied {
 		return nil
+	}
+	if err := nodeupdate.CleanupStale(a.opts.DataDir, a.opts.Version); err != nil {
+		a.opts.Logger.Warn("cleanup stale Node updates failed", "error", err)
+	}
+	a.mu.Lock()
+	browserSidecarDir := a.config.BrowserSidecarDir
+	a.mu.Unlock()
+	if err := componentmgr.CleanupConfigured(a.opts.DataDir, "browser", browserSidecarDir); err != nil {
+		a.opts.Logger.Warn("cleanup configured Browser component failed", "error", err)
 	}
 
 	listener, err := net.Listen("tcp", defaultListenAddress)
@@ -450,6 +460,9 @@ func (a *App) handleComponentEnsure(w http.ResponseWriter, r *http.Request) {
 		a.config = next
 		a.mu.Unlock()
 		a.restartRuntime()
+	}
+	if err := componentmgr.CleanupInstalled(a.opts.DataDir, installed); err != nil {
+		a.opts.Logger.Warn("cleanup installed component files failed", "componentId", installed.ID, "version", installed.Version, "error", err)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"component": installed, "status": a.snapshot()})
 }
