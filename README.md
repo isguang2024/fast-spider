@@ -108,7 +108,7 @@ go run ./cmd/spiderctl setup-url \
 # 在浏览器打开输出的 /setup#code=... 链接；完成后进入 /app 后台。
 
 # 3. 在 /app 后台生成一个连接令牌，然后直接打开 Node 本地客户端界面。
-# Windows 双击 fast-spider-node.exe 即可；源码运行可执行：
+# Windows 双击 fast-spider-node.exe 即可；首次运行会把正式副本收口到 %LOCALAPPDATA%\FastSpider\bin；源码运行可执行：
 go run ./cmd/node ui
 # 在“连接”页填写 Hub 地址、连接令牌和设备名称。连接令牌不绑定某台设备，
 # 可在有效期内给同一账户下多台 Node 重复使用；Node 登记成功后不会保存令牌。
@@ -149,6 +149,9 @@ go run ./cmd/node workspace-add \
 #
 # Node 本地客户端会在登记成功后自动进入运行状态，关闭 UI 窗口也可继续常驻；
 # 再次双击会重新打开已有本地界面。Local Bridge 默认启用，可在“本地配置”页关闭。
+# Windows 可在“本地配置”开启登录后自动启动；同一个 EXE 以后台模式启动，不增加 Windows Service。
+# “版本与扩展组件”支持手动检查/升级；自动更新开启后后台下载已签名的新 EXE，并在下次干净启动时自动替换。
+# 大型能力使用 <data-dir>/components/<id>/<version> 按需安装，下载缓存位于 <data-dir>/cache，不打进主 EXE。
 # Codex AI 能力直接探测本机 codex CLI；无需单独启动 daemon/agent-service。
 # 高级/无界面运行仍可使用：
 go run ./cmd/node run --allow-insecure --browser-sidecar-dir ./sidecar/browser

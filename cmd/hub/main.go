@@ -25,6 +25,7 @@ import (
 func main() {
 	listen := flag.String("listen", "127.0.0.1:8787", "Hub HTTP listen address; production should stay on loopback behind TLS reverse proxy")
 	dataDir := flag.String("data-dir", "./data", "Hub data directory")
+	releaseDir := flag.String("release-dir", "", "signed Node/component release directory; defaults to <data-dir>-releases")
 	allowedHosts := flag.String("allowed-hosts", "localhost,127.0.0.1", "comma-separated Host allowlist; use the public Hub hostname in production")
 	publicBaseURL := flag.String("public-base-url", "", "public Hub base URL used for MCP OAuth discovery, for example https://sharedservices.example/fast-spider")
 	oauthRedirectHosts := flag.String("oauth-redirect-hosts", "chatgpt.com,localhost,127.0.0.1,::1", "comma-separated OAuth redirect host allowlist")
@@ -48,6 +49,13 @@ func main() {
 	if err != nil {
 		fatal(logger, "resolve data directory", err)
 	}
+	absoluteReleaseDir := strings.TrimSpace(*releaseDir)
+	if absoluteReleaseDir != "" {
+		absoluteReleaseDir, err = filepath.Abs(absoluteReleaseDir)
+		if err != nil {
+			fatal(logger, "resolve release directory", err)
+		}
+	}
 	databasePath := filepath.Join(absoluteDataDir, "hub.db")
 	st, err := store.Open(ctx, databasePath)
 	if err != nil {
@@ -55,7 +63,7 @@ func main() {
 	}
 	defer st.Close()
 
-	service, err := core.New(st, registry.New(), core.Config{DataDir: absoluteDataDir, Version: version.Version})
+	service, err := core.New(st, registry.New(), core.Config{DataDir: absoluteDataDir, ReleaseDir: absoluteReleaseDir, Version: version.Version})
 	if err != nil {
 		fatal(logger, "initialize hub core", err)
 	}
@@ -85,7 +93,7 @@ func main() {
 		}
 	}()
 
-	logger.Info("fast spider hub starting", "version", version.Version, "listen", *listen, "dataDir", absoluteDataDir, "hubFingerprint", service.HubFingerprint())
+	logger.Info("fast spider hub starting", "version", version.Version, "listen", *listen, "dataDir", absoluteDataDir, "releaseDir", service.ReleaseDir(), "hubFingerprint", service.HubFingerprint())
 	if err := hub.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fatal(logger, "hub server failed", err)
 	}

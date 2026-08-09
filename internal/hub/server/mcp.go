@@ -175,6 +175,7 @@ type genericCapabilityOutput struct {
 type mcpMachine struct {
 	MachineID            string                            `json:"machineId"`
 	DisplayName          string                            `json:"displayName"`
+	AdminNote            string                            `json:"adminNote,omitempty"`
 	Status               string                            `json:"status"`
 	Online               bool                              `json:"online"`
 	RuntimeStatus        string                            `json:"runtimeStatus,omitempty"`
@@ -633,6 +634,7 @@ func toMCPMachine(machine core.MachineView) mcpMachine {
 	out := mcpMachine{
 		MachineID:            machine.MachineID,
 		DisplayName:          machine.DisplayName,
+		AdminNote:            machine.AdminNote,
 		Status:               machine.Status,
 		Online:               machine.Online,
 		RuntimeStatus:        machine.RuntimeStatus,

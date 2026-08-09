@@ -102,7 +102,8 @@ Node 连接令牌：id、owner_id、token_hash、label、created_at、last_used_
 |---|---|
 | id | machineId |
 | organization_id | 所有者边界 |
-| display_name | 人类名称 |
+| display_name | 客户端自己设置并在连接时上报的设备名称 |
+| admin_note | Hub 管理员独立备注；不反写客户端，可空 |
 | status | active/revoked/disabled |
 | os/arch | 最近上报平台 |
 | node_version | 最近版本 |
@@ -330,7 +331,7 @@ recoveryId、workspaceId、original relative path、internal storage path、hash
 
 ### 12.8 运维状态
 
-当前 Phase 7 不建立 `update_state` 表。版本来自正在运行的二进制；备份 manifest 保存在备份 ZIP 内；升级与回退由 Owner 明确执行。只有以后真正加入自动更新时，才根据实际流程决定是否需要最小持久状态。
+当前仍不建立 Hub `update_state` 表。版本来自正在运行的二进制；备份 manifest 保存在备份 ZIP 内。Windows Node 的自动更新偏好、已准备 release manifest 和下载文件只保存在该 Node 的本地 `config.json` / `updates/`，不写入 Hub 数据库；组件也只落在该 Node 的本地 `components/`。
 
 ## 13. 事务边界
 

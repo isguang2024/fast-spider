@@ -490,7 +490,15 @@ func TestWebRevokedObjectsCanBeDeleted(t *testing.T) {
 	}
 	client.Jar.SetCookies(hubURL, []*http.Cookie{{Name: "fast_spider_session", Value: session.Token, Path: "/"}})
 
-	status, _, body := webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/machines/"+state.MachineID+"/delete", url.Values{"csrf_token": {session.CSRFToken}})
+	status, _, body := webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/machines/"+state.MachineID+"/note", url.Values{"csrf_token": {session.CSRFToken}, "admin_note": {"Office primary"}})
+	if status != http.StatusSeeOther {
+		t.Fatalf("machine admin note status=%d body=%s", status, body)
+	}
+	machinesBeforeRevoke, err := service.ListMachines(ctx, account.OwnerID)
+	if err != nil || len(machinesBeforeRevoke) != 1 || machinesBeforeRevoke[0].AdminNote != "Office primary" || machinesBeforeRevoke[0].DisplayName != "delete-me-machine" {
+		t.Fatalf("machine admin note did not stay independent from client name: machines=%+v err=%v", machinesBeforeRevoke, err)
+	}
+	status, _, body = webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/machines/"+state.MachineID+"/delete", url.Values{"csrf_token": {session.CSRFToken}})
 	if status != http.StatusBadRequest {
 		t.Fatalf("active machine delete status=%d body=%s", status, body)
 	}

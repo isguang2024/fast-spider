@@ -50,6 +50,21 @@ func TestLocalConfigIsPrivateAndRoundTrips(t *testing.T) {
 	}
 }
 
+func TestLocalConfigV1LoadsIntoV2WithoutLosingExistingSettings(t *testing.T) {
+	dataDir := t.TempDir()
+	legacy := `{"version":1,"hubUrl":"https://hub.example","machineName":"Legacy Node","browserSidecarDir":"C:/browser","localBridgeEnabled":true,"allowInsecureLocalHub":false}`
+	if err := os.WriteFile(filepath.Join(dataDir, "config.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadLocalConfig(dataDir, "fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Version != localConfigVersion || cfg.MachineName != "Legacy Node" || cfg.HubURL != "https://hub.example" || !cfg.LocalBridgeEnabled || cfg.AutoStartEnabled || cfg.AutoUpdateEnabled {
+		t.Fatalf("legacy config migration mismatch: %+v", cfg)
+	}
+}
+
 func TestLocalUIAPIRequiresUISecretAndReportsConnectionModel(t *testing.T) {
 	app, err := New(Options{DataDir: t.TempDir(), Version: "ui-test", MachineName: "Test Node", Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {

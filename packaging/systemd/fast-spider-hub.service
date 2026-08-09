@@ -12,9 +12,10 @@ StateDirectoryMode=0700
 WorkingDirectory=/var/lib/fast-spider
 Environment=FAST_SPIDER_ALLOWED_HOSTS=localhost,127.0.0.1
 Environment=FAST_SPIDER_PUBLIC_BASE_URL=http://127.0.0.1:8787
+Environment=FAST_SPIDER_RELEASE_DIR=/var/lib/fast-spider-releases
 Environment=FAST_SPIDER_OAUTH_REDIRECT_HOSTS=chatgpt.com,localhost,127.0.0.1,::1
 EnvironmentFile=-/etc/fast-spider/hub.env
-ExecStart=/usr/local/bin/fast-spider-hub --listen 127.0.0.1:8787 --data-dir /var/lib/fast-spider --allowed-hosts ${FAST_SPIDER_ALLOWED_HOSTS} --public-base-url ${FAST_SPIDER_PUBLIC_BASE_URL} --oauth-redirect-hosts ${FAST_SPIDER_OAUTH_REDIRECT_HOSTS}
+ExecStart=/usr/local/bin/fast-spider-hub --listen 127.0.0.1:8787 --data-dir /var/lib/fast-spider --release-dir ${FAST_SPIDER_RELEASE_DIR} --allowed-hosts ${FAST_SPIDER_ALLOWED_HOSTS} --public-base-url ${FAST_SPIDER_PUBLIC_BASE_URL} --oauth-redirect-hosts ${FAST_SPIDER_OAUTH_REDIRECT_HOSTS}
 Restart=on-failure
 RestartSec=2s
 TimeoutStopSec=30s

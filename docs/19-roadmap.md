@@ -7,7 +7,7 @@
 - 每个 Phase 都必须有可演示闭环、拒绝路径、资源上限和回滚方案。
 - 不为未来规模提前引入微服务、Kubernetes、Redis、NATS、Kafka、S3 或长期双写。
 - 公开 Contract、状态机和权限语义先于 Adapter/界面。
-- 浏览器、截图、Local Bridge 在核心链路稳定后进入；自动更新不作为当前 MVP 既定阶段。
+- 浏览器、截图、Local Bridge 在核心链路稳定后进入；自动更新最初后置，现已在真实 Windows 客户端需求出现后按“单 EXE + Hub 签名 manifest”轻量落地。
 - 一个阶段未达到安全门禁，不用“后面再补”进入正式发布。
 
 ## 2. 阶段总览
@@ -107,7 +107,7 @@
 
 - Workspace、文件、Shell、Git。
 - 浏览器、Local Bridge、Agent。
-- 多实例 Hub、团队 RBAC、自动更新。自动更新只有真实需求出现时再单独立项，不阻塞当前路线。
+- Phase 1 当时不做多实例 Hub、团队 RBAC、自动更新；Windows Node 自更新是在核心链路稳定后的后续需求中单独落地。
 
 ### 依赖
 
@@ -424,8 +424,8 @@ Workspace 默认只读，可整体关闭 `file.system`/`code.search`。Node 保�
 ### 非目标
 
 - Windows 安装包、托盘 UI、SYSTEM service。
-- 自动更新下载/安装和自动提权。
-- Release Key/Root Key/签名 manifest 状态机。
+- 独立常驻 updater 服务和自动提权。
+- Release Key/Root Key 轮换状态机（当前 Node 更新复用 Hub Ed25519 签名 manifest）。
 - Recovery Mode 常驻恢复器。
 - 多版本 `current/previous` 进程管理。
 - Kubernetes/多实例无停机升级。
@@ -449,7 +449,7 @@ Workspace 默认只读，可整体关闭 `file.system`/`code.search`。Node 保�
 - Restore 只接受不存在或空目录，并以临时目录完成后再发布。
 - 恢复后的 DB/secrets/Artifact 与源数据一致。
 - Hub/Node/spiderctl 都能查询版本。
-- 正式运行仍只有一个 Hub 和每机一个 Node，不增加 updater/helper/daemon。
+- 正式运行仍只有一个 Hub 和每机一个 Node；升级时允许下载好的同一个新版 EXE 短暂承担替换动作，但不增加常驻 updater/helper/daemon。
 - Windows/Linux build 与 Phase 1–6 全量测试继续通过。
 
 ### 可演示场景
@@ -482,7 +482,7 @@ Workspace 默认只读，可整体关闭 `file.system`/`code.search`。Node 保�
 - 自动联网安装 `govulncheck`、SBOM、secret scanner 等工具。
 - 24–72 小时固定 soak、50 Node 压测或大规模 SaaS 场景。
 - 为当前 Windows/386 工具链强行改代码以运行 race/random fuzz。
-- 发布签名、自动更新或安装器体系。
+- 独立 Release Key/Root Key、Authenticode 或复杂安装器体系。
 
 ### 依赖
 
@@ -505,7 +505,7 @@ Workspace 默认只读，可整体关闭 `file.system`/`code.search`。Node 保�
 - Windows amd64/Linux amd64 构建通过。
 - 无未解决 P0/P1；关键输入边界无 panic/路径静默改写。
 - 恢复、Local Bridge、Browser、Codex 和完整产品 smoke 继续通过。
-- 文档与当前个人模式实现一致，不把自动更新、Local Client Grant、desktop-owned 等未来能力写成当前事实。
+- 文档与当前个人模式实现一致：Windows Node 的轻量自更新是当前事实；Local Client Grant、desktop-owned、独立 Release Key 等仍不得写成已实现。
 
 ### 可演示场景
 

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/isguang2024/fast-spider/internal/agent"
+	"github.com/isguang2024/fast-spider/internal/componentmgr"
 	"github.com/isguang2024/fast-spider/internal/localbridge"
 	"github.com/isguang2024/fast-spider/internal/node"
 	"github.com/isguang2024/fast-spider/internal/nodeinstance"
@@ -29,25 +30,29 @@ const (
 )
 
 type Options struct {
-	DataDir     string
-	Version     string
-	MachineName string
-	Logger      *slog.Logger
+	DataDir      string
+	Version      string
+	MachineName  string
+	NoOpenWindow bool
+	Logger       *slog.Logger
 }
 
 type App struct {
 	opts Options
 
-	mu            sync.Mutex
-	ctx           context.Context
-	cancel        context.CancelFunc
-	config        LocalConfig
-	uiToken       string
-	runtimeCancel context.CancelFunc
-	runtimeDone   chan struct{}
-	runtimeOwned  bool
-	runtimeStatus string
-	runtimeError  string
+	mu             sync.Mutex
+	ctx            context.Context
+	cancel         context.CancelFunc
+	config         LocalConfig
+	uiToken        string
+	runtimeCancel  context.CancelFunc
+	runtimeDone    chan struct{}
+	runtimeOwned   bool
+	runtimeStatus  string
+	runtimeError   string
+	updateStatus   updateStatusResponse
+	updateArtifact string
+	updateRunning  bool
 }
 
 type statusResponse struct {
@@ -64,6 +69,10 @@ type statusResponse struct {
 	RuntimeOwned         bool                         `json:"runtimeOwned"`
 	RuntimeStatus        string                       `json:"runtimeStatus"`
 	RuntimeError         string                       `json:"runtimeError,omitempty"`
+	AutoStartSupported   bool                         `json:"autoStartSupported"`
+	AutoStartEnabled     bool                         `json:"autoStartEnabled"`
+	ComponentRoot        string                       `json:"componentRoot"`
+	Update               updateStatusResponse         `json:"update"`
 	Config               LocalConfig                  `json:"config"`
 	Workspaces           []node.LocalWorkspaceSummary `json:"workspaces"`
 }
@@ -79,12 +88,18 @@ type configRequest struct {
 	MachineName           string `json:"machineName"`
 	BrowserSidecarDir     string `json:"browserSidecarDir"`
 	LocalBridgeEnabled    bool   `json:"localBridgeEnabled"`
+	AutoStartEnabled      bool   `json:"autoStartEnabled"`
+	AutoUpdateEnabled     bool   `json:"autoUpdateEnabled"`
 	AllowInsecureLocalHub bool   `json:"allowInsecureLocalHub"`
 }
 
 type workspaceAddRequest struct {
 	Path string `json:"path"`
 	Name string `json:"name"`
+}
+
+type componentEnsureRequest struct {
+	ComponentID string `json:"componentId"`
 }
 
 type workspaceActionRequest struct {
@@ -119,6 +134,14 @@ func New(opts Options) (*App, error) {
 }
 
 func (a *App) Run(ctx context.Context) error {
+	a.mu.Lock()
+	autoStart := a.config.AutoStartEnabled
+	a.mu.Unlock()
+	if autoStart && autostartSupported() {
+		if err := setAutostart(true, a.opts.DataDir); err != nil {
+			a.opts.Logger.Warn("refresh Windows autostart failed", "error", err)
+		}
+	}
 	runCtx, runCancel := context.WithCancel(ctx)
 	defer runCancel()
 	listener, err := net.Listen("tcp", defaultListenAddress)
@@ -136,6 +159,11 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	if lease != nil {
 		defer lease.Close()
+		if applied, err := a.applyReadyUpdateOnStartup(); err != nil {
+			a.opts.Logger.Warn("apply staged update on startup failed", "error", err)
+		} else if applied {
+			return nil
+		}
 	}
 
 	a.mu.Lock()
@@ -169,9 +197,12 @@ func (a *App) Run(ctx context.Context) error {
 	}()
 
 	uiURL := "http://" + defaultListenAddress + "/"
-	if err := openLocalUI(uiURL); err != nil {
-		a.opts.Logger.Warn("open local Node UI failed", "url", uiURL, "error", err)
+	if !a.opts.NoOpenWindow {
+		if err := openLocalUI(uiURL); err != nil {
+			a.opts.Logger.Warn("open local Node UI failed", "url", uiURL, "error", err)
+		}
 	}
+	go a.autoUpdateLoop(runCtx)
 
 	select {
 	case <-runCtx.Done():
@@ -200,6 +231,9 @@ func (a *App) handler() http.Handler {
 	mux.HandleFunc("GET /api/status", a.apiOnly(a.handleStatus))
 	mux.HandleFunc("POST /api/connect", a.apiOnly(a.handleConnect))
 	mux.HandleFunc("POST /api/config", a.apiOnly(a.handleConfig))
+	mux.HandleFunc("POST /api/update/check", a.apiOnly(a.handleUpdateCheck))
+	mux.HandleFunc("POST /api/update/install", a.apiOnly(a.handleUpdateInstall))
+	mux.HandleFunc("POST /api/components/ensure", a.apiOnly(a.handleComponentEnsure))
 	mux.HandleFunc("POST /api/exit", a.apiOnly(a.handleExit))
 	mux.HandleFunc("POST /api/workspaces", a.apiOnly(a.handleWorkspaceAdd))
 	mux.HandleFunc("POST /api/workspaces/action", a.apiOnly(a.handleWorkspaceAction))
@@ -325,25 +359,68 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		MachineName:           strings.TrimSpace(req.MachineName),
 		BrowserSidecarDir:     strings.TrimSpace(req.BrowserSidecarDir),
 		LocalBridgeEnabled:    req.LocalBridgeEnabled,
+		AutoStartEnabled:      req.AutoStartEnabled,
+		AutoUpdateEnabled:     req.AutoUpdateEnabled,
 		AllowInsecureLocalHub: req.AllowInsecureLocalHub,
 	}
 	if next.MachineName == "" {
 		writeAPIError(w, http.StatusBadRequest, errors.New("设备名称不能为空"))
 		return
 	}
+	a.mu.Lock()
+	old := a.config
+	a.mu.Unlock()
+	if !autostartSupported() && next.AutoStartEnabled {
+		writeAPIError(w, http.StatusBadRequest, errors.New("当前系统暂不支持开机自动启动"))
+		return
+	}
+	if err := setAutostart(next.AutoStartEnabled, a.opts.DataDir); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err)
+		return
+	}
 	if err := saveLocalConfig(a.opts.DataDir, next); err != nil {
+		_ = setAutostart(old.AutoStartEnabled, a.opts.DataDir)
 		writeAPIError(w, http.StatusBadRequest, err)
 		return
 	}
 
 	a.mu.Lock()
-	old := a.config
 	a.config = next
 	a.mu.Unlock()
-	if old.BrowserSidecarDir != next.BrowserSidecarDir || old.LocalBridgeEnabled != next.LocalBridgeEnabled || old.AllowInsecureLocalHub != next.AllowInsecureLocalHub {
+	if old.BrowserSidecarDir != next.BrowserSidecarDir || old.LocalBridgeEnabled != next.LocalBridgeEnabled || old.AllowInsecureLocalHub != next.AllowInsecureLocalHub || old.MachineName != next.MachineName {
 		a.restartRuntime()
 	}
+	if !old.AutoUpdateEnabled && next.AutoUpdateEnabled {
+		if _, err := node.LoadState(filepath.Join(a.opts.DataDir, "state.json")); err == nil {
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+				defer cancel()
+				_ = a.refreshUpdate(ctx, true)
+			}()
+		}
+	}
 	writeJSON(w, http.StatusOK, a.snapshot())
+}
+
+func (a *App) handleComponentEnsure(w http.ResponseWriter, r *http.Request) {
+	var req componentEnsureRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err)
+		return
+	}
+	state, err := node.LoadState(filepath.Join(a.opts.DataDir, "state.json"))
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, errors.New("请先连接并登记设备"))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+	defer cancel()
+	installed, err := componentmgr.Ensure(ctx, a.opts.DataDir, state.HubURL, state.HubPublicKey, req.ComponentID)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"component": installed, "status": a.snapshot()})
 }
 
 func (a *App) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
@@ -407,6 +484,7 @@ func (a *App) snapshot() statusResponse {
 	runtimeError := a.runtimeError
 	a.mu.Unlock()
 
+	autoStartEnabled, _ := autostartEnabled(a.opts.DataDir)
 	response := statusResponse{
 		Version:              a.opts.Version,
 		DataDir:              a.opts.DataDir,
@@ -417,6 +495,10 @@ func (a *App) snapshot() statusResponse {
 		RuntimeOwned:         runtimeOwned,
 		RuntimeStatus:        runtimeStatus,
 		RuntimeError:         runtimeError,
+		AutoStartSupported:   autostartSupported(),
+		AutoStartEnabled:     autoStartEnabled,
+		ComponentRoot:        filepath.Join(a.opts.DataDir, "components"),
+		Update:               a.updateSnapshot(),
 		Config:               cfg,
 	}
 	state, err := node.LoadState(filepath.Join(a.opts.DataDir, "state.json"))
@@ -470,6 +552,7 @@ func (a *App) startRuntime() {
 		client, err := node.New(node.Config{
 			DataDir:           a.opts.DataDir,
 			Version:           a.opts.Version,
+			DisplayName:       cfg.MachineName,
 			AllowInsecure:     cfg.AllowInsecureLocalHub,
 			BrowserSidecarDir: cfg.BrowserSidecarDir,
 			Agent:             agentController,

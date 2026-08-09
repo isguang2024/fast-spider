@@ -31,6 +31,7 @@ type ClientHello struct {
 	Arch               string                 `json:"arch"`
 	Capabilities       []CapabilityDescriptor `json:"capabilities"`
 	ChallengeSignature string                 `json:"challengeSignature"`
+	DisplayName        string                 `json:"displayName,omitempty"`
 	MachineId          string                 `json:"machineId"`
 	MessageType        string                 `json:"messageType"`
 	NodeVersion        string                 `json:"nodeVersion"`
@@ -54,6 +55,7 @@ type Heartbeat struct {
 }
 
 type Machine struct {
+	AdminNote    string                 `json:"adminNote,omitempty"`
 	Arch         string                 `json:"arch"`
 	Capabilities []CapabilityDescriptor `json:"capabilities,omitempty"`
 	DisplayName  string                 `json:"displayName"`

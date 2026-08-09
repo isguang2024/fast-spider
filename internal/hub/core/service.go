@@ -27,8 +27,9 @@ const (
 )
 
 type Config struct {
-	DataDir string
-	Version string
+	DataDir    string
+	ReleaseDir string
+	Version    string
 }
 
 type Service struct {
@@ -38,6 +39,7 @@ type Service struct {
 	hubPrivate     ed25519.PrivateKey
 	hubFingerprint string
 	dataDir        string
+	releaseDir     string
 	version        string
 	now            func() time.Time
 }
@@ -81,6 +83,7 @@ func (e *CapabilityCallError) Error() string { return e.Code + ": " + e.Message 
 type MachineView struct {
 	MachineID            string                            `json:"machineId"`
 	DisplayName          string                            `json:"displayName"`
+	AdminNote            string                            `json:"adminNote,omitempty"`
 	Status               string                            `json:"status"`
 	Online               bool                              `json:"online"`
 	RuntimeStatus        string                            `json:"runtimeStatus,omitempty"`
@@ -102,6 +105,10 @@ func New(st *store.Store, reg *registry.Registry, cfg Config) (*Service, error) 
 	if err != nil {
 		return nil, err
 	}
+	releaseDir := strings.TrimSpace(cfg.ReleaseDir)
+	if releaseDir == "" {
+		releaseDir = cfg.DataDir + "-releases"
+	}
 	return &Service{
 		store:          st,
 		registry:       reg,
@@ -109,6 +116,7 @@ func New(st *store.Store, reg *registry.Registry, cfg Config) (*Service, error) 
 		hubPrivate:     priv,
 		hubFingerprint: security.Fingerprint(pub),
 		dataDir:        cfg.DataDir,
+		releaseDir:     releaseDir,
 		version:        cfg.Version,
 		now:            time.Now,
 	}, nil
@@ -121,6 +129,7 @@ func (s *Service) Version() string                   { return s.version }
 func (s *Service) Registry() *registry.Registry      { return s.registry }
 func (s *Service) Store() *store.Store               { return s.store }
 func (s *Service) DataDir() string                   { return s.dataDir }
+func (s *Service) ReleaseDir() string                { return s.releaseDir }
 
 func (s *Service) EnsureBootstrap(ctx context.Context) (string, error) {
 	hasOwnerAccount, err := s.store.HasOwnerAccount(ctx)
@@ -288,7 +297,7 @@ func (s *Service) machineView(ctx context.Context, rec store.MachineRecord) (Mac
 
 func (s *Service) machineViewWithCapabilities(rec store.MachineRecord, capabilities []protocolv1.CapabilityDescriptor) MachineView {
 	view := MachineView{
-		MachineID: rec.ID, DisplayName: rec.DisplayName, Status: rec.Status,
+		MachineID: rec.ID, DisplayName: rec.DisplayName, AdminNote: rec.AdminNote, Status: rec.Status,
 		OS: rec.OS, Arch: rec.Arch, NodeVersion: rec.NodeVersion,
 		Generation: rec.LastConnectionGeneration, LastSeenAt: rec.LastSeenAt,
 		RegistrationMode: "connection_token", ConfigurationScope: "local_node",
@@ -313,6 +322,19 @@ func (s *Service) RevokeMachine(ctx context.Context, ownerID, machineID, remoteA
 	}
 	s.registry.CloseMachine(ctx, machineID, "MACHINE_REVOKED", "machine was revoked by owner")
 	_ = s.audit(ctx, store.AuditEntry{OwnerID: ownerID, MachineID: machineID, ActorType: "owner", ActorID: ownerID, Action: "machine.revoke", Result: "success", RemoteAddr: remoteAddr, CreatedAt: now})
+	return nil
+}
+
+func (s *Service) UpdateMachineAdminNote(ctx context.Context, ownerID, machineID, adminNote, remoteAddr string) error {
+	adminNote = strings.TrimSpace(adminNote)
+	if len([]byte(adminNote)) > 128 {
+		return store.ErrConflict
+	}
+	now := s.now().UTC()
+	if err := s.store.UpdateMachineAdminNote(ctx, ownerID, machineID, adminNote, now); err != nil {
+		return err
+	}
+	_ = s.audit(ctx, store.AuditEntry{OwnerID: ownerID, MachineID: machineID, ActorType: "owner", ActorID: ownerID, Action: "machine.admin_note.update", Result: "success", RemoteAddr: remoteAddr, CreatedAt: now})
 	return nil
 }
 

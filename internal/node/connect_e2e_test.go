@@ -59,6 +59,46 @@ func TestNodeConnectUsesConnectionTokenWithoutOAuth(t *testing.T) {
 	}
 }
 
+func TestNodeRuntimeCanUpdateClientDisplayNameWithoutReregistering(t *testing.T) {
+	fixture := newNodeConnectFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	token, err := fixture.service.CreateConnectionToken(ctx, fixture.account.OwnerID, "Rename", time.Hour, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodeClient, err := node.New(node.Config{DataDir: t.TempDir(), Version: "rename-test", DisplayName: "Client Renamed", AllowInsecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := nodeClient.Connect(ctx, fixture.httpServer.URL, token.Token, "Original Client Name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, stop := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- nodeClient.Run(runCtx) }()
+	defer func() {
+		stop()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Error("renamed node did not stop")
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		machines, listErr := fixture.service.ListMachines(ctx, fixture.account.OwnerID)
+		if listErr == nil && len(machines) == 1 && machines[0].MachineID == state.MachineID && machines[0].DisplayName == "Client Renamed" {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	machines, _ := fixture.service.ListMachines(ctx, fixture.account.OwnerID)
+	t.Fatalf("client display name was not updated through runtime hello: %+v", machines)
+}
+
 func TestConnectionTokenCanRegisterMultipleIndependentNodes(t *testing.T) {
 	fixture := newNodeConnectFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

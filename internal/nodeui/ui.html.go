@@ -38,7 +38,7 @@ const localUIHTML = `<!doctype html>
               <div class="grid">
                 <label class="field full"><span>Hub 地址</span><input id="connect-hub" type="url" maxlength="2048" placeholder="https://sharedservices.example.com/fast-spider" required></label>
                 <label class="field full"><span>连接密钥</span><div class="secret-row"><input id="connect-token" type="password" maxlength="256" autocomplete="off" placeholder="ctk_..." required><button id="toggle-token" class="secondary" type="button">显示</button></div></label>
-                <label class="field full"><span>设备名称</span><input id="connect-name" maxlength="128" required></label>
+                <label class="field full"><span>客户端名称</span><input id="connect-name" maxlength="128" required></label>
               </div>
               <div class="actions"><button class="primary" type="submit">连接</button><span class="hint">成功后改用本机设备密钥持续连接，不再需要连接密钥。</span></div>
             </form>
@@ -65,13 +65,26 @@ const localUIHTML = `<!doctype html>
             <form id="config-form">
               <div class="grid">
                 <label class="field full"><span>默认 Hub 地址（连接/重新登记时使用）</span><input id="config-hub" type="url" maxlength="2048"></label>
-                <label class="field"><span>默认设备名称（下次登记时使用）</span><input id="config-name" maxlength="128" required></label>
+                <label class="field"><span>客户端名称</span><input id="config-name" maxlength="128" required><small class="hint">保存后会在下一次连接时同步到后台；管理员备注与这里完全独立。</small></label>
                 <label class="field"><span>浏览器 Sidecar 目录</span><input id="config-browser" maxlength="4096" placeholder="留空使用默认目录"></label>
                 <label class="switch"><input id="config-bridge" type="checkbox"><span><strong>Local Bridge</strong><br><small class="hint">允许当前系统用户的本地 AI 客户端调用 Node。</small></span></label>
+                <label class="switch"><input id="config-autostart" type="checkbox"><span><strong>登录 Windows 后自动启动</strong><br><small class="hint">后台启动同一个 EXE，不额外安装服务或常驻 updater。</small></span></label>
+                <label class="switch"><input id="config-autoupdate" type="checkbox"><span><strong>自动更新</strong><br><small class="hint">后台检查并下载新版本；下次启动时自动完成替换。</small></span></label>
               </div>
               <details class="advanced"><summary>开发环境选项</summary><label class="switch" style="margin-top:10px"><input id="config-insecure" type="checkbox"><span><strong>允许本机开发 HTTP Hub</strong><br><small class="hint">正式环境保持关闭，只使用 HTTPS。</small></span></label></details>
               <div class="actions"><button class="primary" type="submit">保存本地配置</button><span id="data-dir" class="hint mono"></span></div>
             </form>
+          </div>
+          <div class="panel">
+            <h2>版本与扩展组件</h2>
+            <p class="copy">主程序保持单文件 EXE；Browser 等大型能力以后按需下载到组件目录。更新包由当前 Hub 签名，并同时校验 SHA256。</p>
+            <div class="facts">
+              <div class="fact"><span>当前版本</span><strong id="update-current">{{VERSION}}</strong></div>
+              <div class="fact"><span>最新版本</span><strong id="update-latest">尚未检查</strong></div>
+              <div class="fact"><span>更新状态</span><strong id="update-state">尚未检查</strong></div>
+            </div>
+            <div class="actions"><button id="update-check" class="secondary" type="button">检查更新</button><button id="update-install" class="primary" type="button" disabled>立即升级</button><span id="update-time" class="hint"></span></div>
+            <p class="hint mono" id="component-root"></p>
           </div>
         </section>
 
@@ -140,8 +153,28 @@ const localUIHTML = `<!doctype html>
       $('config-browser').value = cfg.browserSidecarDir || '';
     }
     $('config-bridge').checked = !!cfg.localBridgeEnabled;
+    $('config-autostart').checked = !!status.autoStartEnabled;
+    $('config-autostart').disabled = !status.autoStartSupported;
+    $('config-autoupdate').checked = !!cfg.autoUpdateEnabled;
     $('config-insecure').checked = !!cfg.allowInsecureLocalHub;
+    $('component-root').textContent = '组件目录：' + (status.componentRoot || '—');
+    renderUpdate(status.update || {});
     renderWorkspaces(status.workspaces || []);
+  }
+
+  function renderUpdate(update) {
+    $('update-current').textContent = update.currentVersion || '{{VERSION}}';
+    $('update-latest').textContent = update.latestVersion || '尚未检查';
+    let state = '尚未检查';
+    if (update.checking) state = '正在检查';
+    else if (update.error) state = '检查失败';
+    else if (update.ready) state = '已下载，等待安装';
+    else if (update.available) state = '发现新版本';
+    else if (update.latestVersion) state = '已是最新版本';
+    $('update-state').textContent = state;
+    $('update-time').textContent = update.error ? update.error : (update.lastCheckedAt ? '上次检查：' + update.lastCheckedAt : '');
+    $('update-install').disabled = !update.available || update.checking;
+    $('update-check').disabled = !!update.checking;
   }
 
   function workspaceAction(body, success) {
@@ -224,9 +257,22 @@ const localUIHTML = `<!doctype html>
   $('config-form').addEventListener('submit', async event => {
     event.preventDefault(); if (busy) return; busy=true; const submit = event.currentTarget.querySelector('button[type="submit"]'); submit.disabled=true;
     try {
-      const data = await api('/api/config',{method:'POST',body:JSON.stringify({hubUrl:$('config-hub').value,machineName:$('config-name').value,browserSidecarDir:$('config-browser').value,localBridgeEnabled:$('config-bridge').checked,allowInsecureLocalHub:$('config-insecure').checked})});
+      const data = await api('/api/config',{method:'POST',body:JSON.stringify({hubUrl:$('config-hub').value,machineName:$('config-name').value,browserSidecarDir:$('config-browser').value,localBridgeEnabled:$('config-bridge').checked,autoStartEnabled:$('config-autostart').checked,autoUpdateEnabled:$('config-autoupdate').checked,allowInsecureLocalHub:$('config-insecure').checked})});
       renderStatus(data); message('本地配置已保存。');
     } catch (e) { message(e.message,true); } finally { busy=false; submit.disabled=false; }
+  });
+
+  $('update-check').addEventListener('click', async () => {
+    if (busy) return; busy=true; message('正在检查新版本…');
+    try { const data=await api('/api/update/check',{method:'POST',body:'{}'}); renderStatus(data); message(data.update && data.update.available ? '发现新版本，可以立即升级。' : '当前已经是最新版本。'); }
+    catch(e){message(e.message,true);} finally{busy=false;}
+  });
+
+  $('update-install').addEventListener('click', async () => {
+    if (busy || !confirm('下载并安装最新版本？客户端会自动退出、替换当前 EXE，然后重新打开。')) return;
+    busy=true; message('正在下载并校验新版本…');
+    try { const data=await api('/api/update/install',{method:'POST',body:'{}'}); if(data.restarting){document.body.textContent='更新已校验完成，正在替换 Fast Spider Node 并重新启动…';} else {renderStatus(data.status); message('当前已经是最新版本。');} }
+    catch(e){message(e.message,true);busy=false;}
   });
 
   $('exit-app').addEventListener('click', async () => {

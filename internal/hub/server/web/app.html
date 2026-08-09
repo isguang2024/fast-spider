@@ -60,17 +60,24 @@
 
     <section class="panel" id="machines">
       <div class="panel-heading">
-        <div><p class="eyebrow">Machines</p><h2>本机与远程设备</h2><p class="section-copy">打开 Fast Spider Node 本地界面，填写 Hub、连接令牌和设备名称即可。令牌只决定新设备归属当前账户，不绑定单台客户端，也不会保存在 Node；登记后持续连接使用本机设备密钥。设备先撤销失效，随后可删除记录。</p></div>
+        <div><p class="eyebrow">Machines</p><h2>本机与远程设备</h2><p class="section-copy">客户端名称由每台 Fast Spider Node 自己设置并随连接同步；管理员备注只保存在 Hub，二者互不覆盖。连接令牌只决定新设备归属当前账户，不绑定单台客户端，也不会保存在 Node。设备先撤销失效，随后可删除记录。</p></div>
         <div class="command-box"><span>高级 CLI（可选）</span><code>fast-spider-node connect --hub {{.BaseURL}} --token &lt;连接令牌&gt;</code></div>
       </div>
       {{if .Machines}}
       <div class="table-wrap">
         <table>
-          <thead><tr><th>名称</th><th>系统</th><th>状态</th><th>最近在线</th><th class="action-col">操作</th></tr></thead>
+          <thead><tr><th>客户端名称</th><th>管理员备注</th><th>系统</th><th>状态</th><th>最近在线</th><th class="action-col">操作</th></tr></thead>
           <tbody>
           {{range .Machines}}
             <tr>
-              <td data-label="名称"><strong>{{.DisplayName}}</strong><small>{{.MachineID}} · {{.RegistrationMode}} · {{.ConfigurationScope}}</small></td>
+              <td data-label="客户端名称"><strong>{{.DisplayName}}</strong><small>{{.MachineID}} · {{.RegistrationMode}} · {{.ConfigurationScope}}</small></td>
+              <td data-label="管理员备注">
+                <form method="post" action="{{$.BasePath}}/app/machines/{{.MachineID}}/note" class="inline-note-form">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                  <input name="admin_note" maxlength="128" value="{{.AdminNote}}" placeholder="例如：办公室主机">
+                  <button class="secondary action-button" type="submit">保存</button>
+                </form>
+              </td>
               <td data-label="系统">{{.OS}} / {{.Arch}}</td>
               <td data-label="状态">{{if .Online}}<span class="pill success">在线</span>{{else if eq .Status "revoked"}}<span class="pill danger">已撤销</span>{{else}}<span class="pill">离线</span>{{end}}</td>
               <td data-label="最近在线">{{.LastSeen}}</td>

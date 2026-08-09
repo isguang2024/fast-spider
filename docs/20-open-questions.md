@@ -230,9 +230,9 @@ Phase 6 只实现 `bridge_owned`。desktop-owned、可信 Hook、handoff/recover
 
 ## 8. Phase 7 当前决策
 
-### Q28. 自动更新/代码签名 — 后置
+### Q28. 自动更新/代码签名 — 已按个人模式轻量落地
 
-当前 Phase 7 不发布自动更新，也不建设 root/release key、签名 manifest、Windows Authenticode 或安装器状态机。人工取得/构建二进制后先查看版本、备份、停进程、替换、健康检查。只有以后真正需要无人值守更新时，再把签名信任链作为该功能的前置条件。
+Windows Node 已支持本地 UI 手动升级，以及“后台检查/预下载、下次干净启动自动替换”。不建设独立 root/release key 状态机：release manifest 直接由当前 Hub Ed25519 身份签名，Node 用登记时已固定的 Hub 公钥验证，再校验 SHA-256/大小。当前仍不做 Windows Authenticode、自动提权、独立常驻 updater 或复杂安装器状态机。
 
 ### Q29. RPO/RTO — 保持简单
 
@@ -240,7 +240,7 @@ Phase 6 只实现 `bridge_owned`。desktop-owned、可信 Hook、handoff/recover
 
 ### Q30. 升级审批 — 不需要状态机
 
-当前所有升级都由 Owner 人工执行，不存在 Hub 内部 update approval。不可逆 migration 前的实际门槛是：已生成并通过 `backup-verify` 的升级前备份。
+Hub 升级仍由 Owner 人工执行，不存在 Hub 内部 update approval；不可逆 migration 前的实际门槛仍是已生成并通过 `backup-verify` 的升级前备份。Windows Node 自更新只作用于本机 EXE，不需要 Hub 审批状态机。
 
 ## 9. 以后再决定
 
@@ -267,8 +267,8 @@ Phase 1–8 已经完成实现与真实门禁，早期“一次性确认包”�
 3. Local Bridge 默认随 Node 启用，Windows/Linux 统一 AF_UNIX/UDS；当前 OS 用户是本地信任边界，不存在独立 Local Client Token/Grant/Approval。
 4. Browser/截图不再额外叠 Workspace 权限；私网 Browser Origin 只需本机持久白名单。
 5. Codex 使用本机 `app-server --stdio`，当前只实现 bridge-owned；`write + shell` 是 Session create/send 的现有危险操作边界。
-6. Hub 运维使用手工版本检查和 `backup / backup-verify / restore`，不建设自动更新/安装器状态机。
+6. Hub 运维继续使用手工版本检查和 `backup / backup-verify / restore`；Windows Node 使用本地签名 manifest 自更新，不建设独立 updater 服务或安装器状态机。
 7. `scripts/release-gate.sh` / `--full` 是当前统一发布前门禁；不为 checklist 自动安装外部扫描工具。
-8. 当前真正仍开放的主要是许可证/公开分发、macOS、多用户、自动更新等未来需求；它们不应反向改变个人自用主线。
+8. 当前真正仍开放的主要是许可证/公开分发、macOS、多用户、Authenticode/独立 Release Key 等未来需求；它们不应反向改变个人自用主线。
 
 后续若真实使用需求改变，再按“先修改范围/ADR，再改代码”的方式推进，不重新启用历史 Phase 0 的企业级假设。

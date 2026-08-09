@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -124,6 +125,7 @@ func (c *Client) runSession(ctx context.Context, state State) error {
 	clientHello := protocolv1.ClientHello{
 		MessageType:        protocolv1.MessageClientHello,
 		MachineId:          state.MachineID,
+		DisplayName:        strings.TrimSpace(c.cfg.DisplayName),
 		ProtocolVersions:   []string{protocolv1.ProtocolVersion},
 		ChallengeSignature: security.EncodeSignature(ed25519.Sign(c.privateKey, protocolv1.DeviceChallengePayload(state.MachineID, serverHello.Challenge))),
 		Capabilities:       c.Capabilities(),

@@ -314,8 +314,10 @@ Provider 不可用时返回结构化状态，不阻塞文件/Shell能力。
 - Restore 只接受不存在或空目录；失败不修改原 data-dir。
 - 恢复后的 DB、secrets、Artifact 与源数据逐文件一致。
 - Hub/Node/spiderctl 版本查询。
-- 手工升级后的 `/livez`、`/readyz`、Node 重连和关键 smoke。
-- 正式运行保持一个 Hub/每机一个 Node，不出现 updater/helper/重复启动入口。
+- Hub 手工升级后的 `/livez`、`/readyz`、Node 重连和关键 smoke。
+- Windows Node latest manifest 必须通过固定 Hub 公钥签名校验，下载文件继续核对 size + SHA-256；错误签名必须拒绝。
+- 组件 ZIP 验证签名/摘要后只能解压到受管 `components/<id>/<version>`，拒绝路径逃逸和特殊文件类型。
+- 正式运行保持一个 Hub/每机一个 Node；自更新替换阶段可短暂运行下载好的同一个新版 EXE，但不出现长期 updater/helper/重复启动入口。
 
 ## 19. 安全测试与 Fuzz
 

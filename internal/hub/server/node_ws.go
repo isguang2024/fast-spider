@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -96,7 +97,7 @@ func (s *Server) handleNodeConnect(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close(websocket.StatusInternalError, "capability persistence failed")
 		return
 	}
-	if err := s.service.Store().TouchMachine(wsCtx, session.MachineID, clientHello.Os, clientHello.Arch, clientHello.NodeVersion, capabilityDigest(clientHello.Capabilities), time.Now().UTC()); err != nil {
+	if err := s.service.Store().TouchMachine(wsCtx, session.MachineID, strings.TrimSpace(clientHello.DisplayName), clientHello.Os, clientHello.Arch, clientHello.NodeVersion, capabilityDigest(clientHello.Capabilities), time.Now().UTC()); err != nil {
 		_ = conn.Close(websocket.StatusPolicyViolation, "machine inactive")
 		return
 	}
@@ -124,7 +125,7 @@ func (s *Server) verifyClientHello(machineID, encodedPublicKey, challenge string
 	if !contains(hello.ProtocolVersions, protocolv1.ProtocolVersion) {
 		return errors.New("no common protocol version")
 	}
-	if len(hello.Capabilities) > 128 || len(hello.NodeVersion) > 64 || len(hello.Os) > 64 || len(hello.Arch) > 64 {
+	if len(hello.Capabilities) > 128 || len(hello.NodeVersion) > 64 || len(hello.Os) > 64 || len(hello.Arch) > 64 || len([]byte(strings.TrimSpace(hello.DisplayName))) > 128 {
 		return errors.New("client hello exceeds limits")
 	}
 	if ts, err := time.Parse(time.RFC3339Nano, hello.Timestamp); err != nil || absDuration(time.Since(ts)) > 5*time.Minute {
@@ -177,7 +178,7 @@ func (s *Server) nodeReadLoop(ctx context.Context, conn *registry.Connection, he
 				return
 			}
 			if now.Sub(lastPersist) >= time.Minute {
-				_ = s.service.Store().TouchMachine(ctx, conn.MachineID, hello.Os, hello.Arch, hello.NodeVersion, capabilityDigest(hello.Capabilities), now)
+				_ = s.service.Store().TouchMachine(ctx, conn.MachineID, strings.TrimSpace(hello.DisplayName), hello.Os, hello.Arch, hello.NodeVersion, capabilityDigest(hello.Capabilities), now)
 				lastPersist = now
 			}
 			if err := conn.WriteJSON(ctx, protocolv1.Heartbeat{

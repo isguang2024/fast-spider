@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -19,6 +18,7 @@ import (
 	"github.com/isguang2024/fast-spider/internal/node"
 	"github.com/isguang2024/fast-spider/internal/nodeinstance"
 	"github.com/isguang2024/fast-spider/internal/nodeui"
+	"github.com/isguang2024/fast-spider/internal/nodeupdate"
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 	"github.com/isguang2024/fast-spider/internal/version"
 )
@@ -39,6 +39,8 @@ func main() {
 		runNode(logger, os.Args[2:])
 	case "status":
 		runStatus(logger, os.Args[2:])
+	case "self-update-apply":
+		runSelfUpdateApply(os.Args[2:])
 	case "workspace-add":
 		runWorkspaceAdd(os.Args[2:])
 	case "workspace-list":
@@ -76,12 +78,23 @@ func main() {
 func runUI(logger *slog.Logger, args []string) {
 	fs := flag.NewFlagSet("ui", flag.ExitOnError)
 	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
+	background := fs.Bool("background", false, "start Node without opening the local UI window")
 	_ = fs.Parse(args)
-	app, err := nodeui.New(nodeui.Options{DataDir: *dataDir, Version: version.Version, MachineName: hostname(), Logger: logger})
+	app, err := nodeui.New(nodeui.Options{DataDir: *dataDir, Version: version.Version, MachineName: hostname(), NoOpenWindow: *background, Logger: logger})
 	fatalIf(err)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	fatalIf(app.Run(ctx))
+}
+
+func runSelfUpdateApply(args []string) {
+	fs := flag.NewFlagSet("self-update-apply", flag.ExitOnError)
+	target := fs.String("target", "", "executable path to replace")
+	pid := fs.Int("pid", 0, "old process id")
+	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
+	background := fs.Bool("background", false, "restart without opening the local UI window")
+	_ = fs.Parse(args)
+	fatalIf(nodeupdate.ApplyHelper(*target, *dataDir, *pid, *background))
 }
 
 func runConnect(logger *slog.Logger, args []string) {
@@ -381,13 +394,7 @@ func printJSON(value any) {
 	fatalIf(encoder.Encode(value))
 }
 
-func defaultDataDir() string {
-	base, err := os.UserConfigDir()
-	if err != nil {
-		return ".fast-spider-node"
-	}
-	return filepath.Join(base, "FastSpider", "node")
-}
+func defaultDataDir() string { return platformDefaultDataDir() }
 
 func hostname() string {
 	name, err := os.Hostname()

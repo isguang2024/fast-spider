@@ -2,13 +2,14 @@
 
 ## 1. 当前目标
 
-Fast Spider 当前是单 Owner、个人自托管项目。Phase 7 的目标不是建设企业级更新平台，而是保证三件实际事情简单可靠：
+Fast Spider 当前是单 Owner、个人自托管项目。更新与恢复仍以“少组件、可回滚”为目标：
 
 1. Hub 数据能备份、校验和恢复。
 2. Hub/Node/CLI 能明确查看当前版本。
-3. 升级失败时可以用“上一版二进制 + 升级前备份”恢复，而不是依赖复杂 Recovery Mode。
+3. Windows Node 可由自己的本地 UI 手动升级或自动预下载/下次启动升级。
+4. 升级失败时仍能用“上一版二进制 + 升级前备份”恢复，不建设复杂 Recovery Mode。
 
-当前不实现自动更新服务器、Release Key/Root Key 状态机、Windows 托盘更新器、后台下载器、自动 Schema 回滚或多版本常驻进程。
+Node 更新不引入独立常驻 updater、Release Key/Root Key 状态机、Windows 托盘更新器、自动 Schema 回滚或多版本常驻进程。发布 manifest 直接由当前 Hub Ed25519 身份签名，Node 用登记时已固定的 Hub 公钥验证。
 
 ## 2. 当前唯一数据边界
 
@@ -107,7 +108,7 @@ spiderctl version
 
 ## 7. 当前升级流程
 
-Phase 7 使用简单、可观察的手工升级：
+Hub 继续使用简单、可观察的手工升级：
 
 ```text
 构建/取得新二进制
@@ -129,15 +130,33 @@ Hub 启动时仍由现有内置 migration runner 检查数据库版本与 migrat
 3. 若数据库已发生不可逆变化，恢复升级前备份到新的 data-dir，再用上一版启动。
 4. 保留失败现场和日志用于排查。
 
-当前不自动判断“可逆 migration”，因此重要升级前备份是明确门槛。
+当前不自动判断“可逆 migration”，因此重要 Hub 升级前备份是明确门槛。
+
+Windows Node 不涉及 Hub 数据库 migration。Node 本地 UI 的手动升级链路为：
+
+```text
+GET 已签名 latest manifest
+→ 验证固定 Hub 公钥签名
+→ 比较版本
+→ 下载到 <data-dir>/updates/<version>/
+→ 校验 size + SHA-256
+→ 启动下载好的同一个新版 EXE 作为一次性替换进程
+→ 旧 Node 正常退出
+→ 当前 EXE 改名为 .previous
+→ 新 EXE 原子切换到原路径
+→ 重新启动 Node
+```
+
+自动更新开启后，运行中只检查并预下载，不强制中断正在运行的 Node/Job；下一次客户端干净启动时自动执行同一替换链路。
 
 ## 8. 启动方式
 
 生产环境每个组件只保留一个正式进程：
 
 - Hub：一个 `fast-spider-hub` 进程；Linux 推荐由一个 systemd unit 管理。
-- Node：一台机器一个当前用户 `fast-spider-node run` 进程。
+- Node：一台机器一个当前用户 `fast-spider-node` 进程；桌面模式为 `ui`，自启动为 `ui --background`。
 - Local Bridge 与 Codex stdio 都由 Node 自己管理，不单独启动 helper/daemon。
+- 升级替换阶段会短暂出现下载好的新版 `fast-spider-node.exe`，只负责等待旧进程退出并替换文件，完成后退出，不是常驻 updater。
 
 源码 `go run` 仅用于开发，不作为生产安装方式。
 
@@ -158,8 +177,7 @@ Hub 启动时仍由现有内置 migration runner 检查数据库版本与 migrat
 
 以下能力只有真实使用需求出现时再单独设计：
 
-- 自动更新检查/下载/安装；
-- 签名 release manifest 和密钥轮换体系；
+- 独立 Release Key/Root Key 与密钥轮换体系（当前复用已固定的 Hub Ed25519 身份）；
 - Windows Authenticode 发布流水线；
 - 托盘更新 UI；
 - minimumSafeVersion / emergency revoke；
@@ -181,4 +199,7 @@ Hub 启动时仍由现有内置 migration runner 检查数据库版本与 migrat
 - Hub/Node/CLI 版本可读取；
 - 恢复后的 `hub.db`、secrets、Artifact 内容与源数据一致；
 - Windows/Linux 均能构建；
+- Node release manifest 的 Hub 签名、SHA-256、错误签名拒绝均有测试；
+- 组件 ZIP 只能安全解压到 `<node-data-dir>/components/<id>/<version>`；
+- Windows 单 EXE 自启动与自替换流程保持无第二个常驻进程；
 - `go test ./...` 与现有 Phase 1–6 E2E 不回归。

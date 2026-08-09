@@ -154,6 +154,9 @@ td small { display: block; max-width: 310px; color: var(--text-subtle); font-fam
 .action-col { text-align: right; }
 .action-cell { text-align: right; white-space: nowrap; }
 .action-cell form { display: inline-block; }
+.inline-note-form { display: grid; grid-template-columns: minmax(140px, 1fr) auto; gap: 7px; min-width: 250px; }
+.inline-note-form input { min-height: 40px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text); }
+.inline-note-form .action-button { min-height: 40px; }
 .pill { display: inline-flex; align-items: center; min-height: 26px; padding: 4px 9px; border-radius: 999px; background: var(--surface-soft); color: var(--text-muted); border: 1px solid var(--border-soft); font-size: .7rem; font-weight: 750; white-space: nowrap; }
 .pill.success { background: var(--success-bg); color: var(--success-text); border-color: transparent; }
 .pill.danger { background: var(--danger-bg); color: var(--danger-text); border-color: transparent; }

@@ -33,6 +33,7 @@ type ConnectionStatus struct {
 type Config struct {
 	DataDir           string
 	Version           string
+	DisplayName       string
 	AllowInsecure     bool
 	BrowserSidecarDir string
 	Agent             AgentController

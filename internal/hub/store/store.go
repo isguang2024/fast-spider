@@ -48,6 +48,7 @@ type MachineRecord struct {
 	ID                       string
 	OwnerID                  string
 	DisplayName              string
+	AdminNote                string
 	Status                   string
 	OS                       string
 	Arch                     string
@@ -437,9 +438,10 @@ func (s *Store) NextGeneration(ctx context.Context, machineID string, now time.T
 	return generation, err
 }
 
-func (s *Store) TouchMachine(ctx context.Context, machineID, osName, arch, nodeVersion, capabilityDigest string, now time.Time) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE machines SET os = ?, arch = ?, node_version = ?, capability_digest = ?,
-		last_seen_at = ?, updated_at = ? WHERE id = ? AND status = 'active'`, osName, arch, nodeVersion, capabilityDigest, now.Unix(), now.Unix(), machineID)
+func (s *Store) TouchMachine(ctx context.Context, machineID, displayName, osName, arch, nodeVersion, capabilityDigest string, now time.Time) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE machines SET display_name = CASE WHEN ? <> '' THEN ? ELSE display_name END,
+		os = ?, arch = ?, node_version = ?, capability_digest = ?, last_seen_at = ?, updated_at = ?
+		WHERE id = ? AND status = 'active' AND deleted_at IS NULL`, displayName, displayName, osName, arch, nodeVersion, capabilityDigest, now.Unix(), now.Unix(), machineID)
 	if err != nil {
 		return err
 	}
@@ -472,9 +474,9 @@ func (s *Store) ReplaceCapabilities(ctx context.Context, machineID string, capab
 }
 
 func (s *Store) ListMachines(ctx context.Context, ownerID string) ([]MachineRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, owner_id, display_name, status, os, arch, node_version,
+	rows, err := s.db.QueryContext(ctx, `SELECT id, owner_id, display_name, COALESCE(admin_note,''), status, os, arch, node_version,
 		COALESCE(capability_digest,''), last_seen_at, last_connection_generation, revoked_at, revision, created_at, updated_at
-		FROM machines WHERE owner_id = ? AND deleted_at IS NULL ORDER BY display_name, id`, ownerID)
+		FROM machines WHERE owner_id = ? AND deleted_at IS NULL ORDER BY COALESCE(NULLIF(admin_note,''), display_name), id`, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -484,7 +486,7 @@ func (s *Store) ListMachines(ctx context.Context, ownerID string) ([]MachineReco
 		var rec MachineRecord
 		var lastSeen, revoked sql.NullInt64
 		var created, updated int64
-		if err := rows.Scan(&rec.ID, &rec.OwnerID, &rec.DisplayName, &rec.Status, &rec.OS, &rec.Arch, &rec.NodeVersion,
+		if err := rows.Scan(&rec.ID, &rec.OwnerID, &rec.DisplayName, &rec.AdminNote, &rec.Status, &rec.OS, &rec.Arch, &rec.NodeVersion,
 			&rec.CapabilityDigest, &lastSeen, &rec.LastConnectionGeneration, &revoked, &rec.Revision, &created, &updated); err != nil {
 			return nil, err
 		}
@@ -500,10 +502,10 @@ func (s *Store) GetMachine(ctx context.Context, ownerID, machineID string) (Mach
 	var rec MachineRecord
 	var lastSeen, revoked sql.NullInt64
 	var created, updated int64
-	err := s.db.QueryRowContext(ctx, `SELECT id, owner_id, display_name, status, os, arch, node_version,
+	err := s.db.QueryRowContext(ctx, `SELECT id, owner_id, display_name, COALESCE(admin_note,''), status, os, arch, node_version,
 		COALESCE(capability_digest,''), last_seen_at, last_connection_generation, revoked_at, revision, created_at, updated_at
 		FROM machines WHERE owner_id = ? AND id = ? AND deleted_at IS NULL`, ownerID, machineID).
-		Scan(&rec.ID, &rec.OwnerID, &rec.DisplayName, &rec.Status, &rec.OS, &rec.Arch, &rec.NodeVersion,
+		Scan(&rec.ID, &rec.OwnerID, &rec.DisplayName, &rec.AdminNote, &rec.Status, &rec.OS, &rec.Arch, &rec.NodeVersion,
 			&rec.CapabilityDigest, &lastSeen, &rec.LastConnectionGeneration, &revoked, &rec.Revision, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MachineRecord{}, ErrNotFound
@@ -592,6 +594,20 @@ func (s *Store) RevokeMachine(ctx context.Context, ownerID, machineID string, no
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Store) UpdateMachineAdminNote(ctx context.Context, ownerID, machineID, adminNote string, now time.Time) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE machines SET admin_note = NULLIF(?, ''), updated_at = ?, revision = revision + 1
+		WHERE id = ? AND owner_id = ? AND deleted_at IS NULL`, adminNote, now.Unix(), machineID, ownerID)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *Store) DeleteMachine(ctx context.Context, ownerID, machineID string, now time.Time) error {

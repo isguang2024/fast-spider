@@ -354,6 +354,8 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request, session store
 		})
 	}
 	switch r.URL.Query().Get("notice") {
+	case "machine-note-updated":
+		data.Notice = "管理员备注已保存。"
 	case "machine-revoked":
 		data.Notice = "设备已撤销。"
 	case "machine-deleted":
@@ -382,6 +384,17 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request, session store
 		data.Error = "无法创建连接令牌。请检查名称和有效期，或先撤销不再使用的令牌。"
 	}
 	s.renderWebPage(w, "app", data)
+}
+
+func (s *Server) handleAppMachineNote(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
+	if !s.verifyCSRF(w, r, session.CSRFToken) {
+		return
+	}
+	if err := s.service.UpdateMachineAdminNote(r.Context(), session.OwnerID, r.PathValue("machineId"), r.PostForm.Get("admin_note"), remoteIP(r)); err != nil {
+		http.Error(w, "Unable to update machine note", http.StatusBadRequest)
+		return
+	}
+	s.redirectPublic(w, r, "/app?notice=machine-note-updated", http.StatusSeeOther)
 }
 
 func (s *Server) handleAppMachineRevoke(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {

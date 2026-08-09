@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-const localConfigVersion = 1
+const localConfigVersion = 2
 
 type LocalConfig struct {
 	Version               int    `json:"version"`
@@ -17,6 +17,8 @@ type LocalConfig struct {
 	MachineName           string `json:"machineName"`
 	BrowserSidecarDir     string `json:"browserSidecarDir,omitempty"`
 	LocalBridgeEnabled    bool   `json:"localBridgeEnabled"`
+	AutoStartEnabled      bool   `json:"autoStartEnabled"`
+	AutoUpdateEnabled     bool   `json:"autoUpdateEnabled"`
 	AllowInsecureLocalHub bool   `json:"allowInsecureLocalHub"`
 }
 
@@ -41,7 +43,9 @@ func loadLocalConfig(dataDir, machineName string) (LocalConfig, error) {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return LocalConfig{}, fmt.Errorf("decode local config: %w", err)
 	}
-	if cfg.Version != localConfigVersion {
+	if cfg.Version == 1 {
+		cfg.Version = localConfigVersion
+	} else if cfg.Version != localConfigVersion {
 		return LocalConfig{}, fmt.Errorf("unsupported local config version %d", cfg.Version)
 	}
 	if strings.TrimSpace(cfg.MachineName) == "" {

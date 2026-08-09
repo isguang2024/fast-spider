@@ -62,6 +62,7 @@ Hub 本身不需要为了 Fast Spider 再部署数据库服务、Redis、队列�
 ```text
 FAST_SPIDER_ALLOWED_HOSTS=sharedservices.example.com,127.0.0.1
 FAST_SPIDER_PUBLIC_BASE_URL=https://sharedservices.example.com/fast-spider
+FAST_SPIDER_RELEASE_DIR=/var/lib/fast-spider-releases
 FAST_SPIDER_OAUTH_REDIRECT_HOSTS=chatgpt.com,localhost,127.0.0.1,::1
 ```
 
@@ -71,7 +72,7 @@ FAST_SPIDER_OAUTH_REDIRECT_HOSTS=chatgpt.com,localhost,127.0.0.1,::1
 
 ## 4. Node 本地入口
 
-Windows 日常使用直接双击 `fast-spider-node.exe`。客户端会打开一个简单本地窗口，在“连接”页填写 Hub 地址、后台生成的连接令牌和设备名称即可；无需客户端网页登录。源码/其他桌面环境也可显式运行：
+Windows 日常使用直接双击 `fast-spider-node.exe`。首次双击会把正式运行副本收口到 `%LOCALAPPDATA%\\FastSpider\\bin\\fast-spider-node.exe`，之后从该稳定路径运行；原始下载文件只是单文件引导入口，不需要安装包。客户端会打开一个简单本地窗口，在“连接”页填写 Hub 地址、后台生成的连接令牌和设备名称即可；无需客户端网页登录。源码/其他桌面环境也可显式运行：
 
 ```bash
 fast-spider-node ui --data-dir <node-data-dir>
@@ -102,6 +103,12 @@ fast-spider-node run --data-dir <node-data-dir>
 ```
 
 Local Bridge 默认随 Node 启动；桌面客户端可在“本地配置”页直接关闭。无界面模式仍支持 `--disable-local-bridge`。
+
+Windows “本地配置”同时提供登录后自动启动。它只在当前用户 `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run` 登记同一个 `fast-spider-node.exe ui --background`，不安装 Windows Service，也没有第二个常驻启动器。移动 EXE 后再次保存配置/启动客户端会刷新该路径。
+
+Node 支持自更新：Hub 从独立 release-dir（生产默认 `/var/lib/fast-spider-releases/node/windows-amd64/`）发布最新 EXE 与 `version.txt`，manifest 由 Hub 当前 Ed25519 身份实时签名；Node 先验证已固定的 Hub 公钥签名，再验证 SHA-256 和大小。手动升级会下载到 `<node-data-dir>/updates/<version>/`，随后由下载好的**同一个新版 EXE**临时负责等待旧进程退出、替换目标文件并重新启动；不会安装长期 updater.exe。自动更新只在后台检查和预下载，下一次干净启动时自动完成替换，避免运行中强制打断 Job。
+
+大型扩展能力不打进主 EXE。Hub 可从 `<release-dir>/components/<component>/<platform>/` 发布签名组件 ZIP；Node 的组件管理器按需下载到 `<node-data-dir>/components/<component>/<version>/`，缓存位于 `<node-data-dir>/cache/components/`。当前没有需要常驻的组件守护进程。
 
 本地控制 UI 不引入 Electron、Wails、托盘服务或第二套 Agent。Windows 使用当前 Node 进程在 `127.0.0.1` 提供只面向本机的管理页面，并用 Edge application window 打开。同一 data-dir 的 `ui/run/connect` 共用轻量运行锁，避免两个进程用同一设备密钥争抢 Hub generation；重复双击只重新打开已有 UI。迁移时如果旧 CLI `run` 仍在，UI 可以打开但不会启动第二条设备连接，并会提示先停止旧进程。关闭窗口不等于退出由 UI 持有的 Node，需要停止时使用“退出客户端”。Windows 自启动如果实际需要，可由当前用户登录启动项/任务计划管理同一个客户端；Linux Node 可继续用 user-level systemd 运行 `fast-spider-node run`。模板不覆盖 PATH 或 umask。
 
@@ -248,19 +255,19 @@ Node 的 Workspace Registry/设备状态体积较小；当前不另外建设 Nod
 
 ## 13. 升级
 
-当前升级流程保持人工可观察：
+Hub 升级仍保持人工可观察：
 
 ```text
 检查版本
 → Hub backup + verify
 → 停服务
-→ 替换二进制
+→ 替换 Hub 二进制
 → 启动
 → /livez + /readyz
 → Node 重连与关键 smoke
 ```
 
-不自动下载、不自动安装、不自动提权。数据库 migration 仍由 Hub 内置 runner 在启动时执行。
+Windows Node 则由本地 UI 的“检查更新 / 立即升级 / 自动更新”完成，不需要安装包。更新过程不自动提权；如果当前 EXE 所在目录不可由当前用户写入，升级会明确失败而不是绕过系统权限。数据库 migration 仍只由 Hub 内置 runner 在启动时执行。
 
 ## 14. 卸载
 
@@ -281,7 +288,7 @@ Node 的 Workspace Registry/设备状态体积较小；当前不另外建设 Nod
 - MSI/EXE 安装器与脚本安装器并存；
 - 托盘常驻 UI；
 - 独立 agent-service/daemon；
-- 自动更新服务；
+- 独立常驻 updater 服务；
 - 多 Hub 实例、共享数据库或分布式锁。
 
 出现真实需求后再增加一个明确方案，并同时删除被替代的旧主路径。

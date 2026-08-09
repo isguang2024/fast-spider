@@ -21,6 +21,7 @@
       "properties": {
         "machineId": {"type": "string", "pattern": "^mach_[A-Za-z0-9_-]{20,64}$"},
         "displayName": {"type": "string", "minLength": 1, "maxLength": 128},
+        "adminNote": {"type": "string", "maxLength": 128},
         "status": {"type": "string", "enum": ["active", "revoked", "disabled"]},
         "online": {"type": "boolean"},
         "os": {"type": "string", "maxLength": 64},
@@ -52,6 +53,7 @@
       "properties": {
         "messageType": {"const": "client.hello"},
         "machineId": {"type": "string"},
+        "displayName": {"type": "string", "maxLength": 128},
         "protocolVersions": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 8},
         "challengeSignature": {"type": "string", "minLength": 20, "maxLength": 256},
         "capabilities": {"type": "array", "items": {"$ref": "#/$defs/CapabilityDescriptor"}, "maxItems": 128},
