@@ -110,6 +110,7 @@ const localUIHTML = `<!doctype html>
   const perms = ['read','write','shell','git-write','git-network','git-hooks','build'];
   let current = null;
   let busy = false;
+  let configDirty = false;
 
   async function api(path, options = {}) {
     const headers = Object.assign({'X-Fast-Spider-UI-Token': token}, options.headers || {});
@@ -145,18 +146,20 @@ const localUIHTML = `<!doctype html>
     if (status.runtimeStatus === 'external_running' && status.runtimeError) message(status.runtimeError);
 
     const cfg = status.config || {};
-    if (!document.activeElement || !['connect-hub','connect-name','config-hub','config-name','config-browser'].includes(document.activeElement.id)) {
+    if (!document.activeElement || !['connect-hub','connect-name'].includes(document.activeElement.id)) {
       $('connect-hub').value = cfg.hubUrl || status.hubUrl || '';
       $('connect-name').value = cfg.machineName || '';
+    }
+    if (!configDirty) {
       $('config-hub').value = cfg.hubUrl || status.hubUrl || '';
       $('config-name').value = cfg.machineName || '';
       $('config-browser').value = cfg.browserSidecarDir || '';
+      $('config-bridge').checked = !!cfg.localBridgeEnabled;
+      $('config-autostart').checked = !!status.autoStartEnabled;
+      $('config-autoupdate').checked = !!cfg.autoUpdateEnabled;
+      $('config-insecure').checked = !!cfg.allowInsecureLocalHub;
     }
-    $('config-bridge').checked = !!cfg.localBridgeEnabled;
-    $('config-autostart').checked = !!status.autoStartEnabled;
     $('config-autostart').disabled = !status.autoStartSupported;
-    $('config-autoupdate').checked = !!cfg.autoUpdateEnabled;
-    $('config-insecure').checked = !!cfg.allowInsecureLocalHub;
     $('component-root').textContent = '组件目录：' + (status.componentRoot || '—');
     renderUpdate(status.update || {});
     renderWorkspaces(status.workspaces || []);
@@ -254,11 +257,14 @@ const localUIHTML = `<!doctype html>
     } catch (e) { message(e.message,true); } finally { busy=false; submit.disabled=false; }
   });
 
+  $('config-form').addEventListener('input', () => { configDirty = true; });
+  $('config-form').addEventListener('change', () => { configDirty = true; });
+
   $('config-form').addEventListener('submit', async event => {
     event.preventDefault(); if (busy) return; busy=true; const submit = event.currentTarget.querySelector('button[type="submit"]'); submit.disabled=true;
     try {
       const data = await api('/api/config',{method:'POST',body:JSON.stringify({hubUrl:$('config-hub').value,machineName:$('config-name').value,browserSidecarDir:$('config-browser').value,localBridgeEnabled:$('config-bridge').checked,autoStartEnabled:$('config-autostart').checked,autoUpdateEnabled:$('config-autoupdate').checked,allowInsecureLocalHub:$('config-insecure').checked})});
-      renderStatus(data); message('本地配置已保存。');
+      configDirty = false; renderStatus(data); message('本地配置已保存。');
     } catch (e) { message(e.message,true); } finally { busy=false; submit.disabled=false; }
   });
 
