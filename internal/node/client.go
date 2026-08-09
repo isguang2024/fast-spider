@@ -25,6 +25,11 @@ var ErrNotRegistered = errors.New("node is not registered")
 
 const maxHTTPResponseBytes = 1 << 20
 
+type ConnectionStatus struct {
+	State string
+	Error string
+}
+
 type Config struct {
 	DataDir           string
 	Version           string
@@ -32,6 +37,7 @@ type Config struct {
 	BrowserSidecarDir string
 	Agent             AgentController
 	Logger            *slog.Logger
+	ConnectionStatus  func(ConnectionStatus)
 }
 
 type Client struct {
@@ -100,6 +106,17 @@ func New(cfg Config) (*Client, error) {
 }
 
 func (c *Client) State() (State, error) { return LoadState(c.statePath) }
+
+func (c *Client) reportConnectionStatus(state string, err error) {
+	if c.cfg.ConnectionStatus == nil {
+		return
+	}
+	status := ConnectionStatus{State: state}
+	if err != nil {
+		status.Error = err.Error()
+	}
+	c.cfg.ConnectionStatus(status)
+}
 
 func (c *Client) Capabilities() []protocolv1.CapabilityDescriptor {
 	out := make([]protocolv1.CapabilityDescriptor, len(protocolv1.NodeCapabilities), len(protocolv1.NodeCapabilities)+2)

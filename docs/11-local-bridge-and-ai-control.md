@@ -17,7 +17,7 @@ Local Bridge 不是：
 - Node 正常运行时默认启用本机 IPC；它不占 TCP 端口，因此不要求用户每次手工打开。
 - Windows/Linux 使用当前用户 data-dir 下的 AF_UNIX socket；macOS 后续沿用 Unix Domain Socket。
 - 提供 `--disable-local-bridge` 作为明确关闭入口。
-- loopback HTTP/MCP 默认不实现；只有出现真实兼容需求时再单独评估。
+- loopback HTTP/MCP Capability Adapter 默认不实现；只有出现真实兼容需求时再单独评估。Node 的 `127.0.0.1` 本地控制 UI 是独立管理面，不承载 MCP/Capability 调用。
 - 本机状态只需显示 Local Bridge 是否启用、endpoint 类型和最近活动，不维护“已注册客户端列表”。
 
 ## 3. 传输选择
@@ -44,7 +44,7 @@ Local Bridge 不是：
 
 ## 5. 为什么首版不做 Loopback HTTP
 
-AF_UNIX/UDS 已覆盖本机长期 Client 的核心需求，而且没有端口、CORS、Host、CSRF、DNS rebinding 和本地 Token 管理成本。Phase 6 首版因此不实现 loopback HTTP/MCP；需要兼容只支持 HTTP 的第三方客户端时，再通过一个很薄的可选 Adapter 评估，而不是把 HTTP 安全复杂度塞进 Node 主链路。
+AF_UNIX/UDS 已覆盖本机 AI/CLI Client 的核心需求，因此不实现 loopback HTTP/MCP Capability Adapter。桌面客户端现在有一个单独的 loopback 本地管理 UI，只负责连接、每机配置和 Workspace/权限；它不接受 MCP 工具调用，也不替代 Local Bridge。这样满足日常可视化操作，同时不把远程执行协议搬到 TCP。
 
 ## 6. Local Bridge 调用链
 

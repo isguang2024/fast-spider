@@ -216,7 +216,7 @@ Phase 6 只实现本机 Codex 的 `bridge_owned` 执行：Node 直接启动 `cod
 - 描述中明确只使用 opaque ID 和相对路径。
 - 客户端可以自己记住当前 Machine/Workspace 选择来减少 UI 操作，但请求仍发送 opaque ID，不再维护额外短期授权 Context。
 
-当前固定工具就是 16 个，不随 Node、Workspace、Provider、模型或 Session 数量增长。
+当前固定工具就是 16 个，不随 Node、Workspace、Provider、模型或 Session 数量增长。`machine_list` / `machine_get` 会额外返回当前连接模型：`registrationMode=connection_token`、`configurationScope=local_node`、`runtimeCredential=device_key`、`connectionTokenSaved=false`；不返回连接令牌、设备私钥或本机绝对路径。
 
 ## 9. MCP 权限与工具语义
 
@@ -262,11 +262,11 @@ MVP 支持两种读取方式：
 6. Access Token 有效期 1 小时；Refresh Token 有效期 30 天并在刷新时轮换。
 7. 每次批准形成稳定的 OAuth Authorization 记录，绑定 `clientId + ownerId + resource + scope`；后台列表显示创建时间、最近使用、到期和撤销状态，数据库只保存 Token 哈希。
 8. 撤销一条 Authorization 会同时删除其全部 Access/Refresh Token；刷新只更新同一授权记录，不制造重复列表项。
-9. Node 不参与 OAuth。Node 首次登记使用后台创建的连接令牌；MCP OAuth 和 Node 设备身份是两条互不复用的认证链。
+9. Node 不参与 OAuth。Node 登记使用后台创建、可复用的连接令牌；同一有效令牌可以把多台新 Node 归属到同一 Owner，但不会绑定 machineId。MCP OAuth 和 Node 设备身份是两条互不复用的认证链。
 
 带 path-prefix 的共享域部署要同时支持 MCP 规范的 path-insertion discovery，例如 resource `https://host/fast-spider/mcp` 对应 `/.well-known/oauth-protected-resource/fast-spider/mcp`，issuer `https://host/fast-spider` 对应 `/.well-known/oauth-authorization-server/fast-spider`。反向代理只需把这些 exact well-known 路由交给同一个 Hub，不需要把 Fast Spider 独占整个域名。
 
-设备 WSS 使用独立设备证明，不把连接令牌或 OAuth Token 当长期设备凭据。Node 首次 `connect` 只用连接令牌调用机器登记接口，成功后令牌不写入 Node 状态；后续连接只使用 Node 本地设备私钥。Web Console 使用独立 HttpOnly Session Cookie 与 CSRF，不把浏览器 Cookie 直接当 MCP Token。连接令牌明文只在创建页返回一次；认证、MCP、Artifact、Node WSS 的日志都不得记录 Token、密码或 Cookie 内容。
+设备 WSS 使用独立设备证明，不把连接令牌或 OAuth Token 当长期设备凭据。Node 本地控制 UI 或高级 CLI 只在登记请求中使用连接令牌，成功后令牌不写入 Node 状态或本地配置；后续连接只使用 Node 本地设备私钥。连接令牌可以重复登记多台设备，直到撤销或过期。Web Console 使用独立 HttpOnly Session Cookie 与 CSRF，不把浏览器 Cookie 直接当 MCP Token。连接令牌明文只在创建页返回一次；认证、MCP、Artifact、Node WSS 的日志都不得记录 Token、密码或 Cookie 内容。
 
 ## 13. 错误映射
 

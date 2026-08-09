@@ -28,7 +28,7 @@ MVP 只有一个 Hub 进程，模块边界通过 Go package 和接口体现，�
 | 模块 | 责任 | 主要持久化 |
 |---|---|---|
 | `identity` | 单 Owner Web 登录、MCP OAuth、连接令牌 | owners, web_sessions, oauth_*, connection_tokens |
-| `devices` | Node 首次登记、设备公钥、撤销 | machines, device_credentials, device_access_tokens |
+| `devices` | Node 登记、设备公钥、撤销 | machines, device_credentials, device_access_tokens |
 | `routing` | Node WSS 连接注册表与在线状态 | 内存为主，机器状态快照入库 |
 | `artifacts` | 上传会话、哈希、元数据、清理 | artifacts, artifact_uploads + 文件系统 |
 | `audit` | 必要的安全审计 | audit_entries |
@@ -37,16 +37,16 @@ MVP 只有一个 Hub 进程，模块边界通过 Go package 和接口体现，�
 
 Adapter 不得直接访问 `routing` 内部连接或数据库表，必须经过应用服务。
 
-## 3. Node 注册与配对
+## 3. Node 注册
 
 ### 3.1 后台连接令牌
 
-日常入口是 `fast-spider-node connect --hub <hub> --token <connection-token>`。Owner 先登录 `/app`，创建一个连接令牌；Node 本机生成设备密钥，并把连接令牌与设备公钥、Node 版本、OS、架构、显示名一起提交到 Hub。
+日常入口是 Fast Spider Node 本地控制界面：Owner 先登录 `/app` 创建一个连接令牌，客户端填写 Hub、连接令牌和设备名称即可。CLI `fast-spider-node connect --hub <hub> --token <connection-token>` 只作为高级/无界面入口。Node 本机生成设备密钥，并把连接令牌与设备公钥、Node 版本、OS、架构、显示名一起提交到 Hub。
 
 连接令牌的边界很窄：
 
 - 数据库只保存哈希，明文只在创建页展示一次。
-- 可以设置有效期并随时撤销。
+- 可以设置有效期并随时撤销；同一个有效令牌可重复登记该 Owner 下多台 Node，不与某个 machineId 绑定。
 - 只允许调用 `POST /api/v1/machines/register`，不能直接访问 MCP、机器管理或 Artifact REST。
 - Node 登记成功后不保存连接令牌；后续 WSS 只使用本机设备私钥和 Hub 签发的短期设备凭据。
 - 设备被撤销后，可以使用仍有效的连接令牌重新登记；Workspace Registry 保留在 Node 本机。
@@ -74,7 +74,7 @@ sequenceDiagram
     N-->>H: ready + capability manifest
 ```
 
-任何重试都必须使用配对请求 idempotencyKey；Token 消费和机器创建在一个事务内完成。
+连接令牌不是一次性消费凭据。每次登记都独立验证令牌当前有效性，再创建或幂等解析设备身份；令牌撤销或过期只阻止后续登记，不影响已经登记的设备。
 
 ## 4. Node 长连接管理
 

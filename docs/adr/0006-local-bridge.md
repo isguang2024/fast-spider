@@ -56,7 +56,7 @@ Local Bridge 的默认实现：
 - **Windows/Linux：当前用户 data-dir 下的 AF_UNIX / Unix Domain Socket**。
 - **macOS：后续沿用 Unix Domain Socket**。
 - **stdio：允许作为单 Client/Provider Adapter 的专用模式**。
-- **loopback HTTP/MCP：默认关闭，仅作为明确启用的兼容模式**。
+- **loopback HTTP/MCP Capability Adapter：当前不实现；以后只有真实第三方兼容需求时再单独 ADR 评估**。
 
 Local Bridge 在 Node 正常运行时默认启用，但只创建本机 IPC，不监听 TCP。用户可使用 `--disable-local-bridge` 关闭。调用链为：OS ACL → schema/size 校验 → Workspace/现有危险权限/路径/网络/资源检查 → 同一 Capability Engine。
 
@@ -80,9 +80,9 @@ Phase 6 个人模式不建立长期 Local Client 身份表。当前 OS 用户就
 - 消息有长度、deadline 和并发限制；不叠加应用层配对握手。
 - Node 关闭后移除 socket；不留下 helper/端口服务。
 
-## Loopback HTTP
+## Loopback HTTP / MCP Adapter
 
-Phase 6 首版不实现 loopback HTTP/MCP。这样直接删除 Host/Origin/CORS/CSRF/本地 Token/端口冲突等整组问题。以后如果某个实际第三方客户端只能走 HTTP，再增加一个薄的可选兼容 Adapter，而不是改变 Node 默认边界。
+Phase 6 对 Local Bridge 的决定保持不变：不实现 loopback HTTP/MCP Capability Adapter，本地 AI/CLI 调用继续只走 AF_UNIX/UDS。后续产品阶段增加了一个独立的 `127.0.0.1` Node 本地控制 UI，用于连接、每机配置和 Workspace/权限管理；它不暴露 MCP/Capability，也不是第三方 Client Adapter。因此 Local Bridge 仍没有 Host/CORS/HTTP Token 认证链，本地 UI 自己使用 same-origin + 进程随机 UI secret 的轻量边界。
 
 ## 权限与 Workspace
 

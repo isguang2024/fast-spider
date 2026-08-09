@@ -47,7 +47,7 @@ Hub 进行身份与资源归属判断；Node 使用本地 Workspace 和运行时
 - 首次启动时 Hub 生成短时一次性 `bootstrap-token`。`spiderctl setup-url` 把它放入 `/setup#code=...` 的 URL fragment，浏览器自动填入，值不会进入普通 HTTP/Nginx 请求日志。
 - 首次设置页面创建当前实例唯一的本地管理员用户名和密码；密码使用随机盐 PBKDF2-SHA256 哈希，数据库不保存明文。
 - 登录后 Hub 签发独立 HttpOnly、SameSite Web Session Cookie，并对后台写操作校验 CSRF；登录失败按真实客户端 IP 做小型内存限速，不引入账户锁定表。
-- 后台可以创建连接令牌：明文只展示一次，数据库只保存哈希，可设置有效期、查看最近使用并随时撤销。连接令牌只用于 Node 首次登记，不能访问 MCP 或管理 REST。
+- 后台可以创建连接令牌：明文只展示一次，数据库只保存哈希，可设置有效期、查看最近使用并随时撤销。连接令牌属于当前 Owner，可在有效期内重复登记多台 Node，不绑定具体设备；它只允许机器登记，不能访问 MCP 或管理 REST。
 - 修改管理员密码会保留当前浏览器、撤销该 Owner 的其他 Web Session，但不误删已经明确批准的 OAuth Authorization。
 - 当前不实现多用户、密码找回邮件或外部 OIDC；个人自托管实例通过备份恢复。出现真实多人需求后再扩展。
 
@@ -62,10 +62,10 @@ Hub 进行身份与资源归属判断；Node 使用本地 Workspace 和运行时
 
 ### 4.3 Node
 
-- Owner 在 Web 后台创建连接令牌，Node 首次执行 `fast-spider-node connect --hub <hub> --token <token>`。
-- Node 本机生成设备私钥，并用连接令牌向唯一的机器登记接口提交设备公钥、名称、OS、架构和版本；连接令牌本身不写入 Node 状态文件。
+- Owner 在 Web 后台创建连接令牌；Node 默认打开本地控制界面，填写 Hub、连接令牌和设备名称完成登记。CLI `connect` 仅作为高级/无界面入口。
+- Node 本机生成设备私钥，并用连接令牌向唯一的机器登记接口提交设备公钥、名称、OS、架构和版本；连接令牌只决定新设备归属哪个 Owner，本身不与设备绑定，也不写入 Node 状态或本地配置文件。
 - 登记成功后 Node 只保存 machineId、credentialId、Hub 公钥/指纹和本机设备私钥。后续连接使用设备证明和短期设备凭据，不依赖连接令牌或 OAuth。
-- 连接令牌可撤销；撤销只阻止新的设备登记，不会静默撤销已经登记的机器。设备撤销仍在后台设备列表单独执行。
+- 同一有效连接令牌可以登记多台独立 Node；每台 Node 获得自己的 machineId 和设备私钥。令牌撤销只阻止后续设备登记，不会静默撤销已经登记的机器；设备撤销仍在后台设备列表单独执行。
 - 设备被后台撤销后，再执行 `connect` 可创建新的 machineId；Node 本机 Workspace Registry 不需要删除或重建。
 
 ### 4.4 本机 Local Bridge

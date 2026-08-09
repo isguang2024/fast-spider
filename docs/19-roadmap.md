@@ -98,10 +98,10 @@
 ### 范围
 
 - 单 Owner、单 Hub、SQLite WAL。
-- Windows/Linux Node 控制台模式；托盘/安装包后置。
+- Windows/Linux Node 单进程模式；Windows 当前已提供轻量本地控制 UI，安装包/托盘服务仍后置。
 - WSS JSON 控制消息。
 - Node status/capability discovery。
-- 基础 Web/CLI 管理配对和吊销。
+- 基础 Web/CLI 管理设备登记和吊销。
 
 ### 非目标
 
@@ -117,7 +117,7 @@
 
 ### 风险
 
-- 设备身份/配对重放。
+- 设备身份/登记重放。
 - 双连接 generation 竞争。
 - 反向代理长连接配置。
 - 心跳/重连形成风暴。
@@ -125,8 +125,8 @@
 
 ### 验收标准
 
-- Node 只建立出站 443；端口扫描无 Fast Spider 入站监听。
-- 配对码一次性、过期、并发消费安全。
+- Node 对 Hub 只建立出站 443；不开放公网/局域网监听，本地控制 UI 只绑定 loopback。
+- Connection Token 可重复登记同一 Owner 下多台 Node，支持过期/撤销且不落盘；每台 Node 最终使用独立设备密钥。
 - 被吊销设备立即不能继续接收/发送有效消息。
 - Hub 重启后 Node 带抖动重连。
 - 同 machine 双连接只有新 generation 有效。
@@ -135,13 +135,13 @@
 
 ### 可演示场景
 
-启动 Hub → Windows Node 输入一次性码 → Node 上线 → MCP 列出机器、OS、版本和能力 → Hub 吊销 → Node 断开且重连失败。
+启动 Hub → Web 后台创建 Connection Token → Windows Node 本地 UI 填写 Token → Node 上线 → MCP 列出机器、OS、版本、能力和 `connection_token/local_node/device_key` 模式 → Hub 吊销设备 → Node 断开且重连失败。
 
 ### 回滚
 
 - Feature flag 关闭公网 MCP，只保留本机管理。
 - 数据库只含身份/机器，可从升级前备份恢复。
-- Node 删除本地配对状态并重新 enroll。
+- Node 删除/恢复本地设备身份后使用任一有效 Connection Token 重新登记。
 - 协议不兼容时回退共同 v1，不维护两个执行层。
 
 ## 5. Phase 2：Workspace、文件只读与代码搜索

@@ -86,7 +86,7 @@ MVP 可只有一个默认 organization，但所有资源明确归属，避免以
 
 ### 4.4 `connection_tokens`
 
-Node 首次登记令牌：id、owner_id、token_hash、label、created_at、last_used_at、expires_at、revoked_at。明文只在后台创建页展示一次；该令牌只允许调用机器登记接口。
+Node 连接令牌：id、owner_id、token_hash、label、created_at、last_used_at、expires_at、revoked_at。明文只在后台创建页展示一次；该令牌只允许调用机器登记接口。它归属于 Owner、可在有效期内重复登记多台 Node，不保存 machine_id/token-device 绑定关系。
 
 ### 4.5 MCP OAuth
 
@@ -333,9 +333,9 @@ recoveryId、workspaceId、original relative path、internal storage path、hash
 
 ## 13. 事务边界
 
-### 配对
+### 机器登记
 
-机器登记使用一个短事务：验证连接令牌 → 创建 machine → 创建 device credential。审计在登记成功后记录；WSS 连接在登记事务完成后进行。连接令牌不写入 Node 状态。
+机器登记使用一个短事务：验证当前连接令牌有效且属于 Owner → 创建/解析 machine → 创建 device credential。连接令牌不会被消费，也不与 machine 绑定；审计在登记成功后记录，WSS 连接在登记事务完成后进行。连接令牌不写入 Node 状态或 `config.json`。
 
 ### Job 创建
 

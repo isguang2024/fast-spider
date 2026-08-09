@@ -36,12 +36,13 @@
 
 ### 3.2 Node 生命周期
 
-- MUST 使用后台生成的连接令牌完成首次机器登记；令牌只允许登记接口，Node 成功后不得持久化该令牌。
+- MUST 使用后台生成的连接令牌完成机器登记；连接令牌属于 Owner、可在有效期内重复登记多台 Node，不绑定具体设备。令牌只允许登记接口，Node 成功后不得持久化该令牌。
 - MUST 生成每台设备独立身份与私钥。
 - MUST 只主动连接 Hub，不默认监听公网或局域网地址。
 - MUST 上报 OS、架构、版本、能力和忙闲状态。
 - MUST 支持心跳、断线重连、证书轮换、吊销和紧急断开。
-- MUST 在本机明确显示连接状态、已授权目录和正在执行的高风险操作。
+- MUST 提供简单本地控制界面，显示连接状态并管理本机配置、已授权目录和危险能力开关；Windows 默认双击客户端即可打开该界面，不要求网页登录。
+- 本地控制界面 MUST 只绑定 loopback，不向公网/局域网暴露，也不能形成第二套远程 Capability API。
 - SHOULD 支持可验证备份/恢复、明确版本检查和手工可观察升级；自动更新只有真实需要时再设计。
 
 ### 3.3 Workspace
@@ -109,7 +110,7 @@
 ### 3.9 Local Bridge 与 AI
 
 - 当前用户 AF_UNIX/UDS Local Bridge MUST 默认随 Node 启用，并可由本机开关关闭。
-- Windows/Linux 共用同一 AF_UNIX/UDS 实现，不监听 TCP/loopback HTTP。
+- Windows/Linux 共用同一 AF_UNIX/UDS Local Bridge 实现；Local Bridge 自身不监听 TCP/loopback HTTP。Node 的独立本地控制 UI 可绑定 loopback，但不承载 MCP/Capability 调用。
 - 当前 OS 用户 + Node data-dir 权限作为本机信任边界；不建立 Local Client 注册、Token、Grant 或 Approval。
 - Local Bridge MUST 直接复用既有 Workspace、Capability 和危险本机权限检查。
 - MUST 提供 provider-neutral 的 provider/model/project/session create/list/get/send/watch/cancel/result/rename/archive 能力。

@@ -1,0 +1,573 @@
+package nodeui
+
+import (
+	"context"
+	"crypto/subtle"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"html"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/isguang2024/fast-spider/internal/agent"
+	"github.com/isguang2024/fast-spider/internal/localbridge"
+	"github.com/isguang2024/fast-spider/internal/node"
+	"github.com/isguang2024/fast-spider/internal/nodeinstance"
+	"github.com/isguang2024/fast-spider/internal/security"
+)
+
+const (
+	defaultListenAddress = "127.0.0.1:17891"
+	maxUIRequestBytes    = 32 << 10
+)
+
+type Options struct {
+	DataDir     string
+	Version     string
+	MachineName string
+	Logger      *slog.Logger
+}
+
+type App struct {
+	opts Options
+
+	mu            sync.Mutex
+	ctx           context.Context
+	cancel        context.CancelFunc
+	config        LocalConfig
+	uiToken       string
+	runtimeCancel context.CancelFunc
+	runtimeDone   chan struct{}
+	runtimeOwned  bool
+	runtimeStatus string
+	runtimeError  string
+}
+
+type statusResponse struct {
+	Version              string                       `json:"version"`
+	DataDir              string                       `json:"dataDir"`
+	Registered           bool                         `json:"registered"`
+	MachineID            string                       `json:"machineId,omitempty"`
+	HubURL               string                       `json:"hubUrl,omitempty"`
+	HubFingerprint       string                       `json:"hubFingerprint,omitempty"`
+	RegistrationMode     string                       `json:"registrationMode"`
+	ConfigurationScope   string                       `json:"configurationScope"`
+	RuntimeCredential    string                       `json:"runtimeCredential"`
+	ConnectionTokenSaved bool                         `json:"connectionTokenSaved"`
+	RuntimeOwned         bool                         `json:"runtimeOwned"`
+	RuntimeStatus        string                       `json:"runtimeStatus"`
+	RuntimeError         string                       `json:"runtimeError,omitempty"`
+	Config               LocalConfig                  `json:"config"`
+	Workspaces           []node.LocalWorkspaceSummary `json:"workspaces"`
+}
+
+type connectRequest struct {
+	HubURL      string `json:"hubUrl"`
+	Token       string `json:"token"`
+	MachineName string `json:"machineName"`
+}
+
+type configRequest struct {
+	HubURL                string `json:"hubUrl"`
+	MachineName           string `json:"machineName"`
+	BrowserSidecarDir     string `json:"browserSidecarDir"`
+	LocalBridgeEnabled    bool   `json:"localBridgeEnabled"`
+	AllowInsecureLocalHub bool   `json:"allowInsecureLocalHub"`
+}
+
+type workspaceAddRequest struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
+}
+
+type workspaceActionRequest struct {
+	Action      string   `json:"action"`
+	WorkspaceID string   `json:"workspaceId"`
+	Enabled     bool     `json:"enabled"`
+	Permissions []string `json:"permissions"`
+	Origin      string   `json:"origin"`
+}
+
+func New(opts Options) (*App, error) {
+	if strings.TrimSpace(opts.DataDir) == "" {
+		return nil, errors.New("node UI data directory is required")
+	}
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
+	}
+	cfg, err := loadLocalConfig(opts.DataDir, opts.MachineName)
+	if err != nil {
+		return nil, err
+	}
+	uiToken, err := security.RandomOpaque("ui_")
+	if err != nil {
+		return nil, err
+	}
+	return &App{
+		opts:          opts,
+		config:        cfg,
+		uiToken:       uiToken,
+		runtimeStatus: "stopped",
+	}, nil
+}
+
+func (a *App) Run(ctx context.Context) error {
+	runCtx, runCancel := context.WithCancel(ctx)
+	defer runCancel()
+	listener, err := net.Listen("tcp", defaultListenAddress)
+	if err != nil {
+		if existingUIHealthy() {
+			return openLocalUI("http://" + defaultListenAddress + "/")
+		}
+		return fmt.Errorf("listen on local UI %s: %w", defaultListenAddress, err)
+	}
+	defer listener.Close()
+
+	lease, leaseErr := nodeinstance.Acquire(a.opts.DataDir)
+	if leaseErr != nil && !errors.Is(leaseErr, nodeinstance.ErrAlreadyRunning) {
+		return leaseErr
+	}
+	if lease != nil {
+		defer lease.Close()
+	}
+
+	a.mu.Lock()
+	a.ctx = runCtx
+	a.cancel = runCancel
+	a.runtimeOwned = lease != nil
+	if lease == nil {
+		a.runtimeStatus = "external_running"
+		a.runtimeError = "检测到同一数据目录已有无界面 Node 实例运行；当前界面不会启动第二个设备连接"
+	}
+	a.mu.Unlock()
+	if lease != nil {
+		a.startRuntime()
+	}
+
+	server := &http.Server{
+		Handler:           a.handler(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	serveErr := make(chan error, 1)
+	go func() {
+		err := server.Serve(listener)
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+			return
+		}
+		serveErr <- nil
+	}()
+
+	uiURL := "http://" + defaultListenAddress + "/"
+	if err := openLocalUI(uiURL); err != nil {
+		a.opts.Logger.Warn("open local Node UI failed", "url", uiURL, "error", err)
+	}
+
+	select {
+	case <-runCtx.Done():
+	case err := <-serveErr:
+		if err != nil {
+			a.stopRuntime()
+			return err
+		}
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = server.Shutdown(shutdownCtx)
+	a.stopRuntime()
+	return nil
+}
+
+func (a *App) handler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Fast-Spider-UI", "1")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, "fast-spider-node-ui\n")
+	})
+	mux.HandleFunc("GET /", a.handleIndex)
+	mux.HandleFunc("GET /api/status", a.apiOnly(a.handleStatus))
+	mux.HandleFunc("POST /api/connect", a.apiOnly(a.handleConnect))
+	mux.HandleFunc("POST /api/config", a.apiOnly(a.handleConfig))
+	mux.HandleFunc("POST /api/exit", a.apiOnly(a.handleExit))
+	mux.HandleFunc("POST /api/workspaces", a.apiOnly(a.handleWorkspaceAdd))
+	mux.HandleFunc("POST /api/workspaces/action", a.apiOnly(a.handleWorkspaceAction))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Cache-Control", "no-store")
+		mux.ServeHTTP(w, r)
+	})
+}
+
+func (a *App) apiOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Fast-Spider-UI-Token")), []byte(a.uiToken)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" && origin != "http://"+defaultListenAddress {
+			http.Error(w, "invalid origin", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		next(w, r)
+	}
+}
+
+func (a *App) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
+	page := strings.ReplaceAll(localUIHTML, "{{UI_TOKEN}}", html.EscapeString(a.uiToken))
+	page = strings.ReplaceAll(page, "{{VERSION}}", html.EscapeString(a.opts.Version))
+	_, _ = io.WriteString(w, page)
+}
+
+func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, a.snapshot())
+}
+
+func (a *App) handleConnect(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	runtimeOwned := a.runtimeOwned
+	a.mu.Unlock()
+	if !runtimeOwned {
+		writeAPIError(w, http.StatusConflict, errors.New("已有无界面 Node 实例运行，请先停止旧 run/connect 进程再重新登记"))
+		return
+	}
+	var req connectRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err)
+		return
+	}
+	req.HubURL = strings.TrimSpace(req.HubURL)
+	req.Token = strings.TrimSpace(req.Token)
+	req.MachineName = strings.TrimSpace(req.MachineName)
+	if req.HubURL == "" || req.Token == "" || req.MachineName == "" {
+		writeAPIError(w, http.StatusBadRequest, errors.New("Hub 地址、连接密钥和设备名称不能为空"))
+		return
+	}
+	if len(req.HubURL) > 2048 || len(req.Token) > 256 || len(req.MachineName) > 128 {
+		writeAPIError(w, http.StatusBadRequest, errors.New("连接参数过长"))
+		return
+	}
+
+	a.mu.Lock()
+	cfg := a.config
+	a.mu.Unlock()
+	client, err := node.New(node.Config{
+		DataDir:       a.opts.DataDir,
+		Version:       a.opts.Version,
+		AllowInsecure: cfg.AllowInsecureLocalHub,
+		Logger:        a.opts.Logger,
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if _, err := client.Connect(ctx, req.HubURL, req.Token, req.MachineName); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	a.mu.Lock()
+	a.config.HubURL = req.HubURL
+	a.config.MachineName = req.MachineName
+	cfg = a.config
+	a.mu.Unlock()
+	if err := saveLocalConfig(a.opts.DataDir, cfg); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, err)
+		return
+	}
+	a.restartRuntime()
+	writeJSON(w, http.StatusOK, a.snapshot())
+}
+
+func (a *App) handleExit(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	cancel := a.cancel
+	a.mu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{"stopping": true})
+	if cancel != nil {
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			cancel()
+		}()
+	}
+}
+
+func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
+	var req configRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err)
+		return
+	}
+	next := LocalConfig{
+		Version:               localConfigVersion,
+		HubURL:                strings.TrimSpace(req.HubURL),
+		MachineName:           strings.TrimSpace(req.MachineName),
+		BrowserSidecarDir:     strings.TrimSpace(req.BrowserSidecarDir),
+		LocalBridgeEnabled:    req.LocalBridgeEnabled,
+		AllowInsecureLocalHub: req.AllowInsecureLocalHub,
+	}
+	if next.MachineName == "" {
+		writeAPIError(w, http.StatusBadRequest, errors.New("设备名称不能为空"))
+		return
+	}
+	if err := saveLocalConfig(a.opts.DataDir, next); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	a.mu.Lock()
+	old := a.config
+	a.config = next
+	a.mu.Unlock()
+	if old.BrowserSidecarDir != next.BrowserSidecarDir || old.LocalBridgeEnabled != next.LocalBridgeEnabled || old.AllowInsecureLocalHub != next.AllowInsecureLocalHub {
+		a.restartRuntime()
+	}
+	writeJSON(w, http.StatusOK, a.snapshot())
+}
+
+func (a *App) handleWorkspaceAdd(w http.ResponseWriter, r *http.Request) {
+	var req workspaceAddRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err)
+		return
+	}
+	if len(req.Path) > 4096 || len(req.Name) > 128 {
+		writeAPIError(w, http.StatusBadRequest, errors.New("工作区参数过长"))
+		return
+	}
+	record, err := node.NewWorkspaceStore(a.opts.DataDir).Add(req.Path, req.Name)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"workspace": record, "status": a.snapshot()})
+}
+
+func (a *App) handleWorkspaceAction(w http.ResponseWriter, r *http.Request) {
+	var req workspaceActionRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err)
+		return
+	}
+	if len(req.WorkspaceID) > 256 || len(req.Origin) > 2048 || len(req.Permissions) > 16 {
+		writeAPIError(w, http.StatusBadRequest, errors.New("工作区参数无效"))
+		return
+	}
+	store := node.NewWorkspaceStore(a.opts.DataDir)
+	var err error
+	switch req.Action {
+	case "set_enabled":
+		err = store.SetEnabled(req.WorkspaceID, req.Enabled)
+	case "set_permissions":
+		err = store.SetPermissions(req.WorkspaceID, req.Permissions)
+	case "remove":
+		err = store.Remove(req.WorkspaceID)
+	case "browser_allow":
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		_, err = store.AuthorizeBrowserOrigin(ctx, req.WorkspaceID, req.Origin)
+		cancel()
+	case "browser_remove":
+		err = store.RevokeBrowserOrigin(req.WorkspaceID, req.Origin)
+	default:
+		err = errors.New("unknown workspace action")
+	}
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, a.snapshot())
+}
+
+func (a *App) snapshot() statusResponse {
+	a.mu.Lock()
+	cfg := a.config
+	runtimeOwned := a.runtimeOwned
+	runtimeStatus := a.runtimeStatus
+	runtimeError := a.runtimeError
+	a.mu.Unlock()
+
+	response := statusResponse{
+		Version:              a.opts.Version,
+		DataDir:              a.opts.DataDir,
+		RegistrationMode:     "connection_token",
+		ConfigurationScope:   "local_node",
+		RuntimeCredential:    "device_key",
+		ConnectionTokenSaved: false,
+		RuntimeOwned:         runtimeOwned,
+		RuntimeStatus:        runtimeStatus,
+		RuntimeError:         runtimeError,
+		Config:               cfg,
+	}
+	state, err := node.LoadState(filepath.Join(a.opts.DataDir, "state.json"))
+	if err == nil {
+		response.Registered = true
+		response.MachineID = state.MachineID
+		response.HubURL = state.HubURL
+		response.HubFingerprint = state.HubFingerprint
+	}
+	workspaces, err := node.NewWorkspaceStore(a.opts.DataDir).ListLocal()
+	if err == nil {
+		response.Workspaces = workspaces
+	}
+	return response
+}
+
+func (a *App) startRuntime() {
+	a.mu.Lock()
+	if !a.runtimeOwned {
+		a.runtimeStatus = "external_running"
+		a.mu.Unlock()
+		return
+	}
+	if a.runtimeCancel != nil || a.ctx == nil {
+		a.mu.Unlock()
+		return
+	}
+	if _, err := node.LoadState(filepath.Join(a.opts.DataDir, "state.json")); err != nil {
+		if errors.Is(err, node.ErrNotRegistered) {
+			a.runtimeStatus = "not_registered"
+			a.runtimeError = ""
+		} else {
+			a.runtimeStatus = "error"
+			a.runtimeError = err.Error()
+		}
+		a.mu.Unlock()
+		return
+	}
+	cfg := a.config
+	runCtx, cancel := context.WithCancel(a.ctx)
+	done := make(chan struct{})
+	a.runtimeCancel = cancel
+	a.runtimeDone = done
+	a.runtimeStatus = "starting"
+	a.runtimeError = ""
+	a.mu.Unlock()
+
+	go func() {
+		defer close(done)
+		agentController := agent.New(a.opts.DataDir, a.opts.Logger)
+		client, err := node.New(node.Config{
+			DataDir:           a.opts.DataDir,
+			Version:           a.opts.Version,
+			AllowInsecure:     cfg.AllowInsecureLocalHub,
+			BrowserSidecarDir: cfg.BrowserSidecarDir,
+			Agent:             agentController,
+			Logger:            a.opts.Logger,
+			ConnectionStatus:  a.setConnectionStatus,
+		})
+		if err != nil {
+			a.setConnectionStatus(node.ConnectionStatus{State: "error", Error: err.Error()})
+			a.clearRuntime(done)
+			return
+		}
+		if cfg.LocalBridgeEnabled {
+			go func() {
+				if bridgeErr := localbridge.Run(runCtx, a.opts.DataDir, client.HandleLocalCapability); bridgeErr != nil && runCtx.Err() == nil {
+					a.opts.Logger.Error("local bridge stopped", "endpoint", localbridge.Endpoint(a.opts.DataDir), "error", bridgeErr)
+				}
+			}()
+		}
+		if err := client.Run(runCtx); err != nil && !errors.Is(err, context.Canceled) {
+			a.setConnectionStatus(node.ConnectionStatus{State: "error", Error: err.Error()})
+		}
+		a.clearRuntime(done)
+	}()
+}
+
+func (a *App) clearRuntime(done chan struct{}) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.runtimeDone == done {
+		a.runtimeCancel = nil
+		a.runtimeDone = nil
+	}
+}
+
+func (a *App) setConnectionStatus(status node.ConnectionStatus) {
+	a.mu.Lock()
+	a.runtimeStatus = status.State
+	a.runtimeError = status.Error
+	a.mu.Unlock()
+}
+
+func (a *App) stopRuntime() {
+	a.mu.Lock()
+	cancel := a.runtimeCancel
+	done := a.runtimeDone
+	a.runtimeCancel = nil
+	a.runtimeDone = nil
+	a.mu.Unlock()
+	if cancel == nil {
+		return
+	}
+	cancel()
+	if done == nil {
+		return
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		a.opts.Logger.Warn("Node runtime did not stop within timeout")
+	}
+}
+
+func (a *App) restartRuntime() {
+	a.stopRuntime()
+	a.startRuntime()
+}
+
+func decodeJSON(r *http.Request, output any) error {
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type"))), "application/json") {
+		return errors.New("content type must be application/json")
+	}
+	decoder := json.NewDecoder(io.LimitReader(r.Body, maxUIRequestBytes+1))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(output); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return errors.New("request must contain one JSON value")
+	}
+	return nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, value any) {
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
+}
+
+func writeAPIError(w http.ResponseWriter, status int, err error) {
+	writeJSON(w, status, map[string]any{"error": err.Error()})
+}
+
+func existingUIHealthy() bool {
+	client := &http.Client{Timeout: time.Second}
+	resp, err := client.Get("http://" + defaultListenAddress + "/healthz")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK && resp.Header.Get("X-Fast-Spider-UI") == "1"
+}

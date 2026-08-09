@@ -17,18 +17,22 @@ import (
 	"github.com/isguang2024/fast-spider/internal/agent"
 	"github.com/isguang2024/fast-spider/internal/localbridge"
 	"github.com/isguang2024/fast-spider/internal/node"
+	"github.com/isguang2024/fast-spider/internal/nodeinstance"
+	"github.com/isguang2024/fast-spider/internal/nodeui"
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 	"github.com/isguang2024/fast-spider/internal/version"
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		usage()
-		os.Exit(2)
-	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	if len(os.Args) < 2 {
+		launchDefaultUI(logger)
+		return
+	}
 
 	switch os.Args[1] {
+	case "ui":
+		runUI(logger, os.Args[2:])
 	case "connect":
 		runConnect(logger, os.Args[2:])
 	case "run":
@@ -69,6 +73,17 @@ func main() {
 	}
 }
 
+func runUI(logger *slog.Logger, args []string) {
+	fs := flag.NewFlagSet("ui", flag.ExitOnError)
+	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
+	_ = fs.Parse(args)
+	app, err := nodeui.New(nodeui.Options{DataDir: *dataDir, Version: version.Version, MachineName: hostname(), Logger: logger})
+	fatalIf(err)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	fatalIf(app.Run(ctx))
+}
+
 func runConnect(logger *slog.Logger, args []string) {
 	fs := flag.NewFlagSet("connect", flag.ExitOnError)
 	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
@@ -83,6 +98,9 @@ func runConnect(logger *slog.Logger, args []string) {
 	if *hubURL == "" || *token == "" {
 		fatalIf(errors.New("connect requires --hub and --token"))
 	}
+	lease, err := nodeinstance.Acquire(*dataDir)
+	fatalIf(err)
+	defer lease.Close()
 	client, err := node.New(node.Config{
 		DataDir: *dataDir, Version: version.Version, AllowInsecure: *allowInsecure, Logger: logger,
 	})
@@ -95,17 +113,19 @@ func runConnect(logger *slog.Logger, args []string) {
 	if *noRun {
 		return
 	}
-	runArgs := []string{"--data-dir", *dataDir}
-	if *allowInsecure {
-		runArgs = append(runArgs, "--allow-insecure")
-	}
-	if *browserSidecarDir != "" {
-		runArgs = append(runArgs, "--browser-sidecar-dir", *browserSidecarDir)
-	}
-	if *disableLocalBridge {
-		runArgs = append(runArgs, "--disable-local-bridge")
-	}
-	runNode(logger, runArgs)
+	runNodeLocked(logger, nodeRunOptions{
+		dataDir:            *dataDir,
+		allowInsecure:      *allowInsecure,
+		browserSidecarDir:  *browserSidecarDir,
+		disableLocalBridge: *disableLocalBridge,
+	})
+}
+
+type nodeRunOptions struct {
+	dataDir            string
+	allowInsecure      bool
+	browserSidecarDir  string
+	disableLocalBridge bool
 }
 
 func runNode(logger *slog.Logger, args []string) {
@@ -115,18 +135,30 @@ func runNode(logger *slog.Logger, args []string) {
 	browserSidecarDir := fs.String("browser-sidecar-dir", "", "optional Playwright sidecar directory; defaults to FAST_SPIDER_BROWSER_SIDECAR_DIR or ./sidecar/browser")
 	disableLocalBridge := fs.Bool("disable-local-bridge", false, "disable the current-user AF_UNIX Local Bridge")
 	_ = fs.Parse(args)
-	agentController := agent.New(*dataDir, logger)
-	client, err := node.New(node.Config{DataDir: *dataDir, Version: version.Version, AllowInsecure: *allowInsecure, BrowserSidecarDir: *browserSidecarDir, Agent: agentController, Logger: logger})
+	lease, err := nodeinstance.Acquire(*dataDir)
+	fatalIf(err)
+	defer lease.Close()
+	runNodeLocked(logger, nodeRunOptions{
+		dataDir:            *dataDir,
+		allowInsecure:      *allowInsecure,
+		browserSidecarDir:  *browserSidecarDir,
+		disableLocalBridge: *disableLocalBridge,
+	})
+}
+
+func runNodeLocked(logger *slog.Logger, opts nodeRunOptions) {
+	agentController := agent.New(opts.dataDir, logger)
+	client, err := node.New(node.Config{DataDir: opts.dataDir, Version: version.Version, AllowInsecure: opts.allowInsecure, BrowserSidecarDir: opts.browserSidecarDir, Agent: agentController, Logger: logger})
 	fatalIf(err)
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithCancel(signalCtx)
 	defer cancel()
-	if !*disableLocalBridge {
-		logger.Info("local bridge enabled", "endpoint", localbridge.Endpoint(*dataDir))
+	if !opts.disableLocalBridge {
+		logger.Info("local bridge enabled", "endpoint", localbridge.Endpoint(opts.dataDir))
 		go func() {
-			if bridgeErr := localbridge.Run(ctx, *dataDir, client.HandleLocalCapability); bridgeErr != nil && ctx.Err() == nil {
-				logger.Error("local bridge stopped", "endpoint", localbridge.Endpoint(*dataDir), "error", bridgeErr)
+			if bridgeErr := localbridge.Run(ctx, opts.dataDir, client.HandleLocalCapability); bridgeErr != nil && ctx.Err() == nil {
+				logger.Error("local bridge stopped", "endpoint", localbridge.Endpoint(opts.dataDir), "error", bridgeErr)
 			}
 		}()
 	}
@@ -374,5 +406,5 @@ func fatalIf(err error) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: fast-spider-node <connect|run|status|local-call|workspace-add|workspace-list|workspace-enable|workspace-disable|workspace-permission|workspace-profile-set|workspace-profile-list|workspace-profile-remove|workspace-browser-allow|workspace-browser-list|workspace-browser-remove|workspace-remove|version> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: fast-spider-node <ui|connect|run|status|local-call|workspace-add|workspace-list|workspace-enable|workspace-disable|workspace-permission|workspace-profile-set|workspace-profile-list|workspace-profile-remove|workspace-browser-allow|workspace-browser-list|workspace-browser-remove|workspace-remove|version> [flags]")
 }

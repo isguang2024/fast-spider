@@ -200,6 +200,7 @@ subjects × machines × workspaces × capabilities × actions × origins × risk
 测试进程内/本机真实 WSS：
 
 - 连接令牌创建、有效期、撤销、明文只展示一次以及仅机器登记权限。
+- 同一个有效连接令牌可登记两台独立 Node，得到不同 machineId；令牌不绑定设备且不写入 Node `config.json/state.json`。
 - 同一设备公钥的登记重试、设备撤销后重新登记、Workspace Registry 保留。
 - 设备 challenge、credential 轮换、overlap、吊销。
 - 同 machine 双连接 generation 替换。
@@ -218,6 +219,7 @@ subjects × machines × workspaces × capabilities × actions × origins × risk
 - 使用官方 MCP SDK conformance 测试固定版本。
 - 工具列表不随机器数重复增长。
 - 工具 Schema 大小、描述和必需字段。
+- `machine_list/machine_get` 返回 `connection_token/local_node/device_key` 连接模型且 `connectionTokenSaved=false`，不泄露连接令牌或本机路径。
 - 工具直接使用 machineId/workspaceId；不依赖 `workspace_open` 或短期 Context 才能保证权限收紧生效。
 - 长任务返回 jobId；watch cursor 正常恢复。
 - 绝对路径、任意 flags、未知 action 被拒绝。
@@ -226,6 +228,14 @@ subjects × machines × workspaces × capabilities × actions × origins × risk
 - body/JSON 深度/数组限制和 413/429。
 
 测试内部 FSWP 不直接暴露在 MCP/API。
+
+## 12.1 Node 本地 UI 测试
+
+- 本地 UI 只绑定 loopback；同一 data-dir 的 `ui/run/connect` 运行锁互斥。第二次 UI 启动只唤起已有界面；已有 CLI `run` 时 UI 不启动第二条 Hub 连接，并禁止重新登记。
+- 本地写 API 必须携带进程随机 UI secret，跨 Origin 请求被拒绝。
+- 连接页使用真实 Hub 登记后，`config.json/state.json` 不出现 `ctk_` 或明文连接令牌。
+- `config.json`、Workspace、权限和 Browser Origin 均为每台 Node 本地状态，不要求 Hub 保存本机绝对路径。
+- Windows amd64 正式构建双击后可打开独立应用窗口；高级 `ui/connect/run` CLI 仍可用。
 
 ## 13. Local Bridge 测试
 

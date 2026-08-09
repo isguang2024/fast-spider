@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 它通过长期部署在公网服务器上的 Hub，将 GPT、Claude、Codex、Web Console、CLI 或其他自动化客户端的请求，安全路由到用户明确授权的 Windows、Linux，未来也包括 macOS 节点。Node 只主动建立 HTTPS/WSS 443 出站连接，不默认开放局域网或公网端口。
 
-> 当前状态：Phase 1–8 已形成完整可运行闭环。Node 本机入口使用当前用户数据目录下的 AF_UNIX socket，Windows/Linux 共用同一实现，不监听 TCP，也不维护本地 Client 注册/Token/Grant。Codex 直接使用本机 `codex app-server --stdio`。运维主线已收敛为版本检查和 `spiderctl backup / backup-verify / restore`；发布前使用 `scripts/release-gate.sh` 复验，不建设安装器、托盘或自动更新服务。
+> 当前状态：Phase 1–8 已形成完整可运行闭环。Windows Node 默认双击打开一个轻量本地控制界面，连接、每机配置和 Workspace/权限都在本机管理；Local Bridge 仍使用当前用户 AF_UNIX/UDS，不建立本地 Client 注册/Grant。Node 对 Hub 只主动出站，唯一 TCP 监听是 `127.0.0.1` 本地 UI，不承载 MCP/Capability。Codex 直接使用本机 `codex app-server --stdio`。运维主线保持版本检查和 `spiderctl backup / backup-verify / restore`，不引入 Electron、托盘服务或自动更新状态机。
 
 ## 核心定位
 
@@ -37,7 +37,8 @@ Fast Spider 不是远程桌面，也不是通用内网穿透软件：
 | Hub 数据库 | SQLite WAL，预留 PostgreSQL 迁移接口 |
 | Artifact | Hub 本地内容寻址文件存储，元数据入库 |
 | Web Console | 静态资源嵌入 Hub |
-| Local Bridge | Windows/Linux 统一 AF_UNIX socket；无 TCP 端口，loopback HTTP 不进入首版 |
+| Node 本地 UI | 同一 Go Node 内置 loopback 管理页；Windows 用 Edge app window 打开 |
+| Local Bridge | Windows/Linux 统一 AF_UNIX socket；不使用本地 HTTP/MCP |
 | 浏览器 | 隔离 Profile，优先 Playwright Adapter |
 | MCP | 固定常用工具 + 动态能力发现的混合模式 |
 
@@ -106,20 +107,21 @@ go run ./cmd/spiderctl setup-url \
   --bootstrap-token-file ./data/bootstrap-token
 # 在浏览器打开输出的 /setup#code=... 链接；完成后进入 /app 后台。
 
-# 3. 在 /app 后台生成一个连接令牌，然后 Node 填写该令牌完成首次登记并立即运行。
-# 令牌只用于这次登记，成功后不会保存在 Node；后续连接使用本机设备私钥。
-go run ./cmd/node connect \
-  --hub http://127.0.0.1:8787 \
-  --allow-insecure \
-  --token '<连接令牌>' \
-  --name dev-node
+# 3. 在 /app 后台生成一个连接令牌，然后直接打开 Node 本地客户端界面。
+# Windows 双击 fast-spider-node.exe 即可；源码运行可执行：
+go run ./cmd/node ui
+# 在“连接”页填写 Hub 地址、连接令牌和设备名称。连接令牌不绑定某台设备，
+# 可在有效期内给同一账户下多台 Node 重复使用；Node 登记成功后不会保存令牌。
+# 高级 CLI 仍可直接登记：
+# go run ./cmd/node connect --hub http://127.0.0.1:8787 --allow-insecure --token '<连接令牌>' --name dev-node
 
 # 4. 在 Node 本机授权代码目录；真实绝对路径只保存在 Node 本机
 go run ./cmd/node workspace-add \
   --path 'V:/repos/GitHub/example' \
   --name example
 
-# 5. 新 Workspace 默认只有 read；危险能力必须在 Node 本机显式授权
+# 5. 新 Workspace 默认只有 read；危险能力必须在 Node 本机显式授权。
+# 推荐直接在 Node 本地客户端“工作区”页添加目录和勾选权限；配置只保存在这台电脑。
 # 本机 workspace-list 会显示真实授权 Root 供用户核对；远程 MCP workspace_list 永远不返回绝对路径。
 # go run ./cmd/node workspace-list
 # 文件编辑 + Shell：
@@ -145,9 +147,10 @@ go run ./cmd/node workspace-add \
 # npx playwright install chromium
 # cd ../..
 #
-# Node 首次 connect 默认会在登记完成后直接进入运行状态；以后只需：
-# Local Bridge 默认同时启动且不占 TCP 端口；如明确不需要可增加 --disable-local-bridge。
+# Node 本地客户端会在登记成功后自动进入运行状态，关闭 UI 窗口也可继续常驻；
+# 再次双击会重新打开已有本地界面。Local Bridge 默认启用，可在“本地配置”页关闭。
 # Codex AI 能力直接探测本机 codex CLI；无需单独启动 daemon/agent-service。
+# 高级/无界面运行仍可使用：
 go run ./cmd/node run --allow-insecure --browser-sidecar-dir ./sidecar/browser
 #
 # 本机可直接复用同一 Capability Engine，例如读取 Workspace：
@@ -168,9 +171,9 @@ go run ./cmd/node version
 go run ./cmd/spiderctl version
 ```
 
-远程 MCP 当前固定工具面为 16 个：`machine_list`、`machine_get`、`capability_list`、`workspace_list`、`file_read`、`code_search`、`file_edit`、`shell_run`、`job_watch`、`job_cancel`、`git_control`、`build_control`、`artifact_get`、`browser_control`、`screenshot_take`、`ai_control`。这些都是 Fast Spider MCP Server 的真实能力；GPT、Claude 或其他 MCP Host 只是调用工具，实际文件修改、Shell、Git、Build、Browser 和 AI 执行都发生在 Node，并继续受 Node 本机 Workspace/危险能力边界约束。工具通过标准 MCP annotations 标记 read-only/destructive/idempotent/open-world 语义，不因某个客户端类型主动删减工具。
+远程 MCP 当前固定工具面为 16 个：`machine_list`、`machine_get`、`capability_list`、`workspace_list`、`file_read`、`code_search`、`file_edit`、`shell_run`、`job_watch`、`job_cancel`、`git_control`、`build_control`、`artifact_get`、`browser_control`、`screenshot_take`、`ai_control`。这些都是 Fast Spider MCP Server 的真实能力；GPT、Claude 或其他 MCP Host 只是调用工具，实际文件修改、Shell、Git、Build、Browser 和 AI 执行都发生在 Node，并继续受 Node 本机 Workspace/危险能力边界约束。`machine_list/machine_get` 会明确返回 `registrationMode=connection_token`、`configurationScope=local_node`、`runtimeCredential=device_key` 和 `connectionTokenSaved=false`，但永远不会返回连接令牌明文。工具通过标准 MCP annotations 标记 read-only/destructive/idempotent/open-world 语义，不因某个客户端类型主动删减工具。
 
-公网 MCP 使用标准 OAuth。生产建议配置 `--public-base-url https://host.example/path-prefix`；OAuth 使用动态 Client Registration + Authorization Code + PKCE S256。GPT 或其他 MCP 客户端发起连接后跳转 Fast Spider 登录页，登录管理员账户并点击“允许连接”即可。MCP 只使用 `fast-spider` scope；Hub 为 MCP 签发 1 小时 Access Token 和可轮换的 30 天 Refresh Token，后台 `/app` 以列表显示 MCP 客户端、授权创建时间、最近使用、到期与撤销状态，明文 OAuth Token 不会被重复展示。Node 不参与 OAuth：管理员在后台创建连接令牌，Node 首次 `connect` 时填写一次，登记成功后只保存设备身份和 Hub 指纹，后续 WSS 使用设备私钥。连接令牌不能调用 MCP 或旧管理 REST。账户页支持修改密码，并会保留当前浏览器、注销其他 Web Session，但不会误删已批准的 OAuth 授权。当前仍是单 Owner，不建立多租户或复杂角色系统。带 path-prefix 部署时，反向代理还应把标准 `/.well-known/oauth-protected-resource/<resource-path>` 与 `/.well-known/oauth-authorization-server/<issuer-path>` 路由到同一个 Hub。
+公网 MCP 使用标准 OAuth。生产建议配置 `--public-base-url https://host.example/path-prefix`；OAuth 使用动态 Client Registration + Authorization Code + PKCE S256。GPT 或其他 MCP 客户端发起连接后跳转 Fast Spider 登录页，登录管理员账户并点击“允许连接”即可。MCP 只使用 `fast-spider` scope；Hub 为 MCP 签发 1 小时 Access Token 和可轮换的 30 天 Refresh Token，后台 `/app` 以列表显示 MCP 客户端、授权创建时间、最近使用、到期与撤销状态，明文 OAuth Token 不会被重复展示。Node 不参与 OAuth：管理员在后台创建可复用连接令牌，Node 本地客户端填写它完成登记；令牌只决定新设备归属哪个 Owner，不与单台设备绑定，也不会写入 Node 本地配置。登记后 Node 只保存设备身份和 Hub 指纹，后续 WSS 使用设备私钥。连接令牌不能调用 MCP 或旧管理 REST。账户页支持修改密码，并会保留当前浏览器、注销其他 Web Session，但不会误删已批准的 OAuth 授权。当前仍是单 Owner，不建立多租户或复杂角色系统。带 path-prefix 部署时，反向代理还应把标准 `/.well-known/oauth-protected-resource/<resource-path>` 与 `/.well-known/oauth-authorization-server/<issuer-path>` 路由到同一个 Hub。
 
 `browser_control` 仍是一个固定工具，通过 action 选择 launch/open/navigate/click/type/press/wait/snapshot/screenshot/events/close；不暴露任意 JavaScript、CDP 或 Playwright API。公网浏览默认可用，本地/私网 Origin 由 Node 本机持久白名单控制。`screenshot_take` 当前开放 `listDisplays/desktop/display/listWindows/window`，不再要求独立截图权限；窗口只需先列出一次拿 opaque `windowId`，结果同样只返回 Artifact。具体 Node 只有在 Sidecar、Playwright npm 包和受管 Chromium 都安装完成时才宣告 `browser.automation`。`ai_control` 当前实现本机 Codex 的 `providers/models/projects/session.*`；创建或继续 Codex Run 复用 Workspace 现有 `write + shell` 权限，不新增单独 `agent` 权限。未指定模型时从当前 `codex model/list` 自动选择可用模型，避免本机默认模型与旧 CLI 不兼容导致 Session 直接失败。
 

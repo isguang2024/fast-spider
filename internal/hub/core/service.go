@@ -79,17 +79,21 @@ type CapabilityCallError struct {
 func (e *CapabilityCallError) Error() string { return e.Code + ": " + e.Message }
 
 type MachineView struct {
-	MachineID     string                            `json:"machineId"`
-	DisplayName   string                            `json:"displayName"`
-	Status        string                            `json:"status"`
-	Online        bool                              `json:"online"`
-	RuntimeStatus string                            `json:"runtimeStatus,omitempty"`
-	OS            string                            `json:"os"`
-	Arch          string                            `json:"arch"`
-	NodeVersion   string                            `json:"nodeVersion"`
-	Generation    int64                             `json:"generation"`
-	LastSeenAt    *time.Time                        `json:"lastSeenAt,omitempty"`
-	Capabilities  []protocolv1.CapabilityDescriptor `json:"capabilities,omitempty"`
+	MachineID            string                            `json:"machineId"`
+	DisplayName          string                            `json:"displayName"`
+	Status               string                            `json:"status"`
+	Online               bool                              `json:"online"`
+	RuntimeStatus        string                            `json:"runtimeStatus,omitempty"`
+	OS                   string                            `json:"os"`
+	Arch                 string                            `json:"arch"`
+	NodeVersion          string                            `json:"nodeVersion"`
+	Generation           int64                             `json:"generation"`
+	LastSeenAt           *time.Time                        `json:"lastSeenAt,omitempty"`
+	RegistrationMode     string                            `json:"registrationMode"`
+	ConfigurationScope   string                            `json:"configurationScope"`
+	RuntimeCredential    string                            `json:"runtimeCredential"`
+	ConnectionTokenSaved bool                              `json:"connectionTokenSaved"`
+	Capabilities         []protocolv1.CapabilityDescriptor `json:"capabilities,omitempty"`
 }
 
 func New(st *store.Store, reg *registry.Registry, cfg Config) (*Service, error) {
@@ -287,6 +291,8 @@ func (s *Service) machineViewWithCapabilities(rec store.MachineRecord, capabilit
 		MachineID: rec.ID, DisplayName: rec.DisplayName, Status: rec.Status,
 		OS: rec.OS, Arch: rec.Arch, NodeVersion: rec.NodeVersion,
 		Generation: rec.LastConnectionGeneration, LastSeenAt: rec.LastSeenAt,
+		RegistrationMode: "connection_token", ConfigurationScope: "local_node",
+		RuntimeCredential: "device_key", ConnectionTokenSaved: false,
 		Capabilities: capabilities,
 	}
 	if snap, ok := s.registry.Get(rec.ID); ok && rec.Status == "active" {

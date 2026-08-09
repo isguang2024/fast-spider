@@ -69,9 +69,17 @@ FAST_SPIDER_OAUTH_REDIRECT_HOSTS=chatgpt.com,localhost,127.0.0.1,::1
 
 模板不包含安装器或更新逻辑，只负责启动这一个进程。
 
-## 4. Node 唯一入口
+## 4. Node 本地入口
 
-Windows/Linux Node 首次连接使用后台生成的连接令牌：
+Windows 日常使用直接双击 `fast-spider-node.exe`。客户端会打开一个简单本地窗口，在“连接”页填写 Hub 地址、后台生成的连接令牌和设备名称即可；无需客户端网页登录。源码/其他桌面环境也可显式运行：
+
+```bash
+fast-spider-node ui --data-dir <node-data-dir>
+```
+
+连接令牌属于 Owner，不绑定某一台设备；同一个仍有效的令牌可以给当前账户下多台 Node 重复登记。Node 登记成功后不会把令牌写入状态或本地配置，只保存自己的设备身份和 Hub 指纹，随后使用设备私钥持续连接。
+
+CLI 保留给高级或无界面场景：
 
 ```bash
 fast-spider-node connect \
@@ -81,9 +89,7 @@ fast-spider-node connect \
   --data-dir <node-data-dir>
 ```
 
-连接令牌只用于首次机器登记，成功后不会写入 Node 状态。Node 保存设备身份和 Hub 指纹，随后直接进入运行状态；以后不需要再次填写连接令牌，除非设备被后台撤销后重新登记。
-
-后续启动命令仍只有：
+无界面常驻仍可直接运行：
 
 ```bash
 fast-spider-node run --data-dir <node-data-dir>
@@ -95,13 +101,9 @@ fast-spider-node run --data-dir <node-data-dir>
 --browser-sidecar-dir <sidecar/browser>
 ```
 
-Local Bridge 默认随 Node 启动；明确不需要时使用：
+Local Bridge 默认随 Node 启动；桌面客户端可在“本地配置”页直接关闭。无界面模式仍支持 `--disable-local-bridge`。
 
-```text
---disable-local-bridge
-```
-
-当前不提供 Windows 托盘安装器、SYSTEM service 或第二套后台 Agent。Windows 自启动如果实际需要，可由用户的登录启动项/任务计划管理这个同一命令；Linux Node 可直接复制 `packaging/systemd/fast-spider-node.service` 到 `~/.config/systemd/user/`，它仍只运行同一个 `fast-spider-node run`。模板不覆盖 PATH 或 umask，避免改变项目构建环境；如果 systemd 用户环境找不到 Codex/Go/npm 等工具，用用户自己的 systemd override 设置完整 PATH 即可，不需要增加 Fast Spider Provider 配置层。
+本地控制 UI 不引入 Electron、Wails、托盘服务或第二套 Agent。Windows 使用当前 Node 进程在 `127.0.0.1` 提供只面向本机的管理页面，并用 Edge application window 打开。同一 data-dir 的 `ui/run/connect` 共用轻量运行锁，避免两个进程用同一设备密钥争抢 Hub generation；重复双击只重新打开已有 UI。迁移时如果旧 CLI `run` 仍在，UI 可以打开但不会启动第二条设备连接，并会提示先停止旧进程。关闭窗口不等于退出由 UI 持有的 Node，需要停止时使用“退出客户端”。Windows 自启动如果实际需要，可由当前用户登录启动项/任务计划管理同一个客户端；Linux Node 可继续用 user-level systemd 运行 `fast-spider-node run`。模板不覆盖 PATH 或 umask。
 
 ## 5. 数据目录
 
@@ -125,6 +127,7 @@ Hub 的所有持久事实收口到一个目录，例如：
 
 ```text
 FastSpider/node/
+├─ config.json        # 仅本机客户端设置，不含连接令牌
 ├─ state.json
 ├─ secrets/
 ├─ workspaces.json
@@ -151,12 +154,12 @@ Node data-dir 不应放到多人共享网络盘。
 
 3. 直接在浏览器打开输出的 `/setup#code=...` 链接，创建管理员用户名和密码；fragment 不会进入普通 HTTP/Nginx access log，设置完成后 bootstrap code 立即失效并删除。
 4. 打开 `/app` 后台，确认 Hub 状态并创建一个连接令牌。
-5. 在 Node 本机执行 `fast-spider-node connect --hub <public-base-url> --token <connection-token> --name <display-name>`。
-6. Node 完成机器登记并自动上线；后台设备列表出现该机器。
-7. 在 Node 本机添加 Workspace 和所需危险权限。
-8. 后续只运行 `fast-spider-node run`，或由当前用户登录启动项/systemd user unit 启动同一进程。设备被后台撤销后，再用一个有效连接令牌执行 `connect` 即可重新登记；Workspace Registry 不需要删除或重建。
+5. 双击 Windows `fast-spider-node.exe`（或运行 `fast-spider-node ui`），在本地“连接”页填写 Hub、连接令牌和设备名称。
+6. Node 完成机器登记并自动上线；后台设备列表出现该机器。连接令牌输入值不会保存到 Node。
+7. 在本地“工作区”页添加目录并勾选需要的 `write/shell/git-*/build` 权限；这些路径和权限只保存在该客户端。
+8. 后续客户端自动使用本机设备身份重连；设备被后台撤销后，可以继续使用任一有效连接令牌重新登记，Workspace Registry 不需要删除或重建。无界面机器仍可使用 `connect/run` CLI。
 
-后台 `/app` 管理设备、MCP OAuth 授权、已授权客户端、连接令牌和账户密码。连接令牌明文只在创建页展示一次，只允许 Node 机器登记；GPT 不使用连接令牌，继续走标准 OAuth。修改密码会注销其他 Web Session，但保留当前会话和已批准的 OAuth 授权。`spiderctl` 只保留 setup URL、备份/校验/恢复和版本命令，不再提供 Owner Token、enrollment 或机器管理兼容命令。任何 Token、密码或 Session Cookie 都不写进仓库或普通日志。
+后台 `/app` 管理设备、MCP OAuth 授权、已授权客户端、连接令牌和账户密码。连接令牌明文只在创建页展示一次，但令牌本身不是一次性消费品：只要仍有效且未撤销，就可以登记该 Owner 下多台 Node；它只允许机器登记。GPT 不使用连接令牌，继续走标准 OAuth。修改密码会注销其他 Web Session，但保留当前会话和已批准的 OAuth 授权。`spiderctl` 只保留 setup URL、备份/校验/恢复和版本命令，不再提供 Owner Token、enrollment 或机器管理兼容命令。任何 Token、密码或 Session Cookie 都不写进仓库或普通日志。
 
 migration `005_connection_tokens.sql` 会清空全部旧 Owner API/PAT Token、清理旧无 authorization 的 OAuth Token 和旧 `device-connect` OAuth 客户端，并删除 `enrollment_tokens` 表；随后把空的历史 `owner_api_tokens` 表重命名为 `connection_tokens`。升级后必须从后台重新生成 `ctk_` 连接令牌，这是一次明确收敛，不保留长期兼容分支。
 

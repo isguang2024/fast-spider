@@ -59,6 +59,48 @@ func TestNodeConnectUsesConnectionTokenWithoutOAuth(t *testing.T) {
 	}
 }
 
+func TestConnectionTokenCanRegisterMultipleIndependentNodes(t *testing.T) {
+	fixture := newNodeConnectFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	token, err := fixture.service.CreateConnectionToken(ctx, fixture.account.OwnerID, "Shared Device Token", 90*24*time.Hour, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstClient, err := node.New(node.Config{DataDir: t.TempDir(), Version: "node-token-reuse-test", AllowInsecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondClient, err := node.New(node.Config{DataDir: t.TempDir(), Version: "node-token-reuse-test", AllowInsecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := firstClient.Connect(ctx, fixture.httpServer.URL, token.Token, "First Node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := secondClient.Connect(ctx, fixture.httpServer.URL, token.Token, "Second Node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.MachineID == second.MachineID {
+		t.Fatalf("reused token returned the same machine ID %q", first.MachineID)
+	}
+	machines, err := fixture.service.ListMachines(ctx, fixture.account.OwnerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(machines) != 2 {
+		t.Fatalf("reused connection token registered %d machines, want 2", len(machines))
+	}
+	for _, machine := range machines {
+		if machine.RegistrationMode != "connection_token" || machine.ConfigurationScope != "local_node" || machine.RuntimeCredential != "device_key" || machine.ConnectionTokenSaved {
+			t.Fatalf("unexpected machine connection model: %+v", machine)
+		}
+	}
+}
+
 func TestNodeReconnectAfterRevokedMachinePreservesWorkspaceRegistry(t *testing.T) {
 	fixture := newNodeConnectFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)

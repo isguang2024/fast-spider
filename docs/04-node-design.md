@@ -6,22 +6,24 @@
 
 Node 默认：
 
-- 作为普通用户后台应用运行。
+- 作为普通用户桌面/后台应用运行。
 - 只建立到 Hub 的 HTTPS/WSS 443 出站连接。
-- 不监听公网或局域网端口。
-- Local Bridge 默认随 Node 启用；明确不需要时可用本机开关关闭。
+- 不监听公网或局域网端口；本地控制 UI 只绑定 `127.0.0.1`。
+- Local Bridge 默认随 Node 启用；明确不需要时可在本地界面关闭。
 - 不自动提权，不隐蔽运行。
 - 显示连接状态、授权目录和正在执行的高风险操作。
 
 ## 2. 进程模型
 
-MVP 使用单 Node 进程。当前不提供 Windows 托盘 UI 或第二个后台进程；如未来确有 UI 需求，也只能复用同一 Node 状态与权限逻辑。
+MVP 仍使用单 Node 进程，但已经提供一个很薄的本地控制 UI。UI 不使用 Electron/Wails，也不启动第二套 Agent：Node 只在 loopback 提供本地管理页面，Windows 用 Edge `--app` 窗口承载。页面和 CLI 共用同一 Node 状态、Workspace Registry 与权限逻辑。
 
 ### Windows
 
 - 当前只维护普通用户启动的单 Node 进程，不提供第二套 Windows Service/SYSTEM 模式。
-- 当前状态通过 CLI/Hub 查看；不为个人 MVP 维护托盘状态同步层。
-- 需要开机启动时使用当前用户启动项或任务计划运行同一个 `fast-spider-node run`，不改变权限语义。
+- 同一 data-dir 使用一个轻量跨进程运行锁，保证同一设备身份只有一个 Hub 运行实例；`ui`、`run`、`connect` 共用该边界。
+- 双击 `fast-spider-node.exe` 默认打开本地应用窗口；第二次双击只重新打开已有 UI，不启动第二个 Hub 运行实例。若迁移时旧 `run` 仍占用运行锁，UI 只打开管理界面并明确提示旧实例仍在运行，不会争抢 generation。
+- 关闭应用窗口不会隐式杀掉由该 UI 持有的 Node；需要停止时使用“退出客户端”。若是旧 CLI `run` 持有运行锁，UI 的按钮只关闭界面，不会假装停止外部进程。无界面服务器仍可直接运行 `fast-spider-node run`。
+- 需要开机启动时使用当前用户启动项或任务计划运行同一个客户端，不改变权限语义。
 
 ### Linux
 
@@ -33,6 +35,7 @@ MVP 使用单 Node 进程。当前不提供 Windows 托盘 UI 或第二个后台
 
 | 模块 | 责任 |
 |---|---|
+| Local UI | loopback-only 连接页、本地配置、Workspace/权限管理；不承载远程 Capability |
 | Connection Manager | Hub 信任、认证、WSS、重连、心跳、协议协商 |
 | Workspace Registry | 本地路径、opaque workspaceId、权限与生命周期 |
 | Path Guard | 规范化、打开时校验、symlink/junction/reparse point 防护 |
@@ -52,14 +55,15 @@ MVP 使用单 Node 进程。当前不提供 Windows 托盘 UI 或第二个后台
 ### Windows
 
 ```text
-%LOCALAPPDATA%\FastSpider\
-├─ config.json
-├─ state.db
-├─ credentials/
-├─ logs/
+<os.UserConfigDir()>\FastSpider\node\
+├─ config.json             # 本机 UI 设置，不含 connection token
+├─ state.json              # machineId / Hub 信任信息
+├─ workspaces.json         # 本机路径、权限、Build Profile、Browser Origin
+├─ secrets/
 ├─ jobs/
-├─ recovery-bin/
-└─ run/
+├─ artifacts/
+├─ browser/
+└─ local/bridge.sock
 ```
 
 ### Linux
@@ -74,7 +78,8 @@ MVP 使用单 Node 进程。当前不提供 Windows 托盘 UI 或第二个后台
 
 本地状态存储：
 
-- machineId、设备凭据引用、Hub 信任材料。
+- machineId、设备凭据引用、Hub 信任材料；连接令牌不落盘。
+- `config.json` 保存这台客户端自己的 Hub 默认地址、设备名、Local Bridge/Browser 等本地设置，不同步到 Hub。
 - Workspace Registry 和本地权限。
 - Job 执行摘要、idempotency 去重窗口和事件缓冲。
 - 更新和恢复状态；当前个人 MVP 不持久化通用逐次 Approval 状态。
@@ -263,7 +268,7 @@ MVP 默认调用本机 `git`：
 - Windows/Linux 都使用 Go 原生 AF_UNIX/UDS，endpoint 位于当前用户 Node data-dir。
 - Node 运行时默认启动 Local Bridge，可通过本机 `--disable-local-bridge` 关闭。
 - 当前 OS 用户与 data-dir 文件系统权限即本机信任边界；不注册 localClientId、公钥、Token 或独立 Grant。
-- 不监听 TCP/loopback HTTP，不存在 Host/Origin/CORS 配置负担。
+- Local Bridge 自身不监听 TCP/loopback HTTP。Node 本地控制 UI 是独立管理面，只绑定 `127.0.0.1`，不暴露 MCP/Capability；它使用进程随机 UI secret、same-origin 检查和 CSP 防普通网页直接调用。
 - 所有请求仍携带 workspaceId 和 action，并进入同一 Capability Dispatcher；危险操作继续复用现有 write/shell/git/build 权限和路径/资源检查。
 
 ## 13. 断线重连
@@ -295,11 +300,13 @@ sequenceDiagram
 
 ## 14. 本机可见性与紧急控制
 
-当前个人版只保留已经存在的简单控制面：
+当前个人版只保留一个简单本机控制面：
 
-- `status` 查看 Node 状态，`version` 查看版本。
-- `workspace-list/enable/disable/remove` 查看或收紧本机 Workspace 授权。
+- 默认本地 UI 显示连接状态、Machine ID、Hub 和 `connection_token / local_node / device_key` 模式。
+- “本地配置”管理设备名、Browser Sidecar、Local Bridge 等每机设置；连接令牌输入后不保存。
+- “工作区”管理本机目录、启停、危险权限和 Browser 私网 Origin；真实绝对路径不上传 Hub。
+- CLI `status/version/workspace-*` 继续作为高级/无界面入口。
 - 运行中的 Job 通过现有 Hub/MCP `job_watch/job_cancel` 查看和取消。
-- 需要立即停止接收任务时，停止当前 Node 进程；重新启动后仍按本机 Workspace 权限工作。
+- “退出客户端”停止当前 Node；重新启动后仍按本机 Workspace 权限工作。
 
-当前没有 Local Client 注册/吊销、Update Manager、更新签名状态、托盘或隐藏持久化进程；Node 只以用户明确启动的当前用户进程运行。
+当前没有 Local Client 注册/吊销、Update Manager、SYSTEM 服务或第二套后台 Agent；本地 UI 只是同一 Node 进程的 loopback 管理层。

@@ -162,8 +162,12 @@ func TestPhase1EndToEnd(t *testing.T) {
 	}
 	var machineList struct {
 		Machines []struct {
-			MachineID string `json:"machineId"`
-			Online    bool   `json:"online"`
+			MachineID            string `json:"machineId"`
+			Online               bool   `json:"online"`
+			RegistrationMode     string `json:"registrationMode"`
+			ConfigurationScope   string `json:"configurationScope"`
+			RuntimeCredential    string `json:"runtimeCredential"`
+			ConnectionTokenSaved bool   `json:"connectionTokenSaved"`
 		} `json:"machines"`
 	}
 	if err := json.Unmarshal(raw, &machineList); err != nil {
@@ -171,6 +175,10 @@ func TestPhase1EndToEnd(t *testing.T) {
 	}
 	if len(machineList.Machines) != 1 || machineList.Machines[0].MachineID != state.MachineID || !machineList.Machines[0].Online {
 		t.Fatalf("unexpected MCP machine list: %s", raw)
+	}
+	machineModel := machineList.Machines[0]
+	if machineModel.RegistrationMode != "connection_token" || machineModel.ConfigurationScope != "local_node" || machineModel.RuntimeCredential != "device_key" || machineModel.ConnectionTokenSaved {
+		t.Fatalf("unexpected MCP machine connection model: %s", raw)
 	}
 
 	workspaceResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "workspace_list", Arguments: map[string]any{"machineId": state.MachineID}})

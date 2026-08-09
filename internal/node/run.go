@@ -19,6 +19,8 @@ import (
 )
 
 func (c *Client) Run(ctx context.Context) error {
+	c.reportConnectionStatus("starting", nil)
+	defer c.reportConnectionStatus("stopped", ctx.Err())
 	go c.jobs.StartMaintenance(ctx)
 	if c.browser != nil {
 		go c.browser.StartMaintenance(ctx)
@@ -42,6 +44,7 @@ func (c *Client) Run(ctx context.Context) error {
 	}()
 	state, err := c.State()
 	if err != nil {
+		c.reportConnectionStatus("not_registered", err)
 		return err
 	}
 	normalizedHubURL, err := c.normalizeHubURL(state.HubURL)
@@ -54,10 +57,12 @@ func (c *Client) Run(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		c.reportConnectionStatus("connecting", nil)
 		err := c.runSession(ctx, state)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		c.reportConnectionStatus("reconnecting", err)
 		c.cfg.Logger.Warn("node connection ended", "machineId", state.MachineID, "error", err)
 
 		delay := jitter(backoff, 0.20)
@@ -160,6 +165,7 @@ func (c *Client) runSession(ctx context.Context, state State) error {
 		return fmt.Errorf("send node ready: %w", err)
 	}
 
+	c.reportConnectionStatus("online", nil)
 	c.cfg.Logger.Info("node connected", "machineId", state.MachineID, "generation", established.Generation)
 	return c.heartbeatLoop(ctx, conn, heartbeatInterval)
 }

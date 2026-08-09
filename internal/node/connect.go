@@ -13,9 +13,10 @@ import (
 
 const deviceProbeTimeout = 10 * time.Second
 
-// Connect registers this Node with a Hub by using an Owner-created connection
-// token once. The token is never persisted; successful registration stores only
-// the device identity needed for later signed WSS connections.
+// Connect registers this Node with a Hub by using an Owner-created reusable
+// connection token. The token is never persisted or bound to this machine;
+// successful registration stores only the device identity needed for later
+// signed WSS connections.
 func (c *Client) Connect(ctx context.Context, hubURL, token, displayName string) (State, error) {
 	normalized, err := c.normalizeHubURL(hubURL)
 	if err != nil {

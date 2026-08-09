@@ -173,17 +173,21 @@ type genericCapabilityOutput struct {
 }
 
 type mcpMachine struct {
-	MachineID     string                            `json:"machineId"`
-	DisplayName   string                            `json:"displayName"`
-	Status        string                            `json:"status"`
-	Online        bool                              `json:"online"`
-	RuntimeStatus string                            `json:"runtimeStatus,omitempty"`
-	OS            string                            `json:"os"`
-	Arch          string                            `json:"arch"`
-	NodeVersion   string                            `json:"nodeVersion"`
-	Generation    int64                             `json:"generation"`
-	LastSeenAt    string                            `json:"lastSeenAt,omitempty"`
-	Capabilities  []protocolv1.CapabilityDescriptor `json:"capabilities,omitempty"`
+	MachineID            string                            `json:"machineId"`
+	DisplayName          string                            `json:"displayName"`
+	Status               string                            `json:"status"`
+	Online               bool                              `json:"online"`
+	RuntimeStatus        string                            `json:"runtimeStatus,omitempty"`
+	OS                   string                            `json:"os"`
+	Arch                 string                            `json:"arch"`
+	NodeVersion          string                            `json:"nodeVersion"`
+	Generation           int64                             `json:"generation"`
+	LastSeenAt           string                            `json:"lastSeenAt,omitempty"`
+	RegistrationMode     string                            `json:"registrationMode"`
+	ConfigurationScope   string                            `json:"configurationScope"`
+	RuntimeCredential    string                            `json:"runtimeCredential"`
+	ConnectionTokenSaved bool                              `json:"connectionTokenSaved"`
+	Capabilities         []protocolv1.CapabilityDescriptor `json:"capabilities,omitempty"`
 }
 
 type machineListOutput struct {
@@ -286,7 +290,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "machine_list",
-		Description: "List Fast Spider machines owned by the authenticated owner, including current online state and negotiated capabilities.",
+		Description: "List Fast Spider machines owned by the authenticated owner, including online state, connection-token registration mode, local configuration scope, runtime credential mode and negotiated capabilities. Connection-token secrets are never returned.",
 		Annotations: toolAnnotations(true, false, true, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ machineListInput) (*mcp.CallToolResult, machineListOutput, error) {
 		machines, err := s.service.ListMachines(ctx, ownerID)
@@ -302,7 +306,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "machine_get",
-		Description: "Get one Fast Spider machine by opaque machineId. This never accepts a local filesystem path.",
+		Description: "Get one Fast Spider machine by opaque machineId, including its registration/runtime credential model. This never returns connection-token secrets or accepts a local filesystem path.",
 		Annotations: toolAnnotations(true, false, true, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input machineGetInput) (*mcp.CallToolResult, machineGetOutput, error) {
 		machine, err := s.service.GetMachine(ctx, ownerID, input.MachineID)
@@ -627,16 +631,20 @@ func decodeCapabilityResult(input map[string]any, output any) error {
 
 func toMCPMachine(machine core.MachineView) mcpMachine {
 	out := mcpMachine{
-		MachineID:     machine.MachineID,
-		DisplayName:   machine.DisplayName,
-		Status:        machine.Status,
-		Online:        machine.Online,
-		RuntimeStatus: machine.RuntimeStatus,
-		OS:            machine.OS,
-		Arch:          machine.Arch,
-		NodeVersion:   machine.NodeVersion,
-		Generation:    machine.Generation,
-		Capabilities:  machine.Capabilities,
+		MachineID:            machine.MachineID,
+		DisplayName:          machine.DisplayName,
+		Status:               machine.Status,
+		Online:               machine.Online,
+		RuntimeStatus:        machine.RuntimeStatus,
+		OS:                   machine.OS,
+		Arch:                 machine.Arch,
+		NodeVersion:          machine.NodeVersion,
+		Generation:           machine.Generation,
+		RegistrationMode:     machine.RegistrationMode,
+		ConfigurationScope:   machine.ConfigurationScope,
+		RuntimeCredential:    machine.RuntimeCredential,
+		ConnectionTokenSaved: machine.ConnectionTokenSaved,
+		Capabilities:         machine.Capabilities,
 	}
 	if machine.LastSeenAt != nil {
 		out.LastSeenAt = protocolv1.Timestamp(*machine.LastSeenAt)

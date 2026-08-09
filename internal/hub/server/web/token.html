@@ -12,7 +12,7 @@
     <div class="brand-mark">FS</div>
     <p class="eyebrow">Connection Token</p>
     <h1>连接令牌已创建</h1>
-    <p class="muted">这是唯一一次显示明文令牌。把它填写到 Fast Spider Node 的首次连接命令中；登记成功后 Node 不保存这个令牌。GPT 的 MCP 连接仍使用 OAuth，不使用这里的令牌。</p>
+    <p class="muted">这是唯一一次显示明文令牌。把它填写到 Fast Spider Node 本地客户端界面即可；同一个有效令牌可以给当前账户下多台 Node 重复使用，不绑定某一台设备。Node 登记成功后不保存令牌，GPT 的 MCP 连接仍使用 OAuth。</p>
     <div class="one-time-banner" role="status">
       <strong>{{.Label}}</strong>
       <span>有效期：{{.Expires}}</span>
@@ -22,7 +22,7 @@
       <textarea id="created-token" rows="4" readonly spellcheck="false">{{.Token}}</textarea>
       <button class="secondary" type="button" data-copy-target="created-token">复制令牌</button>
     </div>
-    <p class="hint">关闭此页面后无法再次查看明文。如果丢失或不再使用，请在后台撤销并重新创建。</p>
+    <p class="hint">关闭此页面后无法再次查看明文。需要连接其他设备时可以继续复用你已安全保存的这个令牌；如果丢失或不再使用，请在后台撤销并重新创建。</p>
     <a class="primary button-link" href="{{.BasePath}}/app#tokens">返回后台</a>
   </main>
 </body>
