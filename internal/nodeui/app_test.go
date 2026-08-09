@@ -66,6 +66,14 @@ func TestLocalConfigV1LoadsIntoV2WithoutLosingExistingSettings(t *testing.T) {
 	}
 }
 
+func TestBackgroundDuplicateInstanceExitsWithoutOpeningUI(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if err := handleExistingInstance(ctx, "http://127.0.0.1:1/", true); err != nil {
+		t.Fatalf("background duplicate should exit quietly: %v", err)
+	}
+}
+
 func TestLocalUIAPIRequiresUISecretAndReportsConnectionModel(t *testing.T) {
 	app, err := New(Options{DataDir: t.TempDir(), Version: "ui-test", MachineName: "Test Node", Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
 	if err != nil {

@@ -150,7 +150,7 @@ func (a *App) Run(ctx context.Context) error {
 	lease, leaseErr := nodeinstance.Acquire()
 	if leaseErr != nil {
 		if errors.Is(leaseErr, nodeinstance.ErrAlreadyRunning) {
-			return openExistingUI(ctx, uiURL)
+			return handleExistingInstance(ctx, uiURL, a.opts.NoOpenWindow)
 		}
 		return leaseErr
 	}
@@ -632,6 +632,13 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func writeAPIError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]any{"error": err.Error()})
+}
+
+func handleExistingInstance(ctx context.Context, uiURL string, noOpenWindow bool) error {
+	if noOpenWindow {
+		return nil
+	}
+	return openExistingUI(ctx, uiURL)
 }
 
 func openExistingUI(ctx context.Context, uiURL string) error {

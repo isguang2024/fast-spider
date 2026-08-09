@@ -18,7 +18,7 @@ Hub data-dir 与 release-dir 分离：数据库/密钥/Artifact 进入备份，W
 - 关闭窗口：Node 继续运行。
 - 托盘打开：重新显示 UI。
 - 托盘退出：真正结束 Node。
-- 自动启动：HKCU Run 执行同一 EXE 的 `ui --background`，隐藏进入托盘。
+- 自动启动：HKCU Run 执行同一 EXE 的 `ui --background`，隐藏进入托盘；若已有实例，后台启动静默退出，不唤起已有 UI。
 
 ## 更新
 
