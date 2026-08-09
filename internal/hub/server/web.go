@@ -356,12 +356,18 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request, session store
 	switch r.URL.Query().Get("notice") {
 	case "machine-revoked":
 		data.Notice = "设备已撤销。"
+	case "machine-deleted":
+		data.Notice = "设备已删除。"
 	case "authorization-revoked":
 		data.Notice = "OAuth 授权已撤销。"
+	case "authorization-deleted":
+		data.Notice = "OAuth 授权已删除。"
 	case "client-deleted":
 		data.Notice = "OAuth 客户端已删除。"
 	case "token-revoked":
 		data.Notice = "连接令牌已撤销。"
+	case "token-deleted":
+		data.Notice = "连接令牌已删除。"
 	case "password-changed":
 		data.Notice = "密码已更新，其他网页登录会话已退出。"
 	}
@@ -389,6 +395,17 @@ func (s *Server) handleAppMachineRevoke(w http.ResponseWriter, r *http.Request, 
 	s.redirectPublic(w, r, "/app?notice=machine-revoked", http.StatusSeeOther)
 }
 
+func (s *Server) handleAppMachineDelete(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
+	if !s.verifyCSRF(w, r, session.CSRFToken) {
+		return
+	}
+	if err := s.service.DeleteMachine(r.Context(), session.OwnerID, r.PathValue("machineId"), remoteIP(r)); err != nil {
+		http.Error(w, "Unable to delete machine", http.StatusBadRequest)
+		return
+	}
+	s.redirectPublic(w, r, "/app?notice=machine-deleted", http.StatusSeeOther)
+}
+
 func (s *Server) handleAppAuthorizationRevoke(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
 	if !s.verifyCSRF(w, r, session.CSRFToken) {
 		return
@@ -400,6 +417,19 @@ func (s *Server) handleAppAuthorizationRevoke(w http.ResponseWriter, r *http.Req
 		return
 	}
 	s.redirectPublic(w, r, "/app?notice=authorization-revoked", http.StatusSeeOther)
+}
+
+func (s *Server) handleAppAuthorizationDelete(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
+	if !s.verifyCSRF(w, r, session.CSRFToken) {
+		return
+	}
+	if err := s.service.Store().DeleteOAuthAuthorization(
+		r.Context(), session.OwnerID, r.PathValue("authorizationId"), time.Now().UTC(),
+	); err != nil {
+		http.Error(w, "Unable to delete OAuth authorization", http.StatusBadRequest)
+		return
+	}
+	s.redirectPublic(w, r, "/app?notice=authorization-deleted", http.StatusSeeOther)
 }
 
 func (s *Server) handleAppClientDelete(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
@@ -475,6 +505,19 @@ func (s *Server) handleAppTokenRevoke(w http.ResponseWriter, r *http.Request, se
 		return
 	}
 	s.redirectPublic(w, r, "/app?notice=token-revoked", http.StatusSeeOther)
+}
+
+func (s *Server) handleAppTokenDelete(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
+	if !s.verifyCSRF(w, r, session.CSRFToken) {
+		return
+	}
+	if err := s.service.DeleteConnectionToken(
+		r.Context(), session.OwnerID, r.PathValue("tokenId"), remoteIP(r),
+	); err != nil {
+		http.Error(w, "Unable to delete access token", http.StatusBadRequest)
+		return
+	}
+	s.redirectPublic(w, r, "/app?notice=token-deleted", http.StatusSeeOther)
 }
 
 func (s *Server) handleWebAsset(w http.ResponseWriter, r *http.Request) {

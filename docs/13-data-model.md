@@ -86,12 +86,12 @@ MVP 可只有一个默认 organization，但所有资源明确归属，避免以
 
 ### 4.4 `connection_tokens`
 
-Node 连接令牌：id、owner_id、token_hash、label、created_at、last_used_at、expires_at、revoked_at。明文只在后台创建页展示一次；该令牌只允许调用机器登记接口。它归属于 Owner、可在有效期内重复登记多台 Node，不保存 machine_id/token-device 绑定关系。
+Node 连接令牌：id、owner_id、token_hash、label、created_at、last_used_at、expires_at、revoked_at、deleted_at。明文只在后台创建页展示一次；该令牌只允许调用机器登记接口。它归属于 Owner、可在有效期内重复登记多台 Node，不保存 machine_id/token-device 绑定关系。撤销负责立即失效；撤销或过期后可删除，删除采用 `deleted_at` 软删除并从后台列表隐藏。
 
 ### 4.5 MCP OAuth
 
 - `oauth_clients`：动态注册客户端、redirect URIs、grant/response type、唯一 `fast-spider` scope。
-- `oauth_authorizations`：一次 Owner 批准形成的长期授权记录。
+- `oauth_authorizations`：一次 Owner 批准形成的长期授权记录；撤销或过期后可通过 `deleted_at` 软删除并从后台列表隐藏。
 - `oauth_access_tokens` / `oauth_refresh_tokens`：都绑定非空 authorization_id，数据库仅保存哈希；Access 1 小时，Refresh 30 天并轮换。
 
 ## 5. 机器与设备身份
@@ -110,6 +110,7 @@ Node 连接令牌：id、owner_id、token_hash、label、created_at、last_used_
 | last_seen_at | 最近有效消息 |
 | last_connection_generation | 防旧连接回写 |
 | revoked_at/revoked_by | 吊销事实 |
+| deleted_at | 已撤销设备的软删除时间；删除后后台/MCP 不再列出 |
 | revision | CAS |
 
 在线/繁忙是连接注册表的运行时事实，数据库只保存最后快照；不能仅靠 DB status 判断当前在线。

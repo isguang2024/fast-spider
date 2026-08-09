@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/isguang2024/fast-spider/internal/hub/core"
 	"github.com/isguang2024/fast-spider/internal/hub/registry"
@@ -424,6 +425,136 @@ func TestWebPathPrefixUsesPublicRedirectCookieAndAssets(t *testing.T) {
 	}
 	if cookie.Path != "/fast-spider" || !cookie.Secure || !cookie.HttpOnly {
 		t.Fatalf("path-prefix session cookie=%+v", cookie)
+	}
+}
+
+func TestWebRevokedObjectsCanBeDeleted(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	st, err := store.Open(ctx, filepath.Join(dataDir, "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	service, err := core.New(st, registry.New(), core.Config{DataDir: dataDir, Version: "web-delete-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrapToken, err := service.EnsureBootstrap(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	account, err := service.BootstrapAccount(ctx, bootstrapToken, "delete-owner", "Delete Owner", "correct horse battery staple", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := service.CreateWebSession(ctx, account.OwnerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connectionToken, err := service.CreateConnectionToken(ctx, account.OwnerID, "delete-me-token", time.Hour, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := server.New(service, server.Config{})
+	httpServer := httptest.NewServer(hub.Handler())
+	defer httpServer.Close()
+
+	nodeClient, err := node.New(node.Config{DataDir: t.TempDir(), Version: "web-delete-node", AllowInsecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := nodeClient.Connect(ctx, httpServer.URL, connectionToken.Token, "delete-me-machine")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	if err := st.RegisterOAuthClient(ctx, store.OAuthClientRecord{
+		ClientID: "mcpcli_delete_test", ClientName: "Delete OAuth Client", RedirectURIs: []string{"http://127.0.0.1/callback"},
+		GrantTypes: []string{"authorization_code", "refresh_token"}, ResponseTypes: []string{"code"}, Scope: "fast-spider", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateOAuthAuthorization(ctx, store.OAuthAuthorizationRecord{
+		AuthorizationID: "authz_delete_test", OwnerID: account.OwnerID, ClientID: "mcpcli_delete_test", ClientName: "Delete OAuth Client",
+		Scopes: []string{"fast-spider"}, Resource: httpServer.URL + "/mcp", CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	client := newWebTestClient(t)
+	hubURL, err := url.Parse(httpServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.Jar.SetCookies(hubURL, []*http.Cookie{{Name: "fast_spider_session", Value: session.Token, Path: "/"}})
+
+	status, _, body := webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/machines/"+state.MachineID+"/delete", url.Values{"csrf_token": {session.CSRFToken}})
+	if status != http.StatusBadRequest {
+		t.Fatalf("active machine delete status=%d body=%s", status, body)
+	}
+	status, _, body = webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/machines/"+state.MachineID+"/revoke", url.Values{"csrf_token": {session.CSRFToken}})
+	if status != http.StatusSeeOther {
+		t.Fatalf("machine revoke status=%d body=%s", status, body)
+	}
+	status, _, dashboard := webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app", nil)
+	if status != http.StatusOK || !strings.Contains(string(dashboard), "删除设备") || !strings.Contains(string(dashboard), state.MachineID) {
+		t.Fatalf("revoked machine delete action missing: status=%d body=%s", status, dashboard)
+	}
+	status, _, body = webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/machines/"+state.MachineID+"/delete", url.Values{"csrf_token": {session.CSRFToken}})
+	if status != http.StatusSeeOther {
+		t.Fatalf("machine delete status=%d body=%s", status, body)
+	}
+	machines, err := service.ListMachines(ctx, account.OwnerID)
+	if err != nil || len(machines) != 0 {
+		t.Fatalf("deleted machine still listed: machines=%+v err=%v", machines, err)
+	}
+
+	status, _, body = webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/tokens/"+connectionToken.Record.ID+"/delete", url.Values{"csrf_token": {session.CSRFToken}})
+	if status != http.StatusBadRequest {
+		t.Fatalf("active token delete status=%d body=%s", status, body)
+	}
+	status, _, body = webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/tokens/"+connectionToken.Record.ID+"/revoke", url.Values{"csrf_token": {session.CSRFToken}})
+	if status != http.StatusSeeOther {
+		t.Fatalf("token revoke status=%d body=%s", status, body)
+	}
+	status, _, dashboard = webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app", nil)
+	if status != http.StatusOK || !strings.Contains(string(dashboard), "删除令牌") || !strings.Contains(string(dashboard), "delete-me-token") {
+		t.Fatalf("revoked token delete action missing: status=%d body=%s", status, dashboard)
+	}
+	status, _, body = webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/tokens/"+connectionToken.Record.ID+"/delete", url.Values{"csrf_token": {session.CSRFToken}})
+	if status != http.StatusSeeOther {
+		t.Fatalf("token delete status=%d body=%s", status, body)
+	}
+	tokens, err := service.ListConnectionTokens(ctx, account.OwnerID)
+	if err != nil || len(tokens) != 0 {
+		t.Fatalf("deleted token still listed: tokens=%+v err=%v", tokens, err)
+	}
+
+	status, _, body = webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/oauth/authorizations/authz_delete_test/delete", url.Values{"csrf_token": {session.CSRFToken}})
+	if status != http.StatusBadRequest {
+		t.Fatalf("active authorization delete status=%d body=%s", status, body)
+	}
+	status, _, body = webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/oauth/authorizations/authz_delete_test/revoke", url.Values{"csrf_token": {session.CSRFToken}})
+	if status != http.StatusSeeOther {
+		t.Fatalf("authorization revoke status=%d body=%s", status, body)
+	}
+	status, _, dashboard = webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app", nil)
+	if status != http.StatusOK || !strings.Contains(string(dashboard), "删除授权") || !strings.Contains(string(dashboard), "Delete OAuth Client") {
+		t.Fatalf("revoked authorization delete action missing: status=%d body=%s", status, dashboard)
+	}
+	status, _, body = webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/oauth/authorizations/authz_delete_test/delete", url.Values{"csrf_token": {session.CSRFToken}})
+	if status != http.StatusSeeOther {
+		t.Fatalf("authorization delete status=%d body=%s", status, body)
+	}
+	authorizations, err := st.ListOAuthAuthorizations(ctx, account.OwnerID)
+	if err != nil || len(authorizations) != 0 {
+		t.Fatalf("deleted authorization still listed: authorizations=%+v err=%v", authorizations, err)
+	}
+	clients, err := st.ListOAuthClientsForOwner(ctx, account.OwnerID)
+	if err != nil || len(clients) != 0 {
+		t.Fatalf("OAuth client with only deleted authorization still listed: clients=%+v err=%v", clients, err)
 	}
 }
 

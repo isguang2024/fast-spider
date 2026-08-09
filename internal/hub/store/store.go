@@ -277,7 +277,7 @@ func (s *Store) AuthenticateConnectionToken(ctx context.Context, tokenHash strin
 	var tokenID, ownerID string
 	var expires, revoked, lastUsed sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
-		"SELECT id, owner_id, expires_at, revoked_at, last_used_at FROM connection_tokens WHERE token_hash = ?",
+		"SELECT id, owner_id, expires_at, revoked_at, last_used_at FROM connection_tokens WHERE token_hash = ? AND deleted_at IS NULL",
 		tokenHash,
 	).Scan(&tokenID, &ownerID, &expires, &revoked, &lastUsed)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -294,7 +294,7 @@ func (s *Store) AuthenticateConnectionToken(ctx context.Context, tokenHash strin
 	}
 	if !lastUsed.Valid || now.Unix()-lastUsed.Int64 >= 300 {
 		_, _ = s.db.ExecContext(ctx,
-			"UPDATE connection_tokens SET last_used_at = ? WHERE id = ? AND revoked_at IS NULL",
+			"UPDATE connection_tokens SET last_used_at = ? WHERE id = ? AND revoked_at IS NULL AND deleted_at IS NULL",
 			now.Unix(), tokenID,
 		)
 	}
@@ -474,7 +474,7 @@ func (s *Store) ReplaceCapabilities(ctx context.Context, machineID string, capab
 func (s *Store) ListMachines(ctx context.Context, ownerID string) ([]MachineRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, owner_id, display_name, status, os, arch, node_version,
 		COALESCE(capability_digest,''), last_seen_at, last_connection_generation, revoked_at, revision, created_at, updated_at
-		FROM machines WHERE owner_id = ? ORDER BY display_name, id`, ownerID)
+		FROM machines WHERE owner_id = ? AND deleted_at IS NULL ORDER BY display_name, id`, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -502,7 +502,7 @@ func (s *Store) GetMachine(ctx context.Context, ownerID, machineID string) (Mach
 	var created, updated int64
 	err := s.db.QueryRowContext(ctx, `SELECT id, owner_id, display_name, status, os, arch, node_version,
 		COALESCE(capability_digest,''), last_seen_at, last_connection_generation, revoked_at, revision, created_at, updated_at
-		FROM machines WHERE owner_id = ? AND id = ?`, ownerID, machineID).
+		FROM machines WHERE owner_id = ? AND id = ? AND deleted_at IS NULL`, ownerID, machineID).
 		Scan(&rec.ID, &rec.OwnerID, &rec.DisplayName, &rec.Status, &rec.OS, &rec.Arch, &rec.NodeVersion,
 			&rec.CapabilityDigest, &lastSeen, &rec.LastConnectionGeneration, &revoked, &rec.Revision, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -543,7 +543,7 @@ func (s *Store) CapabilitiesByOwner(ctx context.Context, ownerID string) (map[st
 		mc.machine_id, mc.capability_id, mc.version, mc.actions_json
 	FROM machine_capabilities mc
 	JOIN machines m ON m.id = mc.machine_id
-	WHERE m.owner_id = ?
+	WHERE m.owner_id = ? AND m.deleted_at IS NULL
 	ORDER BY mc.machine_id, mc.capability_id`, ownerID)
 	if err != nil {
 		return nil, err
@@ -572,13 +572,13 @@ func (s *Store) RevokeMachine(ctx context.Context, ownerID, machineID string, no
 	}
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx, `UPDATE machines SET status = 'revoked', revoked_at = ?, updated_at = ?, revision = revision + 1
-		WHERE id = ? AND owner_id = ? AND status <> 'revoked'`, now.Unix(), now.Unix(), machineID, ownerID)
+		WHERE id = ? AND owner_id = ? AND status <> 'revoked' AND deleted_at IS NULL`, now.Unix(), now.Unix(), machineID, ownerID)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		var exists int
-		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM machines WHERE id = ? AND owner_id = ?", machineID, ownerID).Scan(&exists); err != nil {
+		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM machines WHERE id = ? AND owner_id = ? AND deleted_at IS NULL", machineID, ownerID).Scan(&exists); err != nil {
 			return err
 		}
 		if exists == 0 {
@@ -592,6 +592,22 @@ func (s *Store) RevokeMachine(ctx context.Context, ownerID, machineID string, no
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Store) DeleteMachine(ctx context.Context, ownerID, machineID string, now time.Time) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE machines SET deleted_at = ?, updated_at = ?, revision = revision + 1
+		WHERE id = ? AND owner_id = ? AND status = 'revoked' AND deleted_at IS NULL`,
+		now.Unix(), now.Unix(), machineID, ownerID,
+	)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected == 0 {
+		return ErrConflict
+	}
+	return nil
 }
 
 func (s *Store) FindResumableArtifactUpload(ctx context.Context, ownerID, machineID, workspaceID, jobID, logicalName, contentType string, sizeBytes int64, sha256 string, now time.Time) (ArtifactUploadRecord, bool, error) {

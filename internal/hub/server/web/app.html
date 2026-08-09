@@ -60,7 +60,7 @@
 
     <section class="panel" id="machines">
       <div class="panel-heading">
-        <div><p class="eyebrow">Machines</p><h2>本机与远程设备</h2><p class="section-copy">打开 Fast Spider Node 本地界面，填写 Hub、连接令牌和设备名称即可。令牌只决定新设备归属当前账户，不绑定单台客户端，也不会保存在 Node；登记后持续连接使用本机设备密钥。</p></div>
+        <div><p class="eyebrow">Machines</p><h2>本机与远程设备</h2><p class="section-copy">打开 Fast Spider Node 本地界面，填写 Hub、连接令牌和设备名称即可。令牌只决定新设备归属当前账户，不绑定单台客户端，也不会保存在 Node；登记后持续连接使用本机设备密钥。设备先撤销失效，随后可删除记录。</p></div>
         <div class="command-box"><span>高级 CLI（可选）</span><code>fast-spider-node connect --hub {{.BaseURL}} --token &lt;连接令牌&gt;</code></div>
       </div>
       {{if .Machines}}
@@ -80,7 +80,12 @@
                   <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                   <button class="danger-link action-button" type="submit">撤销设备</button>
                 </form>
-                {{else}}<span class="muted">无需操作</span>{{end}}
+                {{else}}
+                <form method="post" action="{{$.BasePath}}/app/machines/{{.MachineID}}/delete" data-confirm="确认删除这台已撤销设备？删除后将不再显示在设备列表中。">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                  <button class="danger-link action-button" type="submit">删除设备</button>
+                </form>
+                {{end}}
               </td>
             </tr>
           {{end}}
@@ -115,7 +120,12 @@
                   <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                   <button class="danger-link action-button" type="submit">撤销授权</button>
                 </form>
-                {{else}}<span class="muted">无需操作</span>{{end}}
+                {{else}}
+                <form method="post" action="{{$.BasePath}}/app/oauth/authorizations/{{.AuthorizationID}}/delete" data-confirm="确认删除这条已失效授权记录？删除后将不再显示。">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                  <button class="danger-link action-button" type="submit">删除授权</button>
+                </form>
+                {{end}}
               </td>
             </tr>
           {{end}}
@@ -129,7 +139,7 @@
 
     <section class="panel" id="tokens">
       <div class="panel-heading token-heading">
-        <div><p class="eyebrow">Connection Tokens</p><h2>连接令牌</h2><p class="section-copy">用于把新 Node 归属到当前账户。令牌不绑定某一台设备，可以在有效期内重复登记多台客户端；Node 登记成功后不保存令牌。撤销令牌只阻止后续新增设备，已登记设备请在设备列表单独撤销。</p></div>
+        <div><p class="eyebrow">Connection Tokens</p><h2>连接令牌</h2><p class="section-copy">用于把新 Node 归属到当前账户。令牌不绑定某一台设备，可以在有效期内重复登记多台客户端；Node 登记成功后不保存令牌。撤销令牌只阻止后续新增设备，已登记设备请在设备列表单独撤销；撤销或过期后可删除令牌记录。</p></div>
         <form class="token-form" method="post" action="{{.BasePath}}/app/tokens">
           <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
           <label>名称
@@ -164,7 +174,12 @@
                   <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                   <button class="danger-link action-button" type="submit">撤销令牌</button>
                 </form>
-                {{else}}<span class="muted">无需操作</span>{{end}}
+                {{else}}
+                <form method="post" action="{{$.BasePath}}/app/tokens/{{.ID}}/delete" data-confirm="确认删除这条已失效连接令牌记录？删除后将不再显示。">
+                  <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+                  <button class="danger-link action-button" type="submit">删除令牌</button>
+                </form>
+                {{end}}
               </td>
             </tr>
           {{end}}

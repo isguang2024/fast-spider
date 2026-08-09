@@ -196,7 +196,7 @@ func (s *Store) ListConnectionTokens(ctx context.Context, ownerID string) ([]Con
 	rows, err := s.db.QueryContext(ctx, `SELECT
 		id, owner_id, label, created_at, last_used_at, expires_at, revoked_at
 	FROM connection_tokens
-	WHERE owner_id = ?
+	WHERE owner_id = ? AND deleted_at IS NULL
 	ORDER BY created_at DESC, id`, ownerID)
 	if err != nil {
 		return nil, err
@@ -232,7 +232,7 @@ func (s *Store) ListConnectionTokens(ctx context.Context, ownerID string) ([]Con
 
 func (s *Store) RevokeConnectionToken(ctx context.Context, ownerID, tokenID string, now time.Time) error {
 	result, err := s.db.ExecContext(ctx,
-		"UPDATE connection_tokens SET revoked_at = ? WHERE id = ? AND owner_id = ? AND revoked_at IS NULL",
+		"UPDATE connection_tokens SET revoked_at = ? WHERE id = ? AND owner_id = ? AND revoked_at IS NULL AND deleted_at IS NULL",
 		now.Unix(), tokenID, ownerID,
 	)
 	if err != nil {
@@ -242,6 +242,23 @@ func (s *Store) RevokeConnectionToken(ctx context.Context, ownerID, tokenID stri
 		return err
 	} else if affected == 0 {
 		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) DeleteConnectionToken(ctx context.Context, ownerID, tokenID string, now time.Time) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE connection_tokens SET deleted_at = ?
+		WHERE id = ? AND owner_id = ? AND deleted_at IS NULL
+		AND (revoked_at IS NOT NULL OR (expires_at IS NOT NULL AND expires_at <= ?))`,
+		now.Unix(), tokenID, ownerID, now.Unix(),
+	)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected == 0 {
+		return ErrConflict
 	}
 	return nil
 }

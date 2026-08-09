@@ -316,6 +316,15 @@ func (s *Service) RevokeMachine(ctx context.Context, ownerID, machineID, remoteA
 	return nil
 }
 
+func (s *Service) DeleteMachine(ctx context.Context, ownerID, machineID, remoteAddr string) error {
+	now := s.now().UTC()
+	if err := s.store.DeleteMachine(ctx, ownerID, machineID, now); err != nil {
+		return err
+	}
+	_ = s.audit(ctx, store.AuditEntry{OwnerID: ownerID, MachineID: machineID, ActorType: "owner", ActorID: ownerID, Action: "machine.delete", Result: "success", RemoteAddr: remoteAddr, CreatedAt: now})
+	return nil
+}
+
 func (s *Service) CapabilityCatalog() []protocolv1.CapabilityDescriptor {
 	out := make([]protocolv1.CapabilityDescriptor, len(protocolv1.NodeCapabilities), len(protocolv1.NodeCapabilities)+2)
 	copy(out, protocolv1.NodeCapabilities)

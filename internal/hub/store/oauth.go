@@ -73,7 +73,7 @@ func (s *Store) ListOAuthClientsForOwner(ctx context.Context, ownerID string) ([
 	FROM oauth_clients c
 	WHERE EXISTS (
 		SELECT 1 FROM oauth_authorizations owner_auth
-		WHERE owner_auth.client_id = c.client_id AND owner_auth.owner_id = ?
+		WHERE owner_auth.client_id = c.client_id AND owner_auth.owner_id = ? AND owner_auth.deleted_at IS NULL
 	)
 	ORDER BY c.created_at DESC, c.client_id`, ownerID)
 }
@@ -201,7 +201,7 @@ func (s *Store) ListOAuthAuthorizations(ctx context.Context, ownerID string) ([]
 		a.created_at, a.last_used_at, a.expires_at, a.revoked_at
 	FROM oauth_authorizations a
 	JOIN oauth_clients c ON c.client_id = a.client_id
-	WHERE a.owner_id = ?
+	WHERE a.owner_id = ? AND a.deleted_at IS NULL
 	ORDER BY a.created_at DESC, a.id`, ownerID)
 	if err != nil {
 		return nil, err
@@ -251,7 +251,7 @@ func (s *Store) TouchOAuthAuthorization(ctx context.Context, authorizationID str
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE oauth_authorizations
 		SET last_used_at = ?
-		WHERE id = ? AND revoked_at IS NULL
+		WHERE id = ? AND revoked_at IS NULL AND deleted_at IS NULL
 		  AND (last_used_at IS NULL OR last_used_at <= ?)`,
 		now.Unix(), authorizationID, now.Add(-5*time.Minute).Unix(),
 	)
@@ -265,7 +265,7 @@ func (s *Store) RevokeOAuthAuthorization(ctx context.Context, ownerID, authoriza
 	}
 	defer tx.Rollback()
 	result, err := tx.ExecContext(ctx,
-		"UPDATE oauth_authorizations SET revoked_at = ? WHERE id = ? AND owner_id = ? AND revoked_at IS NULL",
+		"UPDATE oauth_authorizations SET revoked_at = ? WHERE id = ? AND owner_id = ? AND revoked_at IS NULL AND deleted_at IS NULL",
 		now.Unix(), authorizationID, ownerID,
 	)
 	if err != nil {
@@ -283,6 +283,23 @@ func (s *Store) RevokeOAuthAuthorization(ctx context.Context, ownerID, authoriza
 		return err
 	}
 	return tx.Commit()
+}
+
+func (s *Store) DeleteOAuthAuthorization(ctx context.Context, ownerID, authorizationID string, now time.Time) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE oauth_authorizations SET deleted_at = ?
+		WHERE id = ? AND owner_id = ? AND deleted_at IS NULL
+		AND (revoked_at IS NOT NULL OR expires_at <= ?)`,
+		now.Unix(), authorizationID, ownerID, now.Unix(),
+	)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected == 0 {
+		return ErrConflict
+	}
+	return nil
 }
 
 func (s *Store) SaveOAuthTokenPair(
@@ -400,7 +417,7 @@ func (s *Store) RevokeOAuthToken(ctx context.Context, tokenHash string, now time
 	}
 	if err == nil && authorizationID.Valid && authorizationID.String != "" {
 		if _, err := tx.ExecContext(ctx,
-			"UPDATE oauth_authorizations SET revoked_at = ? WHERE id = ? AND owner_id = ? AND revoked_at IS NULL",
+			"UPDATE oauth_authorizations SET revoked_at = ? WHERE id = ? AND owner_id = ? AND revoked_at IS NULL AND deleted_at IS NULL",
 			now.Unix(), authorizationID.String, ownerID,
 		); err != nil {
 			return err

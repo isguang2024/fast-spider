@@ -244,6 +244,19 @@ func (s *Service) RevokeConnectionToken(ctx context.Context, ownerID, tokenID, r
 	return nil
 }
 
+func (s *Service) DeleteConnectionToken(ctx context.Context, ownerID, tokenID, remoteAddr string) error {
+	now := s.now().UTC()
+	if err := s.store.DeleteConnectionToken(ctx, ownerID, tokenID, now); err != nil {
+		return err
+	}
+	_ = s.audit(ctx, store.AuditEntry{
+		OwnerID: ownerID, ActorType: "web", ActorID: ownerID,
+		Action: "connection.token.delete", Result: "success", RemoteAddr: remoteAddr, CreatedAt: now,
+		Detail: map[string]any{"tokenId": tokenID},
+	})
+	return nil
+}
+
 func (s *Service) CreateWebSession(ctx context.Context, ownerID string) (WebSessionResult, error) {
 	sessionID, err := security.RandomOpaque("wbs_")
 	if err != nil {
