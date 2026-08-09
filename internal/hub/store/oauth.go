@@ -326,7 +326,7 @@ func (s *Store) SaveOAuthTokenPair(
 	if consumedRefreshHash != "" {
 		result, err := tx.ExecContext(ctx, `DELETE FROM oauth_refresh_tokens
 			WHERE token_hash = ? AND client_id = ? AND owner_id = ? AND expires_at > ?
-			  AND (authorization_id = ? OR authorization_id IS NULL)`,
+			  AND authorization_id = ?`,
 			consumedRefreshHash, rec.ClientID, rec.OwnerID, now.Unix(), rec.AuthorizationID)
 		if err != nil {
 			return err
@@ -362,12 +362,11 @@ func (s *Store) GetOAuthRefreshToken(ctx context.Context, tokenHash string, now 
 }
 
 func (s *Store) oauthTokenRecord(ctx context.Context, table, tokenHash string, now time.Time) (OAuthTokenRecord, error) {
-	query := "SELECT authorization_id, owner_id, client_id, scopes_json, resource, expires_at FROM " + table + " WHERE token_hash = ?"
+	query := "SELECT authorization_id, owner_id, client_id, scopes_json, resource, expires_at FROM " + table + " WHERE token_hash = ? AND authorization_id IS NOT NULL AND authorization_id <> ''"
 	var rec OAuthTokenRecord
-	var authorizationID sql.NullString
 	var scopesJSON string
 	var expires int64
-	err := s.db.QueryRowContext(ctx, query, tokenHash).Scan(&authorizationID, &rec.OwnerID, &rec.ClientID, &scopesJSON, &rec.Resource, &expires)
+	err := s.db.QueryRowContext(ctx, query, tokenHash).Scan(&rec.AuthorizationID, &rec.OwnerID, &rec.ClientID, &scopesJSON, &rec.Resource, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OAuthTokenRecord{}, ErrUnauthorized
 	}
@@ -376,9 +375,6 @@ func (s *Store) oauthTokenRecord(ctx context.Context, table, tokenHash string, n
 	}
 	if expires <= now.Unix() {
 		return OAuthTokenRecord{}, ErrExpired
-	}
-	if authorizationID.Valid {
-		rec.AuthorizationID = authorizationID.String
 	}
 	if err := json.Unmarshal([]byte(scopesJSON), &rec.Scopes); err != nil {
 		return OAuthTokenRecord{}, err

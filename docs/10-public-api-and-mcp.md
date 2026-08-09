@@ -226,29 +226,18 @@ MCP 工具列表始终暴露 Fast Spider 已实现的完整固定能力，不因
 
 工具使用标准 MCP annotations 描述语义：纯查询设置 `readOnlyHint=true`；文件编辑、Shell、Git/Build、Browser/AI 等按真实副作用设置 `destructiveHint/openWorldHint/idempotentHint`。这些字段帮助 MCP Host 正确展示和确认工具，但不能替代 Node 的实际权限校验。
 
-## 10. REST API
+## 10. HTTP API
 
-REST 供 Web Console、CLI/SDK 和自动化使用，资源风格与 Job 模型一致：
+当前不再维护一套给脚本使用的 Owner 管理 REST。Web Console 使用自己的登录 Session，GPT/其他 MCP Host 使用 OAuth + `/mcp`，Node 只使用以下最小 HTTP/WSS 面：
 
 ```text
-GET    /api/v1/machines
-GET    /api/v1/machines/{machineId}
-GET    /api/v1/machines/{machineId}/workspaces
-POST   /api/v1/jobs
-GET    /api/v1/jobs/{jobId}
-GET    /api/v1/jobs/{jobId}/events
-POST   /api/v1/jobs/{jobId}:cancel
-GET    /api/v1/artifacts/{artifactId}
-POST   /api/v1/enrollment-tokens
-POST   /api/v1/machines/{machineId}:revoke
-GET    /api/v1/audit
+POST /api/v1/machines/register     # 仅连接令牌可用
+POST /api/v1/device/token          # 已登记设备签名换短期凭据
+GET  /node/v1/connect              # Node WSS
+/node/v1/artifacts/*               # Node Artifact 上传链
 ```
 
-- 写请求支持 `Idempotency-Key` Header。
-- 分页使用 opaque cursor。
-- 时间统一 RFC 3339 UTC。
-- API 版本 `/v1` 与 FSWP/MCP 版本独立。
-- 不公开 Node 绝对路径或 Provider Token。
+连接令牌不能调用 MCP、机器列表、设备撤销或 Artifact 下载。机器查看/撤销由 Web Console 完成；远程能力调用统一通过 MCP，不再保留第二套脚本管理 API。
 
 ## 11. Event API
 
@@ -261,7 +250,7 @@ MVP 支持两种读取方式：
 
 ## 12. OAuth 与公开入口
 
-当前公网 MCP 以标准 OAuth Access Token 为日常认证方式。Hub 仍保留旧 Owner Bearer 作为受保护的恢复/兼容入口，但后台、GPT 连接和 Node 首次配对均不要求用户查看或复制它。OAuth 不建立第二套 Fast Spider 用户体系；浏览器登录会话映射回同一个 `ownerId`。
+当前公网 MCP 只接受标准 OAuth Access Token。OAuth 不建立第二套 Fast Spider 用户体系；浏览器登录会话映射回同一个 `ownerId`。连接令牌不具备 MCP 权限。
 
 当前 OAuth 流程：
 
@@ -273,11 +262,11 @@ MVP 支持两种读取方式：
 6. Access Token 有效期 1 小时；Refresh Token 有效期 30 天并在刷新时轮换。
 7. 每次批准形成稳定的 OAuth Authorization 记录，绑定 `clientId + ownerId + resource + scope`；后台列表显示创建时间、最近使用、到期和撤销状态，数据库只保存 Token 哈希。
 8. 撤销一条 Authorization 会同时删除其全部 Access/Refresh Token；刷新只更新同一授权记录，不制造重复列表项。
-9. Node 首次配对使用独立 `fast-spider:device-connect` scope 和 enrollment resource，不获得 MCP 权限，也不签发 Refresh Token；完成 enrollment 后撤销临时授权。失败或取消后遗留的无关联 DCR client 会由维护任务自动清理。
+9. Node 不参与 OAuth。Node 首次登记使用后台创建的连接令牌；MCP OAuth 和 Node 设备身份是两条互不复用的认证链。
 
 带 path-prefix 的共享域部署要同时支持 MCP 规范的 path-insertion discovery，例如 resource `https://host/fast-spider/mcp` 对应 `/.well-known/oauth-protected-resource/fast-spider/mcp`，issuer `https://host/fast-spider` 对应 `/.well-known/oauth-authorization-server/fast-spider`。反向代理只需把这些 exact well-known 路由交给同一个 Hub，不需要把 Fast Spider 独占整个域名。
 
-设备 WSS 继续使用独立设备证明，不把长期 OAuth Token 当设备凭据。Node 首次执行 `login` 时临时使用受限 OAuth 调用现有 enrollment API，完成配对后立即撤销该授权；后续连接仍使用 Node 本地设备私钥。Web Console 使用独立 HttpOnly Session Cookie 与 CSRF，不把浏览器 Cookie 直接当 MCP Token。后台 Personal Access Token 仍是 Owner Bearer 的脚本/兼容入口，明文只创建时返回一次。认证、MCP、Artifact、Node WSS 的日志都不得记录 Token、密码或 Cookie 内容。
+设备 WSS 使用独立设备证明，不把连接令牌或 OAuth Token 当长期设备凭据。Node 首次 `connect` 只用连接令牌调用机器登记接口，成功后令牌不写入 Node 状态；后续连接只使用 Node 本地设备私钥。Web Console 使用独立 HttpOnly Session Cookie 与 CSRF，不把浏览器 Cookie 直接当 MCP Token。连接令牌明文只在创建页返回一次；认证、MCP、Artifact、Node WSS 的日志都不得记录 Token、密码或 Cookie 内容。
 
 ## 13. 错误映射
 

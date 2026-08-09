@@ -8,14 +8,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/isguang2024/fast-spider/internal/hub/core"
-	"github.com/isguang2024/fast-spider/internal/hub/store"
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
-	"github.com/isguang2024/fast-spider/internal/security"
 )
 
 const maxControlMessageBytes = 1 << 20
@@ -38,16 +35,6 @@ type Server struct {
 
 type apiError struct {
 	Error protocolv1.ProtocolError `json:"error"`
-}
-
-type bootstrapRequest struct {
-	BootstrapToken string `json:"bootstrapToken"`
-	DisplayName    string `json:"displayName"`
-}
-
-type enrollmentTokenRequest struct {
-	ExpectedName string `json:"expectedName"`
-	ExpectedOS   string `json:"expectedOs"`
 }
 
 func New(service *core.Service, cfg Config) *Server {
@@ -77,15 +64,8 @@ func New(service *core.Service, cfg Config) *Server {
 	mux.HandleFunc("GET /assets/{file}", s.handleWebAsset)
 	mux.HandleFunc("GET /livez", s.handleLive)
 	mux.HandleFunc("GET /readyz", s.handleReady)
-	mux.HandleFunc("POST /api/v1/bootstrap", s.handleBootstrap)
-	mux.HandleFunc("POST /api/v1/enrollment-tokens", s.enrollmentIssuerOnly(s.handleCreateEnrollment))
-	mux.HandleFunc("POST /api/v1/enroll", s.handleEnroll)
+	mux.HandleFunc("POST /api/v1/machines/register", s.connectionTokenOnly(s.handleMachineRegister))
 	mux.HandleFunc("POST /api/v1/device/token", s.handleDeviceToken)
-	mux.HandleFunc("GET /api/v1/machines", s.ownerOnly(s.handleMachineList))
-	mux.HandleFunc("GET /api/v1/machines/{machineId}", s.ownerOnly(s.handleMachineGet))
-	mux.HandleFunc("POST /api/v1/machines/{machineId}/revoke", s.ownerOnly(s.handleMachineRevoke))
-	mux.HandleFunc("GET /api/v1/artifacts/{artifactId}", s.ownerOnly(s.handleArtifactMetadata))
-	mux.HandleFunc("GET /api/v1/artifacts/{artifactId}/content", s.ownerOnly(s.handleArtifactContent))
 	mux.HandleFunc("GET /.well-known/oauth-protected-resource", s.handleOAuthProtectedResource)
 	mux.HandleFunc("GET /.well-known/oauth-protected-resource/{resourcePath...}", s.handleOAuthProtectedResource)
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.handleOAuthAuthorizationServer)
@@ -135,38 +115,12 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ready"})
 }
 
-func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
-	var req bootstrapRequest
+func (s *Server) handleMachineRegister(w http.ResponseWriter, r *http.Request, ownerID string) {
+	var req core.MachineRegistrationRequest
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	result, err := s.service.BootstrapOwner(r.Context(), req.BootstrapToken, req.DisplayName, remoteIP(r))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, result)
-}
-
-func (s *Server) handleCreateEnrollment(w http.ResponseWriter, r *http.Request, ownerID string) {
-	var req enrollmentTokenRequest
-	if r.ContentLength != 0 && !decodeJSON(w, r, &req) {
-		return
-	}
-	result, err := s.service.CreateEnrollmentToken(r.Context(), ownerID, req.ExpectedName, req.ExpectedOS, remoteIP(r))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, result)
-}
-
-func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
-	var req core.EnrollRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	result, err := s.service.Enroll(r.Context(), req, remoteIP(r))
+	result, err := s.service.RegisterMachine(r.Context(), ownerID, req, remoteIP(r))
 	if err != nil {
 		writeError(w, err)
 		return
@@ -187,35 +141,9 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, result)
 }
 
-func (s *Server) handleMachineList(w http.ResponseWriter, r *http.Request, ownerID string) {
-	machines, err := s.service.ListMachines(r.Context(), ownerID)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"machines": machines})
-}
-
-func (s *Server) handleMachineGet(w http.ResponseWriter, r *http.Request, ownerID string) {
-	machine, err := s.service.GetMachine(r.Context(), ownerID, r.PathValue("machineId"))
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, machine)
-}
-
-func (s *Server) handleMachineRevoke(w http.ResponseWriter, r *http.Request, ownerID string) {
-	if err := s.service.RevokeMachine(r.Context(), ownerID, r.PathValue("machineId"), remoteIP(r)); err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "revoked"})
-}
-
-func (s *Server) ownerOnly(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
+func (s *Server) connectionTokenOnly(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ownerID, err := s.authenticateOwnerRequest(r)
+		ownerID, err := s.authenticateConnectionTokenRequest(r)
 		if err != nil {
 			writeError(w, err)
 			return
@@ -224,40 +152,8 @@ func (s *Server) ownerOnly(next func(http.ResponseWriter, *http.Request, string)
 	}
 }
 
-func (s *Server) enrollmentIssuerOnly(next func(http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ownerID, err := s.authenticateEnrollmentIssuerRequest(r)
-		if err != nil {
-			writeError(w, err)
-			return
-		}
-		next(w, r, ownerID)
-	}
-}
-
-func (s *Server) authenticateOwnerRequest(r *http.Request) (string, error) {
-	return s.service.AuthenticateOwner(r.Context(), bearerToken(r.Header.Get("Authorization")))
-}
-
-func (s *Server) authenticateEnrollmentIssuerRequest(r *http.Request) (string, error) {
-	token := bearerToken(r.Header.Get("Authorization"))
-	if ownerID, err := s.service.AuthenticateOwner(r.Context(), token); err == nil {
-		return ownerID, nil
-	}
-	now := time.Now().UTC()
-	record, err := s.service.Store().AuthenticateOAuthAccessToken(r.Context(), security.HashToken(token), now)
-	if err != nil {
-		return "", err
-	}
-	if !slices.Contains(record.Scopes, oauthDeviceConnectScope) {
-		return "", store.ErrUnauthorized
-	}
-	resource, err := s.oauthResourceForScope(r, oauthDeviceConnectScope)
-	if err != nil || record.Resource != resource {
-		return "", store.ErrUnauthorized
-	}
-	_ = s.service.Store().TouchOAuthAuthorization(r.Context(), record.AuthorizationID, now)
-	return record.OwnerID, nil
+func (s *Server) authenticateConnectionTokenRequest(r *http.Request) (string, error) {
+	return s.service.AuthenticateConnectionToken(r.Context(), bearerToken(r.Header.Get("Authorization")))
 }
 
 func (s *Server) hostGuard(next http.Handler) http.Handler {

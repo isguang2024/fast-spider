@@ -12,7 +12,7 @@
     <div class="brand-mark">FS</div>
     <p class="eyebrow">账户设置</p>
     <h1>创建管理员登录</h1>
-    <p class="muted">此页面只在尚未创建网页登录账户时有效，也可安全升级旧的 Owner Token 安装。完成后，后台、OAuth 授权和本机设备都统一使用账户登录。</p>
+    <p class="muted">此页面只在全新实例尚未创建网页登录账户时有效。完成后，后台账户负责管理连接令牌、设备和 MCP OAuth 授权。</p>
     {{if .Error}}<div class="alert" role="alert">{{.Error}}</div>{{end}}
     <form method="post" autocomplete="off">
       <label>用户名

@@ -86,8 +86,8 @@
 2. Contract v1：握手、Machine、Capability Descriptor、Error。
 3. Hub SQLite migration 和存储最小集。
 4. Owner bootstrap 与最小认证（不先做完整多用户）。
-5. 一次性 enrollment token。
-6. Node 设备密钥、Hub 信任和配对。
+5. 后台连接令牌与 Node 首次登记。
+6. Node 设备密钥、Hub 信任和后续设备证明。
 7. WSS 连接、协议协商、generation、心跳、重连。
 8. Hub connection registry、在线状态和 machine list/get。
 9. MCP 固定 `machine_list/machine_get/capability_list`。

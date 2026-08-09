@@ -84,7 +84,7 @@ connectionId/generation
 
 ### 永不记录
 
-- Access/Refresh/enrollment/local tokens。
+- OAuth Access/Refresh、连接令牌、设备 Token 和 Local Bridge 临时凭据。
 - 设备私钥、Provider API Key、密码和 Cookie。
 - 完整环境变量。
 - Authorization/Cookie Header。

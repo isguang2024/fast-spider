@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -106,30 +105,6 @@ func (s *Server) handleArtifactAbort(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"uploadId": r.PathValue("uploadId"), "status": "aborted"})
-}
-
-func (s *Server) handleArtifactMetadata(w http.ResponseWriter, r *http.Request, ownerID string) {
-	artifact, err := s.service.GetArtifact(r.Context(), ownerID, r.PathValue("artifactId"))
-	if err != nil {
-		writeArtifactCoreError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, artifact)
-}
-
-func (s *Server) handleArtifactContent(w http.ResponseWriter, r *http.Request, ownerID string) {
-	artifact, file, err := s.service.OpenArtifact(r.Context(), ownerID, r.PathValue("artifactId"))
-	if err != nil {
-		writeArtifactCoreError(w, err)
-		return
-	}
-	defer file.Close()
-	w.Header().Set("Content-Type", artifact.ContentType)
-	w.Header().Set("Content-Length", strconv.FormatInt(artifact.SizeBytes, 10))
-	w.Header().Set("ETag", `"`+strings.TrimPrefix(artifact.SHA256, "sha256:")+`"`)
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", strings.ReplaceAll(artifact.LogicalName, "\"", "")))
-	w.WriteHeader(http.StatusOK)
-	_, _ = io.Copy(w, file)
 }
 
 func readArtifactInline(ctx context.Context, service *core.Service, artifact store.ArtifactRecord) (string, bool, error) {

@@ -199,7 +199,8 @@ subjects × machines × workspaces × capabilities × actions × origins × risk
 
 测试进程内/本机真实 WSS：
 
-- enrollment 一次性、并发消费、过期、重放。
+- 连接令牌创建、有效期、撤销、明文只展示一次以及仅机器登记权限。
+- 同一设备公钥的登记重试、设备撤销后重新登记、Workspace Registry 保留。
 - 设备 challenge、credential 轮换、overlap、吊销。
 - 同 machine 双连接 generation 替换。
 - 协议/Capability 版本协商。
@@ -370,7 +371,7 @@ Race detector 仅在 `amd64 + CGO_ENABLED=1` 时运行；当前 Windows/386 环�
 
 当前不维护“为了凑数量”的 15 场景清单。Release gate 需要覆盖这些真实链路：
 
-1. Hub/API/WS 的 bootstrap、enrollment、Node 会话和固定 MCP 工具测试随 `go test ./...` 通过。
+1. Hub Web setup、连接令牌、Node 登记/设备会话和固定 MCP 工具测试随 `go test ./...` 通过。
 2. Workspace 搜索/读取/编辑、权限收紧和路径边界通过 Node 集成测试。
 3. Shell Job、watch/cancel、完整进程树和输出边界通过 Node 测试。
 4. Git/Build/Artifact 的权限、副作用和上传/清理测试通过。

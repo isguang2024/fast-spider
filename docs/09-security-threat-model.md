@@ -112,7 +112,7 @@ flowchart LR
 ## 6. 安全基线
 
 - Node 只出站连接；默认无公网/局域网监听。
-- TLS 必需，每台设备独立身份，一次性短时配对码。
+- TLS 必需，每台设备独立身份；首次登记使用后台创建、可过期/可撤销的连接令牌。
 - 可轮换、可吊销设备密钥；可选 mTLS。
 - 当前个人 MVP 以 Owner/Client 身份、Machine、Workspace 为主要边界；写入、Shell、Git 网络/副作用、Build 等危险能力额外由 Node 本机开关控制。
 - Hub 与 Node 双重校验，Node 最终裁决；不依赖通用 Grant/Lease/Approval 引擎才能安全运行。
@@ -160,12 +160,12 @@ flowchart LR
 - **控制**：安全 Cookie、CSRF 防护、近期重新认证、可选 MFA、登录告警、会话/Token 列表、设备配对可见、敏感变更审计、恢复码保护、异常限流。
 - **验证**：旧 Session/Refresh Token 在吊销后不可继续使用。
 
-### T05 Enrollment Token 泄露
+### T05 连接令牌泄露
 
-- **场景**：一次性配对码被截屏、日志或旁观者窃取。
+- **场景**：后台创建的连接令牌被截屏、Shell 历史、进程参数或旁观者窃取。
 - **风险**：High。
-- **控制**：至少 128 bit、10 分钟、一次性、摘要存储、尝试次数限制、绑定 Owner/预期属性、Node 本机生成密钥、配对后显著通知、可立即吊销。
-- **剩余风险**：泄露者在合法 Node 前使用 Token。可增加用户核对短指纹。
+- **控制**：随机高熵、数据库仅保存哈希、明文只展示一次、可设置有效期、可立即撤销；令牌只允许机器登记接口，不能访问 MCP/管理 REST；Node 登记后不持久化令牌。
+- **剩余风险**：泄露者在令牌撤销/过期前可能登记一台新设备，因此后台必须让新增设备清晰可见并支持立即撤销。对敏感环境可使用短有效期并在登记完成后主动撤销令牌。
 
 ### T06 设备私钥泄露
 
@@ -178,7 +178,7 @@ flowchart LR
 
 - **场景**：重放 enroll、dispatch、Approval、cancel、Artifact chunk 或旧连接消息。
 - **风险**：High。
-- **控制**：TLS；握手 nonce；connectionId/generation；deadline；requestId/idempotencyKey；Approval nonce/riskDigest/allowedCount；event sequence；chunk offset/hash；配对码一次性。
+- **控制**：TLS；握手 nonce；connectionId/generation；deadline；requestId/idempotencyKey；event sequence；chunk offset/hash；连接令牌最小权限、可过期、可撤销。
 - **验证**：重复同 key 返回原 Job；不同参数同 key冲突；旧 generation 事件拒绝。
 
 ### T08 中间人攻击

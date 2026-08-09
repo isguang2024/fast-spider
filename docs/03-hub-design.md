@@ -27,35 +27,29 @@ MVP 只有一个 Hub 进程，模块边界通过 Go package 和接口体现，�
 
 | 模块 | 责任 | 主要持久化 |
 |---|---|---|
-| `identity` | 用户、OAuth Client、Token、Session | users, oauth_clients, auth_sessions |
-| `enrollment` | 一次性配对码、设备证书登记 | enrollment_tokens, machines, device_credentials |
-| `policy` | 授权、短期 Lease、审批 | grants, capability_leases, approvals |
-| `routing` | Node 连接注册表、心跳、发送队列 | 内存为主，机器状态快照入库 |
-| `jobs` | Job 状态机、事件游标、取消 | jobs, job_events |
+| `identity` | 单 Owner Web 登录、MCP OAuth、连接令牌 | owners, web_sessions, oauth_*, connection_tokens |
+| `devices` | Node 首次登记、设备公钥、撤销 | machines, device_credentials, device_access_tokens |
+| `routing` | Node WSS 连接注册表与在线状态 | 内存为主，机器状态快照入库 |
 | `artifacts` | 上传会话、哈希、元数据、清理 | artifacts, artifact_uploads + 文件系统 |
-| `audit` | 不可省略的安全审计 | audit_entries |
-| `mcp` | MCP 工具到应用命令的转换 | 无独立业务状态 |
-| `api` | REST/WSS、错误和分页 | 无独立业务状态 |
-| `console` | 静态资源和管理 API | 无独立业务状态 |
-| `operations` | 备份、清理、轮换、升级状态 | operation_runs |
+| `audit` | 必要的安全审计 | audit_entries |
+| `mcp` | 固定 MCP 工具到应用命令的转换 | 无独立业务状态 |
+| `console` | Web 后台、设备/令牌/OAuth 管理 | 复用上述表 |
 
 Adapter 不得直接访问 `routing` 内部连接或数据库表，必须经过应用服务。
 
 ## 3. Node 注册与配对
 
-### 3.1 浏览器登录与内部 Enrollment Token
+### 3.1 后台连接令牌
 
-日常配对入口是 `fast-spider-node login --hub <hub>`。Node 本机生成 PKCE 和 loopback callback，浏览器跳转 Hub 登录/授权页；Owner 登录并允许“设备连接”后，Node 获得仅限 `fast-spider:device-connect` 的短期 OAuth Access Token。
+日常入口是 `fast-spider-node connect --hub <hub> --token <connection-token>`。Owner 先登录 `/app`，创建一个连接令牌；Node 本机生成设备密钥，并把连接令牌与设备公钥、Node 版本、OS、架构、显示名一起提交到 Hub。
 
-Hub 随后为该受限 OAuth 身份签发内部一次性 enrollment token：
+连接令牌的边界很窄：
 
-- 随机强度至少 128 bit。
-- 默认有效期 10 分钟且只允许使用一次。
-- 绑定 Owner、可选节点显示名和预期平台。
-- 数据库仅保存不可逆摘要。
-- token 只在 Node 与 Hub 内部交换，不进入日常用户界面、复制粘贴流程或普通日志。
-
-Node 使用该 token 连同本机设备公钥、Node 版本、OS、架构和随机 nonce 完成 enrollment；成功后立即撤销临时 device-connect OAuth Authorization。后续持续连接只使用设备私钥和短期设备凭据，不依赖 OAuth/PAT。
+- 数据库只保存哈希，明文只在创建页展示一次。
+- 可以设置有效期并随时撤销。
+- 只允许调用 `POST /api/v1/machines/register`，不能直接访问 MCP、机器管理或 Artifact REST。
+- Node 登记成功后不保存连接令牌；后续 WSS 只使用本机设备私钥和 Hub 签发的短期设备凭据。
+- 设备被撤销后，可以使用仍有效的连接令牌重新登记；Workspace Registry 保留在 Node 本机。
 
 ### 3.2 注册时序图
 
@@ -66,19 +60,15 @@ sequenceDiagram
     participant N as New Node
     participant DB as SQLite
 
-    N->>N: generate PKCE + device key pair
-    N-->>U: open Hub OAuth authorize URL
-    U->>H: login + approve device-connect
-    H-->>N: short-lived OAuth authorization code
-    N->>H: exchange PKCE code
-    H-->>N: device-connect access token
-    N->>H: create internal enrollment token
-    H->>DB: store token digest + expiry
-    H-->>N: one-time enrollment token
-    N->>H: enroll(token, publicKey, nonce, platform)
-    H->>DB: atomically consume token + create machine
-    H-->>N: machineId + signed credential + Hub trust info
-    N->>H: revoke temporary OAuth authorization
+    U->>H: login /app
+    U->>H: create connection token
+    H->>DB: store token digest + metadata
+    H-->>U: show plaintext token once
+    N->>N: generate device key pair
+    N->>H: register(connection token, publicKey, platform)
+    H->>DB: authenticate token + create machine/credential
+    H-->>N: machineId + Hub trust info
+    N->>N: persist device identity, not connection token
     N->>H: WSS connect + device proof
     H-->>N: protocol/capability negotiation
     N-->>H: ready + capability manifest
@@ -221,7 +211,7 @@ MVP 选择 SQLite WAL：
 
 只使用 Hub 内置、单实例调度器，不引入消息队列。任务包括：
 
-- 过期 enrollment token、auth session 和 lease 清理。
+- 过期/撤销连接令牌、Web Session、OAuth Token/Authorization 清理。
 - Job event、审计和 Artifact 保留策略执行。
 - 临时上传和孤儿文件清理。
 - 设备凭据轮换提醒。

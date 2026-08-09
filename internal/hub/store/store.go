@@ -79,22 +79,20 @@ type DeviceSession struct {
 	NodeVersion  string
 }
 
-type EnrollmentInput struct {
-	TokenHash      string
-	IdempotencyKey string
-	MachineID      string
-	CredentialID   string
-	OwnerID        string
-	DisplayName    string
-	OS             string
-	Arch           string
-	NodeVersion    string
-	PublicKey      string
-	Fingerprint    string
-	Now            time.Time
+type MachineRegistrationInput struct {
+	MachineID    string
+	CredentialID string
+	OwnerID      string
+	DisplayName  string
+	OS           string
+	Arch         string
+	NodeVersion  string
+	PublicKey    string
+	Fingerprint  string
+	Now          time.Time
 }
 
-type EnrollmentResult struct {
+type MachineRegistrationResult struct {
 	MachineID    string
 	CredentialID string
 	OwnerID      string
@@ -260,22 +258,9 @@ func (s *Store) EnsureBootstrapToken(ctx context.Context, id, tokenHash string, 
 	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM owners").Scan(&owners); err != nil {
 		return false, err
 	}
-	if owners > 1 {
-		return false, fmt.Errorf("unexpected owner count %d", owners)
+	if owners > 0 {
+		return false, tx.Commit()
 	}
-	if owners == 1 {
-		var username, passwordHash sql.NullString
-		if err := tx.QueryRowContext(ctx, "SELECT username, password_hash FROM owners LIMIT 1").Scan(&username, &passwordHash); err != nil {
-			return false, err
-		}
-		if username.Valid && username.String != "" && passwordHash.Valid && passwordHash.String != "" {
-			return false, tx.Commit()
-		}
-	}
-	// Until the single Owner has browser-login credentials, each Hub restart
-	// rotates the one-time setup secret. This covers both a fresh install and
-	// an upgrade from the legacy Owner-token-only setup without creating a
-	// second recovery-token system.
 	if _, err := tx.ExecContext(ctx, "DELETE FROM bootstrap_tokens"); err != nil {
 		return false, err
 	}
@@ -288,51 +273,11 @@ func (s *Store) EnsureBootstrapToken(ctx context.Context, id, tokenHash string, 
 	return true, nil
 }
 
-func (s *Store) BootstrapOwner(ctx context.Context, bootstrapHash, ownerID, displayName, apiTokenID, apiTokenHash string, now time.Time) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var id string
-	var expires int64
-	var consumed sql.NullInt64
-	if err := tx.QueryRowContext(ctx, "SELECT id, expires_at, consumed_at FROM bootstrap_tokens WHERE token_hash = ?", bootstrapHash).Scan(&id, &expires, &consumed); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrUnauthorized
-		}
-		return err
-	}
-	if consumed.Valid {
-		return ErrConsumed
-	}
-	if expires <= now.Unix() {
-		return ErrExpired
-	}
-	var owners int
-	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM owners").Scan(&owners); err != nil {
-		return err
-	}
-	if owners > 0 {
-		return ErrConflict
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO owners(id, display_name, created_at) VALUES(?,?,?)", ownerID, displayName, now.Unix()); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO owner_api_tokens(id, owner_id, token_hash, label, created_at) VALUES(?,?,?,?,?)", apiTokenID, ownerID, apiTokenHash, "Bootstrap CLI token", now.Unix()); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, "UPDATE bootstrap_tokens SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL", now.Unix(), id); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
-func (s *Store) AuthenticateOwnerToken(ctx context.Context, tokenHash string, now time.Time) (string, error) {
+func (s *Store) AuthenticateConnectionToken(ctx context.Context, tokenHash string, now time.Time) (string, error) {
 	var tokenID, ownerID string
 	var expires, revoked, lastUsed sql.NullInt64
 	err := s.db.QueryRowContext(ctx,
-		"SELECT id, owner_id, expires_at, revoked_at, last_used_at FROM owner_api_tokens WHERE token_hash = ?",
+		"SELECT id, owner_id, expires_at, revoked_at, last_used_at FROM connection_tokens WHERE token_hash = ?",
 		tokenHash,
 	).Scan(&tokenID, &ownerID, &expires, &revoked, &lastUsed)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -349,93 +294,54 @@ func (s *Store) AuthenticateOwnerToken(ctx context.Context, tokenHash string, no
 	}
 	if !lastUsed.Valid || now.Unix()-lastUsed.Int64 >= 300 {
 		_, _ = s.db.ExecContext(ctx,
-			"UPDATE owner_api_tokens SET last_used_at = ? WHERE id = ? AND revoked_at IS NULL",
+			"UPDATE connection_tokens SET last_used_at = ? WHERE id = ? AND revoked_at IS NULL",
 			now.Unix(), tokenID,
 		)
 	}
 	return ownerID, nil
 }
 
-func (s *Store) CreateEnrollmentToken(ctx context.Context, id, ownerID, tokenHash, expectedName, expectedOS string, now, expires time.Time, maxAttempts int) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO enrollment_tokens(
-		id, owner_id, token_hash, created_at, expires_at, max_attempts, expected_name, expected_os
-	) VALUES(?,?,?,?,?,?,?,?)`, id, ownerID, tokenHash, now.Unix(), expires.Unix(), maxAttempts, nullString(expectedName), nullString(expectedOS))
-	return err
-}
-
-func (s *Store) Enroll(ctx context.Context, in EnrollmentInput) (EnrollmentResult, error) {
+func (s *Store) RegisterMachine(ctx context.Context, in MachineRegistrationInput) (MachineRegistrationResult, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return EnrollmentResult{}, err
+		return MachineRegistrationResult{}, err
 	}
 	defer tx.Rollback()
-	var tokenID, ownerID string
-	var expires int64
-	var maxAttempts, attempts int
-	var consumed sql.NullInt64
-	var expectedName, expectedOS, savedIdem, resultMachine sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT id, owner_id, expires_at, max_attempts, attempt_count, consumed_at,
-		expected_name, expected_os, idempotency_key, result_machine_id
-		FROM enrollment_tokens WHERE token_hash = ?`, in.TokenHash).
-		Scan(&tokenID, &ownerID, &expires, &maxAttempts, &attempts, &consumed, &expectedName, &expectedOS, &savedIdem, &resultMachine)
-	if errors.Is(err, sql.ErrNoRows) {
-		return EnrollmentResult{}, ErrUnauthorized
-	}
-	if err != nil {
-		return EnrollmentResult{}, err
-	}
-	if consumed.Valid {
-		if savedIdem.Valid && savedIdem.String == in.IdempotencyKey && resultMachine.Valid {
-			var credentialID string
-			if err := tx.QueryRowContext(ctx, "SELECT id FROM device_credentials WHERE machine_id = ? AND status = 'active' ORDER BY issued_at DESC LIMIT 1", resultMachine.String).Scan(&credentialID); err != nil {
-				return EnrollmentResult{}, err
-			}
-			return EnrollmentResult{MachineID: resultMachine.String, CredentialID: credentialID, OwnerID: ownerID, AlreadyDone: true}, tx.Commit()
-		}
-		return EnrollmentResult{}, ErrConsumed
-	}
-	if expires <= in.Now.Unix() {
-		return EnrollmentResult{}, ErrExpired
-	}
-	if attempts >= maxAttempts {
-		return EnrollmentResult{}, ErrUnauthorized
-	}
-	if (expectedName.Valid && expectedName.String != in.DisplayName) || (expectedOS.Valid && expectedOS.String != in.OS) {
-		attempts++
-		_, _ = tx.ExecContext(ctx, "UPDATE enrollment_tokens SET attempt_count = ? WHERE id = ?", attempts, tokenID)
-		if attempts >= maxAttempts {
-			_, _ = tx.ExecContext(ctx, "UPDATE enrollment_tokens SET consumed_at = ? WHERE id = ?", in.Now.Unix(), tokenID)
-		}
+
+	var existingMachineID, existingCredentialID string
+	err = tx.QueryRowContext(ctx, `SELECT m.id, c.id
+		FROM machines m
+		JOIN device_credentials c ON c.machine_id = m.id AND c.status = 'active'
+		WHERE m.owner_id = ? AND m.status = 'active' AND c.public_key = ?
+		ORDER BY c.issued_at DESC LIMIT 1`, in.OwnerID, in.PublicKey).
+		Scan(&existingMachineID, &existingCredentialID)
+	if err == nil {
 		if err := tx.Commit(); err != nil {
-			return EnrollmentResult{}, err
+			return MachineRegistrationResult{}, err
 		}
-		return EnrollmentResult{}, ErrUnauthorized
+		return MachineRegistrationResult{
+			MachineID: existingMachineID, CredentialID: existingCredentialID,
+			OwnerID: in.OwnerID, AlreadyDone: true,
+		}, nil
 	}
-	if ownerID != in.OwnerID && in.OwnerID != "" {
-		return EnrollmentResult{}, ErrUnauthorized
+	if !errors.Is(err, sql.ErrNoRows) {
+		return MachineRegistrationResult{}, err
 	}
+
 	if _, err := tx.ExecContext(ctx, `INSERT INTO machines(
 		id, owner_id, display_name, status, os, arch, node_version, created_at, updated_at
-	) VALUES(?,?,?,'active',?,?,?,?,?)`, in.MachineID, ownerID, in.DisplayName, in.OS, in.Arch, in.NodeVersion, in.Now.Unix(), in.Now.Unix()); err != nil {
-		return EnrollmentResult{}, err
+	) VALUES(?,?,?,'active',?,?,?,?,?)`, in.MachineID, in.OwnerID, in.DisplayName, in.OS, in.Arch, in.NodeVersion, in.Now.Unix(), in.Now.Unix()); err != nil {
+		return MachineRegistrationResult{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO device_credentials(
 		id, machine_id, public_key, fingerprint, status, issued_at
 	) VALUES(?,?,?,?, 'active', ?)`, in.CredentialID, in.MachineID, in.PublicKey, in.Fingerprint, in.Now.Unix()); err != nil {
-		return EnrollmentResult{}, err
-	}
-	res, err := tx.ExecContext(ctx, `UPDATE enrollment_tokens SET consumed_at = ?, idempotency_key = ?, result_machine_id = ?
-		WHERE id = ? AND consumed_at IS NULL`, in.Now.Unix(), in.IdempotencyKey, in.MachineID, tokenID)
-	if err != nil {
-		return EnrollmentResult{}, err
-	}
-	if n, _ := res.RowsAffected(); n != 1 {
-		return EnrollmentResult{}, ErrConflict
+		return MachineRegistrationResult{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return EnrollmentResult{}, err
+		return MachineRegistrationResult{}, err
 	}
-	return EnrollmentResult{MachineID: in.MachineID, CredentialID: in.CredentialID, OwnerID: ownerID}, nil
+	return MachineRegistrationResult{MachineID: in.MachineID, CredentialID: in.CredentialID, OwnerID: in.OwnerID}, nil
 }
 
 func (s *Store) GetDeviceIdentity(ctx context.Context, machineID string) (DeviceIdentity, error) {
@@ -969,7 +875,6 @@ func (s *Store) CleanupExpired(ctx context.Context, now time.Time) error {
 	for _, stmt := range []string{
 		"DELETE FROM device_nonces WHERE expires_at <= ?",
 		"DELETE FROM device_access_tokens WHERE expires_at <= ? OR revoked_at IS NOT NULL",
-		"DELETE FROM enrollment_tokens WHERE expires_at <= ?",
 		"DELETE FROM bootstrap_tokens WHERE expires_at <= ?",
 		"DELETE FROM oauth_access_tokens WHERE expires_at <= ?",
 		"DELETE FROM oauth_refresh_tokens WHERE expires_at <= ?",
@@ -996,7 +901,7 @@ func (s *Store) CleanupExpired(ctx context.Context, now time.Time) error {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
-		"DELETE FROM owner_api_tokens WHERE (revoked_at IS NOT NULL AND revoked_at <= ?) OR (expires_at IS NOT NULL AND expires_at <= ?)",
+		"DELETE FROM connection_tokens WHERE (revoked_at IS NOT NULL AND revoked_at <= ?) OR (expires_at IS NOT NULL AND expires_at <= ?)",
 		now.Add(-oauthAuthorizationHistoryRetention).Unix(),
 		now.Add(-oauthAuthorizationHistoryRetention).Unix(),
 	); err != nil {

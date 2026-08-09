@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -266,7 +265,7 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request, session store
 		http.Error(w, "Failed to load OAuth authorizations", http.StatusInternalServerError)
 		return
 	}
-	tokens, err := s.service.ListOwnerAPITokens(r.Context(), session.OwnerID)
+	tokens, err := s.service.ListConnectionTokens(r.Context(), session.OwnerID)
 	if err != nil {
 		http.Error(w, "Failed to load access tokens", http.StatusInternalServerError)
 		return
@@ -292,9 +291,6 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request, session store
 		data.Machines = append(data.Machines, view)
 	}
 	for _, client := range clients {
-		if client.Scope == oauthDeviceConnectScope {
-			continue
-		}
 		data.Clients = append(data.Clients, oauthClientPageView{
 			ClientID:     client.ClientID,
 			ClientName:   client.ClientName,
@@ -315,7 +311,7 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request, session store
 		}
 		label := strings.TrimSpace(token.Label)
 		if label == "" {
-			label = "旧版兼容令牌"
+			label = "连接令牌"
 		}
 		lastUsed := "尚未使用"
 		if token.LastUsedAt != nil {
@@ -335,9 +331,6 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request, session store
 		})
 	}
 	for _, authorization := range authorizations {
-		if slices.Contains(authorization.Scopes, oauthDeviceConnectScope) {
-			continue
-		}
 		status := "有效"
 		if authorization.RevokedAt != nil {
 			status = "已撤销"
@@ -368,7 +361,7 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request, session store
 	case "client-deleted":
 		data.Notice = "OAuth 客户端已删除。"
 	case "token-revoked":
-		data.Notice = "访问令牌已撤销。"
+		data.Notice = "连接令牌已撤销。"
 	case "password-changed":
 		data.Notice = "密码已更新，其他网页登录会话已退出。"
 	}
@@ -378,9 +371,9 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request, session store
 	case "password-invalid":
 		data.Error = "当前密码不正确，或新密码不符合要求。"
 	case "token-invalid":
-		data.Error = "访问令牌有效期参数无效，请重新选择。"
+		data.Error = "连接令牌有效期参数无效，请重新选择。"
 	case "token-create":
-		data.Error = "无法创建访问令牌。请检查名称和有效期，或先撤销不再使用的令牌。"
+		data.Error = "无法创建连接令牌。请检查名称和有效期，或先撤销不再使用的令牌。"
 	}
 	s.renderWebPage(w, "app", data)
 }
@@ -448,7 +441,7 @@ func (s *Server) handleAppTokenCreate(w http.ResponseWriter, r *http.Request, se
 		s.redirectPublic(w, r, "/app?error=token-invalid", http.StatusSeeOther)
 		return
 	}
-	result, err := s.service.CreateOwnerAPIToken(
+	result, err := s.service.CreateConnectionToken(
 		r.Context(),
 		session.OwnerID,
 		r.PostForm.Get("label"),
@@ -475,7 +468,7 @@ func (s *Server) handleAppTokenRevoke(w http.ResponseWriter, r *http.Request, se
 	if !s.verifyCSRF(w, r, session.CSRFToken) {
 		return
 	}
-	if err := s.service.RevokeOwnerAPIToken(
+	if err := s.service.RevokeConnectionToken(
 		r.Context(), session.OwnerID, r.PathValue("tokenId"), remoteIP(r),
 	); err != nil {
 		http.Error(w, "Unable to revoke access token", http.StatusBadRequest)
@@ -616,10 +609,6 @@ func (s *Server) renderOAuthAuthorizePage(
 	}
 	scopeLabel := "MCP 访问"
 	description := "客户端获得授权后，可以通过 Fast Spider MCP 使用当前账户下的设备和 Workspace 能力。"
-	if values.Get("scope") == oauthDeviceConnectScope {
-		scopeLabel = "设备连接"
-		description = "本机 Fast Spider Node 将注册为当前账户的一台设备。临时授权会在配对完成后自动撤销。"
-	}
 	s.renderWebPage(w, "authorize", authorizePageData{
 		BasePath:    s.publicBasePath(r),
 		DisplayName: session.DisplayName,

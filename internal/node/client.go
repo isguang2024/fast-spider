@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,7 +49,7 @@ type Client struct {
 	screenshotSem  chan struct{}
 }
 
-type enrollResponse struct {
+type machineRegistrationResponse struct {
 	MachineID      string `json:"machineId"`
 	CredentialID   string `json:"credentialId"`
 	HubPublicKey   string `json:"hubPublicKey"`
@@ -111,49 +109,6 @@ func (c *Client) Capabilities() []protocolv1.CapabilityDescriptor {
 		out = append(out, protocolv1.BrowserCapability)
 	}
 	return out
-}
-
-func (c *Client) Enroll(ctx context.Context, hubURL, enrollmentToken, displayName string) (State, error) {
-	normalized, err := c.normalizeHubURL(hubURL)
-	if err != nil {
-		return State{}, err
-	}
-	displayName = strings.TrimSpace(displayName)
-	if displayName == "" {
-		return State{}, fmt.Errorf("display name is required")
-	}
-	idempotency := enrollmentIdempotency(enrollmentToken, security.EncodePublicKey(c.publicKey))
-	payload := map[string]any{
-		"enrollmentToken": enrollmentToken,
-		"idempotencyKey":  idempotency,
-		"displayName":     displayName,
-		"os":              runtime.GOOS,
-		"arch":            runtime.GOARCH,
-		"nodeVersion":     c.cfg.Version,
-		"publicKey":       security.EncodePublicKey(c.publicKey),
-	}
-	var response enrollResponse
-	if err := c.postJSON(ctx, normalized+"/api/v1/enroll", "", payload, &response); err != nil {
-		return State{}, err
-	}
-	hubPublic, err := security.DecodePublicKey(response.HubPublicKey)
-	if err != nil {
-		return State{}, fmt.Errorf("hub returned invalid public key: %w", err)
-	}
-	if security.Fingerprint(hubPublic) != response.HubFingerprint {
-		return State{}, fmt.Errorf("hub public key fingerprint mismatch")
-	}
-	state := State{
-		HubURL:         normalized,
-		MachineID:      response.MachineID,
-		CredentialID:   response.CredentialID,
-		HubPublicKey:   response.HubPublicKey,
-		HubFingerprint: response.HubFingerprint,
-	}
-	if err := SaveState(c.statePath, state); err != nil {
-		return State{}, fmt.Errorf("save node state: %w", err)
-	}
-	return state, nil
 }
 
 func (c *Client) issueDeviceToken(ctx context.Context, state State) (deviceTokenResponse, error) {
@@ -238,9 +193,4 @@ func (c *Client) normalizeHubURL(raw string) (string, error) {
 	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/")
 	return strings.TrimRight(parsed.String(), "/"), nil
-}
-
-func enrollmentIdempotency(token, publicKey string) string {
-	sum := sha256.Sum256([]byte("fast-spider-enroll-v1\n" + token + "\n" + publicKey))
-	return "idem_" + hex.EncodeToString(sum[:])
 }

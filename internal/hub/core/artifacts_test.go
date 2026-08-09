@@ -32,34 +32,7 @@ func TestArtifactUploadIntegrityAndCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bootstrap, err := service.EnsureBootstrap(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	owner, err := service.BootstrapOwner(ctx, bootstrap, "Owner", "127.0.0.1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ownerID, err := service.AuthenticateOwner(ctx, owner.OwnerToken)
-	if err != nil {
-		t.Fatal(err)
-	}
-	enrollment, err := service.CreateEnrollmentToken(ctx, ownerID, "artifact-node", "windows", "127.0.0.1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pub, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	enrolled, err := service.Enroll(ctx, EnrollRequest{
-		EnrollmentToken: enrollment.EnrollmentToken, IdempotencyKey: "idem_artifact_enroll_001",
-		DisplayName: "artifact-node", OS: "windows", Arch: "amd64", NodeVersion: "test", PublicKey: security.EncodePublicKey(pub),
-	}, "127.0.0.1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	session := store.DeviceSession{MachineID: enrolled.MachineID, OwnerID: ownerID}
+	session, ownerID := artifactTestSession(t, ctx, service)
 
 	data := []byte("artifact-data\n")
 	correctHash := artifactTestSHA(data)
@@ -328,15 +301,7 @@ func artifactTestSession(t *testing.T, ctx context.Context, service *Service) (s
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, err := service.BootstrapOwner(ctx, bootstrap, "Owner", "127.0.0.1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	ownerID, err := service.AuthenticateOwner(ctx, owner.OwnerToken)
-	if err != nil {
-		t.Fatal(err)
-	}
-	enrollment, err := service.CreateEnrollmentToken(ctx, ownerID, "artifact-node", "windows", "127.0.0.1")
+	account, err := service.BootstrapAccount(ctx, bootstrap, "owner", "Owner", "correct horse battery staple", "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,11 +309,13 @@ func artifactTestSession(t *testing.T, ctx context.Context, service *Service) (s
 	if err != nil {
 		t.Fatal(err)
 	}
-	enrolled, err := service.Enroll(ctx, EnrollRequest{EnrollmentToken: enrollment.EnrollmentToken, IdempotencyKey: "idem_artifact_resume_001", DisplayName: "artifact-node", OS: "windows", Arch: "amd64", NodeVersion: "test", PublicKey: security.EncodePublicKey(pub)}, "127.0.0.1")
+	registered, err := service.RegisterMachine(ctx, account.OwnerID, MachineRegistrationRequest{
+		DisplayName: "artifact-node", OS: "windows", Arch: "amd64", NodeVersion: "test", PublicKey: security.EncodePublicKey(pub),
+	}, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return store.DeviceSession{MachineID: enrolled.MachineID, OwnerID: ownerID}, ownerID
+	return store.DeviceSession{MachineID: registered.MachineID, OwnerID: account.OwnerID}, account.OwnerID
 }
 
 func artifactTestSHA(data []byte) string {

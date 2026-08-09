@@ -15,7 +15,7 @@
     <nav class="topnav" aria-label="后台导航">
       <a href="#machines">设备</a>
       <a href="#oauth">授权</a>
-      <a href="#tokens">访问令牌</a>
+      <a href="#tokens">连接令牌</a>
       <a href="#account">账户</a>
     </nav>
     <div class="account">
@@ -35,11 +35,11 @@
       <div class="hero-copy">
         <p class="eyebrow">Shared Services / Fast Spider</p>
         <h1 id="page-title">设备与授权中心</h1>
-        <p class="muted">设备、GPT 与其他 MCP 客户端统一走账户登录与 OAuth。日常连接无需复制 Token；真正的文件、Shell、Git、Build 与浏览器能力仍由本机 Node 执行。</p>
+        <p class="muted">后台只负责账户、连接令牌、设备和 MCP OAuth。Node 首次连接填写一个后台生成的令牌；GPT 与其他 MCP 客户端继续走标准 OAuth。真正的文件、Shell、Git、Build 与浏览器能力仍由本机 Node 执行。</p>
         <div class="quick-links" aria-label="快速入口">
           <a href="#machines">连接本机</a>
           <a href="#oauth">查看授权</a>
-          <a href="#tokens">脚本令牌</a>
+          <a href="#tokens">生成连接令牌</a>
         </div>
       </div>
       <div class="hero-meta" aria-label="Hub 状态">
@@ -54,14 +54,14 @@
     <section class="summary-grid" aria-label="状态摘要">
       <article class="summary-card"><span>设备</span><strong>{{len .Machines}}</strong><small>{{.OnlineMachines}} 台在线</small></article>
       <article class="summary-card"><span>OAuth 授权</span><strong>{{.ActiveAuthorizations}}</strong><small>当前有效连接</small></article>
-      <article class="summary-card"><span>访问令牌</span><strong>{{.ActiveTokens}}</strong><small>脚本 / 兼容用途</small></article>
+      <article class="summary-card"><span>连接令牌</span><strong>{{.ActiveTokens}}</strong><small>Node 首次连接使用</small></article>
       <article class="summary-card"><span>OAuth 客户端</span><strong>{{len .Clients}}</strong><small>已完成 MCP 授权</small></article>
     </section>
 
     <section class="panel" id="machines">
       <div class="panel-heading">
-        <div><p class="eyebrow">Machines</p><h2>本机与远程设备</h2><p class="section-copy">首次连接只需运行一次网页登录命令；登录成功后 Node 自动完成设备登记并持续连接 Hub。</p></div>
-        <div class="command-box"><span>Windows / Linux / macOS</span><code>fast-spider-node login --hub {{.BaseURL}}</code></div>
+        <div><p class="eyebrow">Machines</p><h2>本机与远程设备</h2><p class="section-copy">先在下方生成连接令牌，再在 Node 客户端填写一次。连接成功后令牌不会保存在 Node，后续持续连接使用本机设备密钥。</p></div>
+        <div class="command-box"><span>Windows / Linux / macOS</span><code>fast-spider-node connect --hub {{.BaseURL}} --token &lt;连接令牌&gt;</code></div>
       </div>
       {{if .Machines}}
       <div class="table-wrap">
@@ -76,7 +76,7 @@
               <td data-label="最近在线">{{.LastSeen}}</td>
               <td data-label="操作" class="action-cell">
                 {{if ne .Status "revoked"}}
-                <form method="post" action="{{$.BasePath}}/app/machines/{{.MachineID}}/revoke" data-confirm="确认撤销这台设备？撤销后它需要重新登录才能连接。">
+                <form method="post" action="{{$.BasePath}}/app/machines/{{.MachineID}}/revoke" data-confirm="确认撤销这台设备？撤销后需要重新使用有效连接令牌登记。">
                   <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                   <button class="danger-link action-button" type="submit">撤销设备</button>
                 </form>
@@ -88,13 +88,13 @@
         </table>
       </div>
       {{else}}
-      <div class="empty-state"><strong>还没有设备</strong><span>在你的电脑运行上方命令，浏览器会自动打开 Fast Spider 登录授权页。</span></div>
+      <div class="empty-state"><strong>还没有设备</strong><span>先生成连接令牌，再在电脑运行上方命令即可完成设备登记，不需要客户端网页登录。</span></div>
       {{end}}
     </section>
 
     <section class="panel" id="oauth">
       <div class="panel-heading">
-        <div><p class="eyebrow">OAuth Authorizations</p><h2>授权连接</h2><p class="section-copy">GPT 和其他 MCP 客户端完成网页登录后会自动出现在这里。Node 的一次性配对授权会自动清理，只在设备列表保留最终机器状态。</p></div>
+        <div><p class="eyebrow">OAuth Authorizations</p><h2>授权连接</h2><p class="section-copy">这里只管理 GPT 和其他 MCP 客户端的 OAuth 授权。Node 不再使用 OAuth 登录，设备连接统一使用上方连接令牌。</p></div>
         <div class="command-box"><span>MCP 地址</span><code>{{.MCPURL}}</code></div>
       </div>
       {{if .Authorizations}}
@@ -123,17 +123,17 @@
         </table>
       </div>
       {{else}}
-      <div class="empty-state"><strong>还没有 OAuth 授权</strong><span>把 MCP 地址添加到 GPT，或运行 Node 登录后，授权记录会自动出现。</span></div>
+      <div class="empty-state"><strong>还没有 OAuth 授权</strong><span>把 MCP 地址添加到 GPT 并完成网页登录授权后，记录会自动出现。</span></div>
       {{end}}
     </section>
 
     <section class="panel" id="tokens">
       <div class="panel-heading token-heading">
-        <div><p class="eyebrow">Personal Access Tokens</p><h2>访问令牌</h2><p class="section-copy">只给脚本、CLI 兼容或恢复场景使用。Node 与 GPT 的正常登录不需要手工 Token。</p></div>
+        <div><p class="eyebrow">Connection Tokens</p><h2>连接令牌</h2><p class="section-copy">用于 Node 首次登记。客户端只需填写一次；登记成功后不保存令牌。撤销令牌会阻止它继续新增设备，已登记设备请在设备列表单独撤销。</p></div>
         <form class="token-form" method="post" action="{{.BasePath}}/app/tokens">
           <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
           <label>名称
-            <input name="label" maxlength="80" placeholder="例如：本机维护脚本" required>
+            <input name="label" maxlength="80" placeholder="例如：办公室 Windows" required>
           </label>
           <label>有效期
             <select name="expires_days">
@@ -160,7 +160,7 @@
               <td data-label="状态"><span class="pill {{if eq .Status "有效"}}success{{else if eq .Status "已撤销"}}danger{{end}}">{{.Status}}</span></td>
               <td data-label="操作" class="action-cell">
                 {{if eq .Status "有效"}}
-                <form method="post" action="{{$.BasePath}}/app/tokens/{{.ID}}/revoke" data-confirm="确认撤销这个访问令牌？使用它的脚本会立即失去访问权限。">
+                <form method="post" action="{{$.BasePath}}/app/tokens/{{.ID}}/revoke" data-confirm="确认撤销这个连接令牌？之后不能再用它登记新设备。">
                   <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
                   <button class="danger-link action-button" type="submit">撤销令牌</button>
                 </form>
@@ -172,7 +172,7 @@
         </table>
       </div>
       {{else}}
-      <div class="empty-state compact"><strong>没有手工访问令牌</strong><span>这是正常状态。优先使用网页登录，只有脚本需要时再生成。</span></div>
+      <div class="empty-state compact"><strong>还没有连接令牌</strong><span>需要连接新的 Node 时再生成一个即可。</span></div>
       {{end}}
     </section>
 

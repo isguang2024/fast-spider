@@ -37,7 +37,7 @@ type WebSessionRecord struct {
 	ExpiresAt   time.Time
 }
 
-type OwnerAPITokenRecord struct {
+type ConnectionTokenRecord struct {
 	ID         string
 	OwnerID    string
 	Label      string
@@ -81,34 +81,15 @@ func (s *Store) BootstrapOwnerAccount(
 	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM owners").Scan(&ownerCount); err != nil {
 		return "", err
 	}
-	var ownerID string
-	switch ownerCount {
-	case 0:
-		ownerID = proposedOwnerID
-		if _, err := tx.ExecContext(ctx,
-			"INSERT INTO owners(id, display_name, username, password_hash, created_at) VALUES(?,?,?,?,?)",
-			ownerID, displayName, username, passwordHash, now.Unix(),
-		); err != nil {
-			return "", err
-		}
-	case 1:
-		var existingUsername, existingPassword sql.NullString
-		if err := tx.QueryRowContext(ctx,
-			"SELECT id, username, password_hash FROM owners LIMIT 1",
-		).Scan(&ownerID, &existingUsername, &existingPassword); err != nil {
-			return "", err
-		}
-		if existingUsername.Valid && existingUsername.String != "" && existingPassword.Valid && existingPassword.String != "" {
-			return "", ErrConflict
-		}
-		if _, err := tx.ExecContext(ctx,
-			"UPDATE owners SET username = ?, display_name = ?, password_hash = ? WHERE id = ?",
-			username, displayName, passwordHash, ownerID,
-		); err != nil {
-			return "", err
-		}
-	default:
+	if ownerCount != 0 {
 		return "", ErrConflict
+	}
+	ownerID := proposedOwnerID
+	if _, err := tx.ExecContext(ctx,
+		"INSERT INTO owners(id, display_name, username, password_hash, created_at) VALUES(?,?,?,?,?)",
+		ownerID, displayName, username, passwordHash, now.Unix(),
+	); err != nil {
+		return "", err
 	}
 
 	result, err := tx.ExecContext(ctx,
@@ -170,23 +151,6 @@ func (s *Store) ownerAccount(ctx context.Context, query, value string) (OwnerAcc
 	return rec, nil
 }
 
-func (s *Store) SetOwnerAccountCredentials(ctx context.Context, ownerID, username, passwordHash string) error {
-	result, err := s.db.ExecContext(ctx,
-		"UPDATE owners SET username = ?, password_hash = ? WHERE id = ?",
-		username, passwordHash, ownerID,
-	)
-	if err != nil {
-		return err
-	}
-	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
-		if err != nil {
-			return err
-		}
-		return ErrNotFound
-	}
-	return nil
-}
-
 func (s *Store) ChangeOwnerPassword(ctx context.Context, ownerID, passwordHash, keepSessionID string, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -210,12 +174,12 @@ func (s *Store) ChangeOwnerPassword(ctx context.Context, ownerID, passwordHash, 
 	return tx.Commit()
 }
 
-func (s *Store) CreateOwnerAPIToken(ctx context.Context, rec OwnerAPITokenRecord, tokenHash string) error {
+func (s *Store) CreateConnectionToken(ctx context.Context, rec ConnectionTokenRecord, tokenHash string) error {
 	var expires any
 	if rec.ExpiresAt != nil {
 		expires = rec.ExpiresAt.Unix()
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO owner_api_tokens(
+	_, err := s.db.ExecContext(ctx, `INSERT INTO connection_tokens(
 		id, owner_id, token_hash, label, created_at, expires_at
 	) VALUES(?,?,?,?,?,?)`,
 		rec.ID,
@@ -228,19 +192,19 @@ func (s *Store) CreateOwnerAPIToken(ctx context.Context, rec OwnerAPITokenRecord
 	return err
 }
 
-func (s *Store) ListOwnerAPITokens(ctx context.Context, ownerID string) ([]OwnerAPITokenRecord, error) {
+func (s *Store) ListConnectionTokens(ctx context.Context, ownerID string) ([]ConnectionTokenRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT
 		id, owner_id, label, created_at, last_used_at, expires_at, revoked_at
-	FROM owner_api_tokens
+	FROM connection_tokens
 	WHERE owner_id = ?
 	ORDER BY created_at DESC, id`, ownerID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var records []OwnerAPITokenRecord
+	var records []ConnectionTokenRecord
 	for rows.Next() {
-		var rec OwnerAPITokenRecord
+		var rec ConnectionTokenRecord
 		var label sql.NullString
 		var created int64
 		var lastUsed, expires, revoked sql.NullInt64
@@ -266,9 +230,9 @@ func (s *Store) ListOwnerAPITokens(ctx context.Context, ownerID string) ([]Owner
 	return records, rows.Err()
 }
 
-func (s *Store) RevokeOwnerAPIToken(ctx context.Context, ownerID, tokenID string, now time.Time) error {
+func (s *Store) RevokeConnectionToken(ctx context.Context, ownerID, tokenID string, now time.Time) error {
 	result, err := s.db.ExecContext(ctx,
-		"UPDATE owner_api_tokens SET revoked_at = ? WHERE id = ? AND owner_id = ? AND revoked_at IS NULL",
+		"UPDATE connection_tokens SET revoked_at = ? WHERE id = ? AND owner_id = ? AND revoked_at IS NULL",
 		now.Unix(), tokenID, ownerID,
 	)
 	if err != nil {

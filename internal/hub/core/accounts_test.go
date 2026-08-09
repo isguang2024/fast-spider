@@ -12,7 +12,7 @@ import (
 	"github.com/isguang2024/fast-spider/internal/hub/store"
 )
 
-func TestOwnerPersonalAccessTokenLifecycleAndSecretRedaction(t *testing.T) {
+func TestConnectionTokenLifecycleAndSecretRedaction(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
 	st, err := store.Open(ctx, filepath.Join(dataDir, "hub.db"))
@@ -28,48 +28,48 @@ func TestOwnerPersonalAccessTokenLifecycleAndSecretRedaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	account, err := service.BootstrapAccount(ctx, bootstrapToken, "pat-owner", "PAT Owner", "correct horse battery staple", "127.0.0.1")
+	account, err := service.BootstrapAccount(ctx, bootstrapToken, "token-owner", "Token Owner", "correct horse battery staple", "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	created, err := service.CreateOwnerAPIToken(ctx, account.OwnerID, "maintenance", 0, "127.0.0.1")
+	created, err := service.CreateConnectionToken(ctx, account.OwnerID, "office-windows", 0, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(created.Token, "own_") {
-		t.Fatalf("PAT has unexpected prefix: %q", created.Token)
+	if !strings.HasPrefix(created.Token, "ctk_") {
+		t.Fatalf("connection token has unexpected prefix: %q", created.Token)
 	}
-	listed, err := service.ListOwnerAPITokens(ctx, account.OwnerID)
+	listed, err := service.ListConnectionTokens(ctx, account.OwnerID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(listed) != 1 || listed[0].ID != created.Record.ID || listed[0].LastUsedAt != nil {
-		t.Fatalf("new PAT listing=%+v", listed)
+		t.Fatalf("new connection token listing=%+v", listed)
 	}
 	listedJSON, err := json.Marshal(listed)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(listedJSON), created.Token) {
-		t.Fatalf("PAT plaintext was persisted in list response: %s", listedJSON)
+		t.Fatalf("connection token plaintext was persisted in list response: %s", listedJSON)
 	}
 
-	if ownerID, err := service.AuthenticateOwner(ctx, created.Token); err != nil || ownerID != account.OwnerID {
-		t.Fatalf("PAT authentication owner=%q err=%v", ownerID, err)
+	if ownerID, err := service.AuthenticateConnectionToken(ctx, created.Token); err != nil || ownerID != account.OwnerID {
+		t.Fatalf("connection token authentication owner=%q err=%v", ownerID, err)
 	}
-	listed, err = service.ListOwnerAPITokens(ctx, account.OwnerID)
+	listed, err = service.ListConnectionTokens(ctx, account.OwnerID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(listed) != 1 || listed[0].LastUsedAt == nil {
-		t.Fatalf("PAT last_used_at was not recorded: %+v", listed)
+		t.Fatalf("connection token last_used_at was not recorded: %+v", listed)
 	}
 
-	if err := service.RevokeOwnerAPIToken(ctx, account.OwnerID, created.Record.ID, "127.0.0.1"); err != nil {
+	if err := service.RevokeConnectionToken(ctx, account.OwnerID, created.Record.ID, "127.0.0.1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.AuthenticateOwner(ctx, created.Token); !errors.Is(err, store.ErrRevoked) {
-		t.Fatalf("revoked PAT authentication error=%v, want ErrRevoked", err)
+	if _, err := service.AuthenticateConnectionToken(ctx, created.Token); !errors.Is(err, store.ErrRevoked) {
+		t.Fatalf("revoked connection token authentication error=%v, want ErrRevoked", err)
 	}
 }

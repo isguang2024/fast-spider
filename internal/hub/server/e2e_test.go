@@ -20,12 +20,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/isguang2024/fast-spider/internal/adminclient"
 	"github.com/isguang2024/fast-spider/internal/hub/core"
 	"github.com/isguang2024/fast-spider/internal/hub/registry"
 	"github.com/isguang2024/fast-spider/internal/hub/server"
 	"github.com/isguang2024/fast-spider/internal/hub/store"
 	"github.com/isguang2024/fast-spider/internal/node"
+	"github.com/isguang2024/fast-spider/internal/security"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -51,19 +51,11 @@ func TestPhase1EndToEnd(t *testing.T) {
 	httpServer := httptest.NewServer(hub.Handler())
 	defer httpServer.Close()
 
-	bootstrapClient, err := adminclient.New(httpServer.URL, "", true)
+	account, err := service.BootstrapAccount(ctx, bootstrapToken, "e2e-owner", "Owner", "correct horse battery staple", "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, err := bootstrapClient.Bootstrap(ctx, bootstrapToken, "Owner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	admin, err := adminclient.New(httpServer.URL, owner.OwnerToken, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	enrollment, err := admin.CreateEnrollment(ctx, "test-node", runtime.GOOS)
+	connectionToken, err := service.CreateConnectionToken(ctx, account.OwnerID, "E2E Node", time.Hour, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +85,7 @@ func TestPhase1EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, err := nodeClient.Enroll(ctx, httpServer.URL, enrollment.EnrollmentToken, "test-node")
+	state, err := nodeClient.Connect(ctx, httpServer.URL, connectionToken.Token, "test-node")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,11 +102,30 @@ func TestPhase1EndToEnd(t *testing.T) {
 	}()
 
 	waitFor(t, 5*time.Second, func() bool {
-		machines, err := admin.ListMachines(ctx)
+		machines, err := service.ListMachines(ctx, account.OwnerID)
 		return err == nil && len(machines) == 1 && machines[0].MachineID == state.MachineID && machines[0].Online
 	})
 
-	mcpHTTP := &http.Client{Transport: bearerTransport{token: owner.OwnerToken, base: http.DefaultTransport}}
+	mcpAccessToken := "oauth_e2e_access_token"
+	now := time.Now().UTC()
+	if err := st.RegisterOAuthClient(ctx, store.OAuthClientRecord{
+		ClientID: "mcpcli_e2e", ClientName: "E2E MCP", RedirectURIs: []string{"http://127.0.0.1/callback"},
+		GrantTypes: []string{"authorization_code", "refresh_token"}, ResponseTypes: []string{"code"}, Scope: "fast-spider", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateOAuthAuthorization(ctx, store.OAuthAuthorizationRecord{
+		AuthorizationID: "authz_e2e", OwnerID: account.OwnerID, ClientID: "mcpcli_e2e", ClientName: "E2E MCP",
+		Scopes: []string{"fast-spider"}, Resource: httpServer.URL + "/mcp", CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveOAuthTokenPair(ctx, security.HashToken(mcpAccessToken), "", store.OAuthTokenRecord{
+		AuthorizationID: "authz_e2e", OwnerID: account.OwnerID, ClientID: "mcpcli_e2e", Scopes: []string{"fast-spider"}, Resource: httpServer.URL + "/mcp",
+	}, now.Add(time.Hour), now.Add(time.Hour), "", now); err != nil {
+		t.Fatal(err)
+	}
+	mcpHTTP := &http.Client{Transport: bearerTransport{token: mcpAccessToken, base: http.DefaultTransport}}
 	mcpClient := mcp.NewClient(&mcp.Implementation{Name: "phase1-e2e", Version: "test"}, nil)
 	mcpSession, err := mcpClient.Connect(ctx, &mcp.StreamableClientTransport{
 		Endpoint:             httpServer.URL + "/mcp",
@@ -232,7 +243,7 @@ func TestPhase1EndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	if os.Getenv("FAST_SPIDER_SCREENSHOT_E2E") == "1" {
-		runScreenshotTakeE2E(t, ctx, mcpSession, mcpHTTP, httpServer.URL, state.MachineID, workspace.WorkspaceID, nodeDataDir)
+		runScreenshotTakeE2E(t, ctx, mcpSession, service, account.OwnerID, state.MachineID, workspace.WorkspaceID, nodeDataDir)
 	}
 	editResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "file_edit", Arguments: map[string]any{
 		"machineId": state.MachineID, "workspaceId": workspace.WorkspaceID, "path": "hello.txt",
@@ -519,11 +530,11 @@ func TestPhase1EndToEnd(t *testing.T) {
 		return json.Unmarshal(raw, &watch) == nil && watch.State == "canceled"
 	})
 
-	if err := admin.RevokeMachine(ctx, state.MachineID); err != nil {
+	if err := service.RevokeMachine(ctx, account.OwnerID, state.MachineID, "127.0.0.1"); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, 5*time.Second, func() bool {
-		machines, err := admin.ListMachines(ctx)
+		machines, err := service.ListMachines(ctx, account.OwnerID)
 		return err == nil && len(machines) == 1 && machines[0].Status == "revoked" && !machines[0].Online
 	})
 }
@@ -556,7 +567,7 @@ type mcpToolCaller interface {
 	CallTool(context.Context, *mcp.CallToolParams) (*mcp.CallToolResult, error)
 }
 
-func runScreenshotTakeE2E(t *testing.T, ctx context.Context, session mcpToolCaller, httpClient *http.Client, hubURL, machineID, workspaceID, nodeDataDir string) {
+func runScreenshotTakeE2E(t *testing.T, ctx context.Context, session mcpToolCaller, service *core.Service, ownerID, machineID, workspaceID, nodeDataDir string) {
 	t.Helper()
 	call := func(name string, arguments map[string]any) (map[string]any, error) {
 		result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: arguments})
@@ -626,19 +637,12 @@ func runScreenshotTakeE2E(t *testing.T, ctx context.Context, session mcpToolCall
 	if !ok || metadataResult["artifactId"] != artifactID || metadataResult["contentType"] != "image/png" {
 		t.Fatalf("artifact_get metadata=%+v", metadata)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, hubURL+"/api/v1/artifacts/"+artifactID+"/content", nil)
+	_, artifactFile, err := service.OpenArtifact(ctx, ownerID, artifactID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := httpClient.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("artifact content status=%s", response.Status)
-	}
-	content, err := io.ReadAll(io.LimitReader(response.Body, 32<<20+1))
+	defer artifactFile.Close()
+	content, err := io.ReadAll(io.LimitReader(artifactFile, 32<<20+1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -743,19 +747,12 @@ func runScreenshotTakeE2E(t *testing.T, ctx context.Context, session mcpToolCall
 	if !ok || windowMetadataResult["artifactId"] != windowArtifactID || windowMetadataResult["contentType"] != "image/png" {
 		t.Fatalf("window artifact_get metadata=%+v", windowMetadata)
 	}
-	windowRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, hubURL+"/api/v1/artifacts/"+windowArtifactID+"/content", nil)
+	_, windowArtifactFile, err := service.OpenArtifact(ctx, ownerID, windowArtifactID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	windowResponse, err := httpClient.Do(windowRequest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer windowResponse.Body.Close()
-	if windowResponse.StatusCode != http.StatusOK {
-		t.Fatalf("window artifact content status=%s", windowResponse.Status)
-	}
-	windowContent, err := io.ReadAll(io.LimitReader(windowResponse.Body, 32<<20+1))
+	defer windowArtifactFile.Close()
+	windowContent, err := io.ReadAll(io.LimitReader(windowArtifactFile, 32<<20+1))
 	if err != nil {
 		t.Fatal(err)
 	}

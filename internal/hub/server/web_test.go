@@ -15,6 +15,7 @@ import (
 	"github.com/isguang2024/fast-spider/internal/hub/registry"
 	"github.com/isguang2024/fast-spider/internal/hub/server"
 	"github.com/isguang2024/fast-spider/internal/hub/store"
+	"github.com/isguang2024/fast-spider/internal/node"
 )
 
 func TestWebSetupLoginAndDashboard(t *testing.T) {
@@ -82,75 +83,7 @@ func TestWebSetupLoginAndDashboard(t *testing.T) {
 	}
 }
 
-func TestLegacyOwnerAddsWebAccountWithoutIdentityReset(t *testing.T) {
-	ctx := context.Background()
-	dataDir := t.TempDir()
-	st, err := store.Open(ctx, filepath.Join(dataDir, "hub.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	service, err := core.New(st, registry.New(), core.Config{DataDir: dataDir, Version: "web-test"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacyBootstrap, err := service.EnsureBootstrap(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacyOwner, err := service.BootstrapOwner(ctx, legacyBootstrap, "Legacy Owner", "127.0.0.1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	setupToken, err := service.EnsureBootstrap(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if setupToken == "" || setupToken == legacyBootstrap {
-		t.Fatal("legacy owner account setup token was not rotated")
-	}
-
-	hub := server.New(service, server.Config{})
-	httpServer := httptest.NewServer(hub.Handler())
-	defer httpServer.Close()
-	client := newWebTestClient(t)
-	status, headers, _ := webTestRequest(t, client, http.MethodGet, httpServer.URL+"/", nil)
-	if status != http.StatusFound || !strings.HasSuffix(headers.Get("Location"), "/setup") {
-		t.Fatalf("legacy owner root status=%d location=%q", status, headers.Get("Location"))
-	}
-	status, headers, body := webTestRequest(t, client, http.MethodPost, httpServer.URL+"/setup", url.Values{
-		"bootstrap_token":  {setupToken},
-		"username":         {"legacy-owner"},
-		"display_name":     {"Legacy Owner"},
-		"password":         {"correct horse battery staple"},
-		"password_confirm": {"correct horse battery staple"},
-	})
-	if status != http.StatusSeeOther || !strings.HasSuffix(headers.Get("Location"), "/app") {
-		t.Fatalf("legacy account setup status=%d location=%q body=%s", status, headers.Get("Location"), body)
-	}
-	account, err := st.OwnerAccountByUsername(ctx, "legacy-owner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if account.OwnerID != legacyOwner.OwnerID {
-		t.Fatalf("owner identity changed: got %s want %s", account.OwnerID, legacyOwner.OwnerID)
-	}
-	if ownerID, err := service.AuthenticateOwner(ctx, legacyOwner.OwnerToken); err != nil || ownerID != legacyOwner.OwnerID {
-		t.Fatalf("legacy owner token no longer authenticates: owner=%s err=%v", ownerID, err)
-	}
-	if account, err := service.LoginAccount(ctx, "legacy-owner", "correct horse battery staple", "127.0.0.1"); err != nil || account.OwnerID != legacyOwner.OwnerID {
-		t.Fatalf("legacy owner web login failed: account=%+v err=%v", account, err)
-	}
-	tokens, err := service.ListOwnerAPITokens(ctx, legacyOwner.OwnerID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(tokens) != 1 || tokens[0].ID == "" {
-		t.Fatalf("legacy Owner API token was not preserved: %+v", tokens)
-	}
-}
-
-func TestWebPersonalAccessTokenIsOneTimeAndCSRFProtected(t *testing.T) {
+func TestWebConnectionTokenIsOneTimeAndCSRFProtected(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
 	st, err := store.Open(ctx, filepath.Join(dataDir, "hub.db"))
@@ -166,7 +99,7 @@ func TestWebPersonalAccessTokenIsOneTimeAndCSRFProtected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	account, err := service.BootstrapAccount(ctx, bootstrapToken, "pat-owner", "PAT Owner", "correct horse battery staple", "127.0.0.1")
+	account, err := service.BootstrapAccount(ctx, bootstrapToken, "token-owner", "Token Owner", "correct horse battery staple", "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,8 +119,8 @@ func TestWebPersonalAccessTokenIsOneTimeAndCSRFProtected(t *testing.T) {
 	client.Jar.SetCookies(hubURL, []*http.Cookie{{Name: "fast_spider_session", Value: session.Token, Path: "/"}})
 
 	status, _, dashboard := webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app", nil)
-	if status != http.StatusOK || !strings.Contains(string(dashboard), "访问令牌") {
-		t.Fatalf("PAT dashboard status=%d body=%s", status, dashboard)
+	if status != http.StatusOK || !strings.Contains(string(dashboard), "连接令牌") {
+		t.Fatalf("connection token dashboard status=%d body=%s", status, dashboard)
 	}
 	status, _, body := webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/tokens", url.Values{
 		"csrf_token":   {"wrong-csrf"},
@@ -195,10 +128,10 @@ func TestWebPersonalAccessTokenIsOneTimeAndCSRFProtected(t *testing.T) {
 		"expires_days": {"90"},
 	})
 	if status != http.StatusForbidden {
-		t.Fatalf("bad PAT CSRF status=%d body=%s", status, body)
+		t.Fatalf("bad connection token CSRF status=%d body=%s", status, body)
 	}
-	if tokens, err := service.ListOwnerAPITokens(ctx, account.OwnerID); err != nil || len(tokens) != 0 {
-		t.Fatalf("bad CSRF created PATs=%+v err=%v", tokens, err)
+	if tokens, err := service.ListConnectionTokens(ctx, account.OwnerID); err != nil || len(tokens) != 0 {
+		t.Fatalf("bad CSRF created connection tokens=%+v err=%v", tokens, err)
 	}
 
 	status, _, body = webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/tokens", url.Values{
@@ -207,19 +140,19 @@ func TestWebPersonalAccessTokenIsOneTimeAndCSRFProtected(t *testing.T) {
 		"expires_days": {"90"},
 	})
 	if status != http.StatusOK {
-		t.Fatalf("PAT create status=%d body=%s", status, body)
+		t.Fatalf("connection token create status=%d body=%s", status, body)
 	}
 	secret := webCreatedToken(t, body)
 	if strings.Count(string(body), secret) != 1 {
-		t.Fatalf("PAT secret displayed %d times, want once: %s", strings.Count(string(body), secret), body)
+		t.Fatalf("connection token secret displayed %d times, want once: %s", strings.Count(string(body), secret), body)
 	}
 	status, _, dashboard = webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app", nil)
 	if status != http.StatusOK || strings.Contains(string(dashboard), secret) {
-		t.Fatalf("dashboard leaked PAT secret: status=%d body=%s", status, dashboard)
+		t.Fatalf("dashboard leaked connection token secret: status=%d body=%s", status, dashboard)
 	}
 }
 
-func TestOwnerPATHTTPAuthenticationAndRevocation(t *testing.T) {
+func TestConnectionTokenRegistersNodeButCannotUseMCPOrAdminREST(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
 	st, err := store.Open(ctx, filepath.Join(dataDir, "hub.db"))
@@ -227,7 +160,7 @@ func TestOwnerPATHTTPAuthenticationAndRevocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	service, err := core.New(st, registry.New(), core.Config{DataDir: dataDir, Version: "owner-pat-http-test"})
+	service, err := core.New(st, registry.New(), core.Config{DataDir: dataDir, Version: "connection-token-http-test"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,11 +168,11 @@ func TestOwnerPATHTTPAuthenticationAndRevocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	account, err := service.BootstrapAccount(ctx, bootstrapToken, "pat-http-owner", "PAT HTTP Owner", "correct horse battery staple", "127.0.0.1")
+	account, err := service.BootstrapAccount(ctx, bootstrapToken, "token-http-owner", "Token HTTP Owner", "correct horse battery staple", "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	pat, err := service.CreateOwnerAPIToken(ctx, account.OwnerID, "http-test", 0, "127.0.0.1")
+	connectionToken, err := service.CreateConnectionToken(ctx, account.OwnerID, "node-connect", 0, "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,31 +180,40 @@ func TestOwnerPATHTTPAuthenticationAndRevocation(t *testing.T) {
 	httpServer := httptest.NewServer(hub.Handler())
 	defer httpServer.Close()
 
-	requestMachines := func() (int, []byte) {
-		req, err := http.NewRequest(http.MethodGet, httpServer.URL+"/api/v1/machines", nil)
+	nodeClient, err := node.New(node.Config{DataDir: t.TempDir(), Version: "connection-token-test", AllowInsecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := nodeClient.Connect(ctx, httpServer.URL, connectionToken.Token, "Connected Node")
+	if err != nil || state.MachineID == "" {
+		t.Fatalf("connection token register state=%+v err=%v", state, err)
+	}
+
+	for _, target := range []string{"/api/v1/machines", "/mcp"} {
+		req, err := http.NewRequest(http.MethodGet, httpServer.URL+target, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		req.Header.Set("Authorization", "Bearer "+pat.Token)
+		req.Header.Set("Authorization", "Bearer "+connectionToken.Token)
 		resp, err := (&http.Client{}).Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer resp.Body.Close()
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			t.Fatal(err)
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			t.Fatalf("connection token unexpectedly authorized %s", target)
 		}
-		return resp.StatusCode, body
 	}
-	if status, body := requestMachines(); status != http.StatusOK {
-		t.Fatalf("owner PAT GET /api/v1/machines status=%d body=%s", status, body)
-	}
-	if err := service.RevokeOwnerAPIToken(ctx, account.OwnerID, pat.Record.ID, "127.0.0.1"); err != nil {
+
+	if err := service.RevokeConnectionToken(ctx, account.OwnerID, connectionToken.Record.ID, "127.0.0.1"); err != nil {
 		t.Fatal(err)
 	}
-	if status, body := requestMachines(); status != http.StatusConflict || !strings.Contains(string(body), "REVOKED") {
-		t.Fatalf("revoked owner PAT status=%d body=%s, want 409/REVOKED", status, body)
+	secondClient, err := node.New(node.Config{DataDir: t.TempDir(), Version: "connection-token-test", AllowInsecure: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := secondClient.Connect(ctx, httpServer.URL, connectionToken.Token, "Denied Node"); err == nil {
+		t.Fatal("revoked connection token unexpectedly registered another node")
 	}
 }
 

@@ -25,7 +25,6 @@ const oauthTestPublicBaseURL = "https://sharedservices.tibbs.app/fast-spider"
 
 type oauthTestFixture struct {
 	httpServer      *httptest.Server
-	ownerToken      string
 	webSessionToken string
 	csrfToken       string
 }
@@ -62,14 +61,11 @@ func newOAuthTestFixture(t *testing.T) oauthTestFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, err := service.BootstrapOwner(ctx, bootstrapToken, "OAuth Test Owner", "127.0.0.1")
+	account, err := service.BootstrapAccount(ctx, bootstrapToken, "oauth-test", "OAuth Test Owner", "oauth-test-password", "127.0.0.1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.SetOwnerAccountCredentials(ctx, owner.OwnerID, "oauth-test", "oauth-test-password"); err != nil {
-		t.Fatal(err)
-	}
-	webSession, err := service.CreateWebSession(ctx, owner.OwnerID)
+	webSession, err := service.CreateWebSession(ctx, account.OwnerID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +77,6 @@ func newOAuthTestFixture(t *testing.T) oauthTestFixture {
 	t.Cleanup(httpServer.Close)
 	return oauthTestFixture{
 		httpServer:      httpServer,
-		ownerToken:      owner.OwnerToken,
 		webSessionToken: webSession.Token,
 		csrfToken:       webSession.CSRFToken,
 	}
@@ -259,8 +254,8 @@ func TestOAuthAuthorizationPKCETokenRotationAndMCP(t *testing.T) {
 	if getStatus != http.StatusOK || !strings.Contains(string(getBody), "<form method=\"post\">") || !strings.Contains(string(getBody), "允许连接") {
 		t.Fatalf("authorization GET status=%d body=%s", getStatus, getBody)
 	}
-	if strings.Contains(string(getBody), "Owner Token") || strings.Contains(string(getBody), fixture.ownerToken) {
-		t.Fatal("authorization GET exposed legacy Owner Token UI or token material")
+	if strings.Contains(string(getBody), "Owner Token") {
+		t.Fatal("authorization GET exposed retired Owner Token UI")
 	}
 
 	badCSRF := cloneOAuthValues(authorizeValues)
@@ -381,11 +376,6 @@ func TestOAuthAuthorizationPKCETokenRotationAndMCP(t *testing.T) {
 		t.Fatalf("OAuth access token tools/list: %v", err)
 	}
 	assertMCPToolAnnotations(t, oauthTools.Tools)
-
-	ownerSession := connectOAuthMCP(t, ctx, fixture.httpServer.URL+"/mcp", fixture.ownerToken)
-	if _, err := ownerSession.ListTools(ctx, nil); err != nil {
-		t.Fatalf("legacy Owner Bearer tools/list: %v", err)
-	}
 }
 
 func TestWebOAuthClientsExcludeOrphanDCR(t *testing.T) {

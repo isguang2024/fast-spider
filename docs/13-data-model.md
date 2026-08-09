@@ -76,44 +76,27 @@ erDiagram
 
 MVP 可只有一个默认 organization，但所有资源明确归属，避免以后补租户边界时改全库。
 
-### 4.2 `users`
+### 4.2 `owners`
 
-- id、organization_id。
-- login identifier/email（如使用）。
-- password_hash/identity_provider_ref（二选一或组合）。
-- role_hint（Owner 模式仅作 UI；实际权限由 grant）。
-- status、last_login_at、created_at、updated_at、revision。
+当前实例只有一个 Owner：id、display_name、username、password_hash、created_at。没有 Organization/RBAC/User 角色表；出现真实多人需求后再设计。
 
-敏感恢复材料单独表并保存摘要。
+### 4.3 `web_sessions`
 
-### 4.3 `oauth_clients`
+后台登录会话：id、owner_id、token_hash、csrf_token、created_at、last_seen_at、expires_at、revoked_at。浏览器只持有 HttpOnly Cookie；数据库不保存明文 Session Token。
 
-- id、organization_id、name、client_type。
-- redirect_uris（规范化子表或 JSON，MVP 推荐子表）。
-- public key/client secret 摘要（按 Client 类型）。
-- allowed_scopes、status、created_by、created_at、last_used_at。
+### 4.4 `connection_tokens`
 
-### 4.4 `auth_sessions` 与 `refresh_tokens`
+Node 首次登记令牌：id、owner_id、token_hash、label、created_at、last_used_at、expires_at、revoked_at。明文只在后台创建页展示一次；该令牌只允许调用机器登记接口。
 
-`auth_sessions`：userId、session family、认证强度、created/expires/last_seen、revoked_at、客户端摘要。
+### 4.5 MCP OAuth
 
-`refresh_tokens`：只保存 token hash、family/session、rotation counter、expires/revoked/replaced_by。检测旧 Token 重用时吊销整个 family。
-
-Access Token 通常不入库；需要即时吊销时通过 session/client revision 或短 TTL 实现。
+- `oauth_clients`：动态注册客户端、redirect URIs、grant/response type、唯一 `fast-spider` scope。
+- `oauth_authorizations`：一次 Owner 批准形成的长期授权记录。
+- `oauth_access_tokens` / `oauth_refresh_tokens`：都绑定非空 authorization_id，数据库仅保存哈希；Access 1 小时，Refresh 30 天并轮换。
 
 ## 5. 机器与设备身份
 
-### 5.1 `enrollment_tokens`
-
-- id、organization_id、token_hash。
-- created_by、created_at、expires_at。
-- max_attempts、attempt_count、consumed_at。
-- expected_name/os 可选。
-- idempotency_key、result_machine_id 可选。
-
-唯一约束：token_hash。消费与 machine/credential 创建在一个事务。
-
-### 5.2 `machines`
+### 5.1 `machines`
 
 | 字段 | 说明 |
 |---|---|
@@ -131,7 +114,7 @@ Access Token 通常不入库；需要即时吊销时通过 session/client revisi
 
 在线/繁忙是连接注册表的运行时事实，数据库只保存最后快照；不能仅靠 DB status 判断当前在线。
 
-### 5.3 `device_credentials`
+### 5.2 `device_credentials`
 
 - id、machine_id。
 - public_key/certificate fingerprint。
@@ -142,7 +125,7 @@ Access Token 通常不入库；需要即时吊销时通过 session/client revisi
 
 私钥不在 Hub。
 
-### 5.4 `machine_presence_snapshots`
+### 5.3 `machine_presence_snapshots`
 
 可选轻量表，只保存连接/断开时间、connectionId hash、generation、原因和容量摘要。高频 heartbeat 不逐条入库，避免写放大。
 
@@ -352,7 +335,7 @@ recoveryId、workspaceId、original relative path、internal storage path、hash
 
 ### 配对
 
-一个事务：验证/消费 enrollment token → 创建 machine → 创建 credential → 写审计。WSS 连接在事务后进行。
+机器登记使用一个短事务：验证连接令牌 → 创建 machine → 创建 device credential。审计在登记成功后记录；WSS 连接在登记事务完成后进行。连接令牌不写入 Node 状态。
 
 ### Job 创建
 

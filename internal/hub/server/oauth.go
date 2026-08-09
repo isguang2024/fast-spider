@@ -20,12 +20,11 @@ import (
 )
 
 const (
-	oauthScope              = "fast-spider"
-	oauthDeviceConnectScope = "fast-spider:device-connect"
-	oauthCodeTTL            = 5 * time.Minute
-	oauthMaxPendingCodes    = 1024
-	oauthAccessTokenTTL     = time.Hour
-	oauthRefreshTokenTTL    = 30 * 24 * time.Hour
+	oauthScope           = "fast-spider"
+	oauthCodeTTL         = 5 * time.Minute
+	oauthMaxPendingCodes = 1024
+	oauthAccessTokenTTL  = time.Hour
+	oauthRefreshTokenTTL = 30 * 24 * time.Hour
 )
 
 var defaultOAuthRedirectHosts = []string{"chatgpt.com", "localhost", "127.0.0.1", "::1"}
@@ -125,22 +124,11 @@ func oauthURL(base *url.URL, suffix string) string {
 }
 
 func (s *Server) oauthResourceURL(r *http.Request) (string, error) {
-	return s.oauthResourceForScope(r, oauthScope)
-}
-
-func (s *Server) oauthResourceForScope(r *http.Request, scope string) (string, error) {
 	base, err := s.oauthBaseURL(r)
 	if err != nil {
 		return "", err
 	}
-	switch scope {
-	case oauthScope:
-		return oauthURL(base, "/mcp"), nil
-	case oauthDeviceConnectScope:
-		return oauthURL(base, "/api/v1/enrollment-tokens"), nil
-	default:
-		return "", fmt.Errorf("unsupported OAuth scope")
-	}
+	return oauthURL(base, "/mcp"), nil
 }
 
 func (s *Server) oauthResourceMetadataURL(r *http.Request) (string, error) {
@@ -186,7 +174,7 @@ func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, r *http.R
 		"grant_types_supported":                 []string{"authorization_code", "refresh_token"},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"token_endpoint_auth_methods_supported": []string{"none"},
-		"scopes_supported":                      []string{oauthScope, oauthDeviceConnectScope},
+		"scopes_supported":                      []string{oauthScope},
 	})
 }
 
@@ -384,7 +372,7 @@ func (s *Server) validateOAuthAuthorizationRequest(ctx context.Context, r *http.
 	if !scopeAllowed(scope) || !scopeSubset(strings.Fields(scope), strings.Fields(client.Scope)) {
 		return store.OAuthClientRecord{}, "", "", fmt.Errorf("unsupported scope")
 	}
-	resource, err := s.oauthResourceForScope(r, scope)
+	resource, err := s.oauthResourceURL(r)
 	if err != nil {
 		return store.OAuthClientRecord{}, "", "", err
 	}
@@ -554,9 +542,6 @@ func (s *Server) handleOAuthRevoke(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) mcpTokenVerifier(ctx context.Context, token string, req *http.Request) (*auth.TokenInfo, error) {
-	if ownerID, err := s.service.AuthenticateOwner(ctx, token); err == nil {
-		return &auth.TokenInfo{Scopes: []string{oauthScope}, Expiration: time.Now().UTC().Add(24 * time.Hour), UserID: ownerID}, nil
-	}
 	now := time.Now().UTC()
 	record, err := s.service.Store().AuthenticateOAuthAccessToken(ctx, security.HashToken(token), now)
 	if err != nil || !slices.Contains(record.Scopes, oauthScope) {
@@ -614,7 +599,7 @@ func allOAuthValuesSupported(values []string, supported ...string) bool {
 
 func scopeAllowed(scope string) bool {
 	fields := strings.Fields(scope)
-	return len(fields) == 1 && (fields[0] == oauthScope || fields[0] == oauthDeviceConnectScope)
+	return len(fields) == 1 && fields[0] == oauthScope
 }
 
 func scopeSubset(requested, existing []string) bool {

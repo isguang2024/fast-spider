@@ -24,7 +24,7 @@ type OwnerAccountView struct {
 	CreatedAt   time.Time `json:"createdAt"`
 }
 
-type OwnerAPITokenView struct {
+type ConnectionTokenView struct {
 	ID         string     `json:"id"`
 	Label      string     `json:"label"`
 	CreatedAt  time.Time  `json:"createdAt"`
@@ -33,9 +33,9 @@ type OwnerAPITokenView struct {
 	RevokedAt  *time.Time `json:"revokedAt,omitempty"`
 }
 
-type OwnerAPITokenResult struct {
-	Token  string            `json:"token"`
-	Record OwnerAPITokenView `json:"record"`
+type ConnectionTokenResult struct {
+	Token  string              `json:"token"`
+	Record ConnectionTokenView `json:"record"`
 }
 
 type WebSessionResult struct {
@@ -129,18 +129,6 @@ func (s *Service) LoginAccount(ctx context.Context, username, password, remoteAd
 	}, nil
 }
 
-func (s *Service) SetOwnerAccountCredentials(ctx context.Context, ownerID, username, password string) error {
-	username, err := normalizeUsername(username)
-	if err != nil {
-		return err
-	}
-	passwordHash, err := security.HashPassword(password)
-	if err != nil {
-		return err
-	}
-	return s.store.SetOwnerAccountCredentials(ctx, ownerID, username, passwordHash)
-}
-
 func (s *Service) ChangeOwnerPassword(
 	ctx context.Context,
 	ownerID, currentPassword, newPassword, keepSessionID, remoteAddr string,
@@ -168,14 +156,14 @@ func (s *Service) ChangeOwnerPassword(
 	return nil
 }
 
-func (s *Service) ListOwnerAPITokens(ctx context.Context, ownerID string) ([]OwnerAPITokenView, error) {
-	records, err := s.store.ListOwnerAPITokens(ctx, ownerID)
+func (s *Service) ListConnectionTokens(ctx context.Context, ownerID string) ([]ConnectionTokenView, error) {
+	records, err := s.store.ListConnectionTokens(ctx, ownerID)
 	if err != nil {
 		return nil, err
 	}
-	views := make([]OwnerAPITokenView, 0, len(records))
+	views := make([]ConnectionTokenView, 0, len(records))
 	for _, record := range records {
-		views = append(views, OwnerAPITokenView{
+		views = append(views, ConnectionTokenView{
 			ID:         record.ID,
 			Label:      record.Label,
 			CreatedAt:  record.CreatedAt,
@@ -187,22 +175,22 @@ func (s *Service) ListOwnerAPITokens(ctx context.Context, ownerID string) ([]Own
 	return views, nil
 }
 
-func (s *Service) CreateOwnerAPIToken(
+func (s *Service) CreateConnectionToken(
 	ctx context.Context,
 	ownerID, label string,
 	ttl time.Duration,
 	remoteAddr string,
-) (OwnerAPITokenResult, error) {
+) (ConnectionTokenResult, error) {
 	label = strings.TrimSpace(label)
 	if label == "" {
-		label = "Personal token"
+		label = "Connection token"
 	}
 	if len([]byte(label)) > 80 || ttl < 0 || ttl > 5*365*24*time.Hour {
-		return OwnerAPITokenResult{}, store.ErrConflict
+		return ConnectionTokenResult{}, store.ErrConflict
 	}
-	existing, err := s.store.ListOwnerAPITokens(ctx, ownerID)
+	existing, err := s.store.ListConnectionTokens(ctx, ownerID)
 	if err != nil {
-		return OwnerAPITokenResult{}, err
+		return ConnectionTokenResult{}, err
 	}
 	now := s.now().UTC()
 	active := 0
@@ -212,30 +200,30 @@ func (s *Service) CreateOwnerAPIToken(
 		}
 	}
 	if active >= 64 {
-		return OwnerAPITokenResult{}, store.ErrConflict
+		return ConnectionTokenResult{}, store.ErrConflict
 	}
 	id, err := security.RandomOpaque("tok_")
 	if err != nil {
-		return OwnerAPITokenResult{}, err
+		return ConnectionTokenResult{}, err
 	}
-	token, err := security.RandomOpaque("own_")
+	token, err := security.RandomOpaque("ctk_")
 	if err != nil {
-		return OwnerAPITokenResult{}, err
+		return ConnectionTokenResult{}, err
 	}
-	record := store.OwnerAPITokenRecord{ID: id, OwnerID: ownerID, Label: label, CreatedAt: now}
+	record := store.ConnectionTokenRecord{ID: id, OwnerID: ownerID, Label: label, CreatedAt: now}
 	if ttl > 0 {
 		expires := now.Add(ttl)
 		record.ExpiresAt = &expires
 	}
-	if err := s.store.CreateOwnerAPIToken(ctx, record, security.HashToken(token)); err != nil {
-		return OwnerAPITokenResult{}, err
+	if err := s.store.CreateConnectionToken(ctx, record, security.HashToken(token)); err != nil {
+		return ConnectionTokenResult{}, err
 	}
 	_ = s.audit(ctx, store.AuditEntry{
 		OwnerID: ownerID, ActorType: "web", ActorID: ownerID,
-		Action: "owner.token.create", Result: "success", RemoteAddr: remoteAddr, CreatedAt: now,
+		Action: "connection.token.create", Result: "success", RemoteAddr: remoteAddr, CreatedAt: now,
 		Detail: map[string]any{"tokenId": id, "label": label},
 	})
-	return OwnerAPITokenResult{Token: token, Record: OwnerAPITokenView{
+	return ConnectionTokenResult{Token: token, Record: ConnectionTokenView{
 		ID:        record.ID,
 		Label:     record.Label,
 		CreatedAt: record.CreatedAt,
@@ -243,14 +231,14 @@ func (s *Service) CreateOwnerAPIToken(
 	}}, nil
 }
 
-func (s *Service) RevokeOwnerAPIToken(ctx context.Context, ownerID, tokenID, remoteAddr string) error {
+func (s *Service) RevokeConnectionToken(ctx context.Context, ownerID, tokenID, remoteAddr string) error {
 	now := s.now().UTC()
-	if err := s.store.RevokeOwnerAPIToken(ctx, ownerID, tokenID, now); err != nil {
+	if err := s.store.RevokeConnectionToken(ctx, ownerID, tokenID, now); err != nil {
 		return err
 	}
 	_ = s.audit(ctx, store.AuditEntry{
 		OwnerID: ownerID, ActorType: "web", ActorID: ownerID,
-		Action: "owner.token.revoke", Result: "success", RemoteAddr: remoteAddr, CreatedAt: now,
+		Action: "connection.token.revoke", Result: "success", RemoteAddr: remoteAddr, CreatedAt: now,
 		Detail: map[string]any{"tokenId": tokenID},
 	})
 	return nil

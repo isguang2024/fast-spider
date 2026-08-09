@@ -47,9 +47,8 @@ Hub 进行身份与资源归属判断；Node 使用本地 Workspace 和运行时
 - 首次启动时 Hub 生成短时一次性 `bootstrap-token`。`spiderctl setup-url` 把它放入 `/setup#code=...` 的 URL fragment，浏览器自动填入，值不会进入普通 HTTP/Nginx 请求日志。
 - 首次设置页面创建当前实例唯一的本地管理员用户名和密码；密码使用随机盐 PBKDF2-SHA256 哈希，数据库不保存明文。
 - 登录后 Hub 签发独立 HttpOnly、SameSite Web Session Cookie，并对后台写操作校验 CSRF；登录失败按真实客户端 IP 做小型内存限速，不引入账户锁定表。
-- 后台可以创建 Personal Access Token 供脚本/CLI 兼容使用：明文只展示一次，数据库只保存哈希，可设置有效期、查看最近使用并随时撤销。GPT 与 Node 的正常连接不需要手工 Token。
+- 后台可以创建连接令牌：明文只展示一次，数据库只保存哈希，可设置有效期、查看最近使用并随时撤销。连接令牌只用于 Node 首次登记，不能访问 MCP 或管理 REST。
 - 修改管理员密码会保留当前浏览器、撤销该 Owner 的其他 Web Session，但不误删已经明确批准的 OAuth Authorization。
-- 旧 Owner API Token 只保留为恢复/兼容入口，不再用于日常登录、OAuth 授权页或 Node 配对交互。
 - 当前不实现多用户、密码找回邮件或外部 OIDC；个人自托管实例通过备份恢复。出现真实多人需求后再扩展。
 
 ### 4.2 MCP Client
@@ -63,11 +62,11 @@ Hub 进行身份与资源归属判断；Node 使用本地 Workspace 和运行时
 
 ### 4.3 Node
 
-- 用户首次执行 `fast-spider-node login`；Node 动态注册 loopback redirect、生成 PKCE、打开系统浏览器并等待 Owner 登录批准。
-- 登录批准后 Node 临时用独立 `fast-spider:device-connect` scope 的 OAuth Access Token 请求一次 enrollment，完成配对后立即撤销临时 OAuth Authorization；用户不复制 enrollment token，临时 DCR/授权也不混入 MCP 授权列表。
-- enrollment token 仍作为 Hub 与 Node 内部的一次性交换材料存在，但不进入日常用户界面、命令参数或日志。
-- Node 本机生成设备私钥；Hub 仅保存公钥/证书信息。后续连接使用设备证明，绑定 challenge、Hub 身份、machineId 和连接 generation。
-- 凭据支持轮换、立即吊销和最后使用时间；设备私钥不能经 Hub、MCP 或普通日志传输。设备被后台撤销后，再执行同一个 `login` 会先验证旧登记确已失效，再自动重新配对，不要求删除本机 Workspace 配置。
+- Owner 在 Web 后台创建连接令牌，Node 首次执行 `fast-spider-node connect --hub <hub> --token <token>`。
+- Node 本机生成设备私钥，并用连接令牌向唯一的机器登记接口提交设备公钥、名称、OS、架构和版本；连接令牌本身不写入 Node 状态文件。
+- 登记成功后 Node 只保存 machineId、credentialId、Hub 公钥/指纹和本机设备私钥。后续连接使用设备证明和短期设备凭据，不依赖连接令牌或 OAuth。
+- 连接令牌可撤销；撤销只阻止新的设备登记，不会静默撤销已经登记的机器。设备撤销仍在后台设备列表单独执行。
+- 设备被后台撤销后，再执行 `connect` 可创建新的 machineId；Node 本机 Workspace Registry 不需要删除或重建。
 
 ### 4.4 本机 Local Bridge
 

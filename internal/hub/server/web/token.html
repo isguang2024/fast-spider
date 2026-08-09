@@ -3,16 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>访问令牌 · Fast Spider</title>
+  <title>连接令牌 · Fast Spider</title>
   <link rel="stylesheet" href="{{.BasePath}}/assets/app.css">
   <script src="{{.BasePath}}/assets/app.js" defer></script>
 </head>
 <body class="auth-page">
   <main class="auth-card wide token-card">
     <div class="brand-mark">FS</div>
-    <p class="eyebrow">Access Token</p>
-    <h1>访问令牌已创建</h1>
-    <p class="muted">这是唯一一次显示明文令牌。仅在脚本、兼容客户端或恢复场景需要时使用；GPT 与 Fast Spider Node 的正常连接使用网页登录，不需要复制它。</p>
+    <p class="eyebrow">Connection Token</p>
+    <h1>连接令牌已创建</h1>
+    <p class="muted">这是唯一一次显示明文令牌。把它填写到 Fast Spider Node 的首次连接命令中；登记成功后 Node 不保存这个令牌。GPT 的 MCP 连接仍使用 OAuth，不使用这里的令牌。</p>
     <div class="one-time-banner" role="status">
       <strong>{{.Label}}</strong>
       <span>有效期：{{.Expires}}</span>
@@ -22,7 +22,7 @@
       <textarea id="created-token" rows="4" readonly spellcheck="false">{{.Token}}</textarea>
       <button class="secondary" type="button" data-copy-target="created-token">复制令牌</button>
     </div>
-    <p class="hint">关闭此页面后无法再次查看明文。如果丢失，请在后台撤销并重新创建。</p>
+    <p class="hint">关闭此页面后无法再次查看明文。如果丢失或不再使用，请在后台撤销并重新创建。</p>
     <a class="primary button-link" href="{{.BasePath}}/app#tokens">返回后台</a>
   </main>
 </body>

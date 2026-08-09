@@ -71,16 +71,17 @@ FAST_SPIDER_OAUTH_REDIRECT_HOSTS=chatgpt.com,localhost,127.0.0.1,::1
 
 ## 4. Node 唯一入口
 
-Windows/Linux Node 首次连接使用网页登录：
+Windows/Linux Node 首次连接使用后台生成的连接令牌：
 
 ```bash
-fast-spider-node login \
+fast-spider-node connect \
   --hub https://sharedservices.example.com/fast-spider \
+  --token <connection-token> \
   --name <machine-display-name> \
   --data-dir <node-data-dir>
 ```
 
-Node 自动创建 loopback OAuth callback、打开系统浏览器并等待管理员登录/允许，随后内部完成一次性设备 enrollment。默认在成功后直接进入运行状态，不要求用户复制任何 Token。
+连接令牌只用于首次机器登记，成功后不会写入 Node 状态。Node 保存设备身份和 Hub 指纹，随后直接进入运行状态；以后不需要再次填写连接令牌，除非设备被后台撤销后重新登记。
 
 后续启动命令仍只有：
 
@@ -149,15 +150,15 @@ Node data-dir 不应放到多人共享网络盘。
    ```
 
 3. 直接在浏览器打开输出的 `/setup#code=...` 链接，创建管理员用户名和密码；fragment 不会进入普通 HTTP/Nginx access log，设置完成后 bootstrap code 立即失效并删除。
-4. 打开 `/app` 后台，确认 Hub 状态。
-5. 在 Node 本机执行 `fast-spider-node login --hub <public-base-url> --name <display-name>`，浏览器登录并点击允许。
-6. Node 内部完成一次性 enrollment 后自动上线；后台设备列表出现该机器。
+4. 打开 `/app` 后台，确认 Hub 状态并创建一个连接令牌。
+5. 在 Node 本机执行 `fast-spider-node connect --hub <public-base-url> --token <connection-token> --name <display-name>`。
+6. Node 完成机器登记并自动上线；后台设备列表出现该机器。
 7. 在 Node 本机添加 Workspace 和所需危险权限。
-8. 后续只运行 `fast-spider-node run`，或由当前用户登录启动项/systemd user unit 启动同一进程。设备被后台撤销后，直接再次执行 `login` 即可重新配对；Workspace Registry 不需要删除或重建。
+8. 后续只运行 `fast-spider-node run`，或由当前用户登录启动项/systemd user unit 启动同一进程。设备被后台撤销后，再用一个有效连接令牌执行 `connect` 即可重新登记；Workspace Registry 不需要删除或重建。
 
-后台 `/app` 管理设备、MCP OAuth 授权、已授权客户端、Personal Access Token 和账户密码。PAT 明文只在创建页展示一次；GPT/Node 正常连接使用网页登录而不是 PAT。修改密码会注销其他 Web Session，但保留当前会话和已批准的 OAuth 授权。旧 `spiderctl bootstrap`、`enrollment-create` 和 `fast-spider-node enroll` 仅保留为受保护的恢复/兼容入口，不是日常流程。任何 Token、密码或 Session Cookie 都不写进仓库或普通日志。
+后台 `/app` 管理设备、MCP OAuth 授权、已授权客户端、连接令牌和账户密码。连接令牌明文只在创建页展示一次，只允许 Node 机器登记；GPT 不使用连接令牌，继续走标准 OAuth。修改密码会注销其他 Web Session，但保留当前会话和已批准的 OAuth 授权。`spiderctl` 只保留 setup URL、备份/校验/恢复和版本命令，不再提供 Owner Token、enrollment 或机器管理兼容命令。任何 Token、密码或 Session Cookie 都不写进仓库或普通日志。
 
-从旧 `58da571` 或更早的 Owner-Token-only 数据库升级时，migration `004_web_accounts.sql` 不创建第二个 Owner。Hub 重启后会为原 ownerId 生成新的短时一次性 setup code；完成 `/setup` 后旧机器、Workspace 归属和旧兼容 Owner Token 保持原关系，`bootstrap-token` 文件随即删除。
+migration `005_connection_tokens.sql` 会清空全部旧 Owner API/PAT Token、清理旧无 authorization 的 OAuth Token 和旧 `device-connect` OAuth 客户端，并删除 `enrollment_tokens` 表；随后把空的历史 `owner_api_tokens` 表重命名为 `connection_tokens`。升级后必须从后台重新生成 `ctk_` 连接令牌，这是一次明确收敛，不保留长期兼容分支。
 
 ## 7. 健康检查
 
@@ -240,7 +241,7 @@ spiderctl restore --file /srv/backups/fast-spider.zip --data-dir /var/lib/fast-s
 
 详细一致性规则见 [16-update-and-recovery.md](16-update-and-recovery.md)。
 
-Node 的 Workspace Registry/设备状态体积较小；当前 Phase 7 不另外建设 Node 云备份。Node 丢失时重新执行网页登录并重新授权 Workspace 即可，内部 enrollment 过程不需要用户处理 Token。真正需要保存 Node data-dir 时直接使用操作系统现有备份工具即可。
+Node 的 Workspace Registry/设备状态体积较小；当前不另外建设 Node 云备份。Node 丢失时在后台创建一个新连接令牌并重新执行 `connect`，随后按需重新授权 Workspace。真正需要保存 Node data-dir 时直接使用操作系统现有备份工具即可。
 
 ## 13. 升级
 

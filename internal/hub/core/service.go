@@ -22,7 +22,6 @@ import (
 
 const (
 	bootstrapTTL   = 30 * time.Minute
-	enrollmentTTL  = 10 * time.Minute
 	deviceTokenTTL = 24 * time.Hour
 	maxClockSkew   = 5 * time.Minute
 )
@@ -43,27 +42,15 @@ type Service struct {
 	now            func() time.Time
 }
 
-type BootstrapResult struct {
-	OwnerID    string `json:"ownerId"`
-	OwnerToken string `json:"ownerToken"`
+type MachineRegistrationRequest struct {
+	DisplayName string `json:"displayName"`
+	OS          string `json:"os"`
+	Arch        string `json:"arch"`
+	NodeVersion string `json:"nodeVersion"`
+	PublicKey   string `json:"publicKey"`
 }
 
-type EnrollmentTokenResult struct {
-	EnrollmentToken string    `json:"enrollmentToken"`
-	ExpiresAt       time.Time `json:"expiresAt"`
-}
-
-type EnrollRequest struct {
-	EnrollmentToken string `json:"enrollmentToken"`
-	IdempotencyKey  string `json:"idempotencyKey"`
-	DisplayName     string `json:"displayName"`
-	OS              string `json:"os"`
-	Arch            string `json:"arch"`
-	NodeVersion     string `json:"nodeVersion"`
-	PublicKey       string `json:"publicKey"`
-}
-
-type EnrollResult struct {
+type MachineRegistrationResult struct {
 	MachineID      string `json:"machineId"`
 	CredentialID   string `json:"credentialId"`
 	HubPublicKey   string `json:"hubPublicKey"`
@@ -141,6 +128,13 @@ func (s *Service) EnsureBootstrap(ctx context.Context) (string, error) {
 		_ = os.Remove(path)
 		return "", nil
 	}
+	hasOwner, err := s.store.HasOwner(ctx)
+	if err != nil {
+		return "", err
+	}
+	if hasOwner {
+		return "", errors.New("owner exists without complete web credentials; manual data repair is required")
+	}
 	token, err := security.RandomOpaque("bsp_")
 	if err != nil {
 		return "", err
@@ -162,94 +156,41 @@ func (s *Service) EnsureBootstrap(ctx context.Context) (string, error) {
 	return token, nil
 }
 
-func (s *Service) BootstrapOwner(ctx context.Context, bootstrapToken, displayName, remoteAddr string) (BootstrapResult, error) {
-	displayName = strings.TrimSpace(displayName)
-	if len(displayName) < 1 || len(displayName) > 128 || len(bootstrapToken) > 256 {
-		return BootstrapResult{}, store.ErrUnauthorized
-	}
-	ownerID, err := security.RandomOpaque("usr_")
-	if err != nil {
-		return BootstrapResult{}, err
-	}
-	apiTokenID, err := security.RandomOpaque("tok_")
-	if err != nil {
-		return BootstrapResult{}, err
-	}
-	apiToken, err := security.RandomOpaque("own_")
-	if err != nil {
-		return BootstrapResult{}, err
-	}
-	now := s.now().UTC()
-	if err := s.store.BootstrapOwner(ctx, security.HashToken(bootstrapToken), ownerID, displayName, apiTokenID, security.HashToken(apiToken), now); err != nil {
-		return BootstrapResult{}, err
-	}
-	_ = os.Remove(filepath.Join(s.dataDir, "bootstrap-token"))
-	_ = s.audit(ctx, store.AuditEntry{OwnerID: ownerID, ActorType: "bootstrap", ActorID: ownerID, Action: "owner.bootstrap", Result: "success", RemoteAddr: remoteAddr, CreatedAt: now})
-	// The legacy bootstrap API creates an Owner API token but no browser
-	// credentials. Immediately rotate a new local setup code so the same Owner
-	// can add a Web account without resetting identity or database state.
-	if _, err := s.EnsureBootstrap(ctx); err != nil {
-		return BootstrapResult{}, err
-	}
-	return BootstrapResult{OwnerID: ownerID, OwnerToken: apiToken}, nil
-}
-
-func (s *Service) AuthenticateOwner(ctx context.Context, bearer string) (string, error) {
-	if !strings.HasPrefix(bearer, "own_") || len(bearer) > 256 {
+func (s *Service) AuthenticateConnectionToken(ctx context.Context, bearer string) (string, error) {
+	if !strings.HasPrefix(bearer, "ctk_") || len(bearer) > 256 {
 		return "", store.ErrUnauthorized
 	}
-	return s.store.AuthenticateOwnerToken(ctx, security.HashToken(bearer), s.now().UTC())
+	return s.store.AuthenticateConnectionToken(ctx, security.HashToken(bearer), s.now().UTC())
 }
 
-func (s *Service) CreateEnrollmentToken(ctx context.Context, ownerID, expectedName, expectedOS, remoteAddr string) (EnrollmentTokenResult, error) {
-	if len(expectedName) > 128 || len(expectedOS) > 64 {
-		return EnrollmentTokenResult{}, store.ErrConflict
-	}
-	token, err := security.RandomOpaque("enr_")
-	if err != nil {
-		return EnrollmentTokenResult{}, err
-	}
-	id, err := security.RandomOpaque("enrrec_")
-	if err != nil {
-		return EnrollmentTokenResult{}, err
-	}
-	now := s.now().UTC()
-	expires := now.Add(enrollmentTTL)
-	if err := s.store.CreateEnrollmentToken(ctx, id, ownerID, security.HashToken(token), strings.TrimSpace(expectedName), strings.TrimSpace(expectedOS), now, expires, 5); err != nil {
-		return EnrollmentTokenResult{}, err
-	}
-	_ = s.audit(ctx, store.AuditEntry{OwnerID: ownerID, ActorType: "owner", ActorID: ownerID, Action: "enrollment.create", Result: "success", RemoteAddr: remoteAddr, CreatedAt: now})
-	return EnrollmentTokenResult{EnrollmentToken: token, ExpiresAt: expires}, nil
-}
-
-func (s *Service) Enroll(ctx context.Context, req EnrollRequest, remoteAddr string) (EnrollResult, error) {
-	if err := validateEnroll(req); err != nil {
-		return EnrollResult{}, err
+func (s *Service) RegisterMachine(ctx context.Context, ownerID string, req MachineRegistrationRequest, remoteAddr string) (MachineRegistrationResult, error) {
+	if err := validateMachineRegistration(req); err != nil {
+		return MachineRegistrationResult{}, err
 	}
 	pub, err := security.DecodePublicKey(req.PublicKey)
 	if err != nil {
-		return EnrollResult{}, store.ErrUnauthorized
+		return MachineRegistrationResult{}, store.ErrUnauthorized
 	}
 	machineID, err := security.RandomOpaque("mach_")
 	if err != nil {
-		return EnrollResult{}, err
+		return MachineRegistrationResult{}, err
 	}
 	credentialID, err := security.RandomOpaque("cred_")
 	if err != nil {
-		return EnrollResult{}, err
+		return MachineRegistrationResult{}, err
 	}
 	now := s.now().UTC()
-	result, err := s.store.Enroll(ctx, store.EnrollmentInput{
-		TokenHash: security.HashToken(req.EnrollmentToken), IdempotencyKey: req.IdempotencyKey,
-		MachineID: machineID, CredentialID: credentialID, DisplayName: strings.TrimSpace(req.DisplayName),
-		OS: strings.TrimSpace(req.OS), Arch: strings.TrimSpace(req.Arch), NodeVersion: strings.TrimSpace(req.NodeVersion),
+	result, err := s.store.RegisterMachine(ctx, store.MachineRegistrationInput{
+		MachineID: machineID, CredentialID: credentialID, OwnerID: ownerID,
+		DisplayName: strings.TrimSpace(req.DisplayName), OS: strings.TrimSpace(req.OS),
+		Arch: strings.TrimSpace(req.Arch), NodeVersion: strings.TrimSpace(req.NodeVersion),
 		PublicKey: security.EncodePublicKey(pub), Fingerprint: security.Fingerprint(pub), Now: now,
 	})
 	if err != nil {
-		return EnrollResult{}, err
+		return MachineRegistrationResult{}, err
 	}
-	_ = s.audit(ctx, store.AuditEntry{OwnerID: result.OwnerID, MachineID: result.MachineID, ActorType: "node", ActorID: result.MachineID, Action: "node.enroll", Result: "success", RemoteAddr: remoteAddr, CreatedAt: now})
-	return EnrollResult{
+	_ = s.audit(ctx, store.AuditEntry{OwnerID: result.OwnerID, MachineID: result.MachineID, ActorType: "node", ActorID: result.MachineID, Action: "node.register", Result: "success", RemoteAddr: remoteAddr, CreatedAt: now})
+	return MachineRegistrationResult{
 		MachineID: result.MachineID, CredentialID: result.CredentialID,
 		HubPublicKey: s.HubPublicKey(), HubFingerprint: s.HubFingerprint(), AlreadyDone: result.AlreadyDone,
 	}, nil
@@ -505,13 +446,7 @@ func (s *Service) audit(ctx context.Context, entry store.AuditEntry) error {
 	return s.store.AppendAudit(ctx, entry)
 }
 
-func validateEnroll(req EnrollRequest) error {
-	if !strings.HasPrefix(req.EnrollmentToken, "enr_") || len(req.EnrollmentToken) > 256 {
-		return store.ErrUnauthorized
-	}
-	if len(req.IdempotencyKey) < 12 || len(req.IdempotencyKey) > 128 {
-		return store.ErrConflict
-	}
+func validateMachineRegistration(req MachineRegistrationRequest) error {
 	if name := strings.TrimSpace(req.DisplayName); len(name) < 1 || len(name) > 128 {
 		return store.ErrConflict
 	}
