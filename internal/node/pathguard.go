@@ -13,7 +13,7 @@ var ErrAbsolutePathRequired = errors.New("absolute path is required")
 // In personal-use mode, the operating-system account running Fast Spider Node
 // is the filesystem permission boundary.
 func ResolveMachinePath(path string) (string, error) {
-	path = strings.TrimSpace(path)
+	path = normalizeMachinePathInput(strings.TrimSpace(path))
 	if path == "" || strings.IndexByte(path, 0) >= 0 || !filepath.IsAbs(path) {
 		return "", ErrAbsolutePathRequired
 	}

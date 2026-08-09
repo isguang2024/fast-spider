@@ -20,6 +20,31 @@ func TestDecodeWindowsCodePage936(t *testing.T) {
 	}
 }
 
+func TestWindowsShellRunAcceptsBareDriveRootCwd(t *testing.T) {
+	client, err := New(Config{DataDir: t.TempDir(), Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.jobs.CancelAll(context.Background()) }()
+	volume := filepath.VolumeName(t.TempDir())
+	if len(volume) != 2 || volume[1] != ':' {
+		t.Fatalf("unexpected Windows temp volume %q", volume)
+	}
+	job, err := client.shellRun(context.Background(), map[string]any{
+		"cwd":            volume,
+		"argv":           []string{"cmd.exe", "/d", "/s", "/c", "echo", "FAST_SPIDER_DRIVE_ROOT_OK"},
+		"timeoutSeconds": 10,
+		"idempotencyKey": "idem_drive_root_001",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := waitJobTerminal(t, client.jobs, job.JobID, 10*time.Second)
+	if final.State != "completed" || final.ExitCode == nil || *final.ExitCode != 0 {
+		t.Fatalf("drive-root cwd job=%+v", final)
+	}
+}
+
 func TestWindowsCmdStructuredArgvCreatesDirectory(t *testing.T) {
 	jobs := NewJobManager()
 	defer func() { _ = jobs.CancelAll(context.Background()) }()

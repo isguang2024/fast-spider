@@ -79,7 +79,7 @@ Capability Descriptor 声明 capabilityId、版本、actions、输入上限、�
 - 文件写入使用临时文件、flush、expected hash/revision 和原子替换；编辑要求唯一匹配，默认拒绝二进制和过大文件。
 - Shell 优先 `executable + args`；显式 shell profile 仅用于解释命令字符串。环境变量显式传递并脱敏，cwd 必须是绝对路径。
 - Git 使用系统 `git`，`repositoryPath` 必须是绝对路径；读写、网络、副作用、hooks/filter 风险进入 Action 和审计，不额外创建目录权限。
-- Build 使用绝对 cwd 和受控 argv/timeout；配置文件可以保存默认值，但远程请求不能以相对路径隐式选择目录。
+- Build 使用绝对 cwd 和受控 argv/timeout；Windows 仅额外接受纯盘符 `C:`/`D:`/`V:` 作为对应盘符根目录的简写，`V:folder` 等 drive-relative 形式仍拒绝。配置文件可以保存默认值，但远程请求不能以其他相对路径隐式选择目录。
 
 ## 8. 浏览器与 AI
 

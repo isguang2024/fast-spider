@@ -49,7 +49,7 @@ type fileEditInput struct {
 type shellRunInput struct {
 	MachineID      string   `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
 	Argv           []string `json:"argv" jsonschema:"explicit executable and arguments; no implicit shell interpolation. Windows cmd example: [\"cmd.exe\",\"/d\",\"/s\",\"/c\",\"mkdir\",\"V:\\\\target\"]"`
-	Cwd            string   `json:"cwd" jsonschema:"absolute working directory on the Node machine"`
+	Cwd            string   `json:"cwd" jsonschema:"absolute working directory on the Node machine. On Windows, bare drive V: is accepted as shorthand for drive root V:\\; drive-relative forms such as V:folder remain invalid"`
 	TimeoutSeconds int64    `json:"timeoutSeconds,omitempty" jsonschema:"0 uses the default; maximum 1800 seconds"`
 	IdempotencyKey string   `json:"idempotencyKey" jsonschema:"12-128 character key preventing duplicate process starts on retries"`
 }
@@ -83,7 +83,7 @@ type buildControlInput struct {
 	MachineID      string   `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
 	Action         string   `json:"action" jsonschema:"run"`
 	Argv           []string `json:"argv" jsonschema:"build executable and arguments"`
-	Cwd            string   `json:"cwd" jsonschema:"absolute working directory on the Node machine"`
+	Cwd            string   `json:"cwd" jsonschema:"absolute working directory on the Node machine. On Windows, bare drive V: is accepted as shorthand for drive root V:\\; drive-relative forms such as V:folder remain invalid"`
 	TimeoutSeconds int64    `json:"timeoutSeconds,omitempty" jsonschema:"0 uses the default; maximum 1800 seconds"`
 	IdempotencyKey string   `json:"idempotencyKey" jsonschema:"12-128 character idempotency key"`
 }
