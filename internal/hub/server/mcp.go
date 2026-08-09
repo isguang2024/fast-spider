@@ -268,8 +268,9 @@ func (s *Server) newMCPHandler() http.Handler {
 		}
 		return s.mcpServerFor(tokenInfo.UserID)
 	}, &mcp.StreamableHTTPOptions{
-		JSONResponse: true,
-		Stateless:    true,
+		JSONResponse:               true,
+		Stateless:                  true,
+		DisableLocalhostProtection: true, // Hub is intentionally loopback-only behind a TLS reverse proxy; hostGuard enforces the configured public Host allowlist.
 	})
 	limited := http.MaxBytesHandler(base, maxControlMessageBytes)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

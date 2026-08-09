@@ -379,6 +379,13 @@ func TestOAuthAuthorizationPKCETokenRotationAndMCP(t *testing.T) {
 		t.Fatalf("OAuth access token tools/list: %v", err)
 	}
 	assertMCPToolAnnotations(t, oauthTools.Tools)
+
+	proxySession := connectOAuthMCPWithHost(t, ctx, fixture.httpServer.URL+"/mcp", rotatedTokens.AccessToken, "sharedservices.tibbs.app")
+	proxyTools, err := proxySession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("reverse-proxy Host tools/list: %v", err)
+	}
+	assertMCPToolAnnotations(t, proxyTools.Tools)
 }
 
 func TestWebOAuthClientsExcludeOrphanDCR(t *testing.T) {
@@ -580,16 +587,24 @@ func strconvBool(value bool) string {
 type oauthBearerTransport struct {
 	token string
 	base  http.RoundTripper
+	host  string
 }
 
 func (t oauthBearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	clone := req.Clone(req.Context())
 	clone.Header = req.Header.Clone()
 	clone.Header.Set("Authorization", "Bearer "+t.token)
+	if t.host != "" {
+		clone.Host = t.host
+	}
 	return t.base.RoundTrip(clone)
 }
 
 func connectOAuthMCP(t *testing.T, ctx context.Context, endpoint, token string) *mcp.ClientSession {
+	return connectOAuthMCPWithHost(t, ctx, endpoint, token, "")
+}
+
+func connectOAuthMCPWithHost(t *testing.T, ctx context.Context, endpoint, token, host string) *mcp.ClientSession {
 	t.Helper()
 	client := mcp.NewClient(&mcp.Implementation{Name: "oauth-test-client", Version: "test"}, nil)
 	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
@@ -597,6 +612,7 @@ func connectOAuthMCP(t *testing.T, ctx context.Context, endpoint, token string) 
 		HTTPClient: &http.Client{Transport: oauthBearerTransport{
 			token: token,
 			base:  http.DefaultTransport,
+			host:  host,
 		}},
 		MaxRetries:           -1,
 		DisableStandaloneSSE: true,
