@@ -38,7 +38,7 @@ const localUIHTML = `<!doctype html>
                 <label class="field full"><span>连接密钥</span><div class="secret-row"><input id="connect-token" type="password" maxlength="256" autocomplete="off" placeholder="ctk_..." required><button id="toggle-token" class="secondary" type="button">显示</button></div></label>
                 <label class="field full"><span>客户端名称</span><input id="connect-name" maxlength="128" required></label>
               </div>
-              <details class="advanced"><summary>高级连接设置</summary><label class="field full" style="margin-top:10px"><span>Hub 地址</span><input id="connect-hub" type="url" maxlength="2048" value="https://sharedservices.tibbs.app/fast-spider" required><small class="hint">正式使用保持默认值即可。</small></label></details>
+              <details class="advanced" open><summary>Hub 连接设置</summary><label class="field full" style="margin-top:10px"><span>Hub 地址</span><input id="connect-hub" type="url" maxlength="2048" placeholder="https://your-hub.example/fast-spider" required><small class="hint">填写你自己部署的 Fast Spider Hub HTTPS 地址；连接成功后保存在本机。</small></label></details>
               <div class="actions"><button class="primary" type="submit">连接这台电脑</button></div>
             </form>
           </div>
@@ -133,7 +133,7 @@ const localUIHTML = `<!doctype html>
 
     const cfg = status.config || {};
     if (!status.registered && (!document.activeElement || !['connect-hub','connect-name','connect-token'].includes(document.activeElement.id))) {
-      $('connect-hub').value = cfg.hubUrl || 'https://sharedservices.tibbs.app/fast-spider';
+      $('connect-hub').value = cfg.hubUrl || '';
       $('connect-name').value = cfg.machineName || '';
     }
     if (!configDirty) {

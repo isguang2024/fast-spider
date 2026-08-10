@@ -387,13 +387,13 @@ func TestWebPathPrefixUsesPublicRedirectCookieAndAssets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hub := server.New(service, server.Config{PublicBaseURL: "https://sharedservices.tibbs.app/fast-spider/"})
+	hub := server.New(service, server.Config{PublicBaseURL: "https://hub.example/fast-spider/"})
 	httpServer := httptest.NewServer(hub.Handler())
 	defer httpServer.Close()
 	client := newWebTestClient(t)
 
 	status, headers, _ := webTestRequest(t, client, http.MethodGet, httpServer.URL+"/", nil)
-	if status != http.StatusFound || headers.Get("Location") != "https://sharedservices.tibbs.app/fast-spider/setup" {
+	if status != http.StatusFound || headers.Get("Location") != "https://hub.example/fast-spider/setup" {
 		t.Fatalf("path-prefix root status=%d location=%q", status, headers.Get("Location"))
 	}
 	status, _, body := webTestRequest(t, client, http.MethodGet, httpServer.URL+"/setup", nil)
@@ -416,7 +416,7 @@ func TestWebPathPrefixUsesPublicRedirectCookieAndAssets(t *testing.T) {
 		"password":         {"correct horse battery staple"},
 		"password_confirm": {"correct horse battery staple"},
 	})
-	if status != http.StatusSeeOther || headers.Get("Location") != "https://sharedservices.tibbs.app/fast-spider/app" {
+	if status != http.StatusSeeOther || headers.Get("Location") != "https://hub.example/fast-spider/app" {
 		t.Fatalf("path-prefix setup status=%d location=%q body=%s", status, headers.Get("Location"), body)
 	}
 	cookie, err := http.ParseSetCookie(headers.Get("Set-Cookie"))

@@ -21,7 +21,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const oauthTestPublicBaseURL = "https://sharedservices.tibbs.app/fast-spider"
+const oauthTestPublicBaseURL = "https://hub.example/fast-spider"
 
 type oauthTestFixture struct {
 	httpServer      *httptest.Server
@@ -380,7 +380,7 @@ func TestOAuthAuthorizationPKCETokenRotationAndMCP(t *testing.T) {
 	}
 	assertMCPToolAnnotations(t, oauthTools.Tools)
 
-	proxySession := connectOAuthMCPWithHost(t, ctx, fixture.httpServer.URL+"/mcp", rotatedTokens.AccessToken, "sharedservices.tibbs.app")
+	proxySession := connectOAuthMCPWithHost(t, ctx, fixture.httpServer.URL+"/mcp", rotatedTokens.AccessToken, "hub.example")
 	proxyTools, err := proxySession.ListTools(ctx, nil)
 	if err != nil {
 		t.Fatalf("reverse-proxy Host tools/list: %v", err)

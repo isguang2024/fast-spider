@@ -18,3 +18,7 @@
 *.wasm binary
 *.dll binary
 *.exe binary
+
+# Internal/private development records must never enter a public source archive.
+.learnings/ export-ignore
+.local/ export-ignore

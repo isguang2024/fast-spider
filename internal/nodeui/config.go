@@ -9,10 +9,9 @@ import (
 	"strings"
 )
 
-const (
-	localConfigVersion = 2
-	defaultHubURL      = "https://sharedservices.tibbs.app/fast-spider"
-)
+const localConfigVersion = 2
+
+const defaultHubURL = ""
 
 type LocalConfig struct {
 	Version               int    `json:"version"`

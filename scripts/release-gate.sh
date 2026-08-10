@@ -52,6 +52,27 @@ if [[ -n "$secret_matches" ]]; then
   exit 1
 fi
 echo "==> Tracked secret pattern scan: PASS"
+private_marker_matches="$(git grep -nE 'mach_[A-Za-z0-9_-]{24,}|[A-Za-z]:\\\\repos\\\\GitHub' -- . ':!.learnings' || true)"
+if [[ -n "$private_marker_matches" ]]; then
+  echo "tracked public-source files contain a machine identifier or local repository path:" >&2
+  printf '%s\n' "$private_marker_matches" >&2
+  exit 1
+fi
+private_marker_file="$ROOT/.local/public-private-markers.txt"
+if [[ -f "$private_marker_file" ]]; then
+  while IFS= read -r marker || [[ -n "$marker" ]]; do
+    marker="${marker%$'\r'}"
+    [[ -z "$marker" || "$marker" == \#* ]] && continue
+    marker_matches="$(git grep -nFi -- "$marker" -- . ':!.learnings' || true)"
+    if [[ -n "$marker_matches" ]]; then
+      echo "tracked public-source files contain a locally configured private marker:" >&2
+      printf '%s\n' "$marker_matches" >&2
+      exit 1
+    fi
+  done < "$private_marker_file"
+fi
+echo "==> Public-source private marker scan: PASS"
+step "Public export script syntax" bash -n scripts/public-export.sh
 step "Module checksum verification" go mod verify
 step "go.mod/go.sum tidiness" go mod tidy -diff
 step "Static analysis" go vet ./...
