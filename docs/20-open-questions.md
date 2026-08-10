@@ -8,7 +8,7 @@
 - Node 以当前 OS 用户权限操作整台电脑；Fast Spider 不维护目录授权、路径白名单、目录注册表或目录 ID。
 - `file_read`、`file_edit`、`code_search` 使用绝对 `path`；`shell_run`、`build_control` 使用绝对 `cwd`；`git_control` 使用绝对 `repositoryPath`；`ai_control.session.create` 使用绝对 `workingDirectory`。
 - Browser 允许 Node 可访问的公网、localhost 和私网 HTTP/HTTPS/WS/WSS；不维护 Fast Spider Origin 白名单。
-- MCP 固定 15 个工具，不提供目录列表工具。
+- MCP 固定 16 个工具，不提供目录列表工具；`working_context` 只保存项目当前任务快照，不演化成长期 AI Memory。
 - Local Bridge 使用当前用户 AF_UNIX/UDS，Codex 使用本机 `codex app-server --stdio`。
 
 ## 2. 进入后续阶段前决定

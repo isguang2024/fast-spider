@@ -115,7 +115,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		names = append(names, tool.Name)
 	}
 	sort.Strings(names)
-	want := []string{"ai_control", "artifact_get", "browser_control", "build_control", "capability_list", "code_search", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "screenshot_take", "shell_run"}
+	want := []string{"ai_control", "artifact_get", "browser_control", "build_control", "capability_list", "code_search", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "screenshot_take", "shell_run", "working_context"}
 	if stringJSON(names) != stringJSON(want) {
 		t.Fatalf("tools=%v want=%v", names, want)
 	}
@@ -166,6 +166,29 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	raw, _ = json.Marshal(gitResult.StructuredContent)
 	if !strings.Contains(string(raw), "hello.txt") {
 		t.Fatalf("git status=%s", raw)
+	}
+
+	contextSet, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "working_context", Arguments: map[string]any{
+		"machineId": state.MachineID, "action": "set", "projectPath": root,
+		"goal": "keep a compact task snapshot", "completed": []string{"file read and edit verified"},
+		"constraints": []string{"do not store chat transcripts"}, "pending": []string{"finish e2e"}, "keyFiles": []string{"hello.txt"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = json.Marshal(contextSet.StructuredContent)
+	if !strings.Contains(string(raw), "keep a compact task snapshot") || !strings.Contains(string(raw), `"exists":true`) {
+		t.Fatalf("working_context set=%s", raw)
+	}
+	contextGet, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "working_context", Arguments: map[string]any{
+		"machineId": state.MachineID, "action": "get", "projectPath": root,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = json.Marshal(contextGet.StructuredContent)
+	if !strings.Contains(string(raw), "keep a compact task snapshot") || !strings.Contains(string(raw), `"currentGit"`) {
+		t.Fatalf("working_context get=%s", raw)
 	}
 
 	buildResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "build_control", Arguments: map[string]any{"machineId": state.MachineID, "action": "run", "argv": e2eEchoArgv(), "cwd": root, "timeoutSeconds": 10, "idempotencyKey": "idem_e2e_build_0001"}})

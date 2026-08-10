@@ -100,6 +100,20 @@ type artifactGetInput struct {
 	ContentType string `json:"contentType,omitempty" jsonschema:"optional MIME type for uploadFile or publishFile"`
 }
 
+type workingContextInput struct {
+	MachineID      string   `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	Action         string   `json:"action" jsonschema:"get, set, or clear"`
+	ProjectPath    string   `json:"projectPath" jsonschema:"absolute project directory on the Node machine"`
+	Goal           string   `json:"goal,omitempty" jsonschema:"current development goal; required for set"`
+	BaselineBranch string   `json:"baselineBranch,omitempty" jsonschema:"optional saved task baseline branch; set auto-fills from current Git when both baseline fields are omitted"`
+	BaselineCommit string   `json:"baselineCommit,omitempty" jsonschema:"optional saved task baseline commit; set auto-fills from current Git when both baseline fields are omitted"`
+	Completed      []string `json:"completed,omitempty" jsonschema:"bounded completed-work summary for set"`
+	Constraints    []string `json:"constraints,omitempty" jsonschema:"bounded active constraints for set; never put secrets here"`
+	Pending        []string `json:"pending,omitempty" jsonschema:"bounded remaining work for set"`
+	KeyFiles       []string `json:"keyFiles,omitempty" jsonschema:"project-relative or in-project absolute key file paths for set"`
+	Facts          []string `json:"facts,omitempty" jsonschema:"bounded project/task facts for set; never chat transcripts or secrets"`
+}
+
 type browserLocatorInput struct {
 	Role   string `json:"role,omitempty" jsonschema:"accessible role locator"`
 	Name   string `json:"name,omitempty" jsonschema:"accessible name used with role"`
@@ -479,6 +493,24 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 			"limit": input.Limit, "name": input.Name,
 		}
 		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "agent.control", input.Action, params)
+		if err != nil {
+			return nil, genericCapabilityOutput{}, err
+		}
+		return nil, genericCapabilityOutput{Result: result}, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "working_context",
+		Description: "Read, replace, or clear one small project-scoped development working-context snapshot on the selected Node. It stores bounded task facts only, never chat transcripts; get also reports live Git branch/HEAD/dirty facts.",
+		Annotations: toolAnnotations(false, false, false, false),
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input workingContextInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+		params := map[string]any{
+			"projectPath": input.ProjectPath, "goal": input.Goal,
+			"baselineBranch": input.BaselineBranch, "baselineCommit": input.BaselineCommit,
+			"completed": input.Completed, "constraints": input.Constraints, "pending": input.Pending,
+			"keyFiles": input.KeyFiles, "facts": input.Facts,
+		}
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "working.context", input.Action, params)
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}

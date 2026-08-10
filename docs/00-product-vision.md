@@ -35,7 +35,7 @@ Hub 是一个 Go 模块化单体，使用 SQLite WAL 和本地 Artifact 存储�
 
 ### 4.4 适合 AI 协作
 
-MCP 固定 15 个工具；长任务通过 Job 和事件流表达；结果包括结构化摘要、Diff、日志和 Artifact；AI 只能调用 Machine 上真实宣告的能力。
+MCP 固定 16 个工具；长任务通过 Job 和事件流表达；结果包括结构化摘要、Diff、日志和 Artifact；轻量 `working_context` 只保存项目当前任务状态，Git/文件仍是最终事实源；AI 只能调用 Machine 上真实宣告的能力。
 
 ## 5. 产品原则
 

@@ -430,7 +430,7 @@ func capabilityCallTimeout(capability, action string) time.Duration {
 
 func shouldAuditCapability(capability, action string) bool {
 	switch capability + "/" + action {
-	case "file.write/edit", "shell.exec/run", "job.control/cancel", "git.repository/add", "git.repository/commit", "git.repository/fetch", "git.repository/pull", "git.repository/push", "git.repository/createWorktree", "git.repository/deleteWorktree", "build.profile/run", "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/screenshot", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/window", "agent.control/session.create", "agent.control/session.send", "agent.control/session.cancel", "agent.control/session.rename", "agent.control/session.archive":
+	case "file.write/edit", "shell.exec/run", "job.control/cancel", "git.repository/add", "git.repository/commit", "git.repository/fetch", "git.repository/pull", "git.repository/push", "git.repository/createWorktree", "git.repository/deleteWorktree", "build.profile/run", "working.context/set", "working.context/clear", "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/screenshot", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/window", "agent.control/session.create", "agent.control/session.send", "agent.control/session.cancel", "agent.control/session.rename", "agent.control/session.archive":
 		return true
 	default:
 		return false

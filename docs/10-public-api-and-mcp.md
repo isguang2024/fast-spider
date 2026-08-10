@@ -2,7 +2,7 @@
 
 ## 公网 MCP
 
-Fast Spider MCP 通过 `/mcp` 提供 Streamable HTTP，使用标准 OAuth Authorization Code + PKCE。当前固定 15 个工具：
+Fast Spider MCP 通过 `/mcp` 提供 Streamable HTTP，使用标准 OAuth Authorization Code + PKCE。当前固定 16 个工具：
 
 ```text
 machine_list
@@ -20,6 +20,7 @@ browser_control
 screenshot_take
 ai_control
 artifact_get
+working_context
 ```
 
 0.3.0 不提供目录列表工具。
@@ -33,6 +34,9 @@ artifact_get
 - shell_run/build_control: `cwd`
 - git_control: `repositoryPath`
 - ai_control session.create: `workingDirectory`
+- working_context: `projectPath`
+
+`working_context` 只保存每个项目当前任务的有界状态快照，不保存聊天原文；`get` 会同时返回实时 Git branch/HEAD/dirty，用于在聊天压缩后重建工作上下文。
 
 Job 后续操作只用 machineId + jobId。Artifact 获取只用 artifactId；Node 上传本机文件时使用 machineId + absolute path。`artifact_get.publishFile` 使用同样的绝对路径，但文件由 Node 直接上传 Hub Temporary Presentation Relay；Relay 不创建 Artifact/数据库记录，只生成 20 分钟短期 `ResourceLink`。
 

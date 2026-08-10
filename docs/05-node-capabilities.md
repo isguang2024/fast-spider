@@ -22,6 +22,7 @@
 | `git.repository` | status, diff, log, show, commit, pull, push, worktree | R1–R3 | 已实现 |
 | `build.test` | list, run | R2–R3 | 已实现 |
 | `artifact.transfer` | create, uploadChunk, complete, getMetadata | R1–R3 | 已实现 |
+| `working.context` | get, set, clear | R0–R1 | 已实现 |
 | `screenshot.capture` | listDisplays, desktop, display, listWindows, window | R1–R3 | 已实现 |
 | `browser.automation` | launch, page.open/navigate/close, pages.list, click, type, press, wait, snapshot, screenshot, events, close | R2–R3 | 已实现 |
 | `agent.control` | providers.list, models.list, projects.list, session.* | R1–R3 | 已实现 |
@@ -113,7 +114,15 @@ Node 使用当前 OS 用户的 Git 配置、凭据、LFS、签名和 hooks。rem
 
 Artifact 仍用于显式文件/日志传输，使用大小、类型、SHA-256、分块、偏移、恢复和保留策略；Hub 保存其元数据和内容寻址 Blob。截图走独立的 AI 展示通道：Node 本地生成后直接上传到 Hub Temporary Presentation Relay，不写数据库；Hub 在系统临时目录中最多保留 20 分钟，并由 MCP 直接返回 `ImageContent`，同时生成短期 `ResourceLink` 供下载。截图支持显示器、桌面、窗口和浏览器页面，窗口目标使用短期 opaque `windowId`，不返回 OS 句柄或临时路径。
 
-## 10. 浏览器自动化
+## 10. Working Context
+
+`working.context` 是项目级的轻量任务状态，不是长期 AI Memory。每个项目只保存一份当前开发任务快照，存放在 Node data-dir，不写入项目目录、不污染 Git；单份 JSON 最大 64 KiB。
+
+固定 actions 为 `get`、`set`、`clear`。`set` 保存 goal、baseline branch/commit、completed、constraints、pending、keyFiles 和 facts；各列表最多 64 项，禁止放聊天原文、凭据、Token 或其它秘密。未显式提供 baseline 时，Node 会用当前 Git branch/HEAD 固化任务起点。`get` 同时实时读取当前 Git `isRepository/branch/HEAD/dirty`，因此保存的任务状态与当前代码事实保持分离。`clear` 只删除 Node 本地任务快照，不修改项目文件。
+
+恢复上下文时推荐组合：聊天压缩摘要 + `working_context.get` + 当前 Git 事实 + 必要 keyFiles 重新读取。Git/文件始终是最终事实源，Codex Thread 只负责 Codex 自己的执行历史。
+
+## 11. 浏览器自动化
 
 Browser 使用 Node 管理的隔离 Profile，动作固定为 `launch`、`close`、`page.open`、`page.navigate`、`page.close`、`pages.list`、`click`、`type`、`press`、`wait`、`snapshot`、`screenshot`、`events`。
 
@@ -122,7 +131,7 @@ Browser 使用 Node 管理的隔离 Profile，动作固定为 `launch`、`close`
 - 仍拒绝 `file:`、危险 scheme、任意 JavaScript、CDP 和 Playwright 原始 API。
 - 每动作、Session、Job、下载和结果都有超时、大小、并发和清理上限。
 
-## 11. Agent 控制
+## 12. Agent 控制
 
 Provider-neutral actions 为 `providers.list`、`models.list`、`projects.list`、`session.list`、`session.get`、`session.create`、`session.send`、`session.watch`、`session.cancel`、`session.result`、`session.rename` 和 `session.archive`。
 

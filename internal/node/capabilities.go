@@ -118,6 +118,8 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 		result, err = c.artifactUploadJobLog(ctx, req.Params)
 	case "artifact.store/publishFile":
 		result, err = c.presentationPublishFile(ctx, req.Params)
+	case "working.context/get", "working.context/set", "working.context/clear":
+		result, err = c.workingContextControl(ctx, req.Action, req.Params)
 	case "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/page.close", "browser.automation/pages.list", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/wait", "browser.automation/snapshot", "browser.automation/screenshot", "browser.automation/events":
 		result, err = c.browserControl(ctx, req.Action, req.Params)
 	case "screenshot.capture/listDisplays", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/listWindows", "screenshot.capture/window":
