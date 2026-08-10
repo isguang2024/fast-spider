@@ -19,6 +19,12 @@ import (
 	"github.com/isguang2024/fast-spider/internal/security"
 )
 
+const (
+	initialReconnectBackoff = 500 * time.Millisecond
+	maxReconnectBackoff     = 30 * time.Second
+	stableSessionDuration   = 2 * time.Minute
+)
+
 func (c *Client) Run(ctx context.Context) error {
 	c.reportConnectionStatus("starting", nil)
 	defer c.reportConnectionStatus("stopped", ctx.Err())
@@ -53,12 +59,13 @@ func (c *Client) Run(ctx context.Context) error {
 		return fmt.Errorf("validate registered hub URL: %w", err)
 	}
 	state.HubURL = normalizedHubURL
-	backoff := 500 * time.Millisecond
+	backoff := initialReconnectBackoff
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		c.reportConnectionStatus("connecting", nil)
+		sessionStarted := time.Now()
 		err := c.runSession(ctx, state)
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -66,20 +73,15 @@ func (c *Client) Run(ctx context.Context) error {
 		c.reportConnectionStatus("reconnecting", err)
 		c.cfg.Logger.Warn("node connection ended", "machineId", state.MachineID, "error", err)
 
-		delay := jitter(backoff, 0.20)
-		timer := time.NewTimer(delay)
+		delayBase, nextBackoff := reconnectBackoffs(backoff, time.Since(sessionStarted))
+		timer := time.NewTimer(jitter(delayBase, 0.20))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return ctx.Err()
 		case <-timer.C:
 		}
-		if backoff < 30*time.Second {
-			backoff *= 2
-			if backoff > 30*time.Second {
-				backoff = 30 * time.Second
-			}
-		}
+		backoff = nextBackoff
 	}
 }
 
@@ -173,6 +175,10 @@ func (c *Client) runSession(ctx context.Context, state State) error {
 }
 
 func (c *Client) heartbeatLoop(ctx context.Context, conn *websocket.Conn, interval time.Duration) error {
+	sessionCtx, cancelSession := context.WithCancel(ctx)
+	defer cancelSession()
+	ctx = sessionCtx
+
 	ack := make(chan time.Time, 1)
 	readErr := make(chan error, 1)
 	go func() {
@@ -345,6 +351,20 @@ func stringsTrimRightSlash(value string) string {
 		value = value[:len(value)-1]
 	}
 	return value
+}
+
+func reconnectBackoffs(current, sessionDuration time.Duration) (time.Duration, time.Duration) {
+	if sessionDuration >= stableSessionDuration || current < initialReconnectBackoff {
+		current = initialReconnectBackoff
+	}
+	if current > maxReconnectBackoff {
+		current = maxReconnectBackoff
+	}
+	next := current * 2
+	if next > maxReconnectBackoff {
+		next = maxReconnectBackoff
+	}
+	return current, next
 }
 
 func jitter(base time.Duration, fraction float64) time.Duration {

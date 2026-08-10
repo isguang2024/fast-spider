@@ -44,7 +44,7 @@ flowchart LR
 
 ### 3.1 Hub 控制面
 
-Hub 决定请求是否有资格路由到某个 Machine，但不代替 Node 判断 OS 是否允许实际操作。Hub 保存 Machine、Job、Event、审计和 Artifact 控制面事实，不保存目录授权映射。
+Hub 决定请求是否有资格路由到某个 Machine，但不代替 Node 判断 OS 是否允许实际操作。Hub 保存 Machine、Job、Event、审计和 Artifact 控制面事实，不保存目录授权映射。Hub↔Node 的 Capability Request/Response 全部直接走该 Machine 当前 generation 的同一条 WSS；`file.read` 文本结果和 `file.write/edit` 的 `oldText`/`newText` 也不绕行 HTTP。
 
 Hub 的职责：
 
@@ -86,10 +86,10 @@ sequenceDiagram
     R->>N: route over WSS
     N->>N: OS user + argument/resource checks
     N->>E: execute
-    E-->>N: events + result
-    N-->>R: ordered events
-    R-->>H: event stream
-    H-->>C: normalized response/watch
+    E-->>N: result
+    N-->>R: CapabilityResponse over same WSS
+    R-->>H: matched response or CONNECTION_LOST
+    H-->>C: normalized response
 ```
 
 ```mermaid
@@ -103,7 +103,9 @@ flowchart LR
     LC --> LB --> OS --> CE --> Res
 ```
 
-Local Bridge 不经过 Hub；它使用当前 OS 用户作为本机信任边界，与远程入口共用 Machine、Capability、Job、资源限制和审计语义。
+Local Bridge 不经过 Hub；它使用当前 OS 用户作为本机信任边界，与远程入口共用 Machine、Capability、Job、资源限制和审计语义。HTTPS 在 Hub↔Node 链路中只承担 Machine 登记、设备 Token 获取，以及 Artifact/Presentation 等大文件数据面；普通能力控制不建立第二条 HTTP 通道。
+
+WSS 断开会立即终止 Hub 上等待响应的 in-flight 调用，并取消 Node 当前会话中仍执行的同步能力上下文；JobManager 已启动的 Job 继续按自身生命周期运行。系统不自动重放断线写操作。
 
 ## 5. Node 内部模块图
 

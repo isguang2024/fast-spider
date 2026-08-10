@@ -135,4 +135,4 @@ Browser 使用 Node 管理的隔离 Profile，动作固定为 `launch`、`close`
 
 Provider-neutral actions 为 `providers.list`、`models.list`、`projects.list`、`session.list`、`session.get`、`session.create`、`session.send`、`session.watch`、`session.cancel`、`session.result`、`session.rename` 和 `session.archive`。
 
-当前实现本机 Codex `bridge_owned`：Node 直接启动 `codex app-server --stdio`，`session.create` 使用绝对 `workingDirectory`，Provider 凭据和本机认证状态不进入 Hub。未指定 model 时从当前 `model/list` 选择实际可用模型；一个 Session 只允许一个 active Run。
+当前实现本机 Codex `bridge_owned`：Node 直接启动 `codex app-server --stdio`，`session.create` 使用绝对 `workingDirectory`，Provider 凭据和本机认证状态不进入 Hub。若该目录属于 Git 仓库，Node 自动解析主工作树作为 `projectDirectory`，复用/注册对应的 Codex Desktop 本地项目，并把 linked worktree 会话绑定到该项目；`cwd` 仍保持实际执行目录。非 Git 目录不自动注册成项目。未指定 model 时从当前 `model/list` 选择实际可用模型；一个 Session 只允许一个 active Run。

@@ -45,7 +45,7 @@ func TestCodexAdapterRealE2E(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	threadResult, err := adapter.StartThread(ctx, root, modelID, "")
+	threadResult, err := adapter.StartThread(ctx, root, root, modelID, "")
 	if err != nil {
 		t.Fatalf("thread/start: %v", err)
 	}

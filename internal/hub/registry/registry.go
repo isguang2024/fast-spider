@@ -11,7 +11,10 @@ import (
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
 
-var ErrMachineOffline = errors.New("machine offline")
+var (
+	ErrMachineOffline = errors.New("machine offline")
+	ErrConnectionLost = errors.New("connection lost")
+)
 
 type Connection struct {
 	MachineID    string
@@ -26,6 +29,9 @@ type Connection struct {
 	writeMu   sync.Mutex
 	pendingMu sync.Mutex
 	pending   map[string]chan protocolv1.CapabilityResponse
+	stateMu   sync.Mutex
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 type Snapshot struct {
@@ -49,22 +55,31 @@ func New() *Registry {
 
 func (r *Registry) Register(conn *Connection) (replaced *Connection, accepted bool) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if current := r.conns[conn.MachineID]; current != nil {
 		if current.Generation >= conn.Generation {
+			r.mu.Unlock()
 			return nil, false
 		}
 		replaced = current
 	}
 	r.conns[conn.MachineID] = conn
+	r.mu.Unlock()
+	if replaced != nil {
+		replaced.MarkLost()
+	}
 	return replaced, true
 }
 
 func (r *Registry) Remove(machineID string, generation int64) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	var removed *Connection
 	if current := r.conns[machineID]; current != nil && current.Generation == generation {
 		delete(r.conns, machineID)
+		removed = current
+	}
+	r.mu.Unlock()
+	if removed != nil {
+		removed.MarkLost()
 	}
 }
 
@@ -162,11 +177,19 @@ func (r *Registry) CloseStale(ctx context.Context, before time.Time) int {
 }
 
 func (c *Connection) ReadJSON(ctx context.Context, value any) error {
-	return wsjson.Read(ctx, c.conn, value)
+	err := wsjson.Read(ctx, c.conn, value)
+	if err != nil {
+		c.MarkLost()
+	}
+	return err
 }
 
 func (c *Connection) Call(ctx context.Context, req protocolv1.CapabilityRequest) (protocolv1.CapabilityResponse, error) {
 	ch := make(chan protocolv1.CapabilityResponse, 1)
+	closed := c.Closed()
+	if isClosed(closed) {
+		return protocolv1.CapabilityResponse{}, ErrConnectionLost
+	}
 	c.pendingMu.Lock()
 	if _, exists := c.pending[req.RequestId]; exists {
 		c.pendingMu.Unlock()
@@ -179,18 +202,47 @@ func (c *Connection) Call(ctx context.Context, req protocolv1.CapabilityRequest)
 		delete(c.pending, req.RequestId)
 		c.pendingMu.Unlock()
 	}()
-	if err := c.WriteJSON(ctx, req); err != nil {
-		return protocolv1.CapabilityResponse{}, err
+	if isClosed(closed) {
+		return protocolv1.CapabilityResponse{}, ErrConnectionLost
+	}
+	writeCtx, cancelWrite := context.WithCancel(ctx)
+	writeErr := make(chan error, 1)
+	go func() {
+		writeErr <- c.WriteJSON(writeCtx, req)
+	}()
+	select {
+	case err := <-writeErr:
+		cancelWrite()
+		if ctx.Err() != nil {
+			return protocolv1.CapabilityResponse{}, ctx.Err()
+		}
+		if err != nil {
+			if isClosed(closed) {
+				return protocolv1.CapabilityResponse{}, ErrConnectionLost
+			}
+			return protocolv1.CapabilityResponse{}, err
+		}
+	case <-closed:
+		cancelWrite()
+		return protocolv1.CapabilityResponse{}, ErrConnectionLost
+	case <-ctx.Done():
+		cancelWrite()
+		return protocolv1.CapabilityResponse{}, ctx.Err()
 	}
 	select {
 	case response := <-ch:
 		return response, nil
+	case <-closed:
+		return protocolv1.CapabilityResponse{}, ErrConnectionLost
 	case <-ctx.Done():
 		return protocolv1.CapabilityResponse{}, ctx.Err()
 	}
 }
 
 func (c *Connection) DeliverResponse(response protocolv1.CapabilityResponse) bool {
+	if isClosed(c.Closed()) {
+		return false
+	}
 	c.pendingMu.Lock()
 	ch := c.pending[response.RequestId]
 	c.pendingMu.Unlock()
@@ -208,13 +260,37 @@ func (c *Connection) DeliverResponse(response protocolv1.CapabilityResponse) boo
 func (c *Connection) WriteJSON(ctx context.Context, value any) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
-	return wsjson.Write(ctx, c.conn, value)
+	err := wsjson.Write(ctx, c.conn, value)
+	if err != nil {
+		c.MarkLost()
+	}
+	return err
 }
 
 func (c *Connection) Close(status websocket.StatusCode, reason string) error {
+	c.MarkLost()
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	return c.conn.Close(status, reason)
+}
+
+func (c *Connection) Closed() <-chan struct{} {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	if c.closed == nil {
+		c.closed = make(chan struct{})
+	}
+	return c.closed
+}
+
+func (c *Connection) MarkLost() {
+	c.stateMu.Lock()
+	if c.closed == nil {
+		c.closed = make(chan struct{})
+	}
+	closed := c.closed
+	c.stateMu.Unlock()
+	c.closeOnce.Do(func() { close(closed) })
 }
 
 func NewConnection(machineID, connectionID string, generation int64, now time.Time, conn *websocket.Conn) *Connection {
@@ -227,6 +303,16 @@ func NewConnection(machineID, connectionID string, generation int64, now time.Ti
 		Status:       "ready",
 		conn:         conn,
 		pending:      make(map[string]chan protocolv1.CapabilityResponse),
+		closed:       make(chan struct{}),
+	}
+}
+
+func isClosed(closed <-chan struct{}) bool {
+	select {
+	case <-closed:
+		return true
+	default:
+		return false
 	}
 }
 

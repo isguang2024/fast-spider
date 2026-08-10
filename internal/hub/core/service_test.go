@@ -244,3 +244,38 @@ func stringJSON(value any) string {
 	raw, _ := json.Marshal(value)
 	return string(raw)
 }
+
+func TestCapabilityTransportErrorsAreStructured(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		capability string
+		action     string
+		wantCode   string
+		retryable  bool
+		status     int
+	}{
+		{name: "lost read", err: registry.ErrConnectionLost, capability: "file.read", action: "read", wantCode: "CONNECTION_LOST", retryable: true, status: 503},
+		{name: "lost edit", err: registry.ErrConnectionLost, capability: "file.write", action: "edit", wantCode: "CONNECTION_LOST", retryable: false, status: 503},
+		{name: "lost browser action", err: registry.ErrConnectionLost, capability: "browser.automation", action: "click", wantCode: "CONNECTION_LOST", retryable: false, status: 503},
+		{name: "lost agent send", err: registry.ErrConnectionLost, capability: "agent.control", action: "session.send", wantCode: "CONNECTION_LOST", retryable: false, status: 503},
+		{name: "deadline query", err: context.DeadlineExceeded, capability: "git.repository", action: "status", wantCode: "DEADLINE_EXCEEDED", retryable: true, status: 504},
+		{name: "deadline shell", err: context.DeadlineExceeded, capability: "shell.exec", action: "run", wantCode: "DEADLINE_EXCEEDED", retryable: false, status: 504},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := capabilityCallTransportError(tt.err, tt.capability, tt.action)
+			var callErr *CapabilityCallError
+			if !errors.As(err, &callErr) {
+				t.Fatalf("error=%T %v, want CapabilityCallError", err, err)
+			}
+			if callErr.Code != tt.wantCode || callErr.Retryable != tt.retryable {
+				t.Fatalf("call error=%+v, want code=%s retryable=%v", callErr, tt.wantCode, tt.retryable)
+			}
+			if got := ErrorStatus(err); got != tt.status {
+				t.Fatalf("ErrorStatus()=%d, want %d", got, tt.status)
+			}
+		})
+	}
+}

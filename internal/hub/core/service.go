@@ -357,7 +357,7 @@ func (s *Service) CapabilityCatalog() []protocolv1.CapabilityDescriptor {
 func (s *Service) CallCapability(ctx context.Context, ownerID, machineID, capability, action string, params any) (map[string]any, error) {
 	record, err := s.store.GetMachine(ctx, ownerID, machineID)
 	if err != nil {
-		return nil, err
+		return nil, capabilityCallTransportError(err, capability, action)
 	}
 	if record.Status != "active" {
 		return nil, &CapabilityCallError{Code: "MACHINE_INACTIVE", Message: "machine is not active", Retryable: false}
@@ -390,10 +390,7 @@ func (s *Service) CallCapability(ctx context.Context, ownerID, machineID, capabi
 		Timestamp:   protocolv1.Timestamp(s.now()),
 	})
 	if err != nil {
-		if errors.Is(err, registry.ErrMachineOffline) {
-			return nil, &CapabilityCallError{Code: "MACHINE_OFFLINE", Message: "machine is offline", Retryable: true}
-		}
-		return nil, err
+		return nil, capabilityCallTransportError(err, capability, action)
 	}
 	if response.Error != nil {
 		if shouldAuditCapability(capability, action) {
@@ -405,6 +402,37 @@ func (s *Service) CallCapability(ctx context.Context, ownerID, machineID, capabi
 		_ = s.audit(ctx, store.AuditEntry{OwnerID: ownerID, MachineID: machineID, ActorType: "owner", ActorID: ownerID, Action: capability + "." + action, Result: "success", CreatedAt: s.now().UTC()})
 	}
 	return response.Result, nil
+}
+
+func capabilityCallTransportError(err error, capability, action string) error {
+	retryable := isRetryableCapability(capability, action)
+	switch {
+	case errors.Is(err, registry.ErrMachineOffline):
+		return &CapabilityCallError{Code: "MACHINE_OFFLINE", Message: "machine is offline", Retryable: true}
+	case errors.Is(err, registry.ErrConnectionLost):
+		return &CapabilityCallError{Code: "CONNECTION_LOST", Message: "node connection was lost before a response was received", Retryable: retryable}
+	case errors.Is(err, context.DeadlineExceeded):
+		return &CapabilityCallError{Code: "DEADLINE_EXCEEDED", Message: "capability call deadline exceeded", Retryable: retryable}
+	default:
+		return err
+	}
+}
+
+func isRetryableCapability(capability, action string) bool {
+	switch capability + "/" + action {
+	case "machine.status/report",
+		"file.read/read",
+		"code.search/search",
+		"job.control/watch",
+		"git.repository/status", "git.repository/diff", "git.repository/stagedDiff", "git.repository/log", "git.repository/show", "git.repository/branches", "git.repository/currentBranch", "git.repository/worktrees",
+		"working.context/get",
+		"browser.automation/pages.list", "browser.automation/snapshot", "browser.automation/events",
+		"screenshot.capture/listDisplays", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/listWindows", "screenshot.capture/window",
+		"agent.control/providers.list", "agent.control/models.list", "agent.control/projects.list", "agent.control/session.list", "agent.control/session.get", "agent.control/session.watch", "agent.control/session.result":
+		return true
+	default:
+		return false
+	}
 }
 
 func capabilityCallTimeout(capability, action string) time.Duration {
@@ -548,7 +576,7 @@ func ErrorStatus(err error) int {
 	var callErr *CapabilityCallError
 	if errors.As(err, &callErr) {
 		switch callErr.Code {
-		case "MACHINE_OFFLINE":
+		case "MACHINE_OFFLINE", "CONNECTION_LOST":
 			return 503
 		case "DEADLINE_EXCEEDED", "TIMEOUT":
 			return 504

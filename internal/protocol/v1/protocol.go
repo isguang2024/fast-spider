@@ -34,7 +34,7 @@ var ScreenshotCapability = CapabilityDescriptor{
 
 var AgentCapability = CapabilityDescriptor{
 	CapabilityId: "agent.control", Version: "1.0",
-	Actions: []string{"providers.list", "models.list", "session.list", "session.get", "session.create", "session.send", "session.watch", "session.cancel", "session.result", "session.rename", "session.archive"},
+	Actions: []string{"providers.list", "models.list", "projects.list", "session.list", "session.get", "session.create", "session.send", "session.watch", "session.cancel", "session.result", "session.rename", "session.archive"},
 }
 
 func ScreenshotCapabilityForOS(goos string) CapabilityDescriptor {

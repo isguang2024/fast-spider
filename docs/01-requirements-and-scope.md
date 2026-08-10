@@ -24,8 +24,9 @@
 
 - MUST 提供 HTTPS 公网入口、OAuth 2.1 授权和 MCP Server。
 - MUST 管理用户、客户端、Machine、Job、Event、审计和 Artifact 元数据。
-- MUST 维护 Node 长连接注册表并按 `machineId` 路由。
+- MUST 维护 Node 长连接注册表并按 `machineId` 路由；Hub↔Node 的 Capability Request/Response（包括 `file.read` 内容和 `file.write/edit` 的 `oldText`/`newText`）直接复用同一条 WSS。
 - MUST 在请求离开 Hub 前完成身份、Machine 归属、Schema 和资源限制校验。
+- MUST 仅将 HTTPS 用于 Machine 登记、设备 Token，以及 Artifact/Presentation 等大文件数据面；不得为普通 Capability 另建 HTTP 控制通道。
 - MUST 不直接读取 Node 文件或执行 Node 命令。
 - MUST 提供 Web Console、健康检查、备份、升级和恢复说明。
 - SHOULD 提供复用同一应用服务的 REST/WebSocket API。
@@ -100,9 +101,10 @@
 
 ### 4.2 可靠性与容量
 
-- 控制消息采用至少一次传输语义，执行端通过 `idempotencyKey` 去重。
-- 已完成的写操作和命令在断线后不能自动重跑。
-- Job 必须具有明确终态；失联任务进入 `lost`，而不是永久 `running`。
+- WSS 控制请求不做断线自动重放：请求帧未被 Node 完整接收时不执行；请求已执行但响应丢失时，结果为 uncertain。
+- 连接丢失后，只读/查询调用可由调用方重试；写操作和其他副作用调用必须先重新读取或查询状态，再决定后续动作，不能自动重跑。
+- Job 启动必须携带 `idempotencyKey` 并由 JobManager 去重；连接断开不取消已经启动的 Job，调用方重连后按 Job ID 查询。
+- `file.write/edit` 必须使用临时文件、fsync、原子替换和 expected SHA CAS，避免半文件并检测并发修改。
 - 所有队列、日志、事件、Artifact 和临时文件都有硬上限和清理任务。
 
 ### 4.3 跨平台

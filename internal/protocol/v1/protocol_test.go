@@ -22,3 +22,12 @@ func TestMessageTypeAndTimestamp(t *testing.T) {
 		t.Fatalf("Timestamp()=%q, want %q", got, want)
 	}
 }
+
+func TestAgentCapabilityAdvertisesProjectsList(t *testing.T) {
+	for _, action := range AgentCapability.Actions {
+		if action == "projects.list" {
+			return
+		}
+	}
+	t.Fatal("agent.control does not advertise projects.list")
+}

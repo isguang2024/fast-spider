@@ -1,9 +1,16 @@
 package registry
 
 import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
 
@@ -49,4 +56,96 @@ func TestRegisterGenerationAndSnapshotIsolation(t *testing.T) {
 	if _, ok := r.Get(second.MachineID); ok {
 		t.Fatal("Remove left the current connection registered")
 	}
+}
+
+func TestPendingCallReturnsWhenConnectionEnds(t *testing.T) {
+	tests := []struct {
+		name string
+		end  func(*Registry, *Connection)
+	}{
+		{name: "close", end: func(_ *Registry, conn *Connection) {
+			go func() { _ = conn.Close(websocket.StatusNormalClosure, "test close") }()
+		}},
+		{name: "remove", end: func(registry *Registry, conn *Connection) {
+			registry.Remove(conn.MachineID, conn.Generation)
+		}},
+		{name: "replacement", end: func(registry *Registry, conn *Connection) {
+			if replaced, accepted := registry.Register(&Connection{MachineID: conn.MachineID, Generation: conn.Generation + 1}); !accepted || replaced != conn {
+				t.Fatalf("replacement register=(%v, %v)", replaced, accepted)
+			}
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conn, requestRead := newWebSocketConnection(t)
+			registry := New()
+			if _, accepted := registry.Register(conn); !accepted {
+				t.Fatal("connection was not registered")
+			}
+
+			callErr := make(chan error, 1)
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				_, err := registry.Call(ctx, conn.MachineID, protocolv1.CapabilityRequest{
+					MessageType: protocolv1.MessageCapabilityRequest,
+					RequestId:   "req_pending_" + tt.name,
+					Capability:  "file.read",
+					Action:      "read",
+				})
+				callErr <- err
+			}()
+
+			select {
+			case <-requestRead:
+			case <-time.After(2 * time.Second):
+				t.Fatal("server did not receive pending request")
+			}
+			tt.end(registry, conn)
+
+			select {
+			case err := <-callErr:
+				if !errors.Is(err, ErrConnectionLost) {
+					t.Fatalf("Call() error=%v, want ErrConnectionLost", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("pending Call() did not return promptly")
+			}
+		})
+	}
+}
+
+func newWebSocketConnection(t *testing.T) (*Connection, <-chan struct{}) {
+	t.Helper()
+	requestRead := make(chan struct{}, 1)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("Accept() error=%v", err)
+			return
+		}
+		defer conn.CloseNow()
+		var request protocolv1.CapabilityRequest
+		if err := wsjson.Read(context.Background(), conn, &request); err != nil {
+			t.Errorf("Read() error=%v", err)
+			return
+		}
+		requestRead <- struct{}{}
+		<-release
+	}))
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	wsConn, _, err := websocket.Dial(context.Background(), wsURL, nil)
+	if err != nil {
+		close(release)
+		server.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		wsConn.CloseNow()
+		close(release)
+		server.Close()
+	})
+	return NewConnection("mach_pending", "conn_pending", 1, time.Now(), wsConn), requestRead
 }

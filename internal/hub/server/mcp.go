@@ -157,7 +157,7 @@ type screenshotTakeInput struct {
 
 type aiControlInput struct {
 	MachineID        string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	Action           string `json:"action" jsonschema:"providers.list,models.list,session.list,session.get,session.create,session.send,session.watch,session.cancel,session.result,session.rename,session.archive"`
+	Action           string `json:"action" jsonschema:"providers.list,models.list,projects.list,session.list,session.get,session.create,session.send,session.watch,session.cancel,session.result,session.rename,session.archive"`
 	ProviderID       string `json:"providerId,omitempty" jsonschema:"provider ID; defaults to codex"`
 	SessionID        string `json:"sessionId,omitempty" jsonschema:"opaque provider session ID"`
 	TurnID           string `json:"turnId,omitempty" jsonschema:"active turn ID for cancel when known"`

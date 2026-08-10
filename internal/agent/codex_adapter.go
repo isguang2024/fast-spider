@@ -562,18 +562,28 @@ func isCodexThreadNotMaterialized(err error) bool {
 	return strings.Contains(message, "not materialized yet") && strings.Contains(message, "includeturns")
 }
 
-func (a *CodexAdapter) StartThread(ctx context.Context, root, model, thinking string) (map[string]any, error) {
+func (a *CodexAdapter) StartThread(ctx context.Context, workingDirectory, projectDirectory, model, thinking string) (map[string]any, error) {
+	params := codexThreadStartParams(workingDirectory, projectDirectory, model, thinking)
+	return a.request(ctx, "thread/start", params)
+}
+
+func codexThreadStartParams(workingDirectory, projectDirectory, model, thinking string) map[string]any {
+	roots := make([]string, 0, 2)
+	if strings.TrimSpace(projectDirectory) != "" {
+		roots = append(roots, projectDirectory)
+	}
+	if strings.TrimSpace(workingDirectory) != "" && (len(roots) == 0 || !sameAgentPath(roots[0], workingDirectory)) {
+		roots = append(roots, workingDirectory)
+	}
 	params := map[string]any{
-		"cwd":                   root,
-		"runtimeWorkspaceRoots": []string{root},
+		"cwd":                   workingDirectory,
+		"runtimeWorkspaceRoots": roots,
 		"approvalPolicy":        "never",
 		"sandbox":               "workspace-write",
 		"ephemeral":             false,
 		"historyMode":           "legacy",
 		"threadSource":          "user",
 		"serviceName":           "fast_spider",
-		"mode":                  "default",
-		"threadStartKind":       "default",
 	}
 	if model != "" {
 		params["model"] = model
@@ -581,7 +591,7 @@ func (a *CodexAdapter) StartThread(ctx context.Context, root, model, thinking st
 	if thinking != "" {
 		params["config"] = map[string]any{"model_reasoning_effort": thinking}
 	}
-	return a.request(ctx, "thread/start", params)
+	return params
 }
 
 func (a *CodexAdapter) StartTurn(ctx context.Context, sessionID, prompt, workingDirectory, model, thinking string) (map[string]any, error) {

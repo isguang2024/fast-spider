@@ -6,11 +6,40 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestCodexThreadStartParamsUsesProjectRootWithoutLosingWorktree(t *testing.T) {
+	projectDirectory := filepath.Join(string(filepath.Separator), "repos", "project")
+	workingDirectory := filepath.Join(string(filepath.Separator), "worktrees", "feature")
+	params := codexThreadStartParams(workingDirectory, projectDirectory, "gpt-test", "high")
+	if got := mapAnyString(params, "cwd"); got != workingDirectory {
+		t.Fatalf("cwd=%q want %q", got, workingDirectory)
+	}
+	roots, _ := params["runtimeWorkspaceRoots"].([]string)
+	if len(roots) != 2 || roots[0] != projectDirectory || roots[1] != workingDirectory {
+		t.Fatalf("runtimeWorkspaceRoots=%#v", roots)
+	}
+	if _, ok := params["mode"]; ok {
+		t.Fatal("unsupported mode field was sent")
+	}
+	if _, ok := params["threadStartKind"]; ok {
+		t.Fatal("unsupported threadStartKind field was sent")
+	}
+}
+
+func TestCodexThreadStartParamsDeduplicatesProjectRoot(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator), "repos", "project")
+	params := codexThreadStartParams(root, root, "", "")
+	roots, _ := params["runtimeWorkspaceRoots"].([]string)
+	if len(roots) != 1 || roots[0] != root {
+		t.Fatalf("runtimeWorkspaceRoots=%#v", roots)
+	}
+}
 
 type concurrentLineWriter struct {
 	mu     sync.Mutex

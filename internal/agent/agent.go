@@ -28,14 +28,20 @@ type agentControlParams struct {
 }
 
 type AgentManager struct {
-	codex *CodexAdapter
+	codex          *CodexAdapter
+	logger         *slog.Logger
+	codexStatePath string
 }
 
 func New(_ string, logger *slog.Logger) *AgentManager {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &AgentManager{codex: NewCodexAdapter(logger)}
+	return &AgentManager{
+		codex:          NewCodexAdapter(logger),
+		logger:         logger,
+		codexStatePath: defaultCodexDesktopStatePath(),
+	}
 }
 
 func (m *AgentManager) Close(ctx context.Context) error {
@@ -66,6 +72,8 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		return m.providers(ctx), nil
 	case "models.list":
 		return m.models(ctx)
+	case "projects.list":
+		return m.projects()
 	case "session.list":
 		root, err := optionalAgentDirectory(input.WorkingDirectory)
 		if err != nil {
@@ -77,7 +85,7 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"session": normalizeCodexThread(thread)}, nil
+		return map[string]any{"session": m.normalizeThread(ctx, thread, nil)}, nil
 	case "session.create":
 		return m.sessionCreate(ctx, input)
 	case "session.send":
@@ -172,19 +180,59 @@ func (m *AgentManager) models(ctx context.Context) (map[string]any, error) {
 	return map[string]any{"models": models}, nil
 }
 
-func (m *AgentManager) sessionList(ctx context.Context, root string, limit int) (map[string]any, error) {
-	result, err := m.codex.ListThreads(ctx, root, limit)
+func (m *AgentManager) projects() (map[string]any, error) {
+	snapshot, err := readCodexDesktopSnapshot(m.codexStatePath)
 	if err != nil {
 		return nil, err
 	}
+	projects := make([]map[string]any, 0, len(snapshot.Projects))
+	for _, project := range snapshot.Projects {
+		projects = append(projects, map[string]any{
+			"projectId":        project.ProjectID,
+			"name":             project.Name,
+			"projectDirectory": project.ProjectDirectory,
+			"isGitRepository":  true,
+		})
+	}
+	return map[string]any{"projects": projects}, nil
+}
+
+func (m *AgentManager) sessionList(ctx context.Context, root string, limit int) (map[string]any, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	listRoot := root
+	listLimit := limit
+	var requestedProject agentProjectContext
+	if root != "" {
+		requestedProject = resolveAgentProjectContext(ctx, root)
+		listRoot = ""
+		listLimit = 100
+	}
+	result, err := m.codex.ListThreads(ctx, listRoot, listLimit)
+	if err != nil {
+		return nil, err
+	}
+	snapshot, snapshotErr := readCodexDesktopSnapshot(m.codexStatePath)
+	if snapshotErr != nil {
+		m.logger.Warn("read Codex Desktop project metadata", "error", snapshotErr)
+	}
 	data, _ := result["data"].([]any)
 	sessions := make([]map[string]any, 0, len(data))
+	projectCache := map[string]agentProjectContext{}
 	for _, raw := range data {
 		thread, _ := raw.(map[string]any)
 		if len(thread) == 0 {
 			continue
 		}
-		sessions = append(sessions, normalizeCodexThread(thread))
+		session := m.normalizeThread(ctx, thread, projectCacheWithSnapshot(projectCache, snapshot))
+		if root != "" && !sameAgentPath(mapAnyString(session, "projectDirectory"), requestedProject.ProjectDirectory) {
+			continue
+		}
+		sessions = append(sessions, session)
+		if len(sessions) >= limit {
+			break
+		}
 	}
 	return map[string]any{"sessions": sessions}, nil
 }
@@ -198,7 +246,8 @@ func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlPara
 	if err != nil {
 		return nil, err
 	}
-	threadResult, err := m.codex.StartThread(ctx, workingDirectory, selectedModel, input.Thinking)
+	project := resolveAgentProjectContext(ctx, workingDirectory)
+	threadResult, err := m.codex.StartThread(ctx, workingDirectory, project.ProjectDirectory, selectedModel, input.Thinking)
 	if err != nil {
 		return nil, err
 	}
@@ -206,8 +255,13 @@ func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlPara
 	if sessionID == "" {
 		return nil, fmt.Errorf("Codex did not return a session ID")
 	}
+	projectID, projectSynced, syncErr := syncCodexDesktopProject(m.codexStatePath, sessionID, project, time.Now())
+	if syncErr != nil {
+		m.logger.Warn("sync Codex Desktop project metadata", "sessionId", sessionID, "error", syncErr)
+	}
 	out := map[string]any{
 		"workingDirectory": workingDirectory,
+		"projectDirectory": project.ProjectDirectory,
 		"sessionId":        sessionID,
 		"executionMode":    "bridge_owned",
 		"model":            selectedModel,
@@ -215,12 +269,22 @@ func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlPara
 		"phase":            "ready",
 		"realtimeChannel":  "session.watch",
 	}
+	if project.IsGitRepository {
+		if projectID == "" {
+			projectID = project.ProjectID
+		}
+		out["projectId"] = projectID
+		out["desktopProjectSynced"] = projectSynced
+	}
 	if strings.TrimSpace(input.Prompt) == "" {
 		return out, nil
 	}
 	turnResult, err := m.codex.StartTurn(ctx, sessionID, input.Prompt, workingDirectory, selectedModel, input.Thinking)
 	if err != nil {
 		_ = m.codex.ArchiveThread(context.Background(), sessionID)
+		if cleanupErr := removeCodexDesktopThreadAssignment(m.codexStatePath, sessionID); cleanupErr != nil {
+			m.logger.Warn("remove failed Codex Desktop thread assignment", "sessionId", sessionID, "error", cleanupErr)
+		}
 		return nil, err
 	}
 	turnID := mapNestedString(turnResult, "turn", "id")
@@ -237,11 +301,28 @@ func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams
 	if threadHasActiveTurn(thread) || m.codex.ActiveTurn(input.SessionID) != "" {
 		return nil, node.ErrAgentSessionBusy
 	}
-	workingDirectory := mapString(thread, "cwd")
+	snapshot, snapshotErr := readCodexDesktopSnapshot(m.codexStatePath)
+	if snapshotErr != nil {
+		m.logger.Warn("read Codex Desktop project metadata", "error", snapshotErr)
+	}
+	assignment := snapshot.Assignments[input.SessionID]
+	workingDirectory := assignment.WorkingDirectory
+	if workingDirectory == "" {
+		workingDirectory = mapString(thread, "cwd")
+	}
 	if strings.TrimSpace(input.WorkingDirectory) != "" {
 		workingDirectory, err = requiredAgentDirectory(input.WorkingDirectory)
 		if err != nil {
 			return nil, err
+		}
+	}
+	project := resolveAgentProjectContext(ctx, workingDirectory)
+	if assignment.ProjectDirectory != "" && (!project.IsGitRepository || !sameAgentPath(assignment.ProjectDirectory, project.ProjectDirectory)) {
+		return nil, fmt.Errorf("workingDirectory belongs to a different project; create a new session instead")
+	}
+	if project.IsGitRepository {
+		if _, _, syncErr := syncCodexDesktopProject(m.codexStatePath, input.SessionID, project, time.Now()); syncErr != nil {
+			m.logger.Warn("sync Codex Desktop project metadata", "sessionId", input.SessionID, "error", syncErr)
 		}
 	}
 	selectedModel := strings.TrimSpace(input.Model)
@@ -344,7 +425,7 @@ func optionalAgentDirectory(raw string) (string, error) {
 
 func normalizeCodexThread(thread map[string]any) map[string]any {
 	out := map[string]any{}
-	for _, key := range []string{"id", "name", "preview", "createdAt", "updatedAt", "lastActivityAt", "archived", "sourceKind"} {
+	for _, key := range []string{"id", "name", "preview", "createdAt", "updatedAt", "lastActivityAt", "archived", "sourceKind", "cwd"} {
 		if value, ok := thread[key]; ok {
 			out[key] = value
 		}
@@ -368,6 +449,52 @@ func normalizeCodexThread(thread map[string]any) map[string]any {
 		if turn, ok := turns[len(turns)-1].(map[string]any); ok {
 			out["latestTurn"] = normalizeCodexTurn(turn)
 		}
+	}
+	return out
+}
+
+type threadProjectCache struct {
+	contexts map[string]agentProjectContext
+	snapshot codexDesktopSnapshot
+}
+
+func projectCacheWithSnapshot(contexts map[string]agentProjectContext, snapshot codexDesktopSnapshot) *threadProjectCache {
+	return &threadProjectCache{contexts: contexts, snapshot: snapshot}
+}
+
+func (m *AgentManager) normalizeThread(ctx context.Context, thread map[string]any, cache *threadProjectCache) map[string]any {
+	out := normalizeCodexThread(thread)
+	sessionID := mapString(thread, "id")
+	workingDirectory := mapString(thread, "cwd")
+	if cache == nil {
+		snapshot, err := readCodexDesktopSnapshot(m.codexStatePath)
+		if err != nil {
+			m.logger.Warn("read Codex Desktop project metadata", "error", err)
+		}
+		cache = projectCacheWithSnapshot(map[string]agentProjectContext{}, snapshot)
+	}
+	if assignment, ok := cache.snapshot.Assignments[sessionID]; ok {
+		if assignment.WorkingDirectory != "" {
+			workingDirectory = assignment.WorkingDirectory
+		}
+		out["workingDirectory"] = workingDirectory
+		out["projectDirectory"] = assignment.ProjectDirectory
+		out["projectId"] = assignment.ProjectID
+		return out
+	}
+	project, ok := cache.contexts[workingDirectory]
+	if !ok {
+		project = resolveAgentProjectContext(ctx, workingDirectory)
+		cache.contexts[workingDirectory] = project
+	}
+	projectID := project.ProjectID
+	if registeredID := cache.snapshot.ProjectIDByKey[agentPathKey(project.ProjectDirectory)]; registeredID != "" {
+		projectID = registeredID
+	}
+	out["workingDirectory"] = workingDirectory
+	out["projectDirectory"] = project.ProjectDirectory
+	if project.IsGitRepository {
+		out["projectId"] = projectID
 	}
 	return out
 }

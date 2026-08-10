@@ -108,9 +108,9 @@ session.result
 
 ### `session.create`
 
-必需：`machineId` 和绝对 `workingDirectory`。可选：`prompt`、`model`、`thinking`；`providerId` 省略时默认为 `codex`。
+必需：`machineId` 和绝对 `workingDirectory`。可选：`prompt`、`model`、`thinking`；`providerId` 省略时默认为 `codex`。Git 子目录/linked worktree 会自动解析到主工作树项目，响应额外返回 `projectDirectory` 和 `projectId`；实际 Turn 仍在传入的 `workingDirectory` 执行。
 
-只创建 Session 时可不带 prompt，返回 `phase=ready`；带 prompt 时同时启动 Turn，返回 sessionId、turnId、model、`executionMode=bridge_owned`、`phase=running`。Node 直接以当前 OS 用户权限启动 Provider，不检查或创建额外目录授权对象。
+只创建 Session 时可不带 prompt，返回 `phase=ready`；带 prompt 时同时启动 Turn，返回 sessionId、turnId、model、`executionMode=bridge_owned`、`phase=running`。Node 直接以当前 OS 用户权限启动 Provider，不检查或创建额外目录授权对象。项目归并只写 Codex Desktop 的项目/会话展示元数据，不创建第二份仓库或项目目录；非 Git 目录保持普通聊天目录语义。
 
 未指定 model 时先读取本机 Codex 当前 `model/list` 并自动选择可用模型；显式不可用模型在启动 Turn 前拒绝。
 
@@ -122,7 +122,7 @@ session.result
 
 ### `session.send`
 
-Session 空闲时启动下一 Turn；active Turn 存在时返回 `AGENT_SESSION_BUSY`，不做隐式 steering。可选 `workingDirectory` 也必须是绝对路径，并按当前 OS 用户权限处理。
+Session 空闲时启动下一 Turn；active Turn 存在时返回 `AGENT_SESSION_BUSY`，不做隐式 steering。可选 `workingDirectory` 也必须是绝对路径，并按当前 OS 用户权限处理；同一 Session 只允许切换到同一主 Git 项目内的子目录或 worktree，跨项目时必须新建 Session。
 
 ### `session.watch/cancel/rename/archive`
 
