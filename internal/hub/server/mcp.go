@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/isguang2024/fast-spider/internal/hub/core"
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
@@ -450,7 +453,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
-		return presentationToolResult(result), genericCapabilityOutput{Result: result}, nil
+		return presentationToolResult(ctx, result), genericCapabilityOutput{Result: result}, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -463,7 +466,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
-		return presentationToolResult(result), genericCapabilityOutput{Result: result}, nil
+		return presentationToolResult(ctx, result), genericCapabilityOutput{Result: result}, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -503,7 +506,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 			if err != nil {
 				return nil, genericCapabilityOutput{}, err
 			}
-			return presentationToolResult(result), genericCapabilityOutput{Result: result}, nil
+			return presentationToolResult(ctx, result), genericCapabilityOutput{Result: result}, nil
 		case "get":
 			artifact, err := s.service.GetArtifact(ctx, ownerID, input.ArtifactID)
 			if err != nil {
@@ -533,7 +536,15 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	return server
 }
 
-func presentationToolResult(result map[string]any) *mcp.CallToolResult {
+const maxMCPPresentationImageBytes int64 = 8 << 20
+
+type presentationImageFetcher func(context.Context, string, string) ([]byte, error)
+
+func presentationToolResult(ctx context.Context, result map[string]any) *mcp.CallToolResult {
+	return presentationToolResultWithFetcher(ctx, result, fetchPresentationImage)
+}
+
+func presentationToolResultWithFetcher(ctx context.Context, result map[string]any, fetcher presentationImageFetcher) *mcp.CallToolResult {
 	publicURL, _ := result["publicUrl"].(string)
 	publicURL = strings.TrimSpace(publicURL)
 	if publicURL == "" {
@@ -553,7 +564,68 @@ func presentationToolResult(result map[string]any) *mcp.CallToolResult {
 	if size, ok := numberAsInt64(result["sizeBytes"]); ok && size > 0 {
 		link.Size = &size
 	}
-	return &mcp.CallToolResult{Content: []mcp.Content{link}}
+
+	content := make([]mcp.Content, 0, 2)
+	if imageMIME, ok := presentationImageMIME(contentType); ok && fetcher != nil {
+		if data, err := fetcher(ctx, publicURL, imageMIME); err == nil && len(data) > 0 {
+			content = append(content, &mcp.ImageContent{Data: data, MIMEType: imageMIME})
+		}
+	}
+	content = append(content, link)
+	return &mcp.CallToolResult{Content: content}
+}
+
+func presentationImageMIME(contentType string) (string, bool) {
+	mimeType := strings.ToLower(strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0]))
+	switch mimeType {
+	case "image/png", "image/jpeg":
+		return mimeType, true
+	default:
+		return "", false
+	}
+}
+
+func fetchPresentationImage(ctx context.Context, publicURL, mimeType string) ([]byte, error) {
+	parsed, err := url.Parse(strings.TrimSpace(publicURL))
+	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Hostname(), "assets.salesmartly.com") ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, fmt.Errorf("presentation image URL is not an allowed SaleSmartly asset")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{
+		Timeout: 8 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("presentation image HTTP status %d", resp.StatusCode)
+	}
+	if resp.ContentLength > maxMCPPresentationImageBytes {
+		return nil, fmt.Errorf("presentation image exceeds inline MCP limit")
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxMCPPresentationImageBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxMCPPresentationImageBytes {
+		return nil, fmt.Errorf("presentation image exceeds inline MCP limit")
+	}
+	if mimeType == "image/png" && (len(data) < 8 || string(data[:8]) != "\x89PNG\r\n\x1a\n") {
+		return nil, fmt.Errorf("presentation image data does not match image/png")
+	}
+	if mimeType == "image/jpeg" && (len(data) < 3 || data[0] != 0xff || data[1] != 0xd8 || data[2] != 0xff) {
+		return nil, fmt.Errorf("presentation image data does not match image/jpeg")
+	}
+	return data, nil
 }
 
 func numberAsInt64(value any) (int64, bool) {
