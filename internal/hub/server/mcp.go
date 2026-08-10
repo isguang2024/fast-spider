@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -453,12 +451,12 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
-		return presentationToolResult(ctx, result), genericCapabilityOutput{Result: result}, nil
+		return s.presentationToolResult(ctx, ownerID, result), genericCapabilityOutput{Result: result}, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "screenshot_take",
-		Description: "Capture a one-time desktop, display, or window image on the selected Node. Use listDisplays/listWindows for targets; captured images are published as external presentation resources and never expose local paths.",
+		Description: "Capture a one-time desktop, display, or window image on the selected Node. Captured images use the Hub temporary presentation relay, return native MCP image content, and never expose local paths.",
 		Annotations: toolAnnotations(false, false, false, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input screenshotTakeInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		params := map[string]any{"displayIndex": input.DisplayIndex, "windowId": input.WindowID, "format": input.Format, "quality": input.Quality}
@@ -466,7 +464,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
-		return presentationToolResult(ctx, result), genericCapabilityOutput{Result: result}, nil
+		return s.presentationToolResult(ctx, ownerID, result), genericCapabilityOutput{Result: result}, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -489,7 +487,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "artifact_get",
-		Description: "Get Artifact metadata/content, ask a Node to upload a file or Job log into Hub Artifact storage, or publish an absolute-path file as an external AI presentation resource without creating a Hub Artifact record.",
+		Description: "Get Artifact metadata/content, ask a Node to upload a file or Job log into Hub Artifact storage, or publish an absolute-path file through the Hub temporary presentation relay without creating a Hub Artifact record.",
 		Annotations: toolAnnotations(false, false, false, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input artifactGetInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		switch input.Action {
@@ -506,7 +504,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 			if err != nil {
 				return nil, genericCapabilityOutput{}, err
 			}
-			return presentationToolResult(ctx, result), genericCapabilityOutput{Result: result}, nil
+			return s.presentationToolResult(ctx, ownerID, result), genericCapabilityOutput{Result: result}, nil
 		case "get":
 			artifact, err := s.service.GetArtifact(ctx, ownerID, input.ArtifactID)
 			if err != nil {
@@ -538,40 +536,44 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 const maxMCPPresentationImageBytes int64 = 8 << 20
 
-type presentationImageFetcher func(context.Context, string, string) ([]byte, error)
-
-func presentationToolResult(ctx context.Context, result map[string]any) *mcp.CallToolResult {
-	return presentationToolResultWithFetcher(ctx, result, fetchPresentationImage)
-}
-
-func presentationToolResultWithFetcher(ctx context.Context, result map[string]any, fetcher presentationImageFetcher) *mcp.CallToolResult {
-	publicURL, _ := result["publicUrl"].(string)
-	publicURL = strings.TrimSpace(publicURL)
-	if publicURL == "" {
+func (s *Server) presentationToolResult(ctx context.Context, ownerID string, result map[string]any) *mcp.CallToolResult {
+	presentationID, _ := result["presentationId"].(string)
+	presentationID = strings.TrimSpace(presentationID)
+	if presentationID == "" {
 		return nil
 	}
-	fileName, _ := result["fileName"].(string)
-	fileName = strings.TrimSpace(fileName)
-	if fileName == "" {
-		fileName = "Fast Spider resource"
+	record, err := s.presentations.getForOwner(ownerID, presentationID, time.Now().UTC())
+	if err != nil {
+		return nil
 	}
-	contentType, _ := result["contentType"].(string)
-	contentType = strings.TrimSpace(contentType)
-	link := &mcp.ResourceLink{
-		URI: publicURL, Name: fileName, Title: fileName,
-		Description: "Fast Spider generated presentation resource", MIMEType: contentType,
-	}
-	if size, ok := numberAsInt64(result["sizeBytes"]); ok && size > 0 {
-		link.Size = &size
+	publicURL := s.presentationPublicURL(record.ID)
+	result["fileName"] = record.FileName
+	result["contentType"] = record.ContentType
+	result["sizeBytes"] = record.SizeBytes
+	result["sha256"] = record.SHA256
+	result["expiresAt"] = record.ExpiresAt
+	if publicURL != "" {
+		result["publicUrl"] = publicURL
 	}
 
 	content := make([]mcp.Content, 0, 2)
-	if imageMIME, ok := presentationImageMIME(contentType); ok && fetcher != nil {
-		if data, err := fetcher(ctx, publicURL, imageMIME); err == nil && len(data) > 0 {
-			content = append(content, &mcp.ImageContent{Data: data, MIMEType: imageMIME})
+	if imageMIME, ok := presentationImageMIME(record.ContentType); ok {
+		if data, readErr := readPresentationImage(ctx, record, maxMCPPresentationImageBytes); readErr == nil && len(data) > 0 {
+			if verifyPresentationImageBytes(imageMIME, data) == nil {
+				content = append(content, &mcp.ImageContent{Data: data, MIMEType: imageMIME})
+			}
 		}
 	}
-	content = append(content, link)
+	if publicURL != "" {
+		size := record.SizeBytes
+		content = append(content, &mcp.ResourceLink{
+			URI: publicURL, Name: record.FileName, Title: record.FileName,
+			Description: "Fast Spider temporary presentation resource", MIMEType: record.ContentType, Size: &size,
+		})
+	}
+	if len(content) == 0 {
+		return nil
+	}
 	return &mcp.CallToolResult{Content: content}
 }
 
@@ -583,49 +585,6 @@ func presentationImageMIME(contentType string) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-func fetchPresentationImage(ctx context.Context, publicURL, mimeType string) ([]byte, error) {
-	parsed, err := url.Parse(strings.TrimSpace(publicURL))
-	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Hostname(), "assets.salesmartly.com") ||
-		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, fmt.Errorf("presentation image URL is not an allowed SaleSmartly asset")
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-	client := &http.Client{
-		Timeout: 8 * time.Second,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("presentation image HTTP status %d", resp.StatusCode)
-	}
-	if resp.ContentLength > maxMCPPresentationImageBytes {
-		return nil, fmt.Errorf("presentation image exceeds inline MCP limit")
-	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxMCPPresentationImageBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > maxMCPPresentationImageBytes {
-		return nil, fmt.Errorf("presentation image exceeds inline MCP limit")
-	}
-	if mimeType == "image/png" && (len(data) < 8 || string(data[:8]) != "\x89PNG\r\n\x1a\n") {
-		return nil, fmt.Errorf("presentation image data does not match image/png")
-	}
-	if mimeType == "image/jpeg" && (len(data) < 3 || data[0] != 0xff || data[1] != 0xd8 || data[2] != 0xff) {
-		return nil, fmt.Errorf("presentation image data does not match image/jpeg")
-	}
-	return data, nil
 }
 
 func numberAsInt64(value any) (int64, bool) {

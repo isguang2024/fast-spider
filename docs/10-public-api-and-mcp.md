@@ -34,7 +34,7 @@ artifact_get
 - git_control: `repositoryPath`
 - ai_control session.create: `workingDirectory`
 
-Job 后续操作只用 machineId + jobId。Artifact 获取只用 artifactId；Node 上传本机文件时使用 machineId + absolute path。`artifact_get.publishFile` 使用同样的绝对路径，但文件由 Node 直接发布为外部 AI 展示资源并返回 `ResourceLink`，不创建 Hub Artifact 记录。
+Job 后续操作只用 machineId + jobId。Artifact 获取只用 artifactId；Node 上传本机文件时使用 machineId + absolute path。`artifact_get.publishFile` 使用同样的绝对路径，但文件由 Node 直接上传 Hub Temporary Presentation Relay；Relay 不创建 Artifact/数据库记录，只生成 20 分钟短期 `ResourceLink`。
 
 ## OAuth
 

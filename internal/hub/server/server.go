@@ -26,11 +26,12 @@ type Config struct {
 }
 
 type Server struct {
-	service      *core.Service
-	config       Config
-	oauth        *oauthState
-	loginLimiter *loginFailureLimiter
-	http         *http.Server
+	service       *core.Service
+	config        Config
+	oauth         *oauthState
+	loginLimiter  *loginFailureLimiter
+	presentations *presentationStore
+	http          *http.Server
 }
 
 type apiError struct {
@@ -42,10 +43,11 @@ func New(service *core.Service, cfg Config) *Server {
 		cfg.Logger = slog.Default()
 	}
 	s := &Server{
-		service:      service,
-		config:       cfg,
-		oauth:        newOAuthState(),
-		loginLimiter: newLoginFailureLimiter(),
+		service:       service,
+		config:        cfg,
+		oauth:         newOAuthState(),
+		loginLimiter:  newLoginFailureLimiter(),
+		presentations: newPresentationStore(presentationTempRoot(service.DataDir())),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleWebRoot)
@@ -74,6 +76,7 @@ func New(service *core.Service, cfg Config) *Server {
 	mux.HandleFunc("GET /api/v1/node/releases/{platform}/download", s.handleNodeReleaseDownload)
 	mux.HandleFunc("GET /api/v1/node/components/{componentId}/{platform}/latest", s.handleComponentReleaseManifest)
 	mux.HandleFunc("GET /api/v1/node/components/{componentId}/{platform}/download", s.handleComponentReleaseDownload)
+	mux.HandleFunc("GET /api/v1/presentations/{presentationId}", s.handlePresentationDownload)
 	mux.HandleFunc("GET /.well-known/oauth-protected-resource", s.handleOAuthProtectedResource)
 	mux.HandleFunc("GET /.well-known/oauth-protected-resource/{resourcePath...}", s.handleOAuthProtectedResource)
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.handleOAuthAuthorizationServer)
@@ -85,6 +88,7 @@ func New(service *core.Service, cfg Config) *Server {
 	mux.HandleFunc("POST /oauth/revoke", oauthPostOnly(s.handleOAuthRevoke))
 	mux.Handle("/mcp", s.newMCPHandler())
 	mux.HandleFunc("GET /node/v1/connect", s.handleNodeConnect)
+	mux.HandleFunc("POST /node/v1/presentations", s.handlePresentationUpload)
 	mux.HandleFunc("POST /node/v1/artifacts", s.handleArtifactCreate)
 	mux.HandleFunc("GET /node/v1/artifacts/{uploadId}", s.handleArtifactUploadStatus)
 	mux.HandleFunc("PUT /node/v1/artifacts/{uploadId}/chunk", s.handleArtifactChunk)
@@ -108,7 +112,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	for _, conn := range s.service.Registry().List() {
 		s.service.Registry().CloseMachine(ctx, conn.MachineID, "HUB_SHUTDOWN", "hub is shutting down")
 	}
-	return s.http.Shutdown(ctx)
+	err := s.http.Shutdown(ctx)
+	s.presentations.clear()
+	return err
 }
 
 func (s *Server) handleLive(w http.ResponseWriter, _ *http.Request) {

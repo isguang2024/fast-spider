@@ -83,6 +83,7 @@ func main() {
 		OAuthRedirectHosts: splitCSV(*oauthRedirectHosts),
 		Logger:             logger,
 	})
+	go hub.StartMaintenance(ctx)
 
 	go func() {
 		<-ctx.Done()

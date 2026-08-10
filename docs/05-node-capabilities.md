@@ -111,7 +111,7 @@ Node 使用当前 OS 用户的 Git 配置、凭据、LFS、签名和 hooks。rem
 
 ## 9. Artifact 与截图
 
-Artifact 仍用于显式文件/日志传输，使用大小、类型、SHA-256、分块、偏移、恢复和保留策略；Hub 保存其元数据和内容寻址 Blob。截图走独立的 AI 展示通道：Node 本地生成后直接上传 SaleSmartly OSS，只返回公开 URL、MIME、文件名、大小和 SHA-256，并由 MCP 映射为外部 `ResourceLink`。STS 只在 Node 内存中最长缓存 20 分钟，不通过 Hub、配置 UI 或 MCP Schema 暴露。截图支持显示器、桌面、窗口和浏览器页面，窗口目标使用短期 opaque `windowId`，不返回 OS 句柄或临时路径。
+Artifact 仍用于显式文件/日志传输，使用大小、类型、SHA-256、分块、偏移、恢复和保留策略；Hub 保存其元数据和内容寻址 Blob。截图走独立的 AI 展示通道：Node 本地生成后直接上传到 Hub Temporary Presentation Relay，不写数据库；Hub 在系统临时目录中最多保留 20 分钟，并由 MCP 直接返回 `ImageContent`，同时生成短期 `ResourceLink` 供下载。截图支持显示器、桌面、窗口和浏览器页面，窗口目标使用短期 opaque `windowId`，不返回 OS 句柄或临时路径。
 
 ## 10. 浏览器自动化
 
