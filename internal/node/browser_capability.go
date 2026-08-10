@@ -17,7 +17,7 @@ func (c *Client) browserControl(ctx context.Context, action string, params map[s
 		return c.browser.Execute(ctx, action, safeParams)
 	}
 	return c.browser.ExecuteScreenshot(ctx, safeParams, func(path, logicalName, contentType string) (map[string]any, error) {
-		return c.publishPresentationFile(ctx, path, logicalName, contentType)
+		return c.publishScreenshotPresentation(ctx, path, logicalName, contentType)
 	})
 }
 

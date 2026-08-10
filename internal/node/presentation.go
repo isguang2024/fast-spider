@@ -46,6 +46,25 @@ func (c *Client) publishPresentationFile(ctx context.Context, filePath, logicalN
 	}, nil
 }
 
+func (c *Client) publishScreenshotPresentation(ctx context.Context, filePath, logicalName, contentType string) (map[string]any, error) {
+	prepared, err := prepareScreenshotPresentation(filePath, logicalName, contentType, filepath.Join(c.cfg.DataDir, "screenshots"))
+	if err != nil {
+		return nil, err
+	}
+	defer prepared.cleanup()
+	result, err := c.publishPresentationFile(ctx, prepared.Path, prepared.FileName, prepared.ContentType)
+	if err != nil {
+		return nil, err
+	}
+	result["optimized"] = prepared.Optimized
+	result["sourceSizeBytes"] = prepared.SourceSizeBytes
+	result["sourceWidth"] = prepared.SourceWidth
+	result["sourceHeight"] = prepared.SourceHeight
+	result["presentationWidth"] = prepared.Width
+	result["presentationHeight"] = prepared.Height
+	return result, nil
+}
+
 func (c *Client) presentationPublishFile(ctx context.Context, params map[string]any) (map[string]any, error) {
 	var input artifactControlParams
 	if err := decodeParams(params, &input); err != nil {

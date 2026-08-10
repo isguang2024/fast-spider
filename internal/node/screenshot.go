@@ -226,7 +226,7 @@ func (c *Client) captureWindowArtifact(ctx context.Context, input screenshotCapt
 			return nil, ErrScreenshotTooLarge
 		}
 	}
-	published, err := c.publishPresentationFile(ctx, finalPath, filepath.Base(finalPath), contentType)
+	published, err := c.publishScreenshotPresentation(ctx, finalPath, filepath.Base(finalPath), contentType)
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +338,7 @@ func (c *Client) captureRectArtifact(ctx context.Context, target string, input s
 	if info.Size() <= 0 || info.Size() > maxDesktopScreenshotBytes {
 		return nil, ErrScreenshotTooLarge
 	}
-	published, err := c.publishPresentationFile(ctx, path, filepath.Base(path), contentType)
+	published, err := c.publishScreenshotPresentation(ctx, path, filepath.Base(path), contentType)
 	if err != nil {
 		return nil, err
 	}

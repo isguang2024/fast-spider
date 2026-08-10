@@ -84,7 +84,7 @@ Client 不传可执行回调；Locator 使用 role、label、text、testId 和�
 }
 ```
 
-桌面截图支持当前桌面、指定显示器、指定窗口和浏览器页面；窗口通过 `listWindows` 返回短期 `windowId` 选择，不暴露 OS 句柄。截图使用 PNG/JPEG、像素/编码大小和单 Node 并发上限。Node 只负责把生成结果以设备凭据直接上传 Hub Presentation Relay；Hub 校验大小和 SHA-256，保留不超过 20 分钟，并在 MCP 调用中直接读取图片字节生成 `ImageContent`。
+桌面截图支持当前桌面、指定显示器、指定窗口和浏览器页面；窗口通过 `listWindows` 返回短期 `windowId` 选择，不暴露 OS 句柄。截图使用 PNG/JPEG、像素/编码大小和单 Node 并发上限。用于 AI 展示的截图在上传前自动优化：不超过 1 MiB、宽度不超过 2560 且总像素不超过 400 万时保持原图；超过任一阈值时按比例缩放到宽度最多 2560/总像素最多约 400 万并以 JPEG quality 82 编码。若只因文件大小触发且 JPEG 没有变小则保留原图；因尺寸触发时始终使用缩放后的 JPEG。该保护可覆盖显式请求的 PNG，因为它约束的是 AI Presentation 结果而不是原始截图文件。Node 只负责把最终展示图以设备凭据直接上传 Hub Presentation Relay；Hub 校验大小和 SHA-256，保留不超过 20 分钟，并在 MCP 调用中直接读取图片字节生成 `ImageContent`。
 
 ## 8. 取消与清理
 
