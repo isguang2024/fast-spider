@@ -56,7 +56,7 @@ var NodeCapabilities = []CapabilityDescriptor{
 	{CapabilityId: "job.control", Version: "1.0", Actions: []string{"watch", "cancel"}},
 	{CapabilityId: "git.repository", Version: "1.0", Actions: []string{"status", "diff", "stagedDiff", "log", "show", "branches", "currentBranch", "worktrees", "add", "commit", "fetch", "pull", "push", "createWorktree", "deleteWorktree"}},
 	{CapabilityId: "build.exec", Version: "1.0", Actions: []string{"run"}},
-	{CapabilityId: "artifact.store", Version: "1.0", Actions: []string{"uploadFile", "uploadJobLog"}},
+	{CapabilityId: "artifact.store", Version: "1.0", Actions: []string{"uploadFile", "uploadJobLog", "publishFile"}},
 	AgentCapability,
 }
 

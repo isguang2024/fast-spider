@@ -18,12 +18,12 @@ Fast Spider 的浏览器能力用于开发页面验证、自动化测试、结�
 - Node 可访问的公网、localhost 和私网 HTTP/HTTPS/WS/WSS 目标均可访问；是否可达由 Node 的 OS、网络和浏览器运行时决定。
 - 固定动作：`launch/close/page.open/page.navigate/page.close/pages.list/click/type/press/wait/snapshot/screenshot/events`。
 - 不公开任意 JavaScript、`evaluate`、CDP、Playwright 原始 API、Trace/HAR/视频。
-- 页面截图和 OS 截图直接上传 Hub Artifact；远程结果不返回临时路径。
+- 页面截图和 OS 截图由 Node 直接发布到内部 SaleSmartly OSS 展示通道；远程结果只返回公开资源 URL/元数据，不返回临时路径，也不写 Hub Artifact 记录。
 - Sidecar、Playwright 或受管 Chromium 缺失时，Node 不宣告 `browser.automation`。
 
 ## 3. 浏览器控制模式
 
-MVP 选择 Node 管理的隔离 Profile：专用数据目录、无用户 Cookie/扩展/历史，生命周期、下载、网络、Job 和 Artifact 均由 Node 控制。未来若支持连接现有真实浏览器，必须作为独立高风险能力，要求用户显式启用并限定浏览器实例/Profile/域名范围。
+MVP 选择 Node 管理的隔离 Profile：专用数据目录、无用户 Cookie/扩展/历史，生命周期、下载、网络和 Job 均由 Node 控制。截图临时文件只在 Node 本地存在到上传完成；未来若支持连接现有真实浏览器，必须作为独立高风险能力，要求用户显式启用并限定浏览器实例/Profile/域名范围。
 
 ## 4. Browser Manager
 
@@ -35,10 +35,10 @@ MVP 选择 Node 管理的隔离 Profile：专用数据目录、无用户 Cookie/
 | Action Executor | 固定动作与参数校验 |
 | Network Policy | scheme、解析、重定向、下载和 OS 网络条件 |
 | Event Collector | console、network error、page crash、download |
-| Artifact Bridge | screenshot、报告和受限诊断上传 |
+| Presentation Publisher | screenshot 等 AI 展示资源直传 SaleSmartly OSS，并只返回公开 URL |
 | Cleanup/Reaper | 崩溃进程、过期 Profile、临时下载清理 |
 
-对外只使用 `browserSessionId`、`browserContextId`、`pageId`、`downloadId`、`windowId`、`displayId` 和 `artifactId` 等 opaque 标识，不返回调试端口、OS 句柄、Profile 绝对路径或 CDP URL。
+对外只使用 `browserSessionId`、`browserContextId`、`pageId`、`downloadId`、`windowId`、`displayId` 等 opaque 标识；截图结果返回 `publicUrl`、MIME、文件名、大小等展示元数据，不返回调试端口、OS 句柄、Profile 绝对路径、CDP URL 或 SaleSmartly STS。
 
 ## 5. 生命周期与固定动作
 
@@ -62,7 +62,7 @@ Client 不传可执行回调；Locator 使用 role、label、text、testId 和�
 - 拒绝 `file:`、`javascript:`、危险自定义 scheme 和非浏览器动作。
 - 不开放任意 JavaScript、CDP、Playwright 原始 API 或端口转发。
 - 重定向、页面子资源和 WebSocket 只接受浏览器固定 Schema 允许的网络动作。
-- 限制页面数量、下载大小、动作超时、Job 时长、输出、临时目录和 Artifact 保留。
+- 限制页面数量、下载大小、动作超时、Job 时长、输出、临时目录和展示资源大小。
 
 这意味着浏览器明确拥有 Node 网络视角下的公网、localhost 和私网访问能力；部署者应通过 OS、防火墙、运行账户和实际网络拓扑管理风险。
 
@@ -84,7 +84,7 @@ Client 不传可执行回调；Locator 使用 role、label、text、testId 和�
 }
 ```
 
-桌面截图支持当前桌面、指定显示器、指定窗口和浏览器页面；窗口通过 `listWindows` 返回短期 `windowId` 选择，不暴露 OS 句柄。截图使用 PNG/JPEG、像素/编码大小和单 Node 并发上限。
+桌面截图支持当前桌面、指定显示器、指定窗口和浏览器页面；窗口通过 `listWindows` 返回短期 `windowId` 选择，不暴露 OS 句柄。截图使用 PNG/JPEG、像素/编码大小和单 Node 并发上限。Node 内部固定使用少量 SaleSmartly Plugin 候选申请短期 STS，按图片/文件/视频类型分别在内存缓存，最长 20 分钟；过期或失败后重新申请/切换候选，不落数据库、不进入 Node 配置 UI，也不经 Hub 下发凭据。
 
 ## 8. 取消与清理
 
@@ -95,6 +95,6 @@ Client 不传可执行回调；Locator 使用 role、label、text、testId 和�
 - Windows 处理用户会话、锁屏、UAC 安全桌面、最小化窗口、多显示器、缩放和 HDR。
 - Linux 处理 X11、Wayland Portal、无图形会话和锁屏；不通过 root 绕过 OS 安全模型。
 - 隔离 Profile 无法读取用户日常浏览器 Cookie。
-- 可打开 Node 网络可达的公网、localhost 和私网页面并返回摘要/截图 Artifact。
+- 可打开 Node 网络可达的公网、localhost 和私网页面并返回摘要；截图发布后以外部 `ResourceLink`/公开 URL 返回给 MCP 客户端用于卡片展示。
 - 危险 scheme、任意脚本、原始 CDP、端口转发和通用远控不可用。
 - 无桌面或 OS 权限不足时返回结构化错误，不尝试提权。

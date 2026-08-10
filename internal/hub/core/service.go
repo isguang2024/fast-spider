@@ -409,7 +409,7 @@ func (s *Service) CallCapability(ctx context.Context, ownerID, machineID, capabi
 
 func capabilityCallTimeout(capability, action string) time.Duration {
 	switch capability + "/" + action {
-	case "artifact.store/uploadFile", "artifact.store/uploadJobLog":
+	case "artifact.store/uploadFile", "artifact.store/uploadJobLog", "artifact.store/publishFile":
 		return 10 * time.Minute
 	case "git.repository/diff", "git.repository/stagedDiff", "git.repository/show":
 		return 5 * time.Minute

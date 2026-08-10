@@ -17,16 +17,7 @@ func (c *Client) browserControl(ctx context.Context, action string, params map[s
 		return c.browser.Execute(ctx, action, safeParams)
 	}
 	return c.browser.ExecuteScreenshot(ctx, safeParams, func(path, logicalName, contentType string) (map[string]any, error) {
-		artifact, err := c.uploadArtifactPath(ctx, "", logicalName, contentType, path)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{
-			"artifactId":  artifact.ArtifactID,
-			"sha256":      artifact.SHA256,
-			"sizeBytes":   artifact.SizeBytes,
-			"contentType": artifact.ContentType,
-		}, nil
+		return c.publishPresentationFile(ctx, path, logicalName, contentType)
 	})
 }
 

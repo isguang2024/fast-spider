@@ -226,16 +226,19 @@ func (c *Client) captureWindowArtifact(ctx context.Context, input screenshotCapt
 			return nil, ErrScreenshotTooLarge
 		}
 	}
-	artifact, err := c.uploadArtifactPath(ctx, "", filepath.Base(finalPath), contentType, finalPath)
+	published, err := c.publishPresentationFile(ctx, finalPath, filepath.Base(finalPath), contentType)
 	if err != nil {
 		return nil, err
 	}
-	c.cfg.Logger.Info("window screenshot captured", "windowId", input.WindowID, "width", config.Width, "height", config.Height, "artifactId", artifact.ArtifactID)
-	return map[string]any{
-		"target": "window", "windowId": input.WindowID, "title": window.Title,
-		"x": window.Bounds.Min.X, "y": window.Bounds.Min.Y, "width": config.Width, "height": config.Height,
-		"artifactId": artifact.ArtifactID, "sha256": artifact.SHA256, "sizeBytes": artifact.SizeBytes, "contentType": artifact.ContentType,
-	}, nil
+	c.cfg.Logger.Info("window screenshot captured", "windowId", input.WindowID, "width", config.Width, "height", config.Height)
+	published["target"] = "window"
+	published["windowId"] = input.WindowID
+	published["title"] = window.Title
+	published["x"] = window.Bounds.Min.X
+	published["y"] = window.Bounds.Min.Y
+	published["width"] = config.Width
+	published["height"] = config.Height
+	return published, nil
 }
 
 func activeDisplays() ([]image.Rectangle, error) {
@@ -335,20 +338,15 @@ func (c *Client) captureRectArtifact(ctx context.Context, target string, input s
 	if info.Size() <= 0 || info.Size() > maxDesktopScreenshotBytes {
 		return nil, ErrScreenshotTooLarge
 	}
-	artifact, err := c.uploadArtifactPath(ctx, "", filepath.Base(path), contentType, path)
+	published, err := c.publishPresentationFile(ctx, path, filepath.Base(path), contentType)
 	if err != nil {
 		return nil, err
 	}
-	c.cfg.Logger.Info("desktop screenshot captured", "target", target, "width", bounds.Dx(), "height", bounds.Dy(), "artifactId", artifact.ArtifactID)
-	return map[string]any{
-		"target":      target,
-		"x":           bounds.Min.X,
-		"y":           bounds.Min.Y,
-		"width":       bounds.Dx(),
-		"height":      bounds.Dy(),
-		"artifactId":  artifact.ArtifactID,
-		"sha256":      artifact.SHA256,
-		"sizeBytes":   artifact.SizeBytes,
-		"contentType": artifact.ContentType,
-	}, nil
+	c.cfg.Logger.Info("desktop screenshot captured", "target", target, "width", bounds.Dx(), "height", bounds.Dy())
+	published["target"] = target
+	published["x"] = bounds.Min.X
+	published["y"] = bounds.Min.Y
+	published["width"] = bounds.Dx()
+	published["height"] = bounds.Dy()
+	return published, nil
 }

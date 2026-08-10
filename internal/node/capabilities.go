@@ -116,6 +116,8 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 		result, err = c.artifactUploadFile(ctx, req.Params)
 	case "artifact.store/uploadJobLog":
 		result, err = c.artifactUploadJobLog(ctx, req.Params)
+	case "artifact.store/publishFile":
+		result, err = c.presentationPublishFile(ctx, req.Params)
 	case "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/page.close", "browser.automation/pages.list", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/wait", "browser.automation/snapshot", "browser.automation/screenshot", "browser.automation/events":
 		result, err = c.browserControl(ctx, req.Action, req.Params)
 	case "screenshot.capture/listDisplays", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/listWindows", "screenshot.capture/window":
@@ -503,6 +505,8 @@ func capabilityError(err error) *protocolv1.ProtocolError {
 		return protocolError("SCREENSHOT_UNAVAILABLE", "screenshot capture is unavailable in the current graphical session", false)
 	case errors.Is(err, ErrScreenshotTooLarge):
 		return protocolError("SCREENSHOT_TOO_LARGE", "desktop screenshot exceeds the configured resource limit", false)
+	case errors.Is(err, ErrPresentationUpload):
+		return protocolError("PRESENTATION_UPLOAD_FAILED", "failed to publish the generated resource for AI presentation", true)
 	case errors.Is(err, ErrNotRegularFile):
 		return protocolError("NOT_REGULAR_FILE", "path is not a regular file", false)
 	case errors.Is(err, ErrBinaryOrInvalidUTF8):

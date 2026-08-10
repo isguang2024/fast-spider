@@ -51,6 +51,7 @@ type Client struct {
 	writeMu        sync.Mutex
 	jobs           *JobManager
 	browser        *BrowserManager
+	publisher      *saleSmartlyPublisher
 	agent          AgentController
 	requestSem     chan struct{}
 	screenshotSem  chan struct{}
@@ -98,6 +99,7 @@ func New(cfg Config) (*Client, error) {
 		windowTokenKey: windowTokenKey(priv),
 		statePath:      filepath.Join(cfg.DataDir, "state.json"),
 		jobs:           NewJobManager(cfg.DataDir),
+		publisher:      newSaleSmartlyPublisher(),
 		requestSem:     make(chan struct{}, 8),
 		screenshotSem:  make(chan struct{}, 1),
 		agent:          cfg.Agent,

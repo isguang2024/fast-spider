@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/isguang2024/fast-spider/internal/hub/core"
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
@@ -89,13 +90,13 @@ type buildControlInput struct {
 }
 
 type artifactGetInput struct {
-	Action      string `json:"action" jsonschema:"get, uploadFile, or uploadJobLog"`
+	Action      string `json:"action" jsonschema:"get, uploadFile, uploadJobLog, or publishFile"`
 	ArtifactID  string `json:"artifactId,omitempty" jsonschema:"artifact ID for get"`
-	MachineID   string `json:"machineId,omitempty" jsonschema:"machine ID for upload actions"`
-	Path        string `json:"path,omitempty" jsonschema:"absolute Node file path for uploadFile"`
+	MachineID   string `json:"machineId,omitempty" jsonschema:"machine ID for upload/publish actions"`
+	Path        string `json:"path,omitempty" jsonschema:"absolute Node file path for uploadFile or publishFile"`
 	JobID       string `json:"jobId,omitempty" jsonschema:"terminal job ID for uploadJobLog"`
-	LogicalName string `json:"logicalName,omitempty" jsonschema:"artifact display file name"`
-	ContentType string `json:"contentType,omitempty" jsonschema:"optional MIME type for uploadFile"`
+	LogicalName string `json:"logicalName,omitempty" jsonschema:"display file name"`
+	ContentType string `json:"contentType,omitempty" jsonschema:"optional MIME type for uploadFile or publishFile"`
 }
 
 type browserLocatorInput struct {
@@ -449,12 +450,12 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
-		return nil, genericCapabilityOutput{Result: result}, nil
+		return presentationToolResult(result), genericCapabilityOutput{Result: result}, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "screenshot_take",
-		Description: "Capture a one-time desktop, display, or window image on the selected Node. Use listDisplays/listWindows for targets; results are Hub Artifacts and never local paths.",
+		Description: "Capture a one-time desktop, display, or window image on the selected Node. Use listDisplays/listWindows for targets; captured images are published as external presentation resources and never expose local paths.",
 		Annotations: toolAnnotations(false, false, false, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input screenshotTakeInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		params := map[string]any{"displayIndex": input.DisplayIndex, "windowId": input.WindowID, "format": input.Format, "quality": input.Quality}
@@ -462,7 +463,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
-		return nil, genericCapabilityOutput{Result: result}, nil
+		return presentationToolResult(result), genericCapabilityOutput{Result: result}, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -485,7 +486,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "artifact_get",
-		Description: "Get Artifact metadata/content or ask a Node to upload an absolute-path file or terminal Job log into Hub Artifact storage. Raw chunk upload remains an internal Node protocol.",
+		Description: "Get Artifact metadata/content, ask a Node to upload a file or Job log into Hub Artifact storage, or publish an absolute-path file as an external AI presentation resource without creating a Hub Artifact record.",
 		Annotations: toolAnnotations(false, false, false, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input artifactGetInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		switch input.Action {
@@ -496,6 +497,13 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 				return nil, genericCapabilityOutput{}, err
 			}
 			return nil, genericCapabilityOutput{Result: result}, nil
+		case "publishFile":
+			params := map[string]any{"path": input.Path, "logicalName": input.LogicalName, "contentType": input.ContentType}
+			result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "artifact.store", input.Action, params)
+			if err != nil {
+				return nil, genericCapabilityOutput{}, err
+			}
+			return presentationToolResult(result), genericCapabilityOutput{Result: result}, nil
 		case "get":
 			artifact, err := s.service.GetArtifact(ctx, ownerID, input.ArtifactID)
 			if err != nil {
@@ -523,6 +531,45 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	})
 
 	return server
+}
+
+func presentationToolResult(result map[string]any) *mcp.CallToolResult {
+	publicURL, _ := result["publicUrl"].(string)
+	publicURL = strings.TrimSpace(publicURL)
+	if publicURL == "" {
+		return nil
+	}
+	fileName, _ := result["fileName"].(string)
+	fileName = strings.TrimSpace(fileName)
+	if fileName == "" {
+		fileName = "Fast Spider resource"
+	}
+	contentType, _ := result["contentType"].(string)
+	contentType = strings.TrimSpace(contentType)
+	link := &mcp.ResourceLink{
+		URI: publicURL, Name: fileName, Title: fileName,
+		Description: "Fast Spider generated presentation resource", MIMEType: contentType,
+	}
+	if size, ok := numberAsInt64(result["sizeBytes"]); ok && size > 0 {
+		link.Size = &size
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{link}}
+}
+
+func numberAsInt64(value any) (int64, bool) {
+	switch current := value.(type) {
+	case int64:
+		return current, true
+	case int:
+		return int64(current), true
+	case float64:
+		return int64(current), current == float64(int64(current))
+	case json.Number:
+		parsed, err := current.Int64()
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
 }
 
 func toolAnnotations(readOnly, destructive, idempotent, openWorld bool) *mcp.ToolAnnotations {
