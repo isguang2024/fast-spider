@@ -76,7 +76,7 @@ func (m *BrowserManager) executeLocked(ctx context.Context, action string, param
 		return m.launch(ctx, params)
 	}
 	switch action {
-	case "close", "page.open", "page.navigate", "page.close", "pages.list", "click", "type", "press", "wait", "snapshot", "screenshot", "events":
+	case "close", "page.open", "page.navigate", "page.close", "pages.list", "click", "type", "press", "wait", "batch", "snapshot", "screenshot", "events":
 		return m.executeSessionAction(ctx, action, params)
 	default:
 		return nil, &BrowserActionError{Code: "INVALID_REQUEST", Message: "unsupported browser action", Retryable: false}
@@ -115,7 +115,6 @@ func (m *BrowserManager) launch(ctx context.Context, params map[string]any) (map
 		launchParams["viewport"] = viewport
 	}
 	launchParams["screenshotDir"] = screenshotDir
-	launchParams["allowPrivateNetwork"] = true
 
 	result, err := m.sidecar.Call(ctx, "launch", launchParams)
 	if err != nil {

@@ -131,22 +131,66 @@ document.querySelector('#submit').addEventListener('click',()=>{status.textConte
 		}
 		return params
 	}
-	if _, err := call(ctx, "type", pageParams(map[string]any{"locator": map[string]any{"css": "#name"}, "text": "Fast Spider"})); err != nil {
-		t.Fatalf("type: %v", err)
+	findRef := func(snapshot map[string]any, role, name string) string {
+		refs, _ := snapshot["refs"].([]any)
+		for _, raw := range refs {
+			item, _ := raw.(map[string]any)
+			if item["role"] == role && item["name"] == name {
+				ref, _ := item["ref"].(string)
+				return ref
+			}
+		}
+		return ""
 	}
-	if _, err := call(ctx, "click", pageParams(map[string]any{"locator": map[string]any{"css": "#submit"}})); err != nil {
-		t.Fatalf("click: %v", err)
-	}
-	if _, err := call(ctx, "wait", pageParams(map[string]any{"locator": map[string]any{"text": "clicked: Fast Spider", "exact": true}, "state": "visible"})); err != nil {
-		t.Fatalf("wait: %v", err)
-	}
-	snapshot, err := call(ctx, "snapshot", pageParams(nil))
+
+	initialSnapshot, err := call(ctx, "snapshot", pageParams(nil))
 	if err != nil {
-		t.Fatalf("snapshot: %v", err)
+		t.Fatalf("initial snapshot: %v", err)
 	}
-	ariaSnapshot, _ := snapshot["ariaSnapshot"].(string)
+	agentSnapshot, _ := initialSnapshot["agentSnapshot"].(string)
+	nameRef := findRef(initialSnapshot, "textbox", "Name")
+	submitRef := findRef(initialSnapshot, "button", "Apply")
+	if nameRef == "" || submitRef == "" || !strings.Contains(agentSnapshot, "[ref=") {
+		t.Fatalf("snapshot refs missing: agent=%q refs=%+v", agentSnapshot, initialSnapshot["refs"])
+	}
+
+	batchResult, err := call(ctx, "batch", pageParams(map[string]any{
+		"steps": []any{
+			map[string]any{"action": "type", "ref": nameRef, "text": "Fast Spider"},
+			map[string]any{"action": "click", "ref": submitRef},
+		},
+		"snapshotAfter": true,
+	}))
+	if err != nil {
+		t.Fatalf("ref batch: %v", err)
+	}
+	if completed, _ := batchResult["completedSteps"].(float64); completed != 2 {
+		t.Fatalf("batch completedSteps=%v", batchResult["completedSteps"])
+	}
+	postSnapshot, _ := batchResult["snapshot"].(map[string]any)
+	ariaSnapshot, _ := postSnapshot["ariaSnapshot"].(string)
 	if !strings.Contains(ariaSnapshot, "Fast Spider") || !strings.Contains(ariaSnapshot, "clicked") {
-		t.Fatalf("snapshot=%q", ariaSnapshot)
+		t.Fatalf("post batch snapshot=%q", ariaSnapshot)
+	}
+
+	staleStarted := time.Now()
+	_, staleErr := call(ctx, "click", pageParams(map[string]any{"ref": submitRef, "timeoutMs": 10000}))
+	var browserErr *BrowserActionError
+	if !errors.As(staleErr, &browserErr) || browserErr.Code != "BROWSER_REF_STALE" {
+		t.Fatalf("old ref error=%v", staleErr)
+	}
+	if elapsed := time.Since(staleStarted); elapsed > 2*time.Second {
+		t.Fatalf("stale ref did not fail fast: %v", elapsed)
+	}
+
+	if _, err := call(ctx, "wait", pageParams(map[string]any{"locator": map[string]any{"text": "clicked: Fast Spider", "exact": true}, "state": "visible"})); err != nil {
+		t.Fatalf("fallback locator wait: %v", err)
+	}
+
+	_, schemeErr := call(ctx, "page.navigate", pageParams(map[string]any{"url": "file:///fast-spider-browser-denied"}))
+	browserErr = nil
+	if !errors.As(schemeErr, &browserErr) || browserErr.Code != "BROWSER_NETWORK_DENIED" {
+		t.Fatalf("dangerous navigation scheme error=%v", schemeErr)
 	}
 
 	var consumedPath string

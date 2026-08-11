@@ -146,7 +146,7 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 		"working.context/plan.init", "working.context/plan.get", "working.context/plan.list", "working.context/plan.sync",
 		"working.context/task.update", "working.context/markdown.list", "working.context/markdown.read", "working.context/markdown.append", "working.context/progress.watch":
 		result, err = c.workingContextControl(ctx, req.Action, req.Params)
-	case "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/page.close", "browser.automation/pages.list", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/wait", "browser.automation/snapshot", "browser.automation/screenshot", "browser.automation/events":
+	case "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/page.close", "browser.automation/pages.list", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/wait", "browser.automation/batch", "browser.automation/snapshot", "browser.automation/screenshot", "browser.automation/events":
 		result, err = c.browserControl(ctx, req.Action, req.Params)
 	case "screenshot.capture/listDisplays", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/listWindows", "screenshot.capture/window":
 		result, err = c.screenshotCapture(ctx, req.Action, req.Params)

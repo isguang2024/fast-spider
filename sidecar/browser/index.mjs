@@ -1,7 +1,5 @@
 import crypto from 'node:crypto';
-import dns from 'node:dns/promises';
 import fs from 'node:fs/promises';
-import net from 'node:net';
 import path from 'node:path';
 import process from 'node:process';
 import readline from 'node:readline';
@@ -16,25 +14,8 @@ const MAX_SNAPSHOT_BYTES = 64 * 1024;
 const MAX_SCREENSHOT_BYTES = 8 * 1024 * 1024;
 const MAX_SCREENSHOT_PIXELS = 20_000_000;
 const MAX_ACTION_TIMEOUT_MS = 30_000;
-
-const dangerousIPs = new net.BlockList();
-dangerousIPs.addSubnet('0.0.0.0', 8, 'ipv4');
-dangerousIPs.addSubnet('169.254.0.0', 16, 'ipv4');
-dangerousIPs.addSubnet('224.0.0.0', 4, 'ipv4');
-dangerousIPs.addSubnet('240.0.0.0', 4, 'ipv4');
-dangerousIPs.addAddress('100.100.100.200', 'ipv4');
-dangerousIPs.addAddress('::', 'ipv6');
-dangerousIPs.addSubnet('fe80::', 10, 'ipv6');
-dangerousIPs.addSubnet('ff00::', 8, 'ipv6');
-
-const privateIPs = new net.BlockList();
-privateIPs.addSubnet('127.0.0.0', 8, 'ipv4');
-privateIPs.addSubnet('10.0.0.0', 8, 'ipv4');
-privateIPs.addSubnet('172.16.0.0', 12, 'ipv4');
-privateIPs.addSubnet('192.168.0.0', 16, 'ipv4');
-privateIPs.addSubnet('100.64.0.0', 10, 'ipv4');
-privateIPs.addAddress('::1', 'ipv6');
-privateIPs.addSubnet('fc00::', 7, 'ipv6');
+const MAX_ELEMENT_REFS = 512;
+const MAX_BATCH_STEPS = 32;
 
 const sessions = new Map();
 
@@ -104,86 +85,31 @@ function waitUntilValue(params) {
   return value;
 }
 
-function normalizedOrigin(rawURL) {
+function navigationURL(rawURL) {
   let parsed;
   try {
     parsed = new URL(rawURL);
   } catch {
-    throw new SidecarError('BROWSER_NETWORK_DENIED', 'request URL is invalid');
+    throw new SidecarError('BROWSER_NETWORK_DENIED', 'navigation URL is invalid');
   }
-  if (!['http:', 'https:', 'ws:', 'wss:'].includes(parsed.protocol)) {
-    throw new SidecarError('BROWSER_NETWORK_DENIED', 'request scheme is not allowed');
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new SidecarError('BROWSER_NETWORK_DENIED', 'navigation scheme is not allowed');
   }
-  const secure = parsed.protocol === 'https:' || parsed.protocol === 'wss:';
-  const policyProtocol = secure ? 'https:' : 'http:';
-  const port = parsed.port || (secure ? '443' : '80');
-  let host = parsed.hostname.toLowerCase().replace(/\.$/, '');
-  if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
-  const bracketed = host.includes(':') ? `[${host}]` : host;
-  return { origin: `${policyProtocol}//${bracketed}:${port}`, host };
-}
-
-async function resolvedIPs(host) {
-  try {
-    const records = await dns.lookup(host, { all: true, verbatim: true });
-    const values = [...new Set(records.map(record => record.address))].sort();
-    if (values.length === 0) throw new Error('no addresses');
-    return values;
-  } catch (error) {
-    throw new SidecarError('BROWSER_DNS_FAILED', `DNS resolution failed: ${boundedText(error.message, 160)}`, true);
-  }
-}
-
-function sameSet(a, b) {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
-  const left = [...a].sort();
-  const right = [...b].sort();
-  return left.every((value, index) => value === right[index]);
-}
-
-function resolverRulesForOrigins(allowedOrigins) {
-  const rules = new Map();
-  for (const rule of allowedOrigins) {
-    const parsed = new URL(rule.origin);
-    let host = parsed.hostname.toLowerCase().replace(/\.$/, '');
-    if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
-    if (net.isIP(host)) continue;
-    const pinned = rule.pinnedIps.find(ip => net.isIP(ip) === 4) || rule.pinnedIps.find(ip => net.isIP(ip) === 6);
-    if (!pinned) throw new SidecarError('INVALID_REQUEST', `origin ${rule.origin} has no valid pinned IP`);
-    const replacement = net.isIP(pinned) === 6 ? `[${pinned}]` : pinned;
-    const value = `MAP ${host} ${replacement}`;
-    const existing = rules.get(host);
-    if (existing && existing !== value) {
-      throw new SidecarError('BROWSER_DNS_CHANGED', `authorized origins for ${host} have inconsistent pinned addresses`);
-    }
-    rules.set(host, value);
-  }
-  return [...rules.values()];
-}
-
-function blockListContains(list, address) {
-  const family = net.isIPv4(address) ? 'ipv4' : net.isIPv6(address) ? 'ipv6' : '';
-  return family === '' || list.check(address, family);
-}
-
-async function assertRequestAllowed(session, rawURL) {
-  const { origin, host } = normalizedOrigin(rawURL);
-  const current = await resolvedIPs(host);
-  if (current.some(address => blockListContains(dangerousIPs, address))) {
-    throw new SidecarError('BROWSER_NETWORK_DENIED', `origin ${origin} resolves to a blocked address`);
-  }
-  if (!current.some(address => blockListContains(privateIPs, address)) || session.allowPrivateNetwork) return;
-  const rule = session.allowedOrigins.find(item => item.origin === origin);
-  if (!rule) throw new SidecarError('BROWSER_NETWORK_DENIED', `local/private origin ${origin} is not authorized`);
-  if (!sameSet(current, rule.pinnedIps)) {
-    throw new SidecarError('BROWSER_DNS_CHANGED', `origin ${origin} no longer resolves to its pinned addresses`);
-  }
+  return parsed.toString();
 }
 
 function pushEvent(session, type, data = {}) {
   session.eventSequence += 1;
   session.events.push({ sequence: session.eventSequence, type, timestamp: new Date().toISOString(), ...data });
   if (session.events.length > MAX_EVENTS) session.events.splice(0, session.events.length - MAX_EVENTS);
+}
+
+function clearPageRefs(session, pageId) {
+  for (const [ref, entry] of session.refs) {
+    if (entry.pageId !== pageId) continue;
+    session.refs.delete(ref);
+    void entry.handle.dispose().catch(() => {});
+  }
 }
 
 function attachPage(session, page, preferredId = '') {
@@ -211,7 +137,13 @@ function attachPage(session, page, preferredId = '') {
       error: boundedText(request.failure()?.errorText || 'request failed', 256),
     });
   });
-  page.on('close', () => session.pages.delete(pageId));
+  page.on('framenavigated', frame => {
+    if (frame === page.mainFrame()) clearPageRefs(session, pageId);
+  });
+  page.on('close', () => {
+    clearPageRefs(session, pageId);
+    session.pages.delete(pageId);
+  });
   return pageId;
 }
 
@@ -228,6 +160,102 @@ function getPage(session, params) {
   const page = session.pages.get(pageId);
   if (!page) throw new SidecarError('PAGE_NOT_FOUND', 'browser page was not found');
   return { pageId, page };
+}
+
+function staleRef(ref) {
+  return new SidecarError('BROWSER_REF_STALE', `element ref ${ref} is stale; take a new snapshot`);
+}
+
+async function refEntryFor(session, pageId, rawRef) {
+  const ref = requireString(rawRef, 'ref', 128);
+  const entry = session.refs.get(ref);
+  if (!entry || entry.pageId !== pageId) throw staleRef(ref);
+  let connected = false;
+  try {
+    connected = await entry.handle.evaluate(element => Boolean(element?.isConnected));
+  } catch {}
+  if (!connected) {
+    session.refs.delete(ref);
+    void entry.handle.dispose().catch(() => {});
+    throw staleRef(ref);
+  }
+  return { ref, handle: entry.handle };
+}
+
+function inferInteractiveMetadata(element) {
+  const tag = element.tagName.toLowerCase();
+  const explicitRole = (element.getAttribute('role') || '').trim();
+  const inputType = tag === 'input' ? (element.getAttribute('type') || 'text').toLowerCase() : '';
+  let role = explicitRole;
+  if (!role) {
+    if (tag === 'a' && element.hasAttribute('href')) role = 'link';
+    else if (tag === 'button' || (tag === 'input' && ['button', 'submit', 'reset', 'image'].includes(inputType))) role = 'button';
+    else if (tag === 'input' && inputType === 'checkbox') role = 'checkbox';
+    else if (tag === 'input' && inputType === 'radio') role = 'radio';
+    else if (tag === 'input' && inputType === 'range') role = 'slider';
+    else if (tag === 'input' && inputType === 'number') role = 'spinbutton';
+    else if (tag === 'input' || tag === 'textarea' || element.isContentEditable) role = 'textbox';
+    else if (tag === 'select') role = element.multiple ? 'listbox' : 'combobox';
+    else if (tag === 'summary') role = 'button';
+    else role = tag;
+  }
+  const labelText = element.labels ? Array.from(element.labels).map(label => label.innerText || label.textContent || '').join(' ').trim() : '';
+  const ariaLabel = (element.getAttribute('aria-label') || '').trim();
+  const alt = (element.getAttribute('alt') || '').trim();
+  const placeholder = (element.getAttribute('placeholder') || '').trim();
+  const title = (element.getAttribute('title') || '').trim();
+  const ownText = (element.innerText || element.textContent || '').trim();
+  const name = ariaLabel || labelText || alt || placeholder || title || ownText;
+  return {
+    role,
+    name,
+    tag,
+    inputType,
+    disabled: element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true',
+    checked: typeof element.checked === 'boolean' ? element.checked : undefined,
+  };
+}
+
+async function snapshotRefs(session, pageId, page) {
+  clearPageRefs(session, pageId);
+  const locator = page.locator('a[href],button,input,textarea,select,summary,[role],[contenteditable="true"],[tabindex]:not([tabindex="-1"])');
+  const total = await locator.count();
+  const count = Math.min(total, MAX_ELEMENT_REFS);
+  const refs = [];
+  for (let index = 0; index < count; index += 1) {
+    const candidate = locator.nth(index);
+    if (!(await candidate.isVisible().catch(() => false))) continue;
+    const handle = await candidate.elementHandle({ timeout: 1000 }).catch(() => null);
+    if (!handle) continue;
+    let metadata;
+    try {
+      metadata = await handle.evaluate(inferInteractiveMetadata);
+    } catch {
+      await handle.dispose().catch(() => {});
+      continue;
+    }
+    session.refSequence += 1;
+    const ref = `e_${session.refSequence.toString(36)}`;
+    session.refs.set(ref, { pageId, handle });
+    refs.push({
+      ref,
+      role: boundedText(metadata.role, 64),
+      name: boundedText(metadata.name, 256),
+      tag: boundedText(metadata.tag, 32),
+      inputType: boundedText(metadata.inputType, 32),
+      disabled: Boolean(metadata.disabled),
+      ...(typeof metadata.checked === 'boolean' ? { checked: metadata.checked } : {}),
+    });
+  }
+  return { refs, truncated: total > MAX_ELEMENT_REFS };
+}
+
+function agentSnapshotText(refs) {
+  return refs.map(item => {
+    const escapedName = item.name ? ` "${item.name.replaceAll('"', '\\"')}"` : '';
+    const flags = `${item.disabled ? ' [disabled]' : ''}${typeof item.checked === 'boolean' ? ` [checked=${item.checked}]` : ''}`;
+    return `- ${item.role || item.tag}${escapedName} [ref=${item.ref}]${flags}`;
+  }).join('\n');
 }
 
 function locatorFor(page, spec) {
@@ -262,27 +290,7 @@ async function launch(params) {
   const browserSessionId = requireString(params?.browserSessionId, 'browserSessionId', 128);
   if (sessions.has(browserSessionId)) throw new SidecarError('CONFLICT', 'browser session already exists');
   const engine = params?.engine || 'chromium';
-  if (engine !== 'chromium') throw new SidecarError('BROWSER_ENGINE_UNAVAILABLE', 'Phase 5 MVP currently supports chromium only');
-  if (params?.allowedOrigins !== undefined && !Array.isArray(params.allowedOrigins)) {
-    throw new SidecarError('INVALID_REQUEST', 'allowedOrigins must be an array');
-  }
-  if ((params?.allowedOrigins?.length || 0) > 32) {
-    throw new SidecarError('INVALID_REQUEST', 'allowed origin limit exceeded');
-  }
-  const allowPrivateNetwork = params?.allowPrivateNetwork === true;
-  const allowedOrigins = (params?.allowedOrigins || []).map(item => ({
-    origin: requireString(item.origin, 'allowedOrigin.origin', 512),
-    pinnedIps: Array.isArray(item.pinnedIps) ? item.pinnedIps.map(ip => requireString(ip, 'allowedOrigin.pinnedIp', 128)) : [],
-  }));
-  if (allowedOrigins.some(item => item.pinnedIps.length < 1 || item.pinnedIps.some(ip => net.isIP(ip) === 0))) {
-    throw new SidecarError('INVALID_REQUEST', 'allowed origin policy is invalid');
-  }
-  for (const item of allowedOrigins) {
-    if (normalizedOrigin(item.origin).origin !== item.origin) {
-      throw new SidecarError('INVALID_REQUEST', 'allowed origin must use canonical form');
-    }
-  }
-  const resolverRules = resolverRulesForOrigins(allowedOrigins);
+  if (engine !== 'chromium') throw new SidecarError('BROWSER_ENGINE_UNAVAILABLE', 'managed browser currently supports chromium only');
   const width = Number(params?.viewport?.width ?? 1280);
   const height = Number(params?.viewport?.height ?? 720);
   if (!Number.isInteger(width) || !Number.isInteger(height) || width < 320 || height < 240 || width > 2560 || height > 1600) {
@@ -290,11 +298,9 @@ async function launch(params) {
   }
   const screenshotDir = path.resolve(requireString(params?.screenshotDir, 'screenshotDir', 2048));
   await fs.mkdir(screenshotDir, { recursive: true });
-  const browserArgs = ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp'];
-  if (resolverRules.length) browserArgs.push(`--host-resolver-rules=${resolverRules.join(',')}`);
   const browser = await chromium.launch({
     headless: params?.headless !== false,
-    args: browserArgs,
+    args: ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],
   });
   const context = await browser.newContext({
     viewport: { width, height },
@@ -315,32 +321,14 @@ async function launch(params) {
     browser,
     context,
     pages: new Map(),
-    allowedOrigins,
-    allowPrivateNetwork,
+    refs: new Map(),
+    refSequence: 0,
     screenshotDir,
     events: [],
     eventSequence: 0,
     lastUsedAt: Date.now(),
   };
   try {
-    await context.route('**/*', async route => {
-      try {
-        await assertRequestAllowed(session, route.request().url());
-        await route.continue();
-      } catch (error) {
-        pushEvent(session, 'network_blocked', { url: safeEventURL(route.request().url()), reason: boundedText(error.message, 256) });
-        await route.abort('blockedbyclient');
-      }
-    });
-    await context.routeWebSocket('**/*', async ws => {
-      try {
-        await assertRequestAllowed(session, ws.url());
-        ws.connectToServer();
-      } catch (error) {
-        pushEvent(session, 'websocket_blocked', { url: safeEventURL(ws.url()), reason: boundedText(error.message, 256) });
-        await ws.close({ code: 1008, reason: 'blocked by Fast Spider network policy' });
-      }
-    });
     context.on('page', page => attachPage(session, page));
     sessions.set(browserSessionId, session);
     return { browserSessionId, engine: 'chromium', state: 'ready', viewport: { width, height } };
@@ -363,8 +351,7 @@ async function closeSession(params) {
 async function pageOpen(params) {
   const session = getSession(params);
   if (session.pages.size >= MAX_PAGES) throw new SidecarError('BROWSER_LIMIT', 'page limit reached');
-  const url = requireString(params?.url, 'url', 4096);
-  await assertRequestAllowed(session, url);
+  const url = navigationURL(requireString(params?.url, 'url', 4096));
   const page = await session.context.newPage();
   const pageId = attachPage(session, page);
   if (!pageId) throw new SidecarError('BROWSER_LIMIT', 'page limit reached');
@@ -380,8 +367,7 @@ async function pageOpen(params) {
 async function pageNavigate(params) {
   const session = getSession(params);
   const { pageId, page } = getPage(session, params);
-  const url = requireString(params?.url, 'url', 4096);
-  await assertRequestAllowed(session, url);
+  const url = navigationURL(requireString(params?.url, 'url', 4096));
   await page.goto(url, { waitUntil: waitUntilValue(params), timeout: actionTimeout(params) });
   return { pageId, url: page.url(), title: boundedText(await page.title(), 512) };
 }
@@ -403,11 +389,75 @@ async function pagesList(params) {
   return { browserSessionId: session.id, pages };
 }
 
+async function runRefAction(action, session, pageId, page, params, timeout) {
+  const ref = requireString(params?.ref, 'ref', 128);
+  const state = params?.state || 'visible';
+  if (action === 'wait' && !['attached', 'detached', 'visible', 'hidden'].includes(state)) {
+    throw new SidecarError('INVALID_REQUEST', 'wait state is invalid');
+  }
+  if (action === 'wait' && state === 'detached') {
+    const entry = session.refs.get(ref);
+    if (!entry || entry.pageId !== pageId) throw staleRef(ref);
+    const deadline = Date.now() + timeout;
+    while (Date.now() <= deadline) {
+      let connected = false;
+      try {
+        connected = await entry.handle.evaluate(element => Boolean(element?.isConnected));
+      } catch {
+        connected = false;
+      }
+      if (!connected) {
+        session.refs.delete(ref);
+        void entry.handle.dispose().catch(() => {});
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new SidecarError('BROWSER_TIMEOUT', `wait for element ref ${ref} to detach timed out`, true);
+  }
+
+  const entry = await refEntryFor(session, pageId, ref);
+  try {
+    switch (action) {
+      case 'click':
+        await entry.handle.click({ timeout });
+        break;
+      case 'type':
+        await entry.handle.fill(requireString(params?.text, 'text', 16 * 1024), { timeout });
+        break;
+      case 'press':
+        await entry.handle.press(requireString(params?.key, 'key', 64), { timeout });
+        break;
+      case 'wait':
+        if (state === 'attached') return;
+        await entry.handle.waitForElementState(state, { timeout });
+        break;
+      default:
+        throw new SidecarError('INVALID_REQUEST', 'unsupported ref action');
+    }
+  } catch (error) {
+    try {
+      await refEntryFor(session, pageId, ref);
+    } catch (refError) {
+      if (refError instanceof SidecarError && refError.code === 'BROWSER_REF_STALE') throw refError;
+    }
+    throw error;
+  }
+}
+
 async function locatorAction(action, params) {
   const session = getSession(params);
   const { pageId, page } = getPage(session, params);
-  const locator = locatorFor(page, params.locator);
+  const hasRef = typeof params?.ref === 'string' && params.ref.length > 0;
+  const hasLocator = Boolean(params?.locator && typeof params.locator === 'object' && !Array.isArray(params.locator));
+  if (hasRef === hasLocator) throw new SidecarError('INVALID_REQUEST', 'provide exactly one of ref or locator');
   const timeout = actionTimeout(params);
+  if (hasRef) {
+    await runRefAction(action, session, pageId, page, params, timeout);
+    return { pageId, url: page.url(), ref: params.ref };
+  }
+
+  const locator = locatorFor(page, params.locator);
   switch (action) {
     case 'click':
       await locator.click({ timeout });
@@ -435,14 +485,59 @@ async function snapshot(params) {
   const { pageId, page } = getPage(session, params);
   const timeout = actionTimeout(params);
   const aria = await page.locator('body').ariaSnapshot({ timeout });
+  const refResult = await snapshotRefs(session, pageId, page);
   const bounded = Buffer.byteLength(aria, 'utf8') <= MAX_SNAPSHOT_BYTES ? aria : `${Buffer.from(aria).subarray(0, MAX_SNAPSHOT_BYTES).toString('utf8')}\n# [truncated]`;
   return {
     pageId,
     url: page.url(),
     title: boundedText(await page.title(), 512),
     ariaSnapshot: bounded,
+    agentSnapshot: agentSnapshotText(refResult.refs),
+    refs: refResult.refs,
+    refCount: refResult.refs.length,
+    refsTruncated: refResult.truncated,
     truncated: bounded !== aria,
   };
+}
+
+async function batch(params) {
+  const session = getSession(params);
+  const { pageId, page } = getPage(session, params);
+  const steps = params?.steps;
+  if (!Array.isArray(steps) || steps.length < 1 || steps.length > MAX_BATCH_STEPS) {
+    throw new SidecarError('INVALID_REQUEST', `batch steps must contain 1-${MAX_BATCH_STEPS} actions`);
+  }
+  let completedSteps = 0;
+  for (let index = 0; index < steps.length; index += 1) {
+    const step = steps[index];
+    if (!step || typeof step !== 'object' || Array.isArray(step)) throw new SidecarError('INVALID_REQUEST', `batch step ${index + 1} is invalid`);
+    const action = requireString(step.action, `steps[${index}].action`, 32);
+    if (!['click', 'type', 'press', 'wait'].includes(action)) throw new SidecarError('INVALID_REQUEST', `batch step ${index + 1} action is not allowed`);
+    const stepParams = {
+      browserSessionId: session.id,
+      pageId,
+      ...(typeof step.ref === 'string' ? { ref: step.ref } : {}),
+      ...(step.locator && typeof step.locator === 'object' && !Array.isArray(step.locator) ? { locator: step.locator } : {}),
+      ...(typeof step.text === 'string' ? { text: step.text } : {}),
+      ...(typeof step.key === 'string' ? { key: step.key } : {}),
+      ...(typeof step.state === 'string' ? { state: step.state } : {}),
+      timeoutMs: Number.isFinite(Number(step.timeoutMs)) ? Number(step.timeoutMs) : actionTimeout(params),
+    };
+    try {
+      await locatorAction(action, stepParams);
+      completedSteps += 1;
+    } catch (error) {
+      if (error instanceof SidecarError) {
+        throw new SidecarError(error.code, `batch step ${index + 1} failed: ${error.message}`, error.retryable);
+      }
+      throw error;
+    }
+  }
+  const result = { pageId, url: page.url(), completedSteps };
+  if (params?.snapshotAfter === true) {
+    result.snapshot = await snapshot({ browserSessionId: session.id, pageId, timeoutMs: actionTimeout(params) });
+  }
+  return result;
 }
 
 async function screenshot(params) {
@@ -498,6 +593,7 @@ async function dispatch(action, params = {}) {
     case 'type': return locatorAction('type', params);
     case 'press': return locatorAction('press', params);
     case 'wait': return locatorAction('wait', params);
+    case 'batch': return batch(params);
     case 'snapshot': return snapshot(params);
     case 'screenshot': return screenshot(params);
     case 'events': return events(params);

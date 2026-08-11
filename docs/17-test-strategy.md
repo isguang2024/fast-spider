@@ -1,4 +1,4 @@
-# 测试策略（0.4.6）
+# 测试策略（0.4.7）
 
 发布门禁必须验证新的 Machine 边界，而不是旧目录授权模型。
 
@@ -13,7 +13,7 @@
 7. job_watch/job_cancel 只依赖 jobId。
 8. git_control 使用绝对 repositoryPath，覆盖读写和受控网络动作。
 9. Artifact 上传绝对路径文件和 Job 日志；数据库不再有目录授权关联字段。
-10. Browser 在隔离 Profile 中可访问 Node 网络可达的公网/localhost/私网；危险地址仍拒绝。
+10. Browser Automation 1.1 在隔离 Profile 中可访问 Node 网络可达的公网/localhost/私网，不做逐请求 DNS/IP 审查；`snapshot` 必须返回可操作 ref，`batch` 必须支持 1-32 个固定动作与 `snapshotAfter`，旧 ref 必须快速返回 `BROWSER_REF_STALE`，显式导航的非 HTTP(S) 危险 scheme 仍拒绝。
 11. Screenshot window token 不依赖目录授权对象。
 12. `routing.status` 真实只读 CC Switch DB：三类 app route、current Provider、takeover/live takeover、model mapping、selectionConsistent、sanitizer 和 request-log Session correlation 均通过。
 13. `providers.list` 经 Local Bridge 同时发现 Codex + Claude Code，并验证每个 Harness 的 `supportedActions`、route 与 provider-specific capabilities。
@@ -49,7 +49,7 @@
 - 0.4.4 Windows legacy install artifacts cleanup 专项
 - 0.4.5 release backup prune 专项
 - 0.4.6 release staging prune 专项
-- real Browser E2E
+- real Browser E2E（snapshot refs、ref batch、snapshotAfter、stale-ref 快速失败、危险 scheme 拒绝）
 - real CC Switch routing read-only E2E
 - real Claude Code CLI E2E
 - real Codex E2E（model/provider capabilities、skills/hooks/permissions/plugins/MCP status、Goal、`outputSchema`、Session/Turn、app-server restart auto-resume）

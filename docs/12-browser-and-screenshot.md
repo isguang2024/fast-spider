@@ -4,7 +4,7 @@
 
 Fast Spider 的浏览器能力用于开发页面验证、自动化测试、结构化页面读取和一次性截图，不用于通用远程桌面。
 
-支持 Node 启动/关闭隔离浏览器、页面导航、列表、点击、输入、按键、等待、可访问性摘要、受限动作、页面截图、下载、控制台日志、网络错误以及桌面/显示器/窗口截图。
+支持 Node 启动/关闭隔离浏览器、页面导航、列表、可访问性快照、短期元素 ref、点击、输入、按键、等待、受限批量动作、页面截图、下载、控制台日志、网络错误以及桌面/显示器/窗口截图。
 
 不支持持续桌面视频/音频、通用鼠标键盘远控、默认接管用户现有浏览器登录态或向 Client 暴露任意 CDP 命令。
 
@@ -16,7 +16,7 @@ Fast Spider 的浏览器能力用于开发页面验证、自动化测试、结�
 - 每个 Node 最多一个受管 Browser Session、最多 8 个页面；Session 空闲 10 分钟自动关闭。
 - Browser 的远程边界是 Machine；不叠加目录授权或 Origin 白名单。
 - Node 可访问的公网、localhost 和私网 HTTP/HTTPS/WS/WSS 目标均可访问；是否可达由 Node 的 OS、网络和浏览器运行时决定。
-- 固定动作：`launch/close/page.open/page.navigate/page.close/pages.list/click/type/press/wait/snapshot/screenshot/events`。
+- `browser.automation` 1.1 固定动作：`launch/close/page.open/page.navigate/page.close/pages.list/click/type/press/wait/batch/snapshot/screenshot/events`。
 - 不公开任意 JavaScript、`evaluate`、CDP、Playwright 原始 API、Trace/HAR/视频。
 - 页面截图和 OS 截图由 Node 直接上传到 Hub Temporary Presentation Relay；Relay 不写数据库，系统临时目录最多保留 20 分钟，MCP 直接返回图片内容与短期下载资源。
 - Sidecar、Playwright 或受管 Chromium 缺失时，Node 不宣告 `browser.automation`。
@@ -33,7 +33,7 @@ MVP 选择 Node 管理的隔离 Profile：专用数据目录、无用户 Cookie/
 | Profile Manager | 隔离 Profile、Context、配额和清理 |
 | Browser Session Manager | browserSessionId、页面和生命周期 |
 | Action Executor | 固定动作与参数校验 |
-| Network Policy | scheme、解析、重定向、下载和 OS 网络条件 |
+| Network Policy | 主动导航 scheme、下载和 OS 网络条件；不做逐请求 DNS/pinned-IP 审查 |
 | Event Collector | console、network error、page crash、download |
 | Presentation Relay | screenshot 等 AI 展示资源由 Node 直传 Hub 临时目录，MCP 返回 `ImageContent` 与短期 `ResourceLink` |
 | Cleanup/Reaper | 崩溃进程、过期 Profile、临时下载清理 |
@@ -48,20 +48,21 @@ Session 状态为 `created → launching → ready → running_action → closin
 
 - 生命周期：`launch`、`close`、`pages.list`。
 - 页面：`page.open`、`page.navigate`、`page.close`、`snapshot`、`screenshot`。
-- 交互：`click`、`type`、`press`、`wait`。
+- 交互：`click`、`type`、`press`、`wait`；优先使用 `snapshot` 返回的短期 `ref`。
+- 批量：`batch` 在 Node 内连续执行 1-32 个 `click/type/press/wait`，可用 `snapshotAfter=true` 一次返回新快照，减少 MCP 往返。
 - 诊断：`events`，返回有界 console/network/download 摘要。
 
-Client 不传可执行回调；Locator 使用 role、label、text、testId 和受限 CSS/XPath。
+`snapshot` 同时返回完整 `ariaSnapshot`、面向 Agent 的 `agentSnapshot` 和结构化 `refs`。每次新 snapshot 会轮换当前页面 ref；页面导航或元素脱离 DOM 后旧 ref 立即返回 `BROWSER_REF_STALE`，不等待普通 Locator 超时。Client 不传可执行回调；当没有可用 ref 时，Locator 仍可使用 role、label、text、testId 和受限纯 CSS，不支持 XPath。
 
 ## 6. 网络策略
 
-浏览器允许 Node 可访问的公网、localhost 和私网 HTTP/HTTPS/WS/WSS。Fast Spider 不维护私网 Origin 白名单、TTL、pinned IP 或“先加入地址再访问”的目录式授权流程。
+浏览器允许 Node 可访问的公网、localhost 和私网 HTTP/HTTPS/WS/WSS。Fast Spider 不维护私网 Origin 白名单、TTL、pinned IP 或“先加入地址再访问”的目录式授权流程，也不再为每个页面子资源执行 `dns.lookup`、route 拦截或 WebSocket DNS 审查。网络请求直接使用 Chromium + OS 网络栈。
 
 仍执行以下固定安全检查：
 
 - 拒绝 `file:`、`javascript:`、危险自定义 scheme 和非浏览器动作。
 - 不开放任意 JavaScript、CDP、Playwright 原始 API 或端口转发。
-- 重定向、页面子资源和 WebSocket 只接受浏览器固定 Schema 允许的网络动作。
+- 页面子资源、重定向和 WebSocket 由隔离 Chromium 按正常浏览器网络语义处理；Fast Spider 不额外增加逐请求 DNS 审查。
 - 限制页面数量、下载大小、动作超时、Job 时长、输出、临时目录和展示资源大小。
 
 这意味着浏览器明确拥有 Node 网络视角下的公网、localhost 和私网访问能力；部署者应通过 OS、防火墙、运行账户和实际网络拓扑管理风险。
@@ -70,17 +71,33 @@ Client 不传可执行回调；Locator 使用 role、label、text、testId 和�
 
 下载进入 Browser Session 的隔离临时目录，限制类型、数量、大小和时间；不自动执行或解压。若用户要把文件放到任意绝对路径，必须另行调用文件能力并由 Node 以当前 OS 用户处理。
 
-浏览器测试使用固定步骤，不接受任意代码文件：
+浏览器测试使用固定动作，不接受任意代码文件。Agent 应先取 snapshot，再直接使用返回 ref；多步表单优先合并为 batch：
+
+```json
+{"action":"snapshot","browserSessionId":"brs_x","pageId":"pg_x"}
+```
+
+快照示例：
+
+```text
+- textbox "Email" [ref=e_1]
+- textbox "Password" [ref=e_2]
+- button "Sign in" [ref=e_3]
+```
+
+随后一次执行：
 
 ```json
 {
-  "steps": [
-    {"action": "navigate", "url": "http://localhost:3000"},
-    {"action": "click", "locator": {"role": "button", "name": "Sign in"}},
-    {"action": "type", "locator": {"label": "Email"}, "textRef": "secret-input-ref"},
-    {"action": "wait", "locator": {"text": "Dashboard"}},
-    {"action": "screenshot", "name": "dashboard"}
-  ]
+  "action":"batch",
+  "browserSessionId":"brs_x",
+  "pageId":"pg_x",
+  "steps":[
+    {"action":"type","ref":"e_1","text":"user@example.com"},
+    {"action":"type","ref":"e_2","text":"..."},
+    {"action":"click","ref":"e_3"}
+  ],
+  "snapshotAfter":true
 }
 ```
 

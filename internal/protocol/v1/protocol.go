@@ -23,8 +23,8 @@ const (
 )
 
 var BrowserCapability = CapabilityDescriptor{
-	CapabilityId: "browser.automation", Version: "1.0",
-	Actions: []string{"launch", "close", "page.open", "page.navigate", "page.close", "pages.list", "click", "type", "press", "wait", "snapshot", "screenshot", "events"},
+	CapabilityId: "browser.automation", Version: "1.1",
+	Actions: []string{"launch", "close", "page.open", "page.navigate", "page.close", "pages.list", "click", "type", "press", "wait", "batch", "snapshot", "screenshot", "events"},
 }
 
 var ScreenshotCapability = CapabilityDescriptor{

@@ -43,16 +43,19 @@ func sanitizeBrowserParams(action string, params map[string]any) (map[string]any
 		add(page...)
 	case "click":
 		add(page...)
-		add("locator")
+		add("ref", "locator")
 	case "type":
 		add(page...)
-		add("locator", "text")
+		add("ref", "locator", "text")
 	case "press":
 		add(page...)
-		add("locator", "key")
+		add("ref", "locator", "key")
 	case "wait":
 		add(page...)
-		add("locator", "state")
+		add("ref", "locator", "state")
+	case "batch":
+		add(page...)
+		add("steps", "snapshotAfter")
 	case "screenshot":
 		add(page...)
 		add("fullPage", "format", "quality")
@@ -67,6 +70,60 @@ func sanitizeBrowserParams(action string, params map[string]any) (map[string]any
 			return nil, &BrowserActionError{Code: "INVALID_REQUEST", Message: fmt.Sprintf("browser parameter %q is not allowed for %s", key, action), Retryable: false}
 		}
 		out[key] = value
+	}
+	if action == "batch" {
+		steps, err := sanitizeBrowserBatchSteps(out["steps"])
+		if err != nil {
+			return nil, err
+		}
+		out["steps"] = steps
+	}
+	return out, nil
+}
+
+func sanitizeBrowserBatchSteps(value any) ([]any, error) {
+	var raw []any
+	switch typed := value.(type) {
+	case []any:
+		raw = typed
+	case []map[string]any:
+		raw = make([]any, 0, len(typed))
+		for _, step := range typed {
+			raw = append(raw, step)
+		}
+	default:
+		return nil, &BrowserActionError{Code: "INVALID_REQUEST", Message: "batch steps must be an array", Retryable: false}
+	}
+	if len(raw) < 1 || len(raw) > 32 {
+		return nil, &BrowserActionError{Code: "INVALID_REQUEST", Message: "batch steps must contain 1-32 actions", Retryable: false}
+	}
+	out := make([]any, 0, len(raw))
+	for index, item := range raw {
+		step, ok := item.(map[string]any)
+		if !ok {
+			return nil, &BrowserActionError{Code: "INVALID_REQUEST", Message: fmt.Sprintf("batch step %d is invalid", index+1), Retryable: false}
+		}
+		action, _ := step["action"].(string)
+		allowed := map[string]struct{}{"action": {}, "ref": {}, "locator": {}, "timeoutMs": {}}
+		switch action {
+		case "click":
+		case "type":
+			allowed["text"] = struct{}{}
+		case "press":
+			allowed["key"] = struct{}{}
+		case "wait":
+			allowed["state"] = struct{}{}
+		default:
+			return nil, &BrowserActionError{Code: "INVALID_REQUEST", Message: fmt.Sprintf("batch step %d action is not allowed", index+1), Retryable: false}
+		}
+		clean := make(map[string]any, len(step))
+		for key, itemValue := range step {
+			if _, ok := allowed[key]; !ok {
+				return nil, &BrowserActionError{Code: "INVALID_REQUEST", Message: fmt.Sprintf("batch step %d parameter %q is not allowed", index+1, key), Retryable: false}
+			}
+			clean[key] = itemValue
+		}
+		out = append(out, clean)
 	}
 	return out, nil
 }

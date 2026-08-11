@@ -24,7 +24,7 @@ Hub 只负责身份、路由、deadline、审计、Job/Artifact 元数据和连�
 | `build.exec` | `run` | 固定 argv 的构建/测试 Job |
 | `artifact.store` | `uploadFile`, `uploadJobLog`, `publishFile` | Hub Artifact/临时 Presentation 数据面 |
 | `working.context` 1.1 | `get`, `set`, `clear`, `plan.init`, `plan.get`, `plan.list`, `plan.sync`, `task.update`, `markdown.list`, `markdown.read`, `markdown.append`, `progress.watch` | Plan/Task + Markdown Task Workspace；旧入口映射默认 plan |
-| `browser.automation` | `launch`, `close`, `page.open`, `page.navigate`, `page.close`, `pages.list`, `click`, `type`, `press`, `wait`, `snapshot`, `screenshot`, `events` | 隔离 Chromium |
+| `browser.automation` 1.1 | `launch`, `close`, `page.open`, `page.navigate`, `page.close`, `pages.list`, `click`, `type`, `press`, `wait`, `batch`, `snapshot`, `screenshot`, `events` | 隔离 Chromium；snapshot refs + bounded batch |
 | `screenshot.capture` | `listDisplays`, `desktop`, `display`, `listWindows`, `window` | 一次性桌面/显示器/窗口截图 |
 | `agent.control` | AI Harness、CC Switch Route/Model/EffectiveCapabilities discovery 与受控 Session/Turn 生命周期 | 当前 Harness 为本机 Codex + Claude Code |
 
@@ -108,7 +108,7 @@ Plan actions 为 `plan.init/plan.get/plan.list/plan.sync/task.update`，Markdown
 
 ## 9. Browser 与 Screenshot
 
-`browser.automation` 使用 Node 管理的隔离 Chromium，不附着用户正常浏览器 Profile，也不暴露原始 CDP/Playwright。可访问 Node 当前网络可达的公网、localhost 与私网 HTTP(S) 目标；仍拒绝危险 scheme、任意 JavaScript 注入和超出固定 action 的控制。
+`browser.automation` 1.1 使用 Node 管理的隔离 Chromium，不附着用户正常浏览器 Profile，也不暴露原始 CDP/Playwright。`snapshot` 返回 `ariaSnapshot + agentSnapshot + refs`；`click/type/press/wait` 优先直接使用短期 `ref`，新 snapshot、页面导航或元素脱离 DOM 后旧 ref 以 `BROWSER_REF_STALE` 快速失败。`batch` 在 Node 内一次执行 1-32 个固定交互动作并可 `snapshotAfter`，减少 Hub/MCP 往返。浏览器可访问 Node 当前网络可达的公网、localhost 与私网 HTTP(S) 目标，不做逐请求 DNS/pinned-IP 审查；仍拒绝危险 scheme、任意 JavaScript 注入和超出固定 action 的控制。
 
 `screenshot.capture` 只做一次性桌面/显示器/窗口捕获。窗口通过短期 opaque `windowId` 指定，不把 OS 原生句柄暴露给远程客户端。
 

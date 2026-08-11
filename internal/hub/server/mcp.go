@@ -173,26 +173,39 @@ type browserLocatorInput struct {
 	Exact  bool   `json:"exact,omitempty" jsonschema:"require exact text/name match"`
 }
 
+type browserBatchStepInput struct {
+	Action         string               `json:"action" jsonschema:"click,type,press,or wait"`
+	Ref            string               `json:"ref,omitempty" jsonschema:"short-lived element ref returned by snapshot; preferred over locator"`
+	Locator        *browserLocatorInput `json:"locator,omitempty" jsonschema:"fallback structured locator when a snapshot ref is unavailable"`
+	Text           string               `json:"text,omitempty" jsonschema:"text for type"`
+	Key            string               `json:"key,omitempty" jsonschema:"key for press"`
+	State          string               `json:"state,omitempty" jsonschema:"attached,detached,visible,hidden for wait"`
+	TimeoutSeconds int                  `json:"timeoutSeconds,omitempty" jsonschema:"step timeout from 1 to 30 seconds"`
+}
+
 type browserControlInput struct {
-	MachineID        string               `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	Action           string               `json:"action" jsonschema:"launch,close,page.open,page.navigate,page.close,pages.list,click,type,press,wait,snapshot,screenshot,events"`
-	BrowserSessionID string               `json:"browserSessionId,omitempty" jsonschema:"opaque managed browser session ID"`
-	PageID           string               `json:"pageId,omitempty" jsonschema:"opaque managed page ID"`
-	Engine           string               `json:"engine,omitempty" jsonschema:"chromium in the Phase 5 MVP"`
-	Headed           bool                 `json:"headed,omitempty" jsonschema:"show the isolated managed browser window instead of headless mode"`
-	ViewportWidth    int                  `json:"viewportWidth,omitempty" jsonschema:"viewport width from 320 to 2560"`
-	ViewportHeight   int                  `json:"viewportHeight,omitempty" jsonschema:"viewport height from 240 to 1600"`
-	URL              string               `json:"url,omitempty" jsonschema:"http(s) URL; the Node may access public, localhost and private-network targets available to the current OS user"`
-	WaitUntil        string               `json:"waitUntil,omitempty" jsonschema:"load,domcontentloaded,networkidle, or commit"`
-	Locator          *browserLocatorInput `json:"locator,omitempty" jsonschema:"structured locator for click/type/press/wait"`
-	Text             string               `json:"text,omitempty" jsonschema:"text for type"`
-	Key              string               `json:"key,omitempty" jsonschema:"key for press"`
-	State            string               `json:"state,omitempty" jsonschema:"attached,detached,visible,hidden for wait"`
-	TimeoutSeconds   int                  `json:"timeoutSeconds,omitempty" jsonschema:"action timeout from 1 to 30 seconds"`
-	FullPage         bool                 `json:"fullPage,omitempty" jsonschema:"capture the full page when within pixel limits"`
-	Format           string               `json:"format,omitempty" jsonschema:"png or jpeg"`
-	Quality          int                  `json:"quality,omitempty" jsonschema:"jpeg quality 20-95"`
-	Cursor           int64                `json:"cursor,omitempty" jsonschema:"last browser event cursor for events"`
+	MachineID        string                  `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	Action           string                  `json:"action" jsonschema:"launch,close,page.open,page.navigate,page.close,pages.list,click,type,press,wait,batch,snapshot,screenshot,events"`
+	BrowserSessionID string                  `json:"browserSessionId,omitempty" jsonschema:"opaque managed browser session ID"`
+	PageID           string                  `json:"pageId,omitempty" jsonschema:"opaque managed page ID"`
+	Engine           string                  `json:"engine,omitempty" jsonschema:"managed chromium"`
+	Headed           bool                    `json:"headed,omitempty" jsonschema:"show the isolated managed browser window instead of headless mode"`
+	ViewportWidth    int                     `json:"viewportWidth,omitempty" jsonschema:"viewport width from 320 to 2560"`
+	ViewportHeight   int                     `json:"viewportHeight,omitempty" jsonschema:"viewport height from 240 to 1600"`
+	URL              string                  `json:"url,omitempty" jsonschema:"http(s) URL; public, localhost and private-network targets are allowed without DNS allowlisting"`
+	WaitUntil        string                  `json:"waitUntil,omitempty" jsonschema:"load,domcontentloaded,networkidle, or commit"`
+	Ref              string                  `json:"ref,omitempty" jsonschema:"short-lived element ref returned by snapshot; preferred for click/type/press/wait and fails fast when stale"`
+	Locator          *browserLocatorInput    `json:"locator,omitempty" jsonschema:"fallback structured locator for click/type/press/wait when ref is unavailable"`
+	Text             string                  `json:"text,omitempty" jsonschema:"text for type"`
+	Key              string                  `json:"key,omitempty" jsonschema:"key for press"`
+	State            string                  `json:"state,omitempty" jsonschema:"attached,detached,visible,hidden for wait"`
+	Steps            []browserBatchStepInput `json:"steps,omitempty" jsonschema:"1-32 fixed browser actions executed inside the Node in one batch"`
+	SnapshotAfter    bool                    `json:"snapshotAfter,omitempty" jsonschema:"for batch, return a fresh accessibility snapshot and refs after all steps succeed"`
+	TimeoutSeconds   int                     `json:"timeoutSeconds,omitempty" jsonschema:"action timeout from 1 to 30 seconds"`
+	FullPage         bool                    `json:"fullPage,omitempty" jsonschema:"capture the full page when within pixel limits"`
+	Format           string                  `json:"format,omitempty" jsonschema:"png or jpeg"`
+	Quality          int                     `json:"quality,omitempty" jsonschema:"jpeg quality 20-95"`
+	Cursor           int64                   `json:"cursor,omitempty" jsonschema:"last browser event cursor for events"`
 }
 
 type screenshotTakeInput struct {
@@ -583,7 +596,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "browser_control",
-		Description: "Control one Node-managed isolated Chromium session with fixed actions. Public, localhost and private-network targets are allowed; it never attaches to the user's normal browser profile or exposes raw CDP/Playwright execution.",
+		Description: "Control one Node-managed isolated Chromium session with accessibility snapshots, short-lived element refs, fallback semantic locators, and bounded batch actions. Prefer snapshot refs over screenshots/selectors for interaction. Public, localhost and private-network targets are allowed without DNS allowlisting; raw CDP/Playwright execution is never exposed.",
 		Annotations: toolAnnotations(false, true, false, true),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input browserControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		params := browserControlParams(input)
@@ -799,6 +812,16 @@ func toolAnnotations(readOnly, destructive, idempotent, openWorld bool) *mcp.Too
 }
 
 func browserControlParams(input browserControlInput) map[string]any {
+	locatorParams := func(locator *browserLocatorInput) map[string]any {
+		if locator == nil {
+			return nil
+		}
+		return map[string]any{
+			"role": locator.Role, "name": locator.Name, "label": locator.Label,
+			"text": locator.Text, "testId": locator.TestID, "css": locator.CSS, "exact": locator.Exact,
+		}
+	}
+
 	params := map[string]any{}
 	if input.Action != "launch" {
 		params["browserSessionId"] = input.BrowserSessionID
@@ -827,11 +850,11 @@ func browserControlParams(input browserControlInput) map[string]any {
 		params["url"] = input.URL
 		params["waitUntil"] = input.WaitUntil
 	case "click", "type", "press", "wait":
-		if input.Locator != nil {
-			params["locator"] = map[string]any{
-				"role": input.Locator.Role, "name": input.Locator.Name, "label": input.Locator.Label,
-				"text": input.Locator.Text, "testId": input.Locator.TestID, "css": input.Locator.CSS, "exact": input.Locator.Exact,
-			}
+		if input.Ref != "" {
+			params["ref"] = input.Ref
+		}
+		if locator := locatorParams(input.Locator); locator != nil {
+			params["locator"] = locator
 		}
 		if input.Action == "type" {
 			params["text"] = input.Text
@@ -842,6 +865,32 @@ func browserControlParams(input browserControlInput) map[string]any {
 		if input.Action == "wait" {
 			params["state"] = input.State
 		}
+	case "batch":
+		steps := make([]map[string]any, 0, len(input.Steps))
+		for _, step := range input.Steps {
+			value := map[string]any{"action": step.Action}
+			if step.Ref != "" {
+				value["ref"] = step.Ref
+			}
+			if locator := locatorParams(step.Locator); locator != nil {
+				value["locator"] = locator
+			}
+			if step.Action == "type" {
+				value["text"] = step.Text
+			}
+			if step.Action == "press" {
+				value["key"] = step.Key
+			}
+			if step.Action == "wait" {
+				value["state"] = step.State
+			}
+			if step.TimeoutSeconds > 0 {
+				value["timeoutMs"] = step.TimeoutSeconds * 1000
+			}
+			steps = append(steps, value)
+		}
+		params["steps"] = steps
+		params["snapshotAfter"] = input.SnapshotAfter
 	case "screenshot":
 		params["fullPage"] = input.FullPage
 		params["format"] = input.Format
