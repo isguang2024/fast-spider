@@ -37,6 +37,36 @@ type Status struct {
 
 func Platform() string { return runtime.GOOS + "-" + runtime.GOARCH }
 
+// CleanupConsumedCurrent removes the staging directory for the running Node
+// version only after its ready marker has been consumed. A remaining ready
+// marker makes the operation a no-op so an out-of-order caller cannot remove
+// a pending update or its diagnostic evidence.
+func CleanupConsumedCurrent(dataDir, currentVersion string) error {
+	version := strings.TrimSpace(currentVersion)
+	if _, err := releaseinfo.ParseVersion(version); err != nil {
+		return fmt.Errorf("current Node version is invalid: %w", err)
+	}
+	updatesDir := filepath.Join(dataDir, "updates")
+	if _, err := os.Lstat(filepath.Join(updatesDir, "ready.json")); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	currentDir := filepath.Join(updatesDir, version)
+	info, err := os.Lstat(currentDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil
+	}
+	return os.RemoveAll(currentDir)
+}
+
 func CleanupStale(dataDir, currentVersion string) error {
 	updatesDir := filepath.Join(dataDir, "updates")
 	entries, err := os.ReadDir(updatesDir)

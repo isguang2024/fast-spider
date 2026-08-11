@@ -127,6 +127,23 @@
 - Gate 通过：public secret/private scan、module verify/tidy、go vet、go test 全仓、current/Windows amd64/Linux amd64 build、Hub restore、Local Bridge、Task Workspace、Managed ripgrep/native、ripgreppack、file_read 2.0、file_edit 2.0、updater temp E2E、reconnect temp E2E、Repeated Node、Real Browser、Real CC Switch、Real Claude、Real Codex、Local Bridge multi-provider 与 product smoke。
 - 当前 Windows/386 + CGO=0 仍按脚本设计跳过随机 fuzz/race；Fuzz seeds 已包含于全仓测试，不替代其它任何 Gate。
 - Final Gate 全程未停止或替换正式 PCa Node/生产 Hub，正式 Node 在 Gate 后仍为 0.3.14 online/ready generation 42。
+
+## 2026-08-11 — 0.4.2 Formal Release / Production Reconciliation
+
+- 0.4.2 已由 release commit `4c263b0` 正式发布并完成生产部署；Hub、Node 与 Managed `search-ripgrep` 三边验收均为 PASS。
+
+## 2026-08-11 — FS-043-001..003 Node Update File Lifecycle
+
+- `FS-043-001`: PASS；新增独立 `CleanupConsumedCurrent`，只处理可解析的 `updates/<currentVersion>` 目录；marker 存在、目录不存在、future/unknown/manual 均不删除，旧版本仍由 `CleanupStale` 处理。
+- `FS-043-002`: PASS；NodeUI 启动保持 Ready/apply 在先，仅 `(applied=false, err=nil)` 调用 consumed-current cleanup；Ready/apply 错误或已开始替换时不清理 current staging，正式 `.previous` 不在 data-dir 清理范围。
+- `FS-043-003`: PASS；源码版本切换到 0.4.3，README、部署/恢复/测试文档和 release gate 已同步；新增 `0.4.3 updater consumed staging gate`，原 Real Browser/CC Switch/Claude/Codex/Local Bridge Gate 保持不变。
+- 验证终态：`go test ./internal/nodeupdate ./internal/nodeui`、`go test ./...`、`go vet ./...`、`git diff --check` 与 Git for Windows Bash 语法检查全部 PASS。
+
+## 2026-08-11 — FS-043-004 Final 0.4.3 Release Gate
+
+- `FS-043-004`: PASS；Windows Git for Windows 执行 `scripts/release-gate.sh --full` 终态 `PASS: Fast Spider full release gate`，exitCode=0。
+- Gate 明确通过新增 `0.4.3 updater consumed staging gate`，并继续通过全仓 test/vet、Windows/Linux build、Task Workspace、Managed ripgrep/native、file_read/file_edit 2.0、updater/reconnect temp E2E、Repeated Node、Real Browser、Real CC Switch、Real Claude、Real Codex 与 Local Bridge multi-provider/product smoke。
+- full gate 未操作正式 0.4.2 Node/Hub/data-dir；正式升级继续复用 0.4.2 已验证的 Hub 独立替换 + Node 内置签名 updater 流程。
 <!-- fast-spider:managed:acceptance:end -->
 
 ## Manual Acceptance Notes

@@ -1,4 +1,4 @@
-# 测试策略（0.4.2）
+# 测试策略（0.4.3）
 
 发布门禁必须验证新的 Machine 边界，而不是旧目录授权模型。
 
@@ -24,6 +24,7 @@
 18. code_search 2.0 同时覆盖受管 ripgrep 安全 argv/environment/JSON parser 与 native content/files/glob/context fallback。
 19. file_read 2.0 覆盖 byte/line/head/tail/around/stat/hash/bounds；file_edit 2.0 覆盖 create/replace/editMany/preview、CAS、全有或全无和原子替换。
 20. 组件中心只接受 Browser/search-ripgrep allowlist；本地自检必须使用临时 data-dir 并确认 preview 不落盘、临时目录已清理。
+21. Node updater 必须覆盖 Ready/apply→consumed-current cleanup 启动顺序、Ready error 不清理、marker fail-safe、current 删除以及 future/old/unknown 分治。
 
 ## Release Gate
 
@@ -41,7 +42,7 @@
 - Managed ripgrep/native 搜索专项
 - file_read 2.0 专项
 - file_edit 2.0 + MCP/Hub policy 专项
-- Node updater staging/cleanup 与 reconnect/backoff 临时 E2E
+- Node updater staging/cleanup、0.4.3 consumed-current cleanup 与 reconnect/backoff 临时 E2E
 - real Browser E2E
 - real CC Switch routing read-only E2E
 - real Claude Code CLI E2E

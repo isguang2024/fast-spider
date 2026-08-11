@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 ## Current 当前事实
 
-- 当前源码版本为 `0.4.2`；`0.4.1` 只作为连续开发阶段，不单独发布。
+- 当前源码版本为 `0.4.3`；0.4.2 已正式发布并完成 Hub、Node 与 Managed ripgrep 生产验收。
 - Machine 是唯一远程资源边界。Fast Spider 不再维护旧目录对象、目录列表工具、目录授权、目录白名单或路径注册表。
 - Node 以启动它的当前 OS 用户运行，直接使用该用户对整台电脑的操作系统权限；Fast Spider 不把文件系统再切成一层目录权限。
 - 同一 OS 用户只允许运行一个 Fast Spider Node 主实例；重复双击、开机自启动与手动启动、不同 EXE 位置或不同 `--data-dir` 都不能建立第二条 Node 连接。重复启动只打开现有本地界面后退出。
@@ -14,6 +14,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 - `working_context` 已扩展为同一套 Plan/Task + Markdown Task Workspace：保留 `get/set/clear` 默认 plan 兼容入口，并提供 `plan.init/plan.get/plan.list/plan.sync/task.update/markdown.list/markdown.read/markdown.append/progress.watch`；状态按 Machine 路由、`projectPath + planId` 隔离。
 - `code_search` 支持 content/files、include/exclude glob 与 bounded context；优先使用 data-dir 中已验证的 Managed `search-ripgrep`，缺失或失败时回退 Go native，不信任 PATH、不读取用户 ripgrep 配置，也不在搜索时自动下载。
 - `file_read` 2.0 保留 byte range，并支持 line/head/tail/around/statOnly/line numbers；`file_edit` 2.0 在同一工具内提供 legacy edit、create、replace、editMany、preview，现有文件写入使用 SHA CAS 与原子替换，preview 不写磁盘。
+- Node 自更新启动时先处理 `ready.json`；仅在没有待应用更新且 Ready 检查成功后清理 `updates/<currentVersion>` 已消费 staging。Ready/apply 失败和 future pending staging 均保留，正式 EXE 的 `.previous` 回滚副本不受 data-dir 清理影响。
 - `ai_control` 已是多 AI Harness 控制面：当前支持 `codex` 与 `claude_code`，并通过 `routing.status` 只读 CC Switch SSOT，区分 Harness、Routing Runtime、上游 Provider 与真实模型映射。
 - Codex 保留 Provider/Model 能力发现、Skills/Hooks/Permission Profiles/Plugins/MCP 状态、Thread/Goal/Settings/Review、steer/respond、原生 Turn input 与 `outputSchema`；app-server 重启后按需 resume 持久 Thread。
 - Claude Code 使用原生 Session UUID + `stream-json` + `--resume`，Prompt 通过 stdin 传入；Fast Spider 只保存小型 Session 控制索引，不复制完整对话。模型和有效能力以 CC Switch Route + Harness 能力共同解释，不把 `sonnet`/`opus` 等别名直接当真实上游模型。
@@ -154,4 +155,4 @@ bash scripts/release-gate.sh
 bash scripts/release-gate.sh --full
 ```
 
-门禁覆盖格式、秘密模式、模块校验、`go vet`、测试、构建、恢复后 Hub 健康检查；完整模式显式运行 Task Workspace、Managed ripgrep/native、file_read 2.0、file_edit 2.0、Node update/reconnect 专项，以及 Browser、真实 CC Switch 只读路由、Claude Code、Codex、Local Bridge 多 Provider discovery 和产品 smoke。具体平台限制以门禁输出为准。
+门禁覆盖格式、秘密模式、模块校验、`go vet`、测试、构建、恢复后 Hub 健康检查；完整模式显式运行 Task Workspace、Managed ripgrep/native、file_read 2.0、file_edit 2.0、Node update/reconnect 与 0.4.3 consumed-current staging cleanup 专项，以及 Browser、真实 CC Switch 只读路由、Claude Code、Codex、Local Bridge 多 Provider discovery 和产品 smoke。具体平台限制以门禁输出为准。

@@ -126,6 +126,84 @@ func TestCleanupStaleNodeUpdatesKeepsCurrentAndFutureVersions(t *testing.T) {
 	}
 }
 
+func TestCleanupConsumedCurrentRemovesCurrentAndKeepsFutureAndUnknown(t *testing.T) {
+	dataDir := t.TempDir()
+	for _, version := range []string{"0.4.3", "0.4.4"} {
+		path := filepath.Join(dataDir, "updates", version, "fast-spider-node.exe")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(version), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	unknown := filepath.Join(dataDir, "updates", "manual", "keep.txt")
+	if err := os.MkdirAll(filepath.Dir(unknown), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unknown, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := nodeupdate.CleanupConsumedCurrent(dataDir, "0.4.3"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "updates", "0.4.3")); !os.IsNotExist(err) {
+		t.Fatalf("consumed current staging remains: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "updates", "0.4.4", "fast-spider-node.exe")); err != nil {
+		t.Fatalf("future staging was removed: %v", err)
+	}
+	if _, err := os.Stat(unknown); err != nil {
+		t.Fatalf("unknown update directory was removed: %v", err)
+	}
+	if err := nodeupdate.CleanupConsumedCurrent(dataDir, "0.4.3"); err != nil {
+		t.Fatalf("idempotent cleanup failed: %v", err)
+	}
+}
+
+func TestCleanupConsumedCurrentKeepsCurrentWhenReadyMarkerExists(t *testing.T) {
+	dataDir := t.TempDir()
+	staged := filepath.Join(dataDir, "updates", "0.4.3", "fast-spider-node.exe")
+	if err := os.MkdirAll(filepath.Dir(staged), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, []byte("pending-or-diagnostic"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ready := filepath.Join(dataDir, "updates", "ready.json")
+	if err := os.WriteFile(ready, []byte("pending"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := nodeupdate.CleanupConsumedCurrent(dataDir, "0.4.3"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(staged); err != nil {
+		t.Fatalf("current staging was removed while ready marker exists: %v", err)
+	}
+	if _, err := os.Stat(ready); err != nil {
+		t.Fatalf("ready marker was modified: %v", err)
+	}
+}
+
+func TestCleanupConsumedCurrentRejectsInvalidVersionAndKeepsDirectory(t *testing.T) {
+	dataDir := t.TempDir()
+	manual := filepath.Join(dataDir, "updates", "current", "keep.txt")
+	if err := os.MkdirAll(filepath.Dir(manual), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manual, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := nodeupdate.CleanupConsumedCurrent(dataDir, "current"); err == nil {
+		t.Fatal("invalid current version was accepted")
+	}
+	if _, err := os.Stat(manual); err != nil {
+		t.Fatalf("manual directory was removed: %v", err)
+	}
+}
+
 func TestCheckRejectsManifestSignedByDifferentHub(t *testing.T) {
 	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

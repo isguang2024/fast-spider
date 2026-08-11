@@ -1,7 +1,7 @@
 # Fast Spider 0.4 Roadmap
 
 <!-- fast-spider:managed:roadmap:start -->
-## Plan `fast-spider-0.4.0-to-0.4.2`
+## Plan `fast-spider-0.4.0-to-0.4.3`
 
 状态枚举：`pending` / `in_progress` / `blocked` / `done`。0.4.1 是连续开发阶段，不做独立发布。
 
@@ -52,10 +52,22 @@
 | FS-042-011 搜索/文件诊断 | done |
 | FS-042-012 全仓文档同步 | done |
 | FS-042-013 完整 Release Gate | done |
-| FS-042-014 commit + push | in_progress |
-| FS-042-015 Hub 0.4.2 部署 | pending |
-| FS-042-016 Node 0.4.2 更新 + 自动重连 | pending |
-| FS-042-017 生产 / 本机 / GitHub 三边最终对账 | pending |
+| FS-042-014 commit + push | done |
+| FS-042-015 Hub 0.4.2 部署 | done |
+| FS-042-016 Node 0.4.2 更新 + 自动重连 | done |
+| FS-042-017 生产 / 本机 / GitHub 三边最终对账 | done |
+
+### 0.4.3 Node 更新文件生命周期
+
+| Task | 状态 |
+|---|---|
+| FS-043-001 独立 consumed-current staging cleanup API | done |
+| FS-043-002 Ready/apply 启动顺序、fail-safe 与生命周期测试 | done |
+| FS-043-003 版本/文档/release gate 与全量验证 | done |
+| FS-043-004 完整 Release Gate | done |
+| FS-043-005 commit + push | in_progress |
+| FS-043-006 Hub / Node 0.4.3 更新 + staging 清理验收 | pending |
+| FS-043-007 发布后文件 / 组件 / 更新链路继续审计 | pending |
 
 ### Final Acceptance Matrix
 
@@ -73,6 +85,7 @@
 - file_read 2.0 E2E
 - file_edit 2.0 E2E
 - update/reconnect E2E
+- consumed-current staging cleanup E2E
 - `scripts/release-gate.sh --full`
 <!-- fast-spider:managed:roadmap:end -->
 

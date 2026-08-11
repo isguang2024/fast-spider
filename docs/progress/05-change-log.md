@@ -22,6 +22,8 @@
 - 完成 FS-042-010..011：本地客户端“组件”页只管理 Browser/search-ripgrep，并提供脱敏组件状态和手动隔离搜索/文件自检；native/fake managed rg、file_read 2.0、file_edit preview、guard 与临时目录清理测试 PASS。
 - 完成 FS-042-012：源码版本更新为 0.4.2，全仓 Current 文档按真实 capability/UI/Agent/安全边界同步；full release gate 新增六组可读的 0.4.2 专项入口，下一任务切换到 FS-042-013。
 - 完成 FS-042-013：最终 `scripts/release-gate.sh --full` 终态 PASS / exitCode=0，覆盖全仓测试、跨平台构建、0.4.2 专项能力、更新重连与 Real Browser/CC Switch/Claude/Codex/Local Bridge；进入唯一 0.4.2 release commit + push。
+- 0.4.2 已由 release commit `4c263b0` 正式发布部署，Hub、Node 与 Managed search-ripgrep 三边生产验收 PASS。
+- 完成 FS-043-001..003：新增独立 consumed-current staging cleanup，严格保持 Ready/apply→cleanup 顺序和 marker/error fail-safe；版本更新为 0.4.3，文档、专项 Gate、全仓 test/vet/diff/bash syntax 全部 PASS。
 <!-- fast-spider:managed:change-log:end -->
 
 ## Manual Change Notes

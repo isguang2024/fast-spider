@@ -3,6 +3,7 @@ package nodeui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -190,4 +191,15 @@ func (a *App) applyReadyUpdateOnStartup() (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func runStartupUpdateMaintenance(applyReady func() (bool, error), cleanupConsumedCurrent func() error) (bool, error) {
+	applied, err := applyReady()
+	if err != nil || applied {
+		return applied, err
+	}
+	if err := cleanupConsumedCurrent(); err != nil {
+		return false, fmt.Errorf("cleanup consumed current Node update: %w", err)
+	}
+	return false, nil
 }

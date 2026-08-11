@@ -15,7 +15,8 @@ Usage: bash scripts/release-gate.sh [--full]
 core: formatting, module integrity, vet, all unit/integration tests,
       current + Windows/Linux builds, Hub restore E2E, Local Bridge E2E.
 full: core + explicit 0.4.2 Task Workspace/Search/file_read/file_edit/update/
-      reconnect gates, repeated Node tests, short fuzzing/race where supported,
+      reconnect gates, the 0.4.3 consumed-current staging cleanup gate,
+      repeated Node tests, short fuzzing/race where supported,
       real Browser/CC Switch/Claude Code/Codex E2E, multi-provider Local Bridge
       discovery, and the complete Local Bridge→Codex smoke.
 
@@ -96,6 +97,7 @@ if [[ "$mode" == "full" ]]; then
   step "0.4.2 file_read gate" go test ./internal/node ./internal/protocol/v1 ./internal/hub/server -run 'Test(FileReadV2|FileReadCapability|MachineBoundaryEndToEnd)' -count=1
   step "0.4.2 file_edit gate" go test ./internal/node ./internal/protocol/v1 ./internal/hub/core ./internal/hub/server -run 'Test(FileEdit|FileWrite|MachineBoundaryEndToEnd)' -count=1
   step "0.4.2 updater temp E2E" go test ./internal/nodeupdate -run 'Test(CheckAndStageSignedNodeUpdate|CleanupStaleNodeUpdates)' -count=1
+  step "0.4.3 updater consumed staging gate" go test ./internal/nodeupdate ./internal/nodeui -run 'Test(CleanupConsumedCurrent|StartupUpdateMaintenance)' -count=1
   step "0.4.2 reconnect temp E2E" go test ./internal/node -run 'Test(NodeReconnectAfterRevokedMachineCreatesFreshMachineIdentity|ReconnectBackoffsResetAfterStableSession)' -count=1
   step "Repeated Node regression" go test ./internal/node -count=3
 

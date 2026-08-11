@@ -167,8 +167,10 @@ func (a *App) Run(ctx context.Context) error {
 		return leaseErr
 	}
 	defer lease.Close()
-	if applied, err := a.applyReadyUpdateOnStartup(); err != nil {
-		a.opts.Logger.Warn("apply staged update on startup failed", "error", err)
+	if applied, err := runStartupUpdateMaintenance(a.applyReadyUpdateOnStartup, func() error {
+		return nodeupdate.CleanupConsumedCurrent(a.opts.DataDir, a.opts.Version)
+	}); err != nil {
+		a.opts.Logger.Warn("startup Node update maintenance failed", "error", err)
 	} else if applied {
 		return nil
 	}

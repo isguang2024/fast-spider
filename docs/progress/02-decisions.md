@@ -22,6 +22,7 @@
 17. **正式连接保护**：开发与测试禁止停止正式 PCa Node/生产 Hub、写正式 data-dir、替换正式 EXE或启动第二正式 Node；仅最终 0.4.2 更新验收允许正式 Node 短暂断线并要求自动恢复/必要时 `.previous` 回滚。
 18. **发布策略**：0.4.0 先形成唯一 baseline commit；0.4.1 不独立发布；全部 Gate 通过后直接提交、推送并部署 0.4.2。
 19. **组件中心 allowlist**：本地 UI 只管理 `browser` 与 `search-ripgrep`，拒绝任意 componentId/path/URL；安装继续复用 component manager 且必须由用户手动触发，搜索/文件自检不联网下载组件。
+20. **Node staging 生命周期**：`CleanupConsumedCurrent` 与 `CleanupStale` 职责分离；启动必须先处理 Ready/apply，只有 `(applied=false, err=nil)` 才尝试清理 current staging，且 `ready.json` 存在时 API 自身 fail-safe 不删。future/unknown 目录与正式 `.previous` 回滚副本不属于 consumed-current cleanup。
 <!-- fast-spider:managed:decisions:end -->
 
 ## Manual Decisions
