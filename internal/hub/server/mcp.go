@@ -136,7 +136,7 @@ type workingContextInput struct {
 	ProjectPath          string           `json:"projectPath" jsonschema:"absolute project directory on the Node machine"`
 	PlanID               string           `json:"planId,omitempty" jsonschema:"bounded plan identifier; omitted by legacy get/set/clear to use the default plan"`
 	ExpectedRevision     string           `json:"expectedRevision,omitempty" jsonschema:"working-context revision required by CAS mutations such as task.update and plan.sync"`
-	Goal                 string           `json:"goal,omitempty" jsonschema:"current development goal; required for set"`
+	Goal                 string           `json:"goal,omitempty" jsonschema:"current development goal; required for set and plan.init"`
 	Title                string           `json:"title,omitempty" jsonschema:"plan title for plan.init"`
 	TargetVersion        string           `json:"targetVersion,omitempty" jsonschema:"plan target version"`
 	MarkdownRoot         string           `json:"markdownRoot,omitempty" jsonschema:"project-relative Markdown workspace directory; defaults to docs/progress"`

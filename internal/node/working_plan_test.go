@@ -132,6 +132,51 @@ func TestWorkingMarkdownInitSyncPreservesManualAndAppendCAS(t *testing.T) {
 	}
 }
 
+func TestWorkingPlanSyncReturnsPostSyncGitAndLabelsPreSyncMarkdownSnapshot(t *testing.T) {
+	project := t.TempDir()
+	runTestGit(t, project, "init")
+	runTestGit(t, project, "config", "user.email", "fast-spider@example.invalid")
+	runTestGit(t, project, "config", "user.name", "Fast Spider Test")
+
+	client, err := New(Config{DataDir: t.TempDir(), Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	init, err := client.workingContextControl(ctx, "plan.init", map[string]any{
+		"projectPath": project, "planId": "git-sync", "goal": "verify post-sync git snapshot", "targetVersion": "0.4.6", "initializeMarkdown": true,
+		"tasks": []map[string]any{{"id": "T-1", "title": "sync", "status": "done", "completion": 100}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, project, "add", "docs/progress")
+	runTestGit(t, project, "commit", "-m", "baseline progress docs")
+	before := inspectWorkingContextGit(ctx, project)
+	if !before.IsRepository || before.Dirty {
+		t.Fatalf("expected clean git baseline, got %+v", before)
+	}
+
+	synced, err := client.workingContextControl(ctx, "plan.sync", map[string]any{"projectPath": project, "planId": "git-sync", "expectedRevision": init.Revision})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !synced.CurrentGit.Dirty {
+		t.Fatalf("plan.sync returned stale clean git snapshot: %+v", synced.CurrentGit)
+	}
+	current, err := os.ReadFile(filepath.Join(project, "docs", "progress", "00-current-state.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(current), "- dirtyBeforeSync: `false`") || strings.Contains(string(current), "- dirty: `") {
+		t.Fatalf("current-state did not label the pre-sync git snapshot:\n%s", current)
+	}
+	live := inspectWorkingContextGit(ctx, project)
+	if live != synced.CurrentGit {
+		t.Fatalf("plan.sync currentGit=%+v live=%+v", synced.CurrentGit, live)
+	}
+}
+
 func TestWorkingPlanInitBindsExistingMarkdownWithoutReplacingIt(t *testing.T) {
 	project := t.TempDir()
 	root := filepath.Join(project, "docs", "progress")

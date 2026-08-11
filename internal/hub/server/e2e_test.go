@@ -115,6 +115,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	var codeSearchSchema []byte
 	var fileReadSchema []byte
 	var fileEditSchema []byte
+	var workingContextSchema []byte
 	for _, tool := range tools.Tools {
 		names = append(names, tool.Name)
 		if tool.Name == "code_search" {
@@ -125,6 +126,9 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		}
 		if tool.Name == "file_edit" {
 			fileEditSchema, _ = json.Marshal(tool.InputSchema)
+		}
+		if tool.Name == "working_context" {
+			workingContextSchema, _ = json.Marshal(tool.InputSchema)
 		}
 	}
 	sort.Strings(names)
@@ -146,6 +150,9 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		if !bytes.Contains(fileEditSchema, []byte(`"`+field+`"`)) {
 			t.Fatalf("file_edit schema missing %q: %s", field, fileEditSchema)
 		}
+	}
+	if !bytes.Contains(workingContextSchema, []byte("required for set and plan.init")) {
+		t.Fatalf("working_context goal schema does not describe plan.init requirement: %s", workingContextSchema)
 	}
 
 	machineResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "machine_list", Arguments: map[string]any{}})

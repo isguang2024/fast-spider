@@ -183,7 +183,7 @@ func (c *Client) appendWorkingMarkdown(input workingContextParams, state working
 	return workingContextResult{Action: "markdown.append", Exists: true, State: &state, CurrentGit: git, Revision: planRevision, FileRevision: workingContextRevision(next), Changed: true}, nil
 }
 
-func (c *Client) syncWorkingPlan(_ context.Context, input workingContextParams, state workingContextState, planRevision, projectPath string, git workingContextGitFacts) (workingContextResult, error) {
+func (c *Client) syncWorkingPlan(ctx context.Context, input workingContextParams, state workingContextState, planRevision, projectPath string, git workingContextGitFacts) (workingContextResult, error) {
 	if input.ExpectedRevision == "" {
 		return workingContextResult{}, fmt.Errorf("expectedRevision is required for plan.sync")
 	}
@@ -238,11 +238,16 @@ func (c *Client) syncWorkingPlan(_ context.Context, input workingContextParams, 
 		}
 		synced = append(synced, item.relative)
 	}
-	return workingContextResult{Action: "plan.sync", Exists: true, State: &state, CurrentGit: git, Revision: planRevision, Synced: synced, Changed: true}, nil
+
+	// Managed Markdown records the Git snapshot from before plan.sync. The
+	// response refreshes currentGit after the writes so callers can distinguish
+	// the persisted pre-sync snapshot from the live post-sync repository state.
+	postGit := inspectWorkingContextGit(ctx, projectPath)
+	return workingContextResult{Action: "plan.sync", Exists: true, State: &state, CurrentGit: postGit, Revision: planRevision, Synced: synced, Changed: true}, nil
 }
 
 func renderWorkingPlanBlocks(state workingContextState, git workingContextGitFacts, revision string) map[string]string {
-	current := fmt.Sprintf("## Managed Current State\n\n- planId: `%s`\n- targetVersion: `%s`\n- Git branch: `%s`\n- Git HEAD: `%s`\n- dirty: `%t`\n- completion: `%d%%`\n- workingContextRevision: `%s`", state.PlanID, state.TargetVersion, git.Branch, git.Head, git.Dirty, workingPlanCompletion(state.Tasks), revision)
+	current := fmt.Sprintf("## Managed Current State\n\n- planId: `%s`\n- targetVersion: `%s`\n- Git branch: `%s`\n- Git HEAD: `%s`\n- dirtyBeforeSync: `%t`\n- completion: `%d%%`\n- workingContextRevision: `%s`", state.PlanID, state.TargetVersion, git.Branch, git.Head, git.Dirty, workingPlanCompletion(state.Tasks), revision)
 	var roadmap strings.Builder
 	roadmap.WriteString("## Managed Tasks\n\n| Task | 状态 | 完成度 |\n|---|---|---|\n")
 	var acceptance strings.Builder

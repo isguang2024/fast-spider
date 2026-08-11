@@ -104,7 +104,7 @@ native fallback 支持同一 content/files、glob、context 与 limit 语义；�
 
 `working.context` 是 Plan/Task + Markdown Task Workspace，不是长期 AI Memory。旧 `get/set/clear` 只是默认 plan 的兼容包装；所有入口共享同一 Plan 状态和写入路径，结构化状态位于 Node data-dir，并按远程 Machine 路由、`projectPath + planId` 隔离。
 
-Plan actions 为 `plan.init/plan.get/plan.list/plan.sync/task.update`，Markdown actions 为 `markdown.list/markdown.read/markdown.append`，`progress.watch` 提供有界 revision change wait。Markdown 仅允许 projectPath 内普通 `.md`，防 symlink/junction 逃逸；受管区块同步不覆盖 Manual 内容，写入使用 CAS、temp+fsync+atomic replace。上限为 64 文件、512 KiB/文件、4 MiB 总量、500 tasks、32 evidences/task；不保存 Token/Cookie/API Key/完整 Prompt/聊天原文/raw error。`get`/plan 读取还返回实时 Git branch/HEAD/dirty，Git 与文件内容始终是最终事实源。
+Plan actions 为 `plan.init/plan.get/plan.list/plan.sync/task.update`，Markdown actions 为 `markdown.list/markdown.read/markdown.append`，`progress.watch` 提供有界 revision change wait。Markdown 仅允许 projectPath 内普通 `.md`，防 symlink/junction 逃逸；受管区块同步不覆盖 Manual 内容，写入使用 CAS、temp+fsync+atomic replace。上限为 64 文件、512 KiB/文件、4 MiB 总量、500 tasks、32 evidences/task；不保存 Token/Cookie/API Key/完整 Prompt/聊天原文/raw error。`get`/plan 读取还返回实时 Git branch/HEAD/dirty，Git 与文件内容始终是最终事实源。`plan.sync` 写入 Markdown 时，受管 `00-current-state.md` 明确记录 `dirtyBeforeSync`（同步前 Git 快照），而调用结果中的 `currentGit` 会在写入完成后重新读取，表示同步后的实时 Git 事实，避免受 Git 跟踪的 Markdown 对自身 dirty 状态形成自指。
 
 ## 9. Browser 与 Screenshot
 
