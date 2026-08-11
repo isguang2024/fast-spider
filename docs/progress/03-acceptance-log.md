@@ -199,6 +199,18 @@
 - `FS-046-004`: PASS；Windows Git for Windows 执行 `scripts/release-gate.sh --full` 终态 `PASS: Fast Spider full release gate`，exitCode=0。
 - Gate 明确通过新增 `0.4.6 release staging prune gate`，并继续通过全仓 test/vet、Windows/Linux build、Hub restore、Local Bridge、Task Workspace、Managed ripgrep/native、file_read/file_edit 2.0、0.4.3 consumed staging、0.4.4 legacy artifacts、0.4.5 backup prune、updater/reconnect temp E2E、Repeated Node、Real Browser、Real CC Switch、Real Claude、Real Codex 与 Local Bridge multi-provider/product smoke。
 - full gate 未操作正式 0.4.5 Hub/Node/data-dir/release-dir/backup root；生产 staging-prune 将在 0.4.6 正式升级成功后先 plan 再 apply。
+
+## 2026-08-11 — 0.4.6 Acceptance Remediation / Final Production Verification
+
+- `FS-046-A01`: PASS；修正 `working_context.goal` MCP Schema 契约说明，明确 `set` 与 `plan.init` 均要求 goal，并在 Hub MCP E2E 中加入 Schema 回归断言。
+- `FS-046-A02`: PASS；修正 `plan.sync` Git 快照语义：受管 Markdown 明确写 `dirtyBeforeSync`，调用结果在写入后重新读取实时 `currentGit`，避免受 Git 跟踪 Markdown 对自身 dirty 状态形成自指；新增临时 Git 仓库回归测试。
+- `FS-046-A03`: PASS；针对性 `go test ./internal/node ./internal/hub/server`、全仓 `go test ./...`、`go vet ./...`、`git diff --check` 全部通过。
+- `FS-046-A04`: PASS；Windows Git for Windows Bash 完整执行 `scripts/release-gate.sh --full`，Job `job_UHILu4nJG-nz8A286pgl4m-pYI5ttDJP` 终态 `PASS: Fast Spider full release gate` / exitCode=0；Real Browser、CC Switch、Claude Code、Codex 与 Local Bridge product smoke 全部通过。
+- `FS-046-A05`: PASS；验收修复源码提交 `b72f13ade86b7e147dc86536d6c20b8ca8c73879` 已推送 `origin/main`。
+- `FS-046-A06`: PASS；生产 Hub 目标通过旧生产 SHA 精确对账确认后执行事务式替换；升级前 `pre-0.4.6-b72f13a.zip` backup-verify `valid=true`，新 Hub 0.4.6 SHA256=`7dca315e29b0ac699bdb460a1dd18aee11db443b2a2fc9017f94b1dce9498d5b`、spiderctl SHA256=`cf2156ffe24d70a01b9a47421ae16fc5f8d2a0c030a73f4f0df8e9053a5eac9f`，livez/readyz PASS。
+- `FS-046-A07`: PASS；同版本 0.4.6 被正常 updater 按设计判定为无需更新，因此采用独立 rollback + 精确 PID + 同卷预置/rename 的人工受控切换。首次构建受本机持久 `GOARCH=386` 影响，验收通过 Machine `arch` 立即识别并拒绝该产物作为最终态；随后显式 `CGO_ENABLED=0 GOOS=windows GOARCH=amd64` 从 `b72f13a` clean VCS 重建并再次切换。最终 PCa Node 0.4.6 / windows-amd64 / generation=57 / SHA256=`617c3e430c3317818641302472ae0873f5ba56384c247923838450bb6667498b` / online+ready，原生产 amd64 rollback SHA256=`148a89c58fc4d02542edf2d4c1e862db1de232bfe49e0f36054a95373240618b` 独立保留。
+- `FS-046-A08`: PASS；新生产 Node 对隔离 `round4` 再次执行 `plan.sync`，`00-current-state.md` 已真实输出 `dirtyBeforeSync` 且 completion=100%，返回 `currentGit` 与实时 Git 事实一致。
+- **Final Acceptance: PASS / PRODUCTION READY**。当前既有 ChatGPT 会话可能仍缓存热更新前的 `goal` 字段描述；服务端新 Schema 已由源码 E2E + full release gate 验证，刷新连接器/新会话后再核对展示层即可，不作为运行态缺陷。
 <!-- fast-spider:managed:acceptance:end -->
 
 ## Manual Acceptance Notes

@@ -34,6 +34,9 @@
 - 发布后审计确认 release staging 是剩余明确线性增长点；无进程引用后一次性清理本机/服务器旧 staging 共 665,103,310 bytes。
 - 完成 FS-046-001..003：新增 bounded/fail-closed `PruneReleaseStaging` 与 `spiderctl staging-prune` plan/apply CLI；严格 local/server 名称、future/unknown 保留、reparse/limits/TOCTOU/幂等/partial facts 测试、0.4.6 版本/文档/专项 Gate 与全仓 test/vet/diff/bash syntax 全部 PASS。
 - 完成 FS-046-004：最终 `scripts/release-gate.sh --full` 终态 PASS / exitCode=0，新增 release staging prune 专项门禁与全部既有 Real E2E 均通过；无人值守进入 0.4.6 release commit/push 与生产 staging lifecycle 验收。
+- 0.4.6 正式验收收口：修正 `working_context.goal` Schema 契约描述与 `plan.sync` pre/post Git snapshot 语义，补自动回归；验收修复源码 `b72f13a` 已 push，Windows Git for Windows full release gate 全绿。
+- 生产 Hub/spiderctl 已同版本事务式更新并通过验证备份、livez/readyz；PCa Node 因 updater 正确拒绝同版本更新，采用受控原子替换。验收中识别并淘汰一次受持久 `GOARCH=386` 影响的错误构建，最终以显式 `GOOS=windows GOARCH=amd64 CGO_ENABLED=0` clean VCS 产物替换，PCa generation=57、online/ready、最终 SHA 对账 PASS。
+- Fast Spider 0.4.6 最终验收状态更新为 `FINAL PASS / PRODUCTION READY`；后续仅在出现新的真实生产缺口时开启下一版本。
 <!-- fast-spider:managed:change-log:end -->
 
 ## Manual Change Notes
