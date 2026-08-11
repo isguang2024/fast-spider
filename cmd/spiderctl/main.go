@@ -17,6 +17,8 @@ import (
 	"github.com/isguang2024/fast-spider/internal/version"
 )
 
+const defaultReleaseBackupKeep = 3
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -29,6 +31,8 @@ func main() {
 		backup(os.Args[2:])
 	case "backup-verify":
 		backupVerify(os.Args[2:])
+	case "backup-prune":
+		backupPrune(os.Args[2:])
 	case "restore":
 		restore(os.Args[2:])
 	case "version":
@@ -93,6 +97,33 @@ func backupVerify(args []string) {
 	})
 }
 
+func backupPrune(args []string) {
+	fs := flag.NewFlagSet("backup-prune", flag.ExitOnError)
+	directory := fs.String("dir", "", "absolute directory containing standard release backups")
+	keep := fs.Int("keep", defaultReleaseBackupKeep, "number of newest verified release backups to keep")
+	_ = fs.Parse(args)
+	if strings.TrimSpace(*directory) == "" {
+		fatalf("--dir is required")
+	}
+	if !filepath.IsAbs(*directory) {
+		fatalf("--dir must be an absolute path")
+	}
+	ctx, cancel := operationContext()
+	defer cancel()
+	result, err := runBackupPrune(ctx, *directory, *keep)
+	if err == nil || result.CandidateCount > 0 {
+		printJSON(result)
+	}
+	fatalIf(err)
+}
+
+func runBackupPrune(ctx context.Context, directory string, keep int) (opsbackup.PruneResult, error) {
+	if strings.TrimSpace(directory) == "" || !filepath.IsAbs(directory) {
+		return opsbackup.PruneResult{}, fmt.Errorf("backup prune directory must be an absolute path")
+	}
+	return opsbackup.PruneReleaseBackups(ctx, directory, keep)
+}
+
 func restore(args []string) {
 	fs := flag.NewFlagSet("restore", flag.ExitOnError)
 	file := fs.String("file", "", "backup archive path")
@@ -149,5 +180,5 @@ func fatalf(format string, args ...any) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: spiderctl <setup-url|backup|backup-verify|restore|version> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: spiderctl <setup-url|backup|backup-verify|backup-prune|restore|version> [flags]")
 }

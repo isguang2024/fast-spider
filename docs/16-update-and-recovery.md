@@ -73,6 +73,10 @@ spiderctl backup-verify --file /srv/backups/fast-spider-20260808.zip
 
 校验成功只说明备份包自身完整，不等于替代真实恢复演练。
 
+### Release backup rotation
+
+长期保留的正式升级前备份统一命名为 `pre-<semver>-<commit>.zip`。新备份完成 Verify 且正式升级成功后，可运行 `spiderctl backup-prune --dir <absolute-backup-dir> --keep 3`。Prune 不创建目录、不递归，也不根据文件 mtime 猜新旧；它先验证所有标准候选，再按 manifest `CreatedAt` UTC 排序。任一候选无效或为 symlink/reparse 时零删除。旧 `fast-spider-pre-*.zip`、Hub binary backup、未知文件和子目录不在自动 retention 范围内。
+
 ## 5. 恢复命令
 
 恢复前先停止旧 Hub：

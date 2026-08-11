@@ -162,6 +162,24 @@
 - `FS-044-004`: PASS；Windows Git for Windows 执行 `scripts/release-gate.sh --full` 终态 `PASS: Fast Spider full release gate`，exitCode=0。
 - Gate 明确通过新增 `0.4.4 legacy install artifacts cleanup gate`，并继续通过全仓 test/vet、Windows/Linux build、Task Workspace、Managed ripgrep/native、file_read/file_edit 2.0、0.4.3 consumed staging、updater/reconnect temp E2E、Repeated Node、Real Browser、Real CC Switch、Real Claude、Real Codex 与 Local Bridge multi-provider/product smoke。
 - full gate 未操作正式 0.4.3 Node/Hub/data-dir 或真实 legacy artifacts；生产验收留给 0.4.4 自更新后对正式 bin 目录实物检查。
+
+## 2026-08-11 — 0.4.4 Formal Release / Production Verification
+
+- 0.4.4 已由 baseline/release commit `1ec91ac0` 正式发布部署；生产启动自动清理旧手工安装 artifacts 共 48,819,313 bytes，严格保护当前 EXE 与 `.previous`，验收 PASS。
+- 发布后增长审计确认标准 release backup 按版本线性累积；历史异名与 Hub binary backups 必须保留，0.4.5 只对标准命名 backup 增加显式 retention。
+
+## 2026-08-11 — FS-045-001..003 Hub Release Backup Retention
+
+- `FS-045-001`: PASS；新增 `PruneReleaseBackups`，root/keep/candidate count bounded；只识别直接标准候选，先检查普通文件/reparse 并对全部执行现有 Verify，再按 manifest CreatedAt UTC 与 basename tie-break 规划删除。任何 planning/verify 错误均零删除，remove 错误返回 bounded kept/deleted 事实与 error。
+- `FS-045-002`: PASS；新增 `spiderctl backup-prune --dir <absolute-dir> --keep N`，默认 keep=3，输出 allowlist JSON DTO；空/相对目录拒绝。历史异名、Hub binary backup、未知文件、子目录与 symlink/reparse 不自动处理。
+- `FS-045-003`: PASS；源码版本更新为 0.4.5，README、部署/恢复/测试文档与 `0.4.5 release backup prune gate` 已同步，全部既有 Real E2E Gate 保留。
+- 验证终态：`go test ./internal/opsbackup ./cmd/spiderctl`、精确 0.4.5 Gate selector、`go test ./...`、`go vet ./...`、`git diff --check` 与 Git for Windows Bash 语法检查全部 PASS；未运行 full release gate。
+
+## 2026-08-11 — FS-045-004 Final 0.4.5 Release Gate
+
+- `FS-045-004`: PASS；Windows Git for Windows 执行 `scripts/release-gate.sh --full` 终态 `PASS: Fast Spider full release gate`，exitCode=0。
+- Gate 明确通过新增 `0.4.5 release backup prune gate`，并继续通过全仓 test/vet、Windows/Linux build、Task Workspace、Managed ripgrep/native、file_read/file_edit 2.0、0.4.3 consumed staging、0.4.4 legacy artifacts、updater/reconnect temp E2E、Repeated Node、Real Browser、Real CC Switch、Real Claude、Real Codex 与 Local Bridge multi-provider/product smoke。
+- full gate 未操作正式 0.4.4 Hub/Node/backup root；生产轮换只在 0.4.5 新标准备份创建并 Verify、正式升级成功后执行。
 <!-- fast-spider:managed:acceptance:end -->
 
 ## Manual Acceptance Notes

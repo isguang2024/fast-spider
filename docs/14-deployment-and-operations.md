@@ -1,4 +1,4 @@
-# 部署与运维（0.4.4）
+# 部署与运维（0.4.5）
 
 ## Hub
 
@@ -56,6 +56,14 @@ spiderctl backup-verify --file /srv/backups/fast-spider-<timestamp>.zip
 
 备份包含 Hub secrets，必须按敏感数据保存。升级生产前必须先生成并校验备份。
 
+正式 release backup 使用严格文件名 `pre-<semver>-<commit>.zip`，其中 semver 为无前导零的三段十进制版本，commit 为 7–40 位十六进制。新 backup 完成 `backup-verify` 且正式升级成功后，执行：
+
+```bash
+spiderctl backup-prune --dir <absolute-backup-dir> --keep 3
+```
+
+`backup-prune` 默认保留最新 3 份，root 必须是已存在的绝对普通目录且不能是 symlink/reparse。它只枚举直接子级、最多接受 256 个标准候选，并在任何删除前对全部候选执行完整 Verify；任一匹配候选损坏、manifest 无效、不是普通文件或为 reparse 时整次零删除。排序使用 manifest `CreatedAt` 的 UTC 时刻从新到旧，同时间按 basename 升序稳定决胜。`fast-spider-pre-*.zip` 等历史异名、Hub binary backup、未知文件和子目录全部保留；删除阶段若个别文件失败，JSON 结果仍明确列出 bounded kept/deleted basenames 与计数并返回错误。
+
 ## 升级验收
 
 每次发布至少确认：
@@ -68,4 +76,4 @@ spiderctl backup-verify --file /srv/backups/fast-spider-<timestamp>.zip
 - Node release manifest 的版本/哈希与正式 EXE 一致。
 - ChatGPT OAuth + MCP tools/list 可获取当前工具。
 
-0.3.x 完成权限模型收敛；0.4.2 正式交付 Task Workspace、多 AI Harness/CC Switch 只读 Routing、Managed ripgrep 与文件能力 2.0；0.4.3 收敛已消费 Node staging 生命周期；0.4.4 清理旧手工安装链路遗留物，不新增常驻服务或第二套更新状态机。
+0.3.x 完成权限模型收敛；0.4.2 正式交付 Task Workspace、多 AI Harness/CC Switch 只读 Routing、Managed ripgrep 与文件能力 2.0；0.4.3/0.4.4 收敛 Node 更新文件生命周期；0.4.5 增加显式、先 Verify 后删除的标准 release backup retention，不改其它 retention 常量。

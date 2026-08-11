@@ -27,6 +27,9 @@
 - 0.4.3 已正式发布部署，生产自更新后的 `updates` staging 验证归零；后续审计将旧手工安装遗留物收敛为 0.4.4 小版本任务。
 - 完成 FS-044-001..003：新增 Windows-only legacy install artifacts cleanup，以 Win32 reparse attribute、严格文件名、同级/非递归范围保护 current/previous 和未知项；NodeUI 安全启动时机接线、0.4.4 版本/文档/专项 Gate 与全仓验证均 PASS。
 - 完成 FS-044-004：最终 `scripts/release-gate.sh --full` 终态 PASS / exitCode=0，新增 legacy install artifacts cleanup 专项门禁与全部既有 Real E2E 均通过；无人值守进入 0.4.4 release commit/push 与生产迁移验收。
+- 0.4.4 已正式发布部署，生产自动清理 Windows legacy install artifacts 48,819,313 bytes 并保护 current/previous；后续审计将标准 release backup 线性增长收敛为 0.4.5 任务。
+- 完成 FS-045-001..003：新增全候选 Verify 后按 CreatedAt UTC retention 的 release backup prune API 与 `spiderctl backup-prune`；严格命名/root/reparse/bounds/零删除失败边界、部分删除事实 DTO、0.4.5 版本/文档/专项 Gate 和全仓验证全部 PASS。
+- 完成 FS-045-004：最终 `scripts/release-gate.sh --full` 终态 PASS / exitCode=0，新增 release backup prune 专项门禁与全部既有 Real E2E 均通过；无人值守进入 0.4.5 release commit/push、生产升级与 keep=3 轮换验收。
 <!-- fast-spider:managed:change-log:end -->
 
 ## Manual Change Notes
