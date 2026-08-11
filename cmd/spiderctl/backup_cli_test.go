@@ -73,3 +73,38 @@ func TestBackupPruneCLIHelperUsesSafeDefaultsAndAbsoluteDirectory(t *testing.T) 
 		t.Fatalf("unexpected prune result: %+v", result)
 	}
 }
+
+func TestStagingPruneCLIHelperPlansThenApplies(t *testing.T) {
+	t.Parallel()
+	if _, err := runStagingPrune(context.Background(), "relative", "local", "0.4.6", false); err == nil {
+		t.Fatal("relative staging directory was accepted")
+	}
+	root := t.TempDir()
+	old := filepath.Join(root, "release-0.4.5")
+	future := filepath.Join(root, "release-0.4.7-deadbee")
+	for _, dir := range []string{old, future} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "artifact.bin"), []byte("fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan, err := runStagingPrune(context.Background(), root, "local", "0.4.6", false)
+	if err != nil || plan.PlannedCount != 1 || plan.DeletedCount != 0 {
+		t.Fatalf("plan=%+v err=%v", plan, err)
+	}
+	if _, err := os.Stat(old); err != nil {
+		t.Fatalf("plan deleted old staging: %v", err)
+	}
+	applied, err := runStagingPrune(context.Background(), root, "local", "0.4.6", true)
+	if err != nil || applied.DeletedCount != 1 {
+		t.Fatalf("apply=%+v err=%v", applied, err)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("old staging remains: %v", err)
+	}
+	if _, err := os.Stat(future); err != nil {
+		t.Fatalf("future staging was removed: %v", err)
+	}
+}

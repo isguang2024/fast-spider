@@ -1,4 +1,4 @@
-# 测试策略（0.4.5）
+# 测试策略（0.4.6）
 
 发布门禁必须验证新的 Machine 边界，而不是旧目录授权模型。
 
@@ -27,6 +27,7 @@
 21. Node updater 必须覆盖 Ready/apply→consumed-current cleanup 启动顺序、Ready error 不清理、marker fail-safe、current 删除以及 future/old/unknown 分治。
 22. Windows legacy install cleanup 必须覆盖严格 temp/marker/backup 命名、Win32 reparse fail-closed、非递归、unknown/current/previous 保留、空目录删除、幂等和 NodeUI 启动时机；非 Windows 为 no-op。
 23. Release backup prune 必须覆盖严格标准文件名、绝对 non-reparse root、全部 Verify 后再删除、CreatedAt UTC 排序和 filename tie-break、损坏/匹配 symlink 零删除、历史异名/未知/子目录保留、keep/candidate bounds、幂等与部分删除结果。
+24. Release staging prune 必须覆盖 local/server 严格目录名、绝对 non-reparse root、plan/apply、old/current/future、unknown/普通文件保留、root/candidate/nested reparse 零删除、candidate/file/byte/depth bounds、删除前 TOCTOU 复核、幂等与部分删除事实。
 
 ## Release Gate
 
@@ -47,6 +48,7 @@
 - Node updater staging/cleanup、0.4.3 consumed-current cleanup 与 reconnect/backoff 临时 E2E
 - 0.4.4 Windows legacy install artifacts cleanup 专项
 - 0.4.5 release backup prune 专项
+- 0.4.6 release staging prune 专项
 - real Browser E2E
 - real CC Switch routing read-only E2E
 - real Claude Code CLI E2E

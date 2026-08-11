@@ -180,6 +180,25 @@
 - `FS-045-004`: PASS；Windows Git for Windows 执行 `scripts/release-gate.sh --full` 终态 `PASS: Fast Spider full release gate`，exitCode=0。
 - Gate 明确通过新增 `0.4.5 release backup prune gate`，并继续通过全仓 test/vet、Windows/Linux build、Task Workspace、Managed ripgrep/native、file_read/file_edit 2.0、0.4.3 consumed staging、0.4.4 legacy artifacts、updater/reconnect temp E2E、Repeated Node、Real Browser、Real CC Switch、Real Claude、Real Codex 与 Local Bridge multi-provider/product smoke。
 - full gate 未操作正式 0.4.4 Hub/Node/backup root；生产轮换只在 0.4.5 新标准备份创建并 Verify、正式升级成功后执行。
+
+## 2026-08-11 — 0.4.5 Formal Release / Production Verification
+
+- 0.4.5 已由 release commit `f5cee7c1` 正式发布部署；Hub、spiderctl、Node 均为 0.4.5，Node 自更新后 `updates` 为空且 `.previous` 精确保留 0.4.4 rollback。
+- 新标准升级前 backup 完成 Verify 后，生产 `backup-prune --keep 3` 从 4 个标准候选中只删除最老 0.4.2，保留 0.4.3/0.4.4/0.4.5 三份且逐份 Verify PASS；历史异名与 Hub binary backup 前后 size/SHA 不变。
+- 发布后长期增长审计发现本机与服务器累计旧 release staging 共 665,103,310 bytes；确认无进程引用后一次性安全清理，触发 0.4.6 staging lifecycle 收口。
+
+## 2026-08-11 — FS-046-001..003 Release Staging Lifecycle
+
+- `FS-046-001`: PASS；新增 `PruneReleaseStaging`，严格区分 local/server 目录名，只处理 direct child 标准候选与三段 semver，并只规划 version `<= through`。root/candidate/tree reparse、非普通树项、候选/文件/字节/深度 bounds 和删除前身份/内容变化均 fail-closed。
+- `FS-046-002`: PASS；新增 `spiderctl staging-prune --dir <absolute> --layout local|server --through <semver> [--apply]`。默认 plan-only，JSON 只返回 basename/version/estimatedBytes/counts；future/unknown/legacy deploy/普通文件保留。
+- `FS-046-003`: PASS；源码版本更新为 0.4.6，README、部署/恢复/测试策略与 `0.4.6 release staging prune gate` 已同步；专项覆盖 strict names、plan/apply、local/server、future/unknown、root/candidate/nested reparse、candidate/file/byte/depth limits、TOCTOU、幂等与 partial delete facts。
+- 验证终态：`go test ./internal/opsbackup ./cmd/spiderctl -run 'Test(StagingPrune|PruneReleaseStaging)' -count=1`、`go test ./... -count=1`、`go vet ./...`、`git diff --check` 与 Git for Windows `bash -n scripts/release-gate.sh` 全部 PASS。
+
+## 2026-08-11 — FS-046-004 Final 0.4.6 Release Gate
+
+- `FS-046-004`: PASS；Windows Git for Windows 执行 `scripts/release-gate.sh --full` 终态 `PASS: Fast Spider full release gate`，exitCode=0。
+- Gate 明确通过新增 `0.4.6 release staging prune gate`，并继续通过全仓 test/vet、Windows/Linux build、Hub restore、Local Bridge、Task Workspace、Managed ripgrep/native、file_read/file_edit 2.0、0.4.3 consumed staging、0.4.4 legacy artifacts、0.4.5 backup prune、updater/reconnect temp E2E、Repeated Node、Real Browser、Real CC Switch、Real Claude、Real Codex 与 Local Bridge multi-provider/product smoke。
+- full gate 未操作正式 0.4.5 Hub/Node/data-dir/release-dir/backup root；生产 staging-prune 将在 0.4.6 正式升级成功后先 plan 再 apply。
 <!-- fast-spider:managed:acceptance:end -->
 
 ## Manual Acceptance Notes

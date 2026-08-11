@@ -30,6 +30,10 @@
 - 0.4.4 已正式发布部署，生产自动清理 Windows legacy install artifacts 48,819,313 bytes 并保护 current/previous；后续审计将标准 release backup 线性增长收敛为 0.4.5 任务。
 - 完成 FS-045-001..003：新增全候选 Verify 后按 CreatedAt UTC retention 的 release backup prune API 与 `spiderctl backup-prune`；严格命名/root/reparse/bounds/零删除失败边界、部分删除事实 DTO、0.4.5 版本/文档/专项 Gate 和全仓验证全部 PASS。
 - 完成 FS-045-004：最终 `scripts/release-gate.sh --full` 终态 PASS / exitCode=0，新增 release backup prune 专项门禁与全部既有 Real E2E 均通过；无人值守进入 0.4.5 release commit/push、生产升级与 keep=3 轮换验收。
+- 0.4.5 已由 release commit `f5cee7c1` 正式发布部署；标准 release backup 从 4 份安全轮换到最近 3 份且逐份 Verify PASS，历史异名/Hub binary backup 保持原 SHA/size；Node/Hub/spiderctl 与组件/搜索文件自检均正常。
+- 发布后审计确认 release staging 是剩余明确线性增长点；无进程引用后一次性清理本机/服务器旧 staging 共 665,103,310 bytes。
+- 完成 FS-046-001..003：新增 bounded/fail-closed `PruneReleaseStaging` 与 `spiderctl staging-prune` plan/apply CLI；严格 local/server 名称、future/unknown 保留、reparse/limits/TOCTOU/幂等/partial facts 测试、0.4.6 版本/文档/专项 Gate 与全仓 test/vet/diff/bash syntax 全部 PASS。
+- 完成 FS-046-004：最终 `scripts/release-gate.sh --full` 终态 PASS / exitCode=0，新增 release staging prune 专项门禁与全部既有 Real E2E 均通过；无人值守进入 0.4.6 release commit/push 与生产 staging lifecycle 验收。
 <!-- fast-spider:managed:change-log:end -->
 
 ## Manual Change Notes

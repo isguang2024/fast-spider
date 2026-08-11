@@ -77,6 +77,12 @@ spiderctl backup-verify --file /srv/backups/fast-spider-20260808.zip
 
 长期保留的正式升级前备份统一命名为 `pre-<semver>-<commit>.zip`。新备份完成 Verify 且正式升级成功后，可运行 `spiderctl backup-prune --dir <absolute-backup-dir> --keep 3`。Prune 不创建目录、不递归，也不根据文件 mtime 猜新旧；它先验证所有标准候选，再按 manifest `CreatedAt` UTC 排序。任一候选无效或为 symlink/reparse 时零删除。旧 `fast-spider-pre-*.zip`、Hub binary backup、未知文件和子目录不在自动 retention 范围内。
 
+### Release staging lifecycle
+
+发布构建目录和服务器上传目录不是正式 release，也不是 rollback SSOT。0.4.6 用同一个 `spiderctl staging-prune` 显式管理两种布局：本机 `release-<semver>[-<commit>]` 与服务器 `fast-spider-<semver>[-<commit>]`。命令要求绝对 root、明确 `local|server` layout 和三段 `--through` 版本；默认仅规划，只有 `--apply` 才删除。
+
+Prune 只处理 root 的直接标准候选，且只删除 version `<= --through`；future、unknown、legacy deploy 名称、普通文件均保留。root/candidate/tree reparse、非普通树项、超过候选/文件/字节/深度上限，或删除前身份/内容发生变化时均 fail-closed。Apply 前完整扫描并再次核对全部候选，避免把中断发布或路径替换误当成可删除 staging。
+
 ## 5. 恢复命令
 
 恢复前先停止旧 Hub：
@@ -210,6 +216,7 @@ GET 已签名 latest manifest
 - Node release manifest 的 Hub 签名、SHA-256、错误签名拒绝均有测试；
 - Ready/apply 先于 cleanup；Ready 错误时 current staging 保留，成功消费后 current staging 删除，future/unknown 与正式 `.previous` 不受影响；
 - Windows legacy cleanup 严格验证 executable 名、文件名、普通文件/目录与 Win32 reparse attribute；未知、嵌套、current/previous 保留且重复执行幂等；
+- Release staging prune 覆盖 local/server 严格命名、plan/apply、old/current/future、unknown、root/candidate/tree reparse、候选/文件/字节/深度上限、TOCTOU、幂等和 partial delete facts；
 - 组件 ZIP 只能安全解压到 `<node-data-dir>/components/<id>/<version>`；
 - Windows 单 EXE 自启动与自替换流程保持无第二个常驻进程；
 - `go test ./...` 与现有 Phase 1–6 E2E 不回归。

@@ -25,6 +25,7 @@
 20. **Node staging 生命周期**：`CleanupConsumedCurrent` 与 `CleanupStale` 职责分离；启动必须先处理 Ready/apply，只有 `(applied=false, err=nil)` 才尝试清理 current staging，且 `ready.json` 存在时 API 自身 fail-safe 不删。future/unknown 目录与正式 `.previous` 回滚副本不属于 consumed-current cleanup。
 21. **Windows legacy install cleanup**：独立 API 只在当前 executable basename 为 `fast-spider-node.exe` 时检查同级目录；使用 Win32 reparse attribute fail-closed，只删除严格命名的旧 temp/marker/直接 backup 文件，未知项和嵌套目录保留。当前 EXE 与 `.previous` 是保护对象，`.previous` 继续作为唯一正式 rollback SSOT；非 Windows no-op。
 22. **Release backup retention**：仅显式 `backup-prune` 管理标准 `pre-<三段 semver>-<7..40 hex commit>.zip`；root 必须是绝对 non-reparse 普通目录。全部候选先执行现有 `Verify`，任一无效/特殊文件则零删除；按 manifest `CreatedAt` UTC 新到旧、basename 升序 tie-break，默认保留 3。历史异名、Hub binary backup、未知项与子目录永不自动处理，不改其它 retention 常量。
+23. **Release staging 生命周期**：仅显式 `staging-prune` 管理本机 `release-<semver>[-<commit>]` 与服务器 `fast-spider-<semver>[-<commit>]` 直接子目录；默认 plan-only，`--apply` 才写。只处理 version `<= through`；future/unknown/legacy deploy/普通文件保留。root/candidate/tree reparse、扫描 bounds 或删除前身份/内容变化时 fail-closed，递归删除逐项 `Lstat`/reparse 校验，不使用无边界 `RemoveAll`。
 <!-- fast-spider:managed:decisions:end -->
 
 ## Manual Decisions

@@ -17,7 +17,8 @@ core: formatting, module integrity, vet, all unit/integration tests,
 full: core + explicit 0.4.2 Task Workspace/Search/file_read/file_edit/update/
       reconnect gates, the 0.4.3 consumed-current staging cleanup gate,
       the 0.4.4 legacy install artifacts cleanup gate, repeated Node tests,
-      the 0.4.5 release backup prune gate, short fuzzing/race where supported,
+      the 0.4.5 release backup prune gate, the 0.4.6 release staging prune gate,
+      short fuzzing/race where supported,
       real Browser/CC Switch/Claude Code/Codex E2E, multi-provider Local Bridge
       discovery, and the complete Local Bridge→Codex smoke.
 
@@ -101,6 +102,7 @@ if [[ "$mode" == "full" ]]; then
   step "0.4.3 updater consumed staging gate" go test ./internal/nodeupdate ./internal/nodeui -run 'Test(CleanupConsumedCurrent|StartupUpdateMaintenance)' -count=1
   step "0.4.4 legacy install artifacts cleanup gate" go test ./internal/nodeupdate ./internal/nodeui -run 'Test(LegacyInstallArtifact|LegacyCleanup|CleanupLegacyInstallArtifacts)' -count=1
   step "0.4.5 release backup prune gate" go test ./internal/opsbackup ./cmd/spiderctl -run 'Test(ReleaseBackupName|PruneReleaseBackups|BackupPruneCLI)' -count=1
+  step "0.4.6 release staging prune gate" go test ./internal/opsbackup ./cmd/spiderctl -run 'Test(StagingPrune|PruneReleaseStaging)' -count=1
   step "0.4.2 reconnect temp E2E" go test ./internal/node -run 'Test(NodeReconnectAfterRevokedMachineCreatesFreshMachineIdentity|ReconnectBackoffsResetAfterStableSession)' -count=1
   step "Repeated Node regression" go test ./internal/node -count=3
 

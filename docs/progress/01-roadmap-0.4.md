@@ -1,7 +1,7 @@
 # Fast Spider 0.4 Roadmap
 
 <!-- fast-spider:managed:roadmap:start -->
-## Plan `fast-spider-0.4.0-to-0.4.5`
+## Plan `fast-spider-0.4.0-to-0.4.6`
 
 状态枚举：`pending` / `in_progress` / `blocked` / `done`。0.4.1 是连续开发阶段，不做独立发布。
 
@@ -89,9 +89,21 @@
 | FS-045-002 `spiderctl backup-prune` + 严格路径/keep/JSON DTO | done |
 | FS-045-003 版本/文档/专项 Gate 与全量验证 | done |
 | FS-045-004 完整 Release Gate | done |
-| FS-045-005 commit + push | in_progress |
-| FS-045-006 Hub / Node 0.4.5 更新 + `backup-prune --keep 3` 生产验收 | pending |
-| FS-045-007 发布后长期增长继续审计 | pending |
+| FS-045-005 commit + push | done |
+| FS-045-006 Hub / Node 0.4.5 更新 + `backup-prune --keep 3` 生产验收 | done |
+| FS-045-007 发布后长期增长继续审计 | done |
+
+### 0.4.6 Release staging lifecycle
+
+| Task | 状态 |
+|---|---|
+| FS-046-001 安全 release staging prune 核心 API | done |
+| FS-046-002 `spiderctl staging-prune` plan/apply CLI + bounded JSON | done |
+| FS-046-003 local/server/future/unknown/reparse/limits/TOCTOU 测试 + version/docs/Gate | done |
+| FS-046-004 完整 Release Gate | done |
+| FS-046-005 commit + push | in_progress |
+| FS-046-006 Hub / Node 0.4.6 更新 + local/server staging-prune 生产验收 | pending |
+| FS-046-007 最终长期增长审计 | pending |
 
 ### Final Acceptance Matrix
 
@@ -112,6 +124,7 @@
 - consumed-current staging cleanup E2E
 - Windows legacy install artifacts cleanup E2E
 - Hub release backup prune E2E
+- Release staging prune local/server E2E
 - `scripts/release-gate.sh --full`
 <!-- fast-spider:managed:roadmap:end -->
 

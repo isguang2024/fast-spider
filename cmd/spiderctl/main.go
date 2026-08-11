@@ -33,6 +33,8 @@ func main() {
 		backupVerify(os.Args[2:])
 	case "backup-prune":
 		backupPrune(os.Args[2:])
+	case "staging-prune":
+		stagingPrune(os.Args[2:])
 	case "restore":
 		restore(os.Args[2:])
 	case "version":
@@ -124,6 +126,34 @@ func runBackupPrune(ctx context.Context, directory string, keep int) (opsbackup.
 	return opsbackup.PruneReleaseBackups(ctx, directory, keep)
 }
 
+func stagingPrune(args []string) {
+	fs := flag.NewFlagSet("staging-prune", flag.ExitOnError)
+	directory := fs.String("dir", "", "absolute release staging root")
+	layout := fs.String("layout", "", "staging layout: local or server")
+	through := fs.String("through", "", "highest completed three-part semantic version to prune")
+	apply := fs.Bool("apply", false, "apply the planned deletion; default is plan-only")
+	_ = fs.Parse(args)
+	ctx, cancel := operationContext()
+	defer cancel()
+	result, err := runStagingPrune(ctx, *directory, *layout, *through, *apply)
+	if err == nil || result.CandidateCount > 0 {
+		printJSON(result)
+	}
+	fatalIf(err)
+}
+
+func runStagingPrune(ctx context.Context, directory, layout, through string, apply bool) (opsbackup.StagingPruneResult, error) {
+	if strings.TrimSpace(directory) == "" || !filepath.IsAbs(directory) {
+		return opsbackup.StagingPruneResult{}, fmt.Errorf("staging prune directory must be an absolute path")
+	}
+	return opsbackup.PruneReleaseStaging(ctx, opsbackup.StagingPruneOptions{
+		Directory:      directory,
+		Layout:         opsbackup.StagingLayout(strings.TrimSpace(layout)),
+		ThroughVersion: strings.TrimSpace(through),
+		Apply:          apply,
+	})
+}
+
 func restore(args []string) {
 	fs := flag.NewFlagSet("restore", flag.ExitOnError)
 	file := fs.String("file", "", "backup archive path")
@@ -180,5 +210,5 @@ func fatalf(format string, args ...any) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: spiderctl <setup-url|backup|backup-verify|backup-prune|restore|version> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: spiderctl <setup-url|backup|backup-verify|backup-prune|staging-prune|restore|version> [flags]")
 }

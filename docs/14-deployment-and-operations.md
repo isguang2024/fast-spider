@@ -1,4 +1,4 @@
-# 部署与运维（0.4.5）
+# 部署与运维（0.4.6）
 
 ## Hub
 
@@ -64,6 +64,18 @@ spiderctl backup-prune --dir <absolute-backup-dir> --keep 3
 
 `backup-prune` 默认保留最新 3 份，root 必须是已存在的绝对普通目录且不能是 symlink/reparse。它只枚举直接子级、最多接受 256 个标准候选，并在任何删除前对全部候选执行完整 Verify；任一匹配候选损坏、manifest 无效、不是普通文件或为 reparse 时整次零删除。排序使用 manifest `CreatedAt` 的 UTC 时刻从新到旧，同时间按 basename 升序稳定决胜。`fast-spider-pre-*.zip` 等历史异名、Hub binary backup、未知文件和子目录全部保留；删除阶段若个别文件失败，JSON 结果仍明确列出 bounded kept/deleted basenames 与计数并返回错误。
 
+## Release staging 清理
+
+发布构建和服务器上传 staging 不进入正式 release-dir，也不应长期保留。0.4.6 提供显式、默认只规划的清理命令：
+
+```bash
+spiderctl staging-prune --dir <absolute-root> --layout local --through 0.4.6
+spiderctl staging-prune --dir <absolute-root> --layout local --through 0.4.6 --apply
+spiderctl staging-prune --dir /tmp --layout server --through 0.4.6 --apply
+```
+
+`local` 只识别直接子级 `release-<semver>` / `release-<semver>-<7..40hex>`；`server` 只识别 `fast-spider-<semver>` / `fast-spider-<semver>-<7..40hex>`。只规划/删除版本不高于 `--through` 的候选；future、未知目录、legacy deploy 名称和普通文件均保留。root 或匹配 candidate 为 symlink/reparse/junction、候选树内出现 reparse/非普通项、扫描超过 256 candidates / 10000 files / 16 GiB / depth 32，或删除前身份/内容变化时均 fail-closed；`--apply` 前会完整扫描并重新核对，默认无 `--apply` 时绝不写磁盘。
+
 ## 升级验收
 
 每次发布至少确认：
@@ -76,4 +88,4 @@ spiderctl backup-prune --dir <absolute-backup-dir> --keep 3
 - Node release manifest 的版本/哈希与正式 EXE 一致。
 - ChatGPT OAuth + MCP tools/list 可获取当前工具。
 
-0.3.x 完成权限模型收敛；0.4.2 正式交付 Task Workspace、多 AI Harness/CC Switch 只读 Routing、Managed ripgrep 与文件能力 2.0；0.4.3/0.4.4 收敛 Node 更新文件生命周期；0.4.5 增加显式、先 Verify 后删除的标准 release backup retention，不改其它 retention 常量。
+0.3.x 完成权限模型收敛；0.4.2 正式交付 Task Workspace、多 AI Harness/CC Switch 只读 Routing、Managed ripgrep 与文件能力 2.0；0.4.3/0.4.4 收敛 Node 更新文件生命周期；0.4.5 收敛标准 release backup retention；0.4.6 收敛本机/服务器 release staging 生命周期，继续不新增常驻服务或第二套发布状态机。
