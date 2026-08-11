@@ -15,7 +15,7 @@ func TestCCSwitchInspectorRealE2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	inspector := NewCCSwitchInspector(nil)
-	if _, err := os.Stat(inspector.dbPath); err != nil {
+	if _, err := os.Stat(inspector.DBPath()); err != nil {
 		t.Skipf("CC Switch database unavailable: %v", err)
 	}
 	for _, appType := range []string{"claude", "codex", "claude-desktop"} {

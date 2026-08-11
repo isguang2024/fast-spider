@@ -22,3 +22,17 @@ func openLocalUI(rawURL string) error {
 	}
 	return nil
 }
+
+func openLocalFolder(path string) error {
+	var name string
+	switch runtime.GOOS {
+	case "darwin":
+		name = "open"
+	default:
+		name = "xdg-open"
+	}
+	if err := exec.Command(name, path).Start(); err != nil {
+		return fmt.Errorf("open Markdown folder: %w", err)
+	}
+	return nil
+}

@@ -186,6 +186,42 @@ func TestAgentCapabilityRetryAndAuditPolicy(t *testing.T) {
 	}
 }
 
+func TestWorkingContextPlanRetryAndAuditPolicy(t *testing.T) {
+	for _, action := range []string{"get", "plan.get", "plan.list", "markdown.list", "markdown.read", "progress.watch"} {
+		if !isRetryableCapability("working.context", action) {
+			t.Fatalf("working.context/%s should be safely retryable", action)
+		}
+		if shouldAuditCapability("working.context", action) {
+			t.Fatalf("working.context/%s must not be audited as a mutation", action)
+		}
+	}
+	for _, action := range []string{"set", "clear", "plan.init", "plan.sync", "task.update", "markdown.append"} {
+		if isRetryableCapability("working.context", action) {
+			t.Fatalf("working.context/%s must not be retryable", action)
+		}
+		if !shouldAuditCapability("working.context", action) {
+			t.Fatalf("working.context/%s must be audited", action)
+		}
+	}
+}
+
+func TestFileEditRetryAndAuditPolicy(t *testing.T) {
+	if !isRetryableCapability("file.write", "preview") {
+		t.Fatal("file.write/preview should be safely retryable")
+	}
+	if shouldAuditCapability("file.write", "preview") {
+		t.Fatal("file.write/preview must not be audited as a mutation")
+	}
+	for _, action := range []string{"edit", "create", "replace", "editMany"} {
+		if isRetryableCapability("file.write", action) {
+			t.Fatalf("file.write/%s must not be retryable", action)
+		}
+		if !shouldAuditCapability("file.write", action) {
+			t.Fatalf("file.write/%s must be audited", action)
+		}
+	}
+}
+
 func TestListMachinesLoadsCapabilitiesForOwnerBatch(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()

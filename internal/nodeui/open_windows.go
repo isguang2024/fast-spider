@@ -34,3 +34,10 @@ func openLocalUI(rawURL string) error {
 	}
 	return nil
 }
+
+func openLocalFolder(path string) error {
+	if err := exec.Command("explorer.exe", path).Start(); err != nil {
+		return errors.New("unable to open the Markdown folder")
+	}
+	return nil
+}

@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-const localConfigVersion = 2
+const localConfigVersion = 3
 
 const defaultHubURL = ""
 
@@ -22,6 +22,8 @@ type LocalConfig struct {
 	AutoStartEnabled      bool   `json:"autoStartEnabled"`
 	AutoUpdateEnabled     bool   `json:"autoUpdateEnabled"`
 	AllowInsecureLocalHub bool   `json:"allowInsecureLocalHub"`
+	WorkingProjectPath    string `json:"workingProjectPath,omitempty"`
+	WorkingPlanID         string `json:"workingPlanId,omitempty"`
 }
 
 func defaultLocalConfig(machineName string) LocalConfig {
@@ -46,7 +48,7 @@ func loadLocalConfig(dataDir, machineName string) (LocalConfig, error) {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return LocalConfig{}, fmt.Errorf("decode local config: %w", err)
 	}
-	if cfg.Version == 1 {
+	if cfg.Version == 1 || cfg.Version == 2 {
 		cfg.Version = localConfigVersion
 	} else if cfg.Version != localConfigVersion {
 		return LocalConfig{}, fmt.Errorf("unsupported local config version %d", cfg.Version)
@@ -65,7 +67,9 @@ func saveLocalConfig(dataDir string, cfg LocalConfig) error {
 	cfg.HubURL = strings.TrimSpace(cfg.HubURL)
 	cfg.MachineName = strings.TrimSpace(cfg.MachineName)
 	cfg.BrowserSidecarDir = strings.TrimSpace(cfg.BrowserSidecarDir)
-	if len(cfg.HubURL) > 2048 || len(cfg.MachineName) > 128 || len(cfg.BrowserSidecarDir) > 4096 {
+	cfg.WorkingProjectPath = strings.TrimSpace(cfg.WorkingProjectPath)
+	cfg.WorkingPlanID = strings.TrimSpace(cfg.WorkingPlanID)
+	if len(cfg.HubURL) > 2048 || len(cfg.MachineName) > 128 || len(cfg.BrowserSidecarDir) > 4096 || len(cfg.WorkingProjectPath) > 4096 || len(cfg.WorkingPlanID) > 128 {
 		return errors.New("local config field exceeds limit")
 	}
 	raw, err := json.MarshalIndent(cfg, "", "  ")

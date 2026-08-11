@@ -20,7 +20,7 @@ Provider Token、Codex/ChatGPT 本地认证和其他 Provider secret 只保留�
 
 ## 2. 多 AI Harness 与 CC Switch Routing
 
-0.4.0 当前内置两个 AI Harness：
+0.4.2 当前内置两个 AI Harness：
 
 ```text
 providerId=codex        -> Codex app-server --stdio
@@ -38,6 +38,8 @@ AI Harness
 因此 `sonnet`、`opus`、Codex model catalog 或 UI 展示名称都不能自动当作真实上游模型。`routing.status` 只读 `~/.cc-switch/cc-switch.db`，这是 Provider、Endpoint、Takeover、Health、Model Mapping 和 Proxy Request Log 的 SSOT；`~/.cc-switch/settings.json` 只用于设备当前选择对账，Claude/Codex live config 只是投影。
 
 CC Switch SQLite 始终以 `mode=ro` 打开。Fast Spider 不返回 raw `settings_config` / `meta` / API Key / Token / Cookie / Authorization；Endpoint 只返回 hostname[:port]。`credentialPresent` 只表示是否检测到凭据，不暴露凭据正文。
+
+Agent 实现按 Manager、静态 Provider Registry、Provider Adapter、Session Store/Event 与独立 `internal/agent/routing` 分层；Registry 只注册 Codex/Claude Code，不做动态插件加载。CC Switch 对唯一支持 schema 使用 `PRAGMA table_info` + fingerprint fail-closed，不兼容时只返回 `unsupported_schema`。只读 discovery 使用 bounded 进程内 TTL（route 约 1.5 秒、CLI version/auth 45 秒、models 20 秒），互不依赖的 Codex/Claude/CC Switch 探测并行执行，不触发 Session 或模型调用。
 
 最终能力使用 tri-state `supported|unsupported|unknown`，原则是：
 
@@ -274,7 +276,7 @@ custom      + reviewInstructions
 
 Codex 本身还公开 `fs/*`、`command/exec/*`、`process/*`、`thread/shellCommand`、`mcpServer/tool/call` 等接口，但这些不会通过 `ai_control` 再暴露。文件、Shell、Git、Build、Artifact、Browser 继续只走 Fast Spider 自己的 Capability/Job/Audit 链，避免两套权限和两套副作用状态机。
 
-## 14. Claude Code Provider（0.4.0）
+## 14. Claude Code Provider（0.4.2）
 
 当前本机验证基线为 Claude Code 2.1.207。Adapter 使用原生 CLI：
 
@@ -353,3 +355,12 @@ Codex 产品层存在 Automations/定时任务体验，但当前验证的 Codex 
 - 不把 Fast Spider 自己未来可能存在的 Scheduler 冒充成 Codex Automation。
 
 只有 Codex 后续公开稳定协议时，才评估以同样的 provider adapter 方式直接映射。
+
+## 16. 本地 Edge App Window
+
+Node loopback UI 继续使用 Edge App Window，不引入 Electron/Wails。0.4.2 一级导航为概览/连接、任务与进度、AI 与路由、组件、诊断：
+
+- 任务与进度复用本地 `working.context` Plan/Task/Markdown actions，不复制第二套状态机。
+- AI 与路由、诊断只返回显式 allowlist DTO；页面加载不自动执行真实模型健康测试。
+- 组件中心只允许 `browser` 与 `search-ripgrep`，安装/更新必须手动点击并复用 component manager；状态响应不公开组件根目录、安装绝对路径或 Hub 凭据。
+- 搜索与文件自检只在 NodeUI data-dir 下建立隔离临时目录，通过同一 Node local capability 调用 code.search、file.read 2.0 与 file.write preview，结束后清理；不读写用户项目、不下载组件、不执行 AI。

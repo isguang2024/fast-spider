@@ -50,21 +50,10 @@ type codexServerRequest struct {
 	ReceivedAt time.Time
 }
 
-type AgentEvent struct {
-	Sequence    int64          `json:"sequence"`
-	Type        string         `json:"type"`
-	SessionID   string         `json:"sessionId,omitempty"`
-	TurnID      string         `json:"turnId,omitempty"`
-	RequestID   string         `json:"requestId,omitempty"`
-	RequestType string         `json:"requestType,omitempty"`
-	Text        string         `json:"text,omitempty"`
-	State       string         `json:"state,omitempty"`
-	Detail      map[string]any `json:"detail,omitempty"`
-	Timestamp   string         `json:"timestamp"`
-}
-
 type CodexAdapter struct {
-	logger *slog.Logger
+	logger       *slog.Logger
+	versionCache *ttlCache[versionProbe]
+	modelsCache  *ttlCache[map[string]any]
 
 	startMu     sync.Mutex
 	loadMu      sync.Mutex
@@ -94,6 +83,8 @@ func NewCodexAdapter(logger *slog.Logger) *CodexAdapter {
 	}
 	return &CodexAdapter{
 		logger:         logger,
+		versionCache:   newTTLCache[versionProbe](cliProbeTTL, 1, nil),
+		modelsCache:    newTTLCache[map[string]any](modelsTTL, 1, cloneAgentMap),
 		pending:        make(map[int64]codexPending),
 		loaded:         make(map[string]struct{}),
 		eventNotify:    make(chan struct{}),
@@ -103,20 +94,30 @@ func NewCodexAdapter(logger *slog.Logger) *CodexAdapter {
 }
 
 func (a *CodexAdapter) Availability(ctx context.Context) (string, error) {
+	if value, ok := a.versionCache.get("version"); ok {
+		return value.version, value.err
+	}
 	path, err := exec.LookPath("codex")
 	if err != nil {
-		return "", fmt.Errorf("%w: codex executable not found", node.ErrAgentProviderUnavailable)
+		err = fmt.Errorf("%w: codex executable not found", node.ErrAgentProviderUnavailable)
+		a.versionCache.set("version", versionProbe{err: err})
+		return "", err
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	output, err := exec.CommandContext(probeCtx, path, "--version").Output()
 	if err != nil {
-		return "", fmt.Errorf("%w: codex --version failed", node.ErrAgentProviderUnavailable)
+		err = fmt.Errorf("%w: codex --version failed", node.ErrAgentProviderUnavailable)
+		a.versionCache.set("version", versionProbe{err: err})
+		return "", err
 	}
 	version := strings.TrimSpace(string(output))
 	if version == "" {
-		return "", fmt.Errorf("%w: codex version is empty", node.ErrAgentProviderUnavailable)
+		err = fmt.Errorf("%w: codex version is empty", node.ErrAgentProviderUnavailable)
+		a.versionCache.set("version", versionProbe{err: err})
+		return "", err
 	}
+	a.versionCache.set("version", versionProbe{version: version})
 	return version, nil
 }
 
@@ -262,7 +263,8 @@ func (a *CodexAdapter) request(ctx context.Context, method string, params map[st
 		return nil, ctx.Err()
 	case response := <-pending.ch:
 		if response.Error != nil {
-			return nil, fmt.Errorf("Codex %s: %s", method, response.Error.Message)
+			a.logger.Debug("Codex app-server request failed", "method", method, "rpcCode", response.Error.Code, "errorClass", classifyExecutionText(response.Error.Message))
+			return nil, newExecutionError("codex", method, response.Error.Message)
 		}
 		var result map[string]any
 		if len(response.Result) == 0 || string(response.Result) == "null" {
@@ -538,7 +540,7 @@ func (a *CodexAdapter) stderrLoop(reader io.Reader) {
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line != "" {
-			a.logger.Debug("Codex app-server", "message", boundedAgentText(line, 512))
+			a.logger.Debug("Codex app-server stderr", "errorClass", classifyExecutionText(line))
 		}
 	}
 }
@@ -635,11 +637,14 @@ func (a *CodexAdapter) handleNotification(method string, raw json.RawMessage) {
 		}
 	case "warning", "error":
 		event.Type = method
-		event.Text = boundedAgentText(firstNonEmptyString(
+		rawText := firstNonEmptyString(
 			mapString(params, "message"),
 			mapNestedString(params, "error", "message"),
 			mapNestedString(params, "error", "msg"),
-		), 2048)
+		)
+		class := classifyExecutionText(rawText)
+		event.Text = publicErrorMessage(class)
+		event.Detail = map[string]any{"errorClass": class}
 	}
 	a.recordEvent(event)
 }
@@ -742,7 +747,14 @@ func (a *CodexAdapter) PendingRequests(sessionID string) []map[string]any {
 }
 
 func (a *CodexAdapter) ListModels(ctx context.Context) (map[string]any, error) {
-	return a.request(ctx, "model/list", map[string]any{})
+	if value, ok := a.modelsCache.get("models"); ok {
+		return value, nil
+	}
+	result, err := a.request(ctx, "model/list", map[string]any{})
+	if err == nil {
+		a.modelsCache.set("models", result)
+	}
+	return result, err
 }
 
 func (a *CodexAdapter) ProviderCapabilities(ctx context.Context) (map[string]any, error) {
@@ -814,7 +826,7 @@ func isCodexThreadNotMaterialized(err error) bool {
 	if err == nil {
 		return false
 	}
-	message := strings.ToLower(err.Error())
+	message := strings.ToLower(executionDebugText(err))
 	return strings.Contains(message, "not materialized yet") && strings.Contains(message, "includeturns")
 }
 

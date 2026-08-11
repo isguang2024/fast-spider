@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/isguang2024/fast-spider/internal/nodeupdate"
@@ -29,7 +30,85 @@ type Installed struct {
 	Path     string `json:"path"`
 }
 
+var (
+	ErrComponentNotInstalled = errors.New("managed component is not installed")
+	ErrComponentInvalid      = errors.New("managed component installation is invalid")
+)
+
 func Root(dataDir string) string { return filepath.Join(dataDir, "components") }
+
+// FindInstalled returns the newest verified managed component installation.
+// It exposes no PATH-based or unverified installation fallback.
+func FindInstalled(dataDir, componentID string) (Installed, error) {
+	return findInstalled(dataDir, componentID, nil)
+}
+
+// FindInstalledExecutable resolves an executable only from a verified managed
+// component version directory. It never consults PATH or follows links.
+func FindInstalledExecutable(dataDir, componentID, executableName string) (Installed, string, error) {
+	if !validID(componentID) || strings.TrimSpace(executableName) == "" || filepath.Base(executableName) != executableName {
+		return Installed{}, "", ErrComponentInvalid
+	}
+	var executablePath string
+	installed, err := findInstalled(dataDir, componentID, func(versionDir string) bool {
+		candidate := filepath.Join(versionDir, executableName)
+		info, statErr := os.Lstat(candidate)
+		if statErr != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || (runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0) {
+			return false
+		}
+		executablePath = candidate
+		return true
+	})
+	return installed, executablePath, err
+}
+
+func findInstalled(dataDir, componentID string, accept func(string) bool) (Installed, error) {
+	if !validID(componentID) {
+		return Installed{}, ErrComponentInvalid
+	}
+	componentRoot := filepath.Join(Root(dataDir), componentID)
+	entries, err := os.ReadDir(componentRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return Installed{}, ErrComponentNotInstalled
+	}
+	if err != nil {
+		return Installed{}, fmt.Errorf("read managed component: %w", ErrComponentInvalid)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() > entries[j].Name() })
+	platform := runtime.GOOS + "-" + runtime.GOARCH
+	foundInvalid := false
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || strings.HasSuffix(entry.Name(), ".tmp") {
+			continue
+		}
+		versionDir := filepath.Join(componentRoot, entry.Name())
+		versionInfo, statErr := os.Lstat(versionDir)
+		if statErr != nil || !versionInfo.IsDir() || versionInfo.Mode()&os.ModeSymlink != 0 {
+			foundInvalid = true
+			continue
+		}
+		raw, readErr := os.ReadFile(filepath.Join(versionDir, ".fast-spider-component.json"))
+		if readErr != nil {
+			foundInvalid = true
+			continue
+		}
+		var manifest releaseinfo.Manifest
+		if json.Unmarshal(raw, &manifest) != nil || manifest.Kind != "component" || manifest.ID != componentID || manifest.Platform != platform || manifest.Version != entry.Name() {
+			foundInvalid = true
+			continue
+		}
+		if accept != nil && !accept(versionDir) {
+			foundInvalid = true
+			continue
+		}
+		installed := Installed{ID: componentID, Platform: platform, Version: manifest.Version, Path: versionDir}
+		return installed, nil
+	}
+	if foundInvalid {
+		return Installed{}, ErrComponentInvalid
+	}
+	return Installed{}, ErrComponentNotInstalled
+}
 
 func CleanupConfigured(dataDir, componentID, componentPath string) error {
 	componentID = strings.TrimSpace(componentID)

@@ -8,15 +8,18 @@
 - planId: `fast-spider-0.4.0-to-0.4.2`
 - targetVersion: `0.4.2`
 - branch: `main`
-- baselineHead: `45303385e7b45e7b0171746cd85b88197bfcf567`
-- phase: `0.4.0 baseline closeout`
+- baselineHead: `0de4f6286942ccd1a7432651292ea7c8069cd33e`
+- phase: `0.4.2 release commit and production rollout`
 - productionNode: `PCa / 0.3.14 / online / ready / generation 42`
-- worktree: dirty；0.4.0 多 AI Harness、CC Switch 只读 Routing、Claude Code Adapter 和文档尚未提交。
-- protectedParallelChanges: `internal/hub/server/web/app.css`、`app.html`、`web_test.go` 的“下载最新版 Windows 客户端”入口改动已单独对账，必须保留。
-- currentTask: `FS-040-005 0.4.0 baseline commit + push`
-- workingContextRevision: `sha256:2b92fb54d5f910bec4aef9d5bd548fd18738a6aff2c8ba4c2f02a87220148349`
-- releaseGate040: `PASS / Windows Git Bash / full`
-- nextGate: `0.4.0 baseline pushed before any 0.4.1 code change`
+- worktree: 0.4.0 baseline 已 clean + pushed；0.4.1→0.4.2 连续开发已完成最终 full release gate，待形成唯一 0.4.2 release commit。
+- protectedParallelChanges: 后台首页“下载最新版 Windows 客户端”改动已纳入 0.4.0 baseline，不再是未归属 dirty 改动。
+- currentTask: `FS-042-014 commit + push 0.4.2`
+- completed041: `FS-041-001..015 PASS / no 0.4.1 release`
+- completed042: `FS-042-001..013 PASS`
+- workingContextRevision: `sha256:cbc5aaf060d7c7e10803ed210b115ad280c3d6af5607b0011c0d40087452c636`
+- releaseGate041: `PASS / Windows Git Bash / full / clean scan`
+- releaseGate042: `PASS / scripts/release-gate.sh --full / exitCode=0`
+- nextGate: `FS-042-014 release commit + push, then Hub/Node production rollout`
 
 ### Guardrails
 

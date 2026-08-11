@@ -15,20 +15,20 @@ Hub 只负责身份、路由、deadline、审计、Job/Artifact 元数据和连�
 | capabilityId | 当前 actions | 说明 |
 |---|---|---|
 | `machine.status` | `report` | Node 状态报告 |
-| `file.read` | `read` | 有界 UTF-8 文本读取 |
-| `file.write` | `edit` | 基于 exact match + expected SHA 的原子编辑 |
-| `code.search` | `search` | 有界文本/正则搜索 |
+| `file.read` 2.0 | `read` | byte/line/head/tail/around/stat 的有界 UTF-8 文本读取 |
+| `file.write` 2.0 | `edit`, `create`, `replace`, `editMany`, `preview` | CAS、批量规划、原子替换与只读预览；`edit` 兼容映射 `replace` |
+| `code.search` 2.0 | `search` | content/files、glob/context、Managed ripgrep + native fallback |
 | `shell.exec` | `run` | 固定 argv 的后台 Job |
 | `job.control` | `watch`, `cancel` | Job 事件读取与进程树取消 |
 | `git.repository` | `status`, `diff`, `stagedDiff`, `log`, `show`, `branches`, `currentBranch`, `worktrees`, `add`, `commit`, `fetch`, `pull`, `push`, `createWorktree`, `deleteWorktree` | 系统 Git 固定动作 |
 | `build.exec` | `run` | 固定 argv 的构建/测试 Job |
 | `artifact.store` | `uploadFile`, `uploadJobLog`, `publishFile` | Hub Artifact/临时 Presentation 数据面 |
-| `working.context` | `get`, `set`, `clear` | 项目级轻量任务状态 |
+| `working.context` 1.1 | `get`, `set`, `clear`, `plan.init`, `plan.get`, `plan.list`, `plan.sync`, `task.update`, `markdown.list`, `markdown.read`, `markdown.append`, `progress.watch` | Plan/Task + Markdown Task Workspace；旧入口映射默认 plan |
 | `browser.automation` | `launch`, `close`, `page.open`, `page.navigate`, `page.close`, `pages.list`, `click`, `type`, `press`, `wait`, `snapshot`, `screenshot`, `events` | 隔离 Chromium |
 | `screenshot.capture` | `listDisplays`, `desktop`, `display`, `listWindows`, `window` | 一次性桌面/显示器/窗口截图 |
 | `agent.control` | AI Harness、CC Switch Route/Model/EffectiveCapabilities discovery 与受控 Session/Turn 生命周期 | 当前 Harness 为本机 Codex + Claude Code |
 
-当前**没有**通用 `file.write` 覆盖写文件、`mkdir`、`move`、`copy`、`delete`、`purge`、`readChunks`、任意 shell 字符串执行或远程 `node.update` capability。需要这些能力时必须单独设计、实现、测试后再进入 catalog，文档不得提前声明为已实现。
+当前**没有** `mkdir`、`move`、`copy`、`delete`、`purge`、`readChunks`、任意 shell 字符串执行或远程 `node.update` capability。`file.write/create` 只能创建显式目标文件且要求父目录已存在，不是通用文件管理接口。
 
 ## 3. 文件读取与编辑
 
@@ -47,30 +47,36 @@ Hub 只负责身份、路由、deadline、审计、Job/Artifact 元数据和连�
 规则：
 
 - `path` 必须满足当前 OS 的绝对路径规则；Windows 允许盘符绝对路径，裸盘符 `V:` 只在明确支持它的 cwd 场景被归一为 `V:\\`，不能把 `V:folder` 当绝对路径。
-- 单次读取上限 128 KiB。
+- 旧 byte `offset/limit` 保持兼容；也可选择 `lineStart+lineCount`、`headLines`、`tailLines`、`aroundLine+contextLines`，各类选择器严格互斥。
+- `statOnly` 返回 stat 与原文件 SHA，不读取/返回正文；`includeLineNumbers` 对返回文本渲染行号。
+- 正文单次上限 128 KiB；行数、context、长行与大文件扫描均 bounded，tail/around 不把整文件无限载入内存。
 - 只返回 UTF-8 文本；二进制、NUL 或非法 UTF-8 拒绝。
-- 返回 `bytesRead`、`size`、`truncated`、chunk SHA-256；可编辑大小范围内同时返回完整文件 SHA-256。
+- `fileSha256` 始终针对原文件 bytes；`chunkSha256` 针对实际返回 chunk，启用行号时包含渲染结果。
 - 大文件通过 offset/limit 多次读取，不存在另一个 `readChunks` action。
 
-### `file.write/edit`
+### `file.write` 2.0
 
-`file_edit` 是当前唯一远程文件写入口。它要求 exact `oldText`/`newText`，可携带 `expectedFileSha256` 做 CAS。
+`file_edit` 仍是唯一远程文件写工具，不增加 MCP 工具。现有文件的 `edit/replace/editMany` 必须携带基于原始 bytes 的 `expectedFileSha256`；`create` 必须显式 `expectedAbsent=true`，不允许覆盖；`preview` 通过 `previewOf=create|replace|editMany` 复用同一 planner，但绝不写盘。
 
 提交语义：
 
 1. 读取并校验当前文件及 expected SHA。
-2. 要求 oldText 唯一命中。
-3. 在同目录写临时文件并 `Sync`。
-4. 校验目标内容 SHA。
-5. 原子替换正式文件；Windows 使用 replace-existing + write-through 语义。
+2. `replace` 要求 oldText 在原版本唯一命中；`editMany` 的全部 oldText 都在同一原版本上唯一定位，range 不得重叠，任一失败则零写入。
+3. 一次生成最终 bytes；no-op 返回 `changed=false`，不更新 mtime。
+4. 在同目录写临时文件、fsync，并再次校验目标 SHA。
+5. 原子替换正式文件；Windows 使用 MoveFileEx replace-existing + write-through，其他平台使用原子 rename 并尽可能同步父目录。BOM、主换行风格和平台可支持的权限位保持。
+
+返回 `beforeSha256/afterSha256/changed/diff/diffTruncated` 等 bounded 元数据，不返回完整大文件。`preview` 属于可安全重试的只读动作且不进入 mutation audit；`edit/create/replace/editMany` 属于 mutation，不自动重放并进入审计。
 
 因此断线不会把正式目标留成“半文件”。如果请求已经执行但 WSS 响应丢失，结果属于 uncertain：调用方应重新读取文件/状态确认，而不是无脑重放写操作。
 
 ## 4. 代码搜索
 
-`code.search/search` 输入为绝对 `path`、`query`、`regex`、`ignoreCase`、`limit`。当前实现不是开放式 ripgrep 参数代理：Node 自己遍历受限文件集合并执行有界搜索。
+`code.search/search` 输入为绝对 `path`、`query`、`mode=content|files`、`regex`、`ignoreCase`、bounded include/exclude glob、context/beforeContext/afterContext 与 `limit`。结果公开 `engine=ripgrep|native`、安全枚举 `fallbackReason`、`elapsedMs` 和 `truncated`。
 
-当前上限包括：单文件 2 MiB、最多扫描 5000 个文件、默认 100 条结果、最大 200 条结果；超限通过 `truncated` 表示。搜索为只读动作，连接中断后可安全重新发起。
+Node 只从 `<data-dir>/components/search-ripgrep/<version>/rg(.exe)` 解析已验证 Managed Component，绝不信任 PATH，也不在每次搜索时联网安装。rg 固定使用 `--json --no-config --color=never --no-heading --line-number --column`，清空 `RIPGREP_CONFIG_PATH`，不启用 `--pre/--search-zip/--follow/--unrestricted`，JSON/输出均 bounded。组件缺失、无效、平台不支持、启动/执行/解析失败时安全回退 Go native，不向上返回 raw stderr。
+
+native fallback 支持同一 content/files、glob、context 与 limit 语义；当前上限包括单文件 2 MiB、最多扫描 5000 个文件、默认 100 条、最大 200 条结果。搜索为只读动作，连接中断后可安全重新发起。
 
 ## 5. Shell、Build 与 Job
 
@@ -96,9 +102,9 @@ Hub 只负责身份、路由、deadline、审计、Job/Artifact 元数据和连�
 
 ## 8. Working Context
 
-`working.context/get|set|clear` 是项目当前任务快照，不是长期 AI Memory。每个项目只保存一份有界 JSON，存于 Node data-dir，不写项目目录、不污染 Git。
+`working.context` 是 Plan/Task + Markdown Task Workspace，不是长期 AI Memory。旧 `get/set/clear` 只是默认 plan 的兼容包装；所有入口共享同一 Plan 状态和写入路径，结构化状态位于 Node data-dir，并按远程 Machine 路由、`projectPath + planId` 隔离。
 
-保存字段包括 goal、baseline branch/commit、completed、constraints、pending、keyFiles、facts。`get` 会额外实时读取 Git branch/HEAD/dirty；Git 与文件内容始终是最终事实源。
+Plan actions 为 `plan.init/plan.get/plan.list/plan.sync/task.update`，Markdown actions 为 `markdown.list/markdown.read/markdown.append`，`progress.watch` 提供有界 revision change wait。Markdown 仅允许 projectPath 内普通 `.md`，防 symlink/junction 逃逸；受管区块同步不覆盖 Manual 内容，写入使用 CAS、temp+fsync+atomic replace。上限为 64 文件、512 KiB/文件、4 MiB 总量、500 tasks、32 evidences/task；不保存 Token/Cookie/API Key/完整 Prompt/聊天原文/raw error。`get`/plan 读取还返回实时 Git branch/HEAD/dirty，Git 与文件内容始终是最终事实源。
 
 ## 9. Browser 与 Screenshot
 
@@ -147,7 +153,9 @@ session.settings.update
 session.review
 ```
 
-`providers.list` 当前返回 `codex` 与 `claude_code` 两个 Harness，并为每个 Harness 返回自己的 `supportedActions`。`routing.status` 是全局只读 action：读取 CC Switch SQLite SSOT，区分 `direct|cc_switch`、current Provider、model mapping、Takeover/health 与 EffectiveCapabilities；raw provider settings/meta/credential 永不离开 Node。
+Agent Manager 已按 manager/provider/session/routing 边界拆分；静态 Provider Registry 只注册 `codex` 与 `claude_code`，不提供动态反射插件系统。`providers.list` 为每个 Harness 返回自己的 `supportedActions`。`routing.status` 是全局只读 action：读取 CC Switch SQLite SSOT，区分 `direct|cc_switch`、current Provider、model mapping、Takeover/health 与 EffectiveCapabilities；raw provider settings/meta/credential 永不离开 Node。
+
+CC Switch 使用 `PRAGMA table_info` 对唯一支持 schema 计算 fingerprint 并 fail-closed；不支持时返回 `available=false/reason=unsupported_schema`，不猜旧 schema。进程内 bounded TTL 为 route 约 1.5 秒、CLI version/auth 45 秒、models 20 秒；Codex/Claude/CC Switch 独立 discovery 并行且只读，不触发模型生成。
 
 ### Codex
 

@@ -37,6 +37,7 @@ type ClaudeSessionRecord struct {
 	LatestTurnID     string         `json:"latestTurnId,omitempty"`
 	LatestResult     string         `json:"latestResult,omitempty"`
 	LastError        string         `json:"lastError,omitempty"`
+	ErrorClass       ErrorClass     `json:"errorClass,omitempty"`
 	Usage            map[string]any `json:"usage,omitempty"`
 	RouteBefore      map[string]any `json:"routeBefore,omitempty"`
 	RouteAfter       map[string]any `json:"routeAfter,omitempty"`
@@ -44,11 +45,6 @@ type ClaudeSessionRecord struct {
 	Archived         bool           `json:"archived,omitempty"`
 	CreatedAt        string         `json:"createdAt"`
 	UpdatedAt        string         `json:"updatedAt"`
-}
-
-type claudeSessionIndex struct {
-	SchemaVersion int                    `json:"schemaVersion"`
-	Sessions      []*ClaudeSessionRecord `json:"sessions"`
 }
 
 type claudeRun struct {
@@ -65,6 +61,9 @@ type ClaudeCodeAdapter struct {
 	executable                string
 	routing                   *CCSwitchInspector
 	disableSessionPersistence bool
+	versionCache              *ttlCache[versionProbe]
+	authCache                 *ttlCache[map[string]any]
+	modelsCache               *ttlCache[map[string]any]
 
 	mu       sync.Mutex
 	sessions map[string]*ClaudeSessionRecord
@@ -84,14 +83,17 @@ func NewClaudeCodeAdapter(dataDir string, routing *CCSwitchInspector, logger *sl
 		dataDir = filepath.Join(os.TempDir(), "fast-spider-agent")
 	}
 	a := &ClaudeCodeAdapter{
-		logger:      logger,
-		dataDir:     dataDir,
-		indexPath:   filepath.Join(dataDir, "agent", "claude-code-sessions.json"),
-		executable:  "claude",
-		routing:     routing,
-		sessions:    map[string]*ClaudeSessionRecord{},
-		active:      map[string]*claudeRun{},
-		eventNotify: make(chan struct{}),
+		logger:       logger,
+		dataDir:      dataDir,
+		indexPath:    filepath.Join(dataDir, "agent", "claude-code-sessions.json"),
+		executable:   "claude",
+		routing:      routing,
+		sessions:     map[string]*ClaudeSessionRecord{},
+		active:       map[string]*claudeRun{},
+		eventNotify:  make(chan struct{}),
+		versionCache: newTTLCache[versionProbe](cliProbeTTL, 1, nil),
+		authCache:    newTTLCache[map[string]any](cliProbeTTL, 1, cloneAgentMap),
+		modelsCache:  newTTLCache[map[string]any](modelsTTL, 1, cloneAgentMap),
 	}
 	if err := a.loadIndex(); err != nil {
 		logger.Warn("load Claude Code session index", "error", err)
@@ -100,28 +102,43 @@ func NewClaudeCodeAdapter(dataDir string, routing *CCSwitchInspector, logger *sl
 }
 
 func (a *ClaudeCodeAdapter) Availability(ctx context.Context) (string, error) {
+	if value, ok := a.versionCache.get("version"); ok {
+		return value.version, value.err
+	}
 	path, err := exec.LookPath(a.executable)
 	if err != nil {
-		return "", fmt.Errorf("%w: claude executable not found", node.ErrAgentProviderUnavailable)
+		err = fmt.Errorf("%w: claude executable not found", node.ErrAgentProviderUnavailable)
+		a.versionCache.set("version", versionProbe{err: err})
+		return "", err
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
 	output, err := exec.CommandContext(probeCtx, path, "--version").Output()
 	if err != nil {
-		return "", fmt.Errorf("%w: claude --version failed", node.ErrAgentProviderUnavailable)
+		err = fmt.Errorf("%w: claude --version failed", node.ErrAgentProviderUnavailable)
+		a.versionCache.set("version", versionProbe{err: err})
+		return "", err
 	}
 	version := strings.TrimSpace(string(output))
 	if version == "" {
-		return "", fmt.Errorf("%w: Claude Code version is empty", node.ErrAgentProviderUnavailable)
+		err = fmt.Errorf("%w: Claude Code version is empty", node.ErrAgentProviderUnavailable)
+		a.versionCache.set("version", versionProbe{err: err})
+		return "", err
 	}
+	a.versionCache.set("version", versionProbe{version: version})
 	return version, nil
 }
 
 func (a *ClaudeCodeAdapter) AuthConfiguration(ctx context.Context) map[string]any {
+	if value, ok := a.authCache.get("auth"); ok {
+		return value
+	}
 	out := map[string]any{"configured": false, "verified": false, "source": "claude_auth_status"}
 	path, err := exec.LookPath(a.executable)
 	if err != nil {
-		out["reason"] = "claude executable unavailable"
+		out["reason"] = "Claude runtime is unavailable"
+		out["errorClass"] = ErrorRuntimeUnavailable
+		a.authCache.set("auth", out)
 		return out
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
@@ -129,15 +146,23 @@ func (a *ClaudeCodeAdapter) AuthConfiguration(ctx context.Context) map[string]an
 	raw, err := exec.CommandContext(probeCtx, path, "auth", "status", "--json").Output()
 	if err != nil || len(raw) > 64<<10 {
 		out["reason"] = "Claude auth configuration could not be read"
+		out["errorClass"] = ErrorUnknown
+		a.authCache.set("auth", out)
 		return out
 	}
 	var status map[string]any
 	if json.Unmarshal(raw, &status) != nil {
 		out["reason"] = "Claude auth configuration returned invalid JSON"
+		out["errorClass"] = ErrorUnknown
+		a.authCache.set("auth", out)
 		return out
 	}
 	if loggedIn, ok := status["loggedIn"].(bool); ok {
 		out["configured"] = loggedIn
+		if !loggedIn {
+			out["reason"] = "Claude authentication is not configured"
+			out["errorClass"] = ErrorAuthFailed
+		}
 	}
 	for _, key := range []string{"authMethod", "apiProvider", "subscriptionType"} {
 		if value, ok := status[key].(string); ok && strings.TrimSpace(value) != "" {
@@ -145,13 +170,17 @@ func (a *ClaudeCodeAdapter) AuthConfiguration(ctx context.Context) map[string]an
 		}
 	}
 	out["health"] = "not_verified_until_turn"
+	a.authCache.set("auth", out)
 	return out
 }
 
 func (a *ClaudeCodeAdapter) Models(ctx context.Context) (map[string]any, error) {
+	if value, ok := a.modelsCache.get("models"); ok {
+		return value, nil
+	}
 	route, err := a.inspectRoute(ctx)
 	if err != nil {
-		return nil, err
+		return nil, wrapExecutionError("claude_code", "models.list", err)
 	}
 	models := make([]map[string]any, 0)
 	if current, ok := route["currentProvider"].(map[string]any); ok {
@@ -199,17 +228,19 @@ func (a *ClaudeCodeAdapter) Models(ctx context.Context) (map[string]any, error) 
 			})
 		}
 	}
-	return map[string]any{
+	out := map[string]any{
 		"models": models,
 		"route":  route,
 		"source": "cc_switch_db+claude_code_cli",
-	}, nil
+	}
+	a.modelsCache.set("models", out)
+	return out, nil
 }
 
 func (a *ClaudeCodeAdapter) Capabilities(ctx context.Context) (map[string]any, error) {
 	route, err := a.inspectRoute(ctx)
 	if err != nil {
-		return nil, err
+		return nil, wrapExecutionError("claude_code", "provider.capabilities", err)
 	}
 	effective, _ := route["effectiveCapabilities"].(map[string]any)
 	return map[string]any{
@@ -403,6 +434,7 @@ func (a *ClaudeCodeAdapter) startTurn(ctx context.Context, record *ClaudeSession
 	record.LatestTurnID = turnID
 	record.LatestResult = ""
 	record.LastError = ""
+	record.ErrorClass = ""
 	record.RouteBefore = routeBefore
 	record.RouteAfter = nil
 	record.ActualUpstream = nil
@@ -445,7 +477,7 @@ func (a *ClaudeCodeAdapter) readStderr(sessionID string, reader io.Reader) {
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line != "" {
-			a.logger.Debug("Claude Code", "sessionId", sessionID, "message", boundedAgentText(line, 512))
+			a.logger.Debug("Claude Code stderr", "sessionId", sessionID, "errorClass", classifyExecutionText(line))
 		}
 	}
 }
@@ -471,7 +503,8 @@ func (a *ClaudeCodeAdapter) handleStreamLine(sessionID, turnID string, raw []byt
 			a.mu.Unlock()
 			a.recordEvent(AgentEvent{Type: "session.status", SessionID: sessionID, TurnID: turnID, State: "initialized", Timestamp: protocolTimestampNow()})
 		case "api_retry":
-			a.recordEvent(AgentEvent{Type: "warning", SessionID: sessionID, TurnID: turnID, Text: boundedAgentText(mapString(message, "error"), 2048), State: "api_retry", Timestamp: protocolTimestampNow()})
+			class := classifyExecutionText(mapString(message, "error"))
+			a.recordEvent(AgentEvent{Type: "warning", SessionID: sessionID, TurnID: turnID, Text: publicErrorMessage(class), State: "api_retry", Detail: map[string]any{"errorClass": class}, Timestamp: protocolTimestampNow()})
 		default:
 			a.recordEvent(AgentEvent{Type: "runtime.notification", SessionID: sessionID, TurnID: turnID, State: subtype, Timestamp: protocolTimestampNow()})
 		}
@@ -505,7 +538,11 @@ func (a *ClaudeCodeAdapter) handleStreamLine(sessionID, turnID string, raw []byt
 			record.Status = status
 			record.LatestResult = result
 			if isError {
-				record.LastError = boundedAgentText(result, 2048)
+				record.ErrorClass = classifyExecutionText(result)
+				record.LastError = publicErrorMessage(record.ErrorClass)
+				record.LatestResult = ""
+			} else {
+				record.ErrorClass = ""
 			}
 			record.Usage = usage
 			record.RouteAfter = routeAfter
@@ -514,7 +551,14 @@ func (a *ClaudeCodeAdapter) handleStreamLine(sessionID, turnID string, raw []byt
 			_ = a.saveIndexLocked()
 		}
 		a.mu.Unlock()
-		a.recordEvent(AgentEvent{Type: eventType, SessionID: sessionID, TurnID: turnID, State: status, Text: result, Timestamp: protocolTimestampNow()})
+		eventText := result
+		detail := map[string]any(nil)
+		if isError {
+			class := classifyExecutionText(result)
+			eventText = publicErrorMessage(class)
+			detail = map[string]any{"errorClass": class}
+		}
+		a.recordEvent(AgentEvent{Type: eventType, SessionID: sessionID, TurnID: turnID, State: status, Text: eventText, Detail: detail, Timestamp: protocolTimestampNow()})
 	}
 }
 
@@ -531,7 +575,8 @@ func (a *ClaudeCodeAdapter) waitRun(sessionID string, run *claudeRun) {
 			record.LastError = ""
 		} else if err != nil {
 			record.Status = "failed"
-			record.LastError = boundedAgentText(err.Error(), 2048)
+			record.ErrorClass = classifyExecutionError(err)
+			record.LastError = publicErrorMessage(record.ErrorClass)
 		} else {
 			record.Status = "completed"
 		}
@@ -541,6 +586,7 @@ func (a *ClaudeCodeAdapter) waitRun(sessionID string, run *claudeRun) {
 		_ = a.saveIndexLocked()
 		state := record.Status
 		text := record.LastError
+		errorClass := record.ErrorClass
 		a.mu.Unlock()
 		eventType := "turn.completed"
 		if state == "canceled" {
@@ -548,7 +594,11 @@ func (a *ClaudeCodeAdapter) waitRun(sessionID string, run *claudeRun) {
 		} else if state == "failed" {
 			eventType = "turn.failed"
 		}
-		a.recordEvent(AgentEvent{Type: eventType, SessionID: sessionID, TurnID: run.turnID, State: state, Text: text, Timestamp: protocolTimestampNow()})
+		var detail map[string]any
+		if state == "failed" {
+			detail = map[string]any{"errorClass": errorClass}
+		}
+		a.recordEvent(AgentEvent{Type: eventType, SessionID: sessionID, TurnID: run.turnID, State: state, Text: text, Detail: detail, Timestamp: protocolTimestampNow()})
 		return
 	}
 	if record != nil {
@@ -658,6 +708,7 @@ func (a *ClaudeCodeAdapter) Result(sessionID string) (map[string]any, error) {
 	}
 	if record.LastError != "" {
 		out["error"] = record.LastError
+		out["errorClass"] = record.ErrorClass
 	}
 	a.mu.Unlock()
 	return out, nil
@@ -769,7 +820,8 @@ func (a *ClaudeCodeAdapter) captureRoute() map[string]any {
 	defer cancel()
 	route, err := a.inspectRoute(ctx)
 	if err != nil {
-		return map[string]any{"appType": "claude", "harness": "claude_code", "source": "cc_switch_db", "error": boundedAgentText(err.Error(), 512)}
+		class := classifyExecutionError(err)
+		return map[string]any{"appType": "claude", "harness": "claude_code", "source": "cc_switch_db", "available": false, "reason": "route_inspection_failed", "errorClass": class}
 	}
 	return claudeRouteSnapshot(route)
 }
@@ -858,102 +910,6 @@ func claudeUsageSummary(message map[string]any) map[string]any {
 		out["tokens"] = summary
 	}
 	return out
-}
-
-func claudeSessionSummary(record *ClaudeSessionRecord) map[string]any {
-	out := map[string]any{
-		"providerId":       "claude_code",
-		"sessionId":        record.SessionID,
-		"name":             record.Name,
-		"workingDirectory": record.WorkingDirectory,
-		"requestedModel":   record.RequestedModel,
-		"nativeModel":      record.NativeModel,
-		"status":           record.Status,
-		"latestTurnId":     record.LatestTurnID,
-		"archived":         record.Archived,
-		"createdAt":        record.CreatedAt,
-		"updatedAt":        record.UpdatedAt,
-		"routeBefore":      record.RouteBefore,
-		"routeAfter":       record.RouteAfter,
-		"actualUpstream":   record.ActualUpstream,
-	}
-	if record.LastError != "" {
-		out["lastError"] = record.LastError
-	}
-	return out
-}
-
-func (a *ClaudeCodeAdapter) loadIndex() error {
-	raw, err := os.ReadFile(a.indexPath)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if len(raw) > claudeCodeIndexMaxBytes {
-		return fmt.Errorf("Claude Code session index exceeds limit")
-	}
-	var index claudeSessionIndex
-	if err := json.Unmarshal(raw, &index); err != nil {
-		return err
-	}
-	for _, record := range index.Sessions {
-		if record == nil || strings.TrimSpace(record.SessionID) == "" || strings.TrimSpace(record.WorkingDirectory) == "" {
-			continue
-		}
-		if record.Status == "running" {
-			record.Status = "interrupted"
-			record.LastError = "Fast Spider Node restarted while this Claude Code turn was running"
-		}
-		a.sessions[record.SessionID] = record
-	}
-	return nil
-}
-
-func (a *ClaudeCodeAdapter) saveIndexLocked() error {
-	if err := os.MkdirAll(filepath.Dir(a.indexPath), 0o700); err != nil {
-		return err
-	}
-	records := make([]*ClaudeSessionRecord, 0, len(a.sessions))
-	for _, record := range a.sessions {
-		copy := *record
-		records = append(records, &copy)
-	}
-	sort.Slice(records, func(i, j int) bool { return records[i].UpdatedAt > records[j].UpdatedAt })
-	index := claudeSessionIndex{SchemaVersion: 1, Sessions: records}
-	raw, err := json.MarshalIndent(index, "", "  ")
-	if err != nil {
-		return err
-	}
-	if len(raw) > claudeCodeIndexMaxBytes {
-		return fmt.Errorf("Claude Code session index exceeds limit")
-	}
-	temp, err := os.CreateTemp(filepath.Dir(a.indexPath), ".claude-code-sessions-*")
-	if err != nil {
-		return err
-	}
-	tempPath := temp.Name()
-	defer os.Remove(tempPath)
-	if err := temp.Chmod(0o600); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if _, err := temp.Write(raw); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	if err := replaceAgentFile(tempPath, a.indexPath); err != nil {
-		return err
-	}
-	return syncAgentParentDirectory(a.indexPath)
 }
 
 func newClaudeUUID() (string, error) {

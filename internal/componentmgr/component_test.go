@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -141,5 +142,42 @@ func TestEnsureDownloadsSignedComponentIntoManagedDirectory(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(installed.Path, "sidecar", "browser.js"))
 	if err != nil || !bytes.Contains(raw, []byte("browser")) {
 		t.Fatalf("component file missing: raw=%q err=%v", raw, err)
+	}
+}
+
+func TestFindInstalledExecutableUsesVerifiedManagedVersionOnly(t *testing.T) {
+	dataDir := t.TempDir()
+	componentID := "search-ripgrep"
+	version := "14.1.0"
+	platform := runtime.GOOS + "-" + runtime.GOARCH
+	executableName := "rg"
+	if runtime.GOOS == "windows" {
+		executableName = "rg.exe"
+	}
+	versionDir := filepath.Join(dataDir, "components", componentID, version)
+	if err := os.MkdirAll(versionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	executablePath := filepath.Join(versionDir, executableName)
+	if err := os.WriteFile(executablePath, []byte("fixture"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := releaseinfo.NewManifest("component", componentID, platform, version, strings.Repeat("a", 64), 1, "/unused")
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(versionDir, ".fast-spider-component.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	installed, resolved, err := componentmgr.FindInstalledExecutable(dataDir, componentID, executableName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installed.ID != componentID || installed.Version != version || filepath.Clean(resolved) != filepath.Clean(executablePath) {
+		t.Fatalf("resolved managed executable=%+v %q", installed, resolved)
+	}
+	if _, _, err := componentmgr.FindInstalledExecutable(t.TempDir(), componentID, executableName); !errors.Is(err, componentmgr.ErrComponentNotInstalled) {
+		t.Fatalf("missing component error=%v", err)
 	}
 }

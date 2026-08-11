@@ -1,17 +1,12 @@
 package node
 
 import (
-	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -30,42 +25,71 @@ const (
 )
 
 type fileReadParams struct {
-	Path   string `json:"path"`
-	Offset int64  `json:"offset,omitempty"`
-	Limit  int64  `json:"limit,omitempty"`
+	Path               string `json:"path"`
+	Offset             int64  `json:"offset,omitempty"`
+	Limit              int64  `json:"limit,omitempty"`
+	LineStart          int    `json:"lineStart,omitempty"`
+	LineCount          int    `json:"lineCount,omitempty"`
+	HeadLines          int    `json:"headLines,omitempty"`
+	TailLines          int    `json:"tailLines,omitempty"`
+	AroundLine         int    `json:"aroundLine,omitempty"`
+	ContextLines       int    `json:"contextLines,omitempty"`
+	StatOnly           bool   `json:"statOnly,omitempty"`
+	IncludeLineNumbers bool   `json:"includeLineNumbers,omitempty"`
 }
 
 type fileReadResult struct {
-	Path        string `json:"path"`
-	Content     string `json:"content"`
-	Offset      int64  `json:"offset"`
-	BytesRead   int64  `json:"bytesRead"`
-	Size        int64  `json:"size"`
-	Truncated   bool   `json:"truncated"`
-	ChunkSHA256 string `json:"chunkSha256"`
-	FileSHA256  string `json:"fileSha256,omitempty"`
-	Encoding    string `json:"encoding"`
+	Path            string  `json:"path"`
+	Content         *string `json:"content,omitempty"`
+	Offset          int64   `json:"offset"`
+	BytesRead       int64   `json:"bytesRead"`
+	SourceBytesRead int64   `json:"sourceBytesRead,omitempty"`
+	Size            int64   `json:"size"`
+	LineStart       int     `json:"lineStart,omitempty"`
+	LineEnd         int     `json:"lineEnd,omitempty"`
+	StatOnly        bool    `json:"statOnly,omitempty"`
+	Truncated       bool    `json:"truncated"`
+	ChunkSHA256     string  `json:"chunkSha256,omitempty"`
+	FileSHA256      string  `json:"fileSha256"`
+	Encoding        string  `json:"encoding"`
 }
 
 type codeSearchParams struct {
-	Query      string `json:"query"`
-	Path       string `json:"path,omitempty"`
-	Regex      bool   `json:"regex,omitempty"`
-	IgnoreCase bool   `json:"ignoreCase,omitempty"`
-	Limit      int    `json:"limit,omitempty"`
+	Query         string   `json:"query"`
+	Path          string   `json:"path,omitempty"`
+	Mode          string   `json:"mode,omitempty"`
+	Regex         bool     `json:"regex,omitempty"`
+	IgnoreCase    bool     `json:"ignoreCase,omitempty"`
+	Include       []string `json:"include,omitempty"`
+	Exclude       []string `json:"exclude,omitempty"`
+	Context       int      `json:"context,omitempty"`
+	BeforeContext int      `json:"beforeContext,omitempty"`
+	AfterContext  int      `json:"afterContext,omitempty"`
+	Limit         int      `json:"limit,omitempty"`
+}
+
+type codeSearchContextLine struct {
+	Line int    `json:"line"`
+	Text string `json:"text"`
 }
 
 type codeSearchMatch struct {
-	Path   string `json:"path"`
-	Line   int    `json:"line"`
-	Column int    `json:"column"`
-	Text   string `json:"text"`
+	Path   string                  `json:"path"`
+	Line   int                     `json:"line"`
+	Column int                     `json:"column"`
+	Text   string                  `json:"text"`
+	Before []codeSearchContextLine `json:"before,omitempty"`
+	After  []codeSearchContextLine `json:"after,omitempty"`
 }
 
 type codeSearchResult struct {
-	Matches      []codeSearchMatch `json:"matches"`
-	ScannedFiles int               `json:"scannedFiles"`
-	Truncated    bool              `json:"truncated"`
+	Matches        []codeSearchMatch `json:"matches"`
+	Files          []string          `json:"files,omitempty"`
+	ScannedFiles   int               `json:"scannedFiles"`
+	Engine         string            `json:"engine"`
+	FallbackReason string            `json:"fallbackReason,omitempty"`
+	ElapsedMs      int64             `json:"elapsedMs"`
+	Truncated      bool              `json:"truncated"`
 }
 
 func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.CapabilityRequest) protocolv1.CapabilityResponse {
@@ -94,8 +118,8 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 	switch req.Capability + "/" + req.Action {
 	case "file.read/read":
 		result, err = c.fileRead(ctx, req.Params)
-	case "file.write/edit":
-		result, err = c.fileEdit(ctx, req.Params)
+	case "file.write/edit", "file.write/create", "file.write/replace", "file.write/editMany", "file.write/preview":
+		result, err = c.fileEdit(ctx, req.Action, req.Params)
 	case "code.search/search":
 		result, err = c.codeSearch(ctx, req.Params)
 	case "shell.exec/run":
@@ -118,7 +142,9 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 		result, err = c.artifactUploadJobLog(ctx, req.Params)
 	case "artifact.store/publishFile":
 		result, err = c.presentationPublishFile(ctx, req.Params)
-	case "working.context/get", "working.context/set", "working.context/clear":
+	case "working.context/get", "working.context/set", "working.context/clear",
+		"working.context/plan.init", "working.context/plan.get", "working.context/plan.list", "working.context/plan.sync",
+		"working.context/task.update", "working.context/markdown.list", "working.context/markdown.read", "working.context/markdown.append", "working.context/progress.watch":
 		result, err = c.workingContextControl(ctx, req.Action, req.Params)
 	case "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/page.close", "browser.automation/pages.list", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/wait", "browser.automation/snapshot", "browser.automation/screenshot", "browser.automation/events":
 		result, err = c.browserControl(ctx, req.Action, req.Params)
@@ -150,177 +176,11 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 }
 
 func (c *Client) fileRead(ctx context.Context, params map[string]any) (fileReadResult, error) {
-	if err := ctx.Err(); err != nil {
-		return fileReadResult{}, err
-	}
-	var input fileReadParams
-	if err := decodeParams(params, &input); err != nil {
-		return fileReadResult{}, fmt.Errorf("invalid params: %w", err)
-	}
-	if input.Path == "" {
-		return fileReadResult{}, fmt.Errorf("path is required")
-	}
-	if input.Offset < 0 || input.Limit < 0 {
-		return fileReadResult{}, fmt.Errorf("offset and limit must be non-negative")
-	}
-	if input.Limit == 0 {
-		input.Limit = maxFileReadBytes
-	}
-	if input.Limit > maxFileReadBytes {
-		return fileReadResult{}, ErrReadLimit
-	}
-	target, err := ResolveMachinePath(input.Path)
-	if err != nil {
-		return fileReadResult{}, err
-	}
-	file, err := os.Open(target)
-	if err != nil {
-		return fileReadResult{}, err
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return fileReadResult{}, err
-	}
-	if !info.Mode().IsRegular() {
-		return fileReadResult{}, ErrNotRegularFile
-	}
-	probe := make([]byte, 4096)
-	probeN, probeErr := file.ReadAt(probe, 0)
-	if probeErr != nil && !errors.Is(probeErr, io.EOF) {
-		return fileReadResult{}, probeErr
-	}
-	probe = probe[:probeN]
-	if bytes.IndexByte(probe, 0) >= 0 {
-		return fileReadResult{}, ErrBinaryOrInvalidUTF8
-	}
-	if !utf8.Valid(probe) {
-		if errors.Is(probeErr, io.EOF) {
-			return fileReadResult{}, ErrBinaryOrInvalidUTF8
-		}
-		if _, ok := trimIncompleteUTF8Suffix(probe); !ok {
-			return fileReadResult{}, ErrBinaryOrInvalidUTF8
-		}
-	}
-	if input.Offset > info.Size() {
-		input.Offset = info.Size()
-	}
-	if _, err := file.Seek(input.Offset, io.SeekStart); err != nil {
-		return fileReadResult{}, err
-	}
-	buf := make([]byte, input.Limit+1)
-	n, readErr := io.ReadFull(file, buf)
-	if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
-		return fileReadResult{}, readErr
-	}
-	truncated := int64(n) > input.Limit
-	if truncated {
-		n = int(input.Limit)
-	}
-	buf = buf[:n]
-	if bytes.IndexByte(buf, 0) >= 0 {
-		return fileReadResult{}, ErrBinaryOrInvalidUTF8
-	}
-	if !utf8.Valid(buf) {
-		if !truncated && input.Offset+int64(len(buf)) >= info.Size() {
-			return fileReadResult{}, ErrBinaryOrInvalidUTF8
-		}
-		var ok bool
-		buf, ok = trimIncompleteUTF8Suffix(buf)
-		if !ok {
-			return fileReadResult{}, ErrBinaryOrInvalidUTF8
-		}
-	}
-	sum := sha256.Sum256(buf)
-	fileSHA256 := ""
-	if info.Size() <= maxEditableFileBytes {
-		all, err := os.ReadFile(target)
-		if err != nil {
-			return fileReadResult{}, err
-		}
-		fileSHA256 = sha256String(all)
-	}
-	return fileReadResult{
-		Path: filepath.Clean(target), Content: string(buf), Offset: input.Offset,
-		BytesRead: int64(len(buf)), Size: info.Size(), Truncated: truncated || input.Offset+int64(len(buf)) < info.Size(),
-		ChunkSHA256: "sha256:" + hex.EncodeToString(sum[:]), FileSHA256: fileSHA256, Encoding: "utf-8",
-	}, nil
+	return c.fileReadV2(ctx, params)
 }
 
 func (c *Client) codeSearch(ctx context.Context, params map[string]any) (codeSearchResult, error) {
-	var input codeSearchParams
-	if err := decodeParams(params, &input); err != nil {
-		return codeSearchResult{}, fmt.Errorf("invalid params: %w", err)
-	}
-	input.Query = strings.TrimSpace(input.Query)
-	if input.Query == "" || len(input.Query) > 512 {
-		return codeSearchResult{}, fmt.Errorf("query is required and must be at most 512 characters")
-	}
-	if input.Limit == 0 {
-		input.Limit = defaultSearchLimit
-	}
-	if input.Limit < 1 || input.Limit > maxSearchLimit {
-		return codeSearchResult{}, fmt.Errorf("limit must be between 1 and %d", maxSearchLimit)
-	}
-	if strings.TrimSpace(input.Path) == "" {
-		return codeSearchResult{}, fmt.Errorf("absolute search path is required")
-	}
-	searchRoot, err := ResolveMachinePath(input.Path)
-	if err != nil {
-		return codeSearchResult{}, err
-	}
-	info, err := os.Stat(searchRoot)
-	if err != nil {
-		return codeSearchResult{}, err
-	}
-	if !info.IsDir() {
-		return codeSearchResult{}, fmt.Errorf("search path must be a directory")
-	}
-	matcher, err := compileSearchMatcher(input.Query, input.Regex, input.IgnoreCase)
-	if err != nil {
-		return codeSearchResult{}, err
-	}
-	result := codeSearchResult{Matches: []codeSearchMatch{}}
-	err = filepath.WalkDir(searchRoot, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if path != searchRoot && shouldSkipDir(entry.Name()) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
-			return nil
-		}
-		if result.ScannedFiles >= maxSearchFiles {
-			result.Truncated = true
-			return filepath.SkipAll
-		}
-		info, err := entry.Info()
-		if err != nil || info.Size() > maxSearchFileBytes {
-			return nil
-		}
-		result.ScannedFiles++
-		matches, binary, err := searchFile(path, searchRoot, matcher, input.Limit-len(result.Matches))
-		if err != nil || binary {
-			return nil
-		}
-		result.Matches = append(result.Matches, matches...)
-		if len(result.Matches) >= input.Limit {
-			result.Truncated = true
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	if err != nil && !errors.Is(err, filepath.SkipAll) {
-		return codeSearchResult{}, err
-	}
-	return result, nil
+	return c.codeSearchV2(ctx, params)
 }
 
 type lineMatcher func(string) (int, bool)
@@ -355,54 +215,6 @@ func compileSearchMatcher(query string, useRegex, ignoreCase bool) (lineMatcher,
 		index := strings.Index(haystack, needle)
 		return index + 1, index >= 0
 	}, nil
-}
-
-func searchFile(path, searchRoot string, matcher lineMatcher, remaining int) ([]codeSearchMatch, bool, error) {
-	if remaining <= 0 {
-		return nil, false, nil
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, false, err
-	}
-	defer file.Close()
-	probe := make([]byte, 4096)
-	n, err := file.Read(probe)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, false, err
-	}
-	probe = probe[:n]
-	if bytes.IndexByte(probe, 0) >= 0 || !utf8.Valid(probe) {
-		return nil, true, nil
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return nil, false, err
-	}
-	rel, err := filepath.Rel(searchRoot, path)
-	if err != nil {
-		return nil, false, err
-	}
-	var matches []codeSearchMatch
-	scanner := bufio.NewScanner(io.LimitReader(file, maxSearchFileBytes+1))
-	scanner.Buffer(make([]byte, 64*1024), 1<<20)
-	lineNo := 0
-	for scanner.Scan() {
-		lineNo++
-		line := scanner.Text()
-		column, ok := matcher(line)
-		if !ok {
-			continue
-		}
-		text := line
-		if len(text) > maxSearchLineLength {
-			text = text[:maxSearchLineLength]
-		}
-		matches = append(matches, codeSearchMatch{Path: filepath.ToSlash(rel), Line: lineNo, Column: column, Text: text})
-		if len(matches) >= remaining {
-			break
-		}
-	}
-	return matches, false, scanner.Err()
 }
 
 func shouldSkipDir(name string) bool {
@@ -475,6 +287,10 @@ func capabilityError(err error) *protocolv1.ProtocolError {
 		return protocolError("REVISION_CONFLICT", "file changed since it was read", false)
 	case errors.Is(err, ErrEditNotUnique):
 		return protocolError("EDIT_NOT_UNIQUE", "oldText must match exactly once", false)
+	case errors.Is(err, ErrEditOverlap):
+		return protocolError("EDIT_OVERLAP", "edit ranges must not overlap", false)
+	case errors.Is(err, ErrFileAlreadyExists):
+		return protocolError("ALREADY_EXISTS", "file already exists", false)
 	case errors.Is(err, ErrJobNotFound):
 		return protocolError("JOB_NOT_FOUND", "job was not found", false)
 	case errors.Is(err, ErrJobNotComplete):

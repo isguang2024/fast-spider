@@ -10,10 +10,12 @@ const localUIHTML = `<!doctype html>
   <style>
     :root{color-scheme:light;--bg:#f4f4f1;--panel:#fff;--line:#deded8;--text:#171717;--muted:#6d6d67;--soft:#f8f8f5;--ok:#1d7a45;--warn:#a45a00;--bad:#b42318;--accent:#171717}
     *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
-    button,input,textarea{font:inherit}button,input{min-height:44px}button{cursor:pointer}button:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible{outline:2px solid #4f4f49;outline-offset:2px}.shell{width:min(1100px,calc(100% - 28px));margin:24px auto 50px}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.brand{display:flex;align-items:center;gap:12px}.logo{width:38px;height:38px;border-radius:11px;background:#171717;color:#fff;display:grid;place-items:center;font-weight:800}.brand h1{font-size:18px;margin:0}.brand small{display:block;color:var(--muted);margin-top:1px}.top-actions{display:flex;align-items:center;gap:8px}.status{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--panel);padding:8px 12px;border-radius:999px}.dot{width:8px;height:8px;border-radius:50%;background:#999}.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
+    button,input,textarea,select{font:inherit}button,input,select{min-height:44px}button{cursor:pointer}button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid #4f4f49;outline-offset:2px}.shell{width:min(1100px,calc(100% - 28px));margin:24px auto 50px}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.brand{display:flex;align-items:center;gap:12px}.logo{width:38px;height:38px;border-radius:11px;background:#171717;color:#fff;display:grid;place-items:center;font-weight:800}.brand h1{font-size:18px;margin:0}.brand small{display:block;color:var(--muted);margin-top:1px}.top-actions{display:flex;align-items:center;gap:8px}.status{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--panel);padding:8px 12px;border-radius:999px}.dot{width:8px;height:8px;border-radius:50%;background:#999}.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
     .layout{display:grid;grid-template-columns:190px minmax(0,1fr);gap:16px}.nav,.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px}.nav{padding:10px;height:max-content;position:sticky;top:18px}.nav button{width:100%;border:0;background:transparent;text-align:left;padding:10px 12px;border-radius:10px;color:var(--muted);margin:2px 0}.nav button.active{background:#171717;color:#fff}.content{min-width:0}.panel{padding:22px;margin-bottom:16px}.panel h2{font-size:18px;margin:0 0 5px}.copy{color:var(--muted);margin:0 0 18px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{display:grid;gap:6px}.field.full{grid-column:1/-1}.field span{font-weight:650}.field input,.field textarea{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:#fff;outline:none}.field textarea{min-height:150px;resize:vertical;line-height:1.55}.field input:focus,.field textarea:focus{border-color:#777}.secret-row{display:grid;grid-template-columns:1fr auto;gap:8px}.secondary,.primary,.danger{border-radius:10px;padding:9px 13px;border:1px solid var(--line);background:#fff}.primary{background:#171717;border-color:#171717;color:#fff}.danger{color:var(--bad)}.actions{display:flex;align-items:center;gap:10px;margin-top:16px;flex-wrap:wrap}.hint{color:var(--muted);font-size:12px}.message{display:none;margin:0 0 16px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}.message.show{display:block}.message.error{border-color:#f0b7b2;color:var(--bad);background:#fff7f6}
-    .facts{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:18px}.fact{border:1px solid var(--line);background:var(--soft);border-radius:12px;padding:12px}.fact span{display:block;color:var(--muted);font-size:12px}.fact strong{display:block;margin-top:3px;word-break:break-all}.section{display:none}.section.active{display:block}.switch{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:var(--soft)}.switch input{width:18px;height:18px}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.advanced{margin-top:14px}.advanced summary{cursor:pointer;color:var(--muted)}[hidden]{display:none!important}
-    @media(max-width:760px){body{font-size:16px}.layout{grid-template-columns:1fr}.nav{position:static;display:flex;gap:6px}.nav button{text-align:center}.grid,.facts{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}.top-actions{width:100%;flex-wrap:wrap}.status{flex:1;justify-content:center}}
+    .facts{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:18px}.fact{border:1px solid var(--line);background:var(--soft);border-radius:12px;padding:12px}.fact span{display:block;color:var(--muted);font-size:12px}.fact strong{display:block;margin-top:3px;word-break:break-word}.section{display:none}.section.active{display:block}.switch{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:var(--soft)}.switch input{width:18px;height:18px}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.advanced{margin-top:14px}.advanced summary{cursor:pointer;color:var(--muted)}[hidden]{display:none!important}
+    .field select{width:100%;border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:#fff}.progress-track{height:8px;border-radius:999px;background:#e6e6e0;overflow:hidden;margin-top:9px}.progress-fill{height:100%;background:var(--ok);width:0}.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}.task-list{display:grid;gap:8px}.task-row{border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:var(--soft)}.task-row strong{display:block}.task-row small{color:var(--muted)}.empty{color:var(--muted);padding:8px 0}.workspace{display:grid;grid-template-columns:230px minmax(0,1fr);gap:12px}.file-list{display:grid;gap:6px;align-content:start}.file-list button{text-align:left;min-height:38px;padding:7px 9px}.markdown-view{min-height:250px;max-height:520px;overflow:auto;margin:0;padding:14px;border:1px solid var(--line);border-radius:10px;background:#20201e;color:#f5f5f0;white-space:pre-wrap;word-break:break-word}.subhead{font-size:14px;margin:0 0 10px}
+	.data-list{display:grid;gap:7px;margin-top:12px}.data-row{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding:7px 0}.data-row:last-child{border-bottom:0}.data-row span{color:var(--muted)}.data-row strong{text-align:right;word-break:break-word}.provider-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.provider-grid .panel{margin-bottom:0}.tag-list{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.tag{border:1px solid var(--line);border-radius:999px;background:var(--soft);padding:4px 8px;font-size:12px}.notice{border:1px solid var(--line);border-radius:12px;background:var(--soft);padding:12px 14px;color:var(--muted)}
+    @media(max-width:760px){body{font-size:16px}.layout{grid-template-columns:1fr}.nav{position:static;display:flex;gap:6px;overflow:auto}.nav button{text-align:center;white-space:nowrap}.grid,.facts,.split,.workspace,.provider-grid{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}.top-actions{width:100%;flex-wrap:wrap}.status{flex:1;justify-content:center}}
   </style>
 </head>
 <body>
@@ -26,6 +28,10 @@ const localUIHTML = `<!doctype html>
     <div class="layout">
       <nav class="nav" aria-label="本地设置">
         <button class="active" data-tab="connect">设备</button>
+        <button data-tab="working">任务与进度</button>
+		<button data-tab="ai">AI 与路由</button>
+		<button data-tab="diagnostics">诊断</button>
+		<button data-tab="components">组件</button>
         <button data-tab="config">本地配置</button>
       </nav>
       <main class="content">
@@ -47,7 +53,6 @@ const localUIHTML = `<!doctype html>
             <p class="copy">设备已经完成登记。以后打开 Fast Spider 会自动连接 Hub，不需要再次输入连接密钥。</p>
             <div class="facts">
               <div class="fact"><span>客户端名称</span><strong id="machine-name">—</strong></div>
-              <div class="fact"><span>Machine ID</span><strong id="machine-id">—</strong></div>
               <div class="fact"><span>Hub</span><strong id="machine-hub">—</strong></div>
               <div class="fact"><span>连接方式</span><strong>设备密钥 · 自动连接</strong></div>
               <div class="fact"><span>文件权限</span><strong>当前系统用户 · 全电脑</strong></div>
@@ -56,6 +61,125 @@ const localUIHTML = `<!doctype html>
             <p class="hint" style="margin-top:12px">客户端名称可在“本地配置”中修改；管理员备注只在 Web 后台维护，两者互不覆盖。</p>
           </div>
         </section>
+
+        <section id="tab-working" class="section">
+          <div class="panel">
+            <h2>任务与进度</h2>
+            <p class="copy">绑定项目内的结构化 Plan 与 Markdown Workspace。这里直接使用 Node Working Context，不创建额外任务状态。</p>
+            <div class="grid">
+              <label class="field full"><span>当前项目</span><input id="working-project" maxlength="4096" placeholder="项目绝对路径"></label>
+              <label class="field"><span>planId</span><input id="working-plan" maxlength="128" value="default"></label>
+              <label class="field"><span>目标版本</span><input id="working-target" maxlength="128" placeholder="例如 0.4.1"></label>
+            </div>
+            <div class="actions"><button id="working-init" class="primary" type="button">初始化 / 绑定 docs/progress</button><button id="working-refresh" class="secondary" type="button">刷新</button><button id="working-sync" class="secondary" type="button" disabled>同步受管区块</button><button id="working-open" class="secondary" type="button" disabled>打开 Markdown 文件夹</button></div>
+            <div class="facts">
+              <div class="fact"><span>项目 / Plan</span><strong id="working-binding">未绑定</strong></div>
+              <div class="fact"><span>目标版本</span><strong id="working-version">—</strong></div>
+              <div class="fact"><span>Git</span><strong id="working-git">—</strong></div>
+              <div class="fact"><span>总完成度</span><strong id="working-completion">—</strong><div class="progress-track"><div id="working-progress" class="progress-fill"></div></div></div>
+              <div class="fact"><span>Markdown Workspace</span><strong id="working-workspace">未初始化</strong></div>
+              <div class="fact"><span>Working Context revision</span><strong id="working-revision" class="mono">—</strong></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="split">
+              <div><h3 class="subhead">当前任务</h3><div id="working-current-tasks" class="task-list"><span class="empty">暂无</span></div></div>
+              <div><h3 class="subhead">阻塞任务</h3><div id="working-blocked-tasks" class="task-list"><span class="empty">暂无</span></div></div>
+            </div>
+          </div>
+          <div class="panel">
+            <h2>更新任务</h2>
+            <p class="copy">更新使用当前 revision；若内容已经变化，会要求刷新后重试。</p>
+            <div class="grid">
+              <label class="field full"><span>任务</span><select id="working-task"><option value="">暂无任务</option></select></label>
+              <label class="field"><span>状态</span><select id="working-task-status"><option value="pending">待处理</option><option value="in_progress">进行中</option><option value="blocked">阻塞</option><option value="done">完成</option></select></label>
+              <label class="field"><span>完成度（0–100）</span><input id="working-task-completion" type="number" min="0" max="100" value="0"></label>
+            </div>
+            <div class="actions"><button id="working-task-save" class="primary" type="button" disabled>保存任务状态</button></div>
+            <div class="grid" style="margin-top:18px">
+              <label class="field full"><span>验收证据摘要</span><input id="working-evidence-summary" maxlength="2048" placeholder="简短、可验证的验收结果"></label>
+              <label class="field"><span>类型</span><input id="working-evidence-kind" maxlength="128" placeholder="test / review"></label>
+              <label class="field"><span>引用</span><input id="working-evidence-reference" maxlength="2048" placeholder="测试命令、相对文件或工单"></label>
+            </div>
+            <div class="actions"><button id="working-evidence-add" class="secondary" type="button" disabled>添加验收证据</button></div>
+            <h3 class="subhead" style="margin-top:20px">最近验收证据</h3><div id="working-evidences" class="task-list"><span class="empty">暂无</span></div>
+          </div>
+          <div class="panel">
+            <h2>Markdown Workspace</h2>
+            <p class="copy">只读查看已绑定项目 MarkdownRoot 内的普通 .md 文件。</p>
+            <div class="workspace"><div id="working-files" class="file-list"><span class="empty">请先刷新</span></div><pre id="working-markdown" class="markdown-view">选择一个 Markdown 文件查看内容。</pre></div>
+          </div>
+        </section>
+
+		<section id="tab-ai" class="section">
+		  <div class="panel">
+			<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap"><div><h2>AI 与路由</h2><p class="copy">只读取本机 Codex、Claude Code 与 CC Switch 的脱敏状态，不会自动发起模型生成。</p></div><button id="ai-refresh" class="secondary" type="button">手动刷新</button></div>
+			<div class="notice" id="ai-health-note">真实模型健康测试需用户手动从会话执行；本页面不会自动消耗模型额度。</div>
+		  </div>
+		  <div class="provider-grid">
+			<div class="panel">
+			  <h2>Codex</h2><p class="copy">本机 Codex runtime 与有效路由。</p>
+			  <div class="facts"><div class="fact"><span>Runtime</span><strong id="ai-codex-runtime">待刷新</strong></div><div class="fact"><span>Version</span><strong id="ai-codex-version">—</strong></div><div class="fact"><span>Execution health</span><strong id="ai-codex-health">—</strong></div></div>
+			  <h3 class="subhead" style="margin-top:18px">Route</h3><div id="ai-codex-route" class="data-list"><span class="empty">待刷新</span></div>
+			  <h3 class="subhead" style="margin-top:18px">Models</h3><div id="ai-codex-models" class="tag-list"><span class="empty">待刷新</span></div>
+			  <h3 class="subhead" style="margin-top:18px">Effective capabilities</h3><div id="ai-codex-capabilities" class="data-list"><span class="empty">待刷新</span></div>
+			  <h3 class="subhead" style="margin-top:18px">Supported actions</h3><div id="ai-codex-actions" class="tag-list"><span class="empty">待刷新</span></div>
+			</div>
+			<div class="panel">
+			  <h2>Claude Code</h2><p class="copy">仅显示认证是否已配置，不读取或展示凭据。</p>
+			  <div class="facts"><div class="fact"><span>Runtime</span><strong id="ai-claude-runtime">待刷新</strong></div><div class="fact"><span>Version</span><strong id="ai-claude-version">—</strong></div><div class="fact"><span>Auth configured</span><strong id="ai-claude-auth">—</strong></div><div class="fact"><span>Execution health</span><strong id="ai-claude-health">—</strong></div></div>
+			  <h3 class="subhead" style="margin-top:18px">Route</h3><div id="ai-claude-route" class="data-list"><span class="empty">待刷新</span></div>
+			  <h3 class="subhead" style="margin-top:18px">Models</h3><div id="ai-claude-models" class="tag-list"><span class="empty">待刷新</span></div>
+			  <h3 class="subhead" style="margin-top:18px">Effective capabilities</h3><div id="ai-claude-capabilities" class="data-list"><span class="empty">待刷新</span></div>
+			  <h3 class="subhead" style="margin-top:18px">Supported actions</h3><div id="ai-claude-actions" class="tag-list"><span class="empty">待刷新</span></div>
+			</div>
+		  </div>
+		  <div class="panel" style="margin-top:16px">
+			<h2>CC Switch</h2><p class="copy">数据库只读发现、schema fingerprint、接管状态与当前 Provider 映射。</p>
+			<div class="facts"><div class="fact"><span>DB detected</span><strong id="ai-cc-db">待刷新</strong></div><div class="fact"><span>Schema supported</span><strong id="ai-cc-schema">—</strong></div><div class="fact"><span>Schema fingerprint</span><strong id="ai-cc-fingerprint" class="mono">—</strong></div><div class="fact"><span>Proxy enabled</span><strong id="ai-cc-proxy">—</strong></div><div class="fact"><span>Takeover / Live</span><strong id="ai-cc-takeover">—</strong></div><div class="fact"><span>Selection consistent</span><strong id="ai-cc-selection">—</strong></div></div>
+			<div class="split" style="margin-top:18px"><div><h3 class="subhead">Current Provider / Health</h3><div id="ai-cc-provider" class="data-list"><span class="empty">待刷新</span></div></div><div><h3 class="subhead">Model mapping</h3><div id="ai-cc-models" class="tag-list"><span class="empty">待刷新</span></div></div></div>
+			<h3 class="subhead" style="margin-top:18px">Effective capabilities</h3><div id="ai-cc-capabilities" class="data-list"><span class="empty">待刷新</span></div>
+		  </div>
+		</section>
+
+		<section id="tab-diagnostics" class="section">
+		  <div class="panel">
+			<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap"><div><h2>诊断中心</h2><p class="copy">汇总本机 Node、Hub、Agent、任务工作区和本地能力的脱敏只读状态，不读取日志原文或敏感配置。</p></div><button id="diagnostics-refresh" class="secondary" type="button">刷新诊断</button></div>
+			<div class="notice">刷新只执行本地 discovery、plan.get 与 markdown.list，不会创建会话、发送 Prompt 或运行真实模型健康测试。</div>
+		  </div>
+		  <div class="split">
+			<div class="panel"><h2>Node / 客户端</h2><div id="diagnostics-node" class="data-list"><span class="empty">切换到本页后读取</span></div></div>
+			<div class="panel"><h2>Hub 连接</h2><div id="diagnostics-hub" class="data-list"><span class="empty">切换到本页后读取</span></div></div>
+		  </div>
+		  <div class="panel">
+			<h2>Agent runtime</h2><p class="copy">只显示 runtime、版本、认证状态、当前路由与统一 errorClass。</p>
+			<div class="provider-grid"><div><h3 class="subhead">Codex</h3><div id="diagnostics-codex" class="data-list"><span class="empty">待刷新</span></div></div><div><h3 class="subhead">Claude Code</h3><div id="diagnostics-claude" class="data-list"><span class="empty">待刷新</span></div></div></div>
+			<h3 class="subhead" style="margin-top:20px">CC Switch</h3><div id="diagnostics-ccswitch" class="data-list"><span class="empty">待刷新</span></div>
+		  </div>
+		  <div class="split">
+			<div class="panel"><h2>Working Context / Task Workspace</h2><div id="diagnostics-workspace" class="data-list"><span class="empty">待刷新</span></div></div>
+			<div class="panel"><h2>本地能力</h2><div id="diagnostics-local" class="data-list"><span class="empty">待刷新</span></div></div>
+		  </div>
+		  <div class="panel"><h2>最近诊断错误</h2><div id="diagnostics-errors" class="data-list"><span class="empty">暂无公开错误</span></div></div>
+		  <div class="panel"><h2>脱敏诊断摘要</h2><p class="copy">该摘要由 allowlist DTO 生成，可直接选中复制。</p><pre id="diagnostics-summary" class="markdown-view" style="min-height:150px;max-height:320px">切换到本页后生成摘要。</pre></div>
+		</section>
+
+		<section id="tab-components" class="section">
+		  <div class="panel">
+			<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap"><div><h2>本地组件中心</h2><p class="copy">只管理 Fast Spider 已知并经过校验的 Browser 与 ripgrep 组件；安装和更新始终需要手动触发。</p></div><button id="components-refresh" class="secondary" type="button">刷新状态</button></div>
+			<div class="notice">组件状态不会显示安装路径、Hub 地址或凭据，也不会在页面加载时自动下载。</div>
+		  </div>
+		  <div class="provider-grid">
+			<div class="panel"><h2>Browser</h2><p class="copy">受管浏览器运行时与 Sidecar。安装成功后沿用现有本地配置刷新行为。</p><div id="component-browser-data" class="data-list"><span class="empty">切换到本页后读取</span></div><div class="actions"><button id="browser-install" class="primary" type="button">安装 / 更新 Browser</button><span id="browser-status" class="hint">仅在点击后联网安装。</span></div></div>
+			<div class="panel"><h2>ripgrep 搜索引擎</h2><p class="copy">code.search 优先使用已校验的受管 ripgrep；缺失时安全回退至 Go native。</p><div id="component-ripgrep-data" class="data-list"><span class="empty">切换到本页后读取</span></div><div class="actions"><button id="ripgrep-install" class="primary" type="button">安装 / 更新 ripgrep</button><span id="ripgrep-status" class="hint">安装后下次搜索自动生效。</span></div></div>
+		  </div>
+		  <div class="panel">
+			<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap"><div><h2>搜索与文件能力</h2><p class="copy">展示搜索引擎就绪状态，以及 file_read / file_edit 2.0 的本地能力摘要。</p></div><button id="search-file-self-test" class="secondary" type="button">运行本地自检</button></div>
+			<div id="search-file-status" class="data-list" style="margin-top:16px"><span class="empty">切换到本页后读取</span></div>
+			<div class="notice">自检只在 NodeUI 数据目录内创建并清理隔离临时文件；不会读取项目文件、下载组件或执行 AI。</div>
+			<pre id="search-file-self-test-result" class="markdown-view" style="min-height:110px;max-height:240px">尚未运行。仅在点击按钮后执行。</pre>
+		  </div>
+		</section>
 
         <section id="tab-config" class="section">
           <div class="panel">
@@ -73,16 +197,14 @@ const localUIHTML = `<!doctype html>
             </form>
           </div>
           <div class="panel">
-            <h2>版本与扩展组件</h2>
-            <p class="copy">主程序保持单文件 EXE；Browser 等大型能力以后按需下载到组件目录。更新包由当前 Hub 签名，并同时校验 SHA256。</p>
+			<h2>版本更新</h2>
+			<p class="copy">主程序更新包由当前 Hub 签名，并同时校验 SHA256；扩展能力请在“组件”页管理。</p>
             <div class="facts">
               <div class="fact"><span>当前版本</span><strong id="update-current">{{VERSION}}</strong></div>
               <div class="fact"><span>最新版本</span><strong id="update-latest">尚未检查</strong></div>
               <div class="fact"><span>更新状态</span><strong id="update-state">尚未检查</strong></div>
             </div>
             <div class="actions"><button id="update-check" class="secondary" type="button">检查更新</button><button id="update-install" class="primary" type="button" disabled>立即升级</button><span id="update-time" class="hint"></span></div>
-            <div class="actions"><button id="browser-install" class="secondary" type="button">安装 / 更新 Browser</button><span id="browser-status" class="hint">按需安装，不影响基础 Node。</span></div>
-            <p class="hint mono" id="component-root"></p>
           </div>
         </section>
 
@@ -96,6 +218,14 @@ const localUIHTML = `<!doctype html>
   let current = null;
   let busy = false;
   let configDirty = false;
+  let workingDirty = false;
+  let workingBusy = false;
+  let workingState = null;
+  let workingRevision = '';
+	let aiBusy = false;
+	let diagnosticsBusy = false;
+	let componentsBusy = false;
+	let selfTestBusy = false;
 
   async function api(path, options = {}) {
     const headers = Object.assign({'X-Fast-Spider-UI-Token': token}, options.headers || {});
@@ -124,7 +254,6 @@ const localUIHTML = `<!doctype html>
     $('registration-panel').hidden = !!status.registered;
     $('registered-panel').hidden = !status.registered;
     $('machine-name').textContent = (status.config && status.config.machineName) || '—';
-    $('machine-id').textContent = status.machineId || '—';
     $('machine-hub').textContent = status.hubUrl || '—';
     $('tray-state').textContent = status.traySupported ? (status.trayActive ? '已驻留 · 右键可退出' : '未启动') : '当前系统不支持';
     $('data-dir').textContent = '配置目录：' + status.dataDir;
@@ -144,8 +273,11 @@ const localUIHTML = `<!doctype html>
       $('config-autoupdate').checked = !!cfg.autoUpdateEnabled;
       $('config-insecure').checked = !!cfg.allowInsecureLocalHub;
     }
+    if (!workingDirty) {
+      $('working-project').value = cfg.workingProjectPath || '';
+      $('working-plan').value = cfg.workingPlanId || 'default';
+    }
     $('config-autostart').disabled = !status.autoStartSupported;
-    $('component-root').textContent = '组件目录：' + (status.componentRoot || '—');
     renderUpdate(status.update || {});
   }
 
@@ -169,10 +301,211 @@ const localUIHTML = `<!doctype html>
     try { renderStatus(await api('/api/status')); } catch (e) { message(e.message, true); }
   }
 
+  function workingArgs(action, extra = {}) {
+    return Object.assign({action:action,projectPath:$('working-project').value.trim(),planId:$('working-plan').value.trim()}, extra);
+  }
+
+  async function workingCall(action, extra = {}) {
+    return api('/api/working',{method:'POST',body:JSON.stringify(workingArgs(action,extra))});
+  }
+
+  function taskRows(tasks, emptyText) {
+    if (!tasks.length) return '<span class="empty">' + emptyText + '</span>';
+    return tasks.map(task => '<div class="task-row"><strong>' + escapeText(task.id + ' · ' + task.title) + '</strong><small>' + escapeText(task.status + ' · ' + task.completion + '%' + (task.blockedReason ? ' · ' + task.blockedReason : '')) + '</small></div>').join('');
+  }
+
+  function escapeText(value) {
+    const span=document.createElement('span'); span.textContent=value || ''; return span.innerHTML;
+  }
+
+	function boolText(value) { return value === true ? '是' : value === false ? '否' : '—'; }
+	function renderTags(id, values, formatter) {
+	  const box=$(id); box.textContent='';
+	  if(!Array.isArray(values) || !values.length){const empty=document.createElement('span');empty.className='empty';empty.textContent='暂无';box.appendChild(empty);return;}
+	  values.forEach(value=>{const tag=document.createElement('span');tag.className='tag';tag.textContent=formatter ? formatter(value) : String(value);box.appendChild(tag);});
+	}
+	function renderData(id, rows) {
+	  const box=$(id); box.textContent='';
+	  if(!rows.length){const empty=document.createElement('span');empty.className='empty';empty.textContent='暂无';box.appendChild(empty);return;}
+	  rows.forEach(row=>{const line=document.createElement('div');line.className='data-row';const label=document.createElement('span');label.textContent=row[0];const value=document.createElement('strong');value.textContent=row[1] || '—';line.append(label,value);box.appendChild(line);});
+	}
+	function renderCapabilities(id, capabilities) {
+	  renderData(id,Object.entries(capabilities || {}).map(([name,item])=>[name,(item.state || 'unknown')+(item.reason ? ' · '+item.reason : '')]));
+	}
+	function modelLabel(model) { return model.displayName || model.id || model.model || model.upstreamModel || '未知模型'; }
+	function renderRoute(id, route) {
+	  route=route || {};
+	  renderData(id,[['状态',route.available ? '可用' : (route.reason || '不可用')],['模式',route.routingMode || '—'],['当前 Provider',route.currentProvider || '—'],['选择一致',route.selectionConsistent === undefined ? '—' : boolText(route.selectionConsistent)],['错误',route.errorClass ? route.errorClass+' · '+(route.errorMessage || '') : '无公开错误']]);
+	}
+	function renderAI(data) {
+	  const codex=data.codex || {}, claude=data.claudeCode || {}, cc=data.ccSwitch || {};
+	  $('ai-codex-runtime').textContent=(codex.available ? 'available' : 'unavailable'); $('ai-codex-version').textContent=codex.version || '—'; $('ai-codex-health').textContent=codex.executionHealth || '—';
+	  renderRoute('ai-codex-route',codex.route); renderTags('ai-codex-models',codex.models,modelLabel); renderCapabilities('ai-codex-capabilities',codex.effectiveCapabilities); renderTags('ai-codex-actions',codex.supportedActions);
+	  $('ai-claude-runtime').textContent=(claude.available ? 'available' : 'unavailable'); $('ai-claude-version').textContent=claude.version || '—'; $('ai-claude-auth').textContent=claude.authStatus || boolText(claude.authConfigured); $('ai-claude-health').textContent=claude.executionHealth || '—';
+	  renderRoute('ai-claude-route',claude.route); renderTags('ai-claude-models',claude.models,modelLabel); renderCapabilities('ai-claude-capabilities',claude.effectiveCapabilities); renderTags('ai-claude-actions',claude.supportedActions);
+	  $('ai-cc-db').textContent=boolText(cc.dbDetected); $('ai-cc-schema').textContent=boolText(cc.schemaSupported)+(cc.reason ? ' · '+cc.reason : ''); $('ai-cc-fingerprint').textContent=cc.schemaFingerprint || '—'; $('ai-cc-proxy').textContent=boolText(cc.proxyEnabled); $('ai-cc-takeover').textContent=boolText(cc.takeover)+' / '+boolText(cc.liveTakeover); $('ai-cc-selection').textContent=boolText(cc.selectionConsistent);
+	  const health=Array.isArray(cc.providerHealth) ? cc.providerHealth : []; renderData('ai-cc-provider',[['Provider',cc.currentProvider || '—'],['Health',health.length ? health.map(item=>(item.healthy?'healthy':'unhealthy')+' · failures '+item.consecutiveFailures).join(' · ') : '—'],['错误',cc.errorClass ? cc.errorClass+' · '+(cc.errorMessage || '') : '无公开错误']]);
+	  renderTags('ai-cc-models',cc.modelMapping,modelLabel); renderCapabilities('ai-cc-capabilities',cc.effectiveCapabilities); $('ai-health-note').textContent=(data.healthTest && data.healthTest.message) || '真实模型健康测试需用户手动从会话执行。';
+	}
+	async function refreshAI() {
+	  if(aiBusy)return; aiBusy=true; $('ai-refresh').disabled=true;
+	  try{renderAI(await api('/api/ai-routing'));message('AI 与路由状态已刷新。');}catch(e){message(e.message,true);}finally{aiBusy=false;$('ai-refresh').disabled=false;}
+	}
+	function diagnosticRuntimeRows(runtime, includeAuth) {
+	  runtime=runtime || {}; const rows=[['Runtime',runtime.runtime || 'unknown'],['Version',runtime.version || '—'],['Route',runtime.route || 'unknown']];
+	  if(includeAuth) rows.push(['Auth configured',boolText(runtime.authConfigured)]);
+	  rows.push(['错误',runtime.errorClass ? runtime.errorClass+' · '+(runtime.errorMessage || '') : '无公开错误']); return rows;
+	}
+	function renderDiagnostics(data) {
+	  const node=data.node || {}, hub=data.hub || {}, agent=data.agent || {}, workspace=data.workspace || {}, local=data.local || {}, cc=(agent.ccSwitch || {});
+	  renderData('diagnostics-node',[['版本',node.version || 'unknown'],['配置',node.configStatus || 'unknown'],['已登记',boolText(node.registered)],['Runtime',node.runtimeStatus || 'unknown'],['本地进程拥有',boolText(node.runtimeOwned)],['自动启动',boolText(node.autoStartEnabled)],['自动更新',boolText(node.autoUpdateEnabled)]]);
+	  renderData('diagnostics-hub',[['已配置',boolText(hub.configured)],['Hub host',hub.host || '—'],['连接状态',hub.connectionStatus || 'unknown'],['最近状态',hub.lastKnownStatus || 'unknown']]);
+	  renderData('diagnostics-codex',diagnosticRuntimeRows(agent.codex,false)); renderData('diagnostics-claude',diagnosticRuntimeRows(agent.claudeCode,true));
+	  renderData('diagnostics-ccswitch',[['DB detected',boolText(cc.dbDetected)],['Schema supported',boolText(cc.schemaSupported)],['Schema fingerprint',cc.schemaFingerprint || '—'],['Current route',cc.currentRoute || 'unknown'],['Selection consistent',boolText(cc.selectionConsistent)],['错误',cc.errorClass ? cc.errorClass+' · '+(cc.errorMessage || '') : '无公开错误']]);
+	  renderData('diagnostics-workspace',[['绑定',boolText(workspace.bound)],['项目摘要',workspace.projectStatus || 'not_bound'],['Plan',workspace.planId || '—'],['可读',boolText(workspace.readable)],['计划存在',boolText(workspace.exists)],['Revision',workspace.revision || '—'],['Markdown 文件',String(workspace.markdownFiles || 0)]]);
+	  renderData('diagnostics-local',[['Local Bridge configured',boolText(local.localBridgeConfigured)],['Browser configured',boolText(local.browserConfigured)],['Browser present',boolText(local.browserPresent)],['Component root present',boolText(local.componentRootPresent)],['Tray supported',boolText(local.traySupported)],['Tray active',boolText(local.trayActive)]]);
+	  renderData('diagnostics-errors',(data.errors || []).map(item=>[item.area || 'diagnostic',(item.errorClass || 'unknown')+' · '+(item.publicMessage || '诊断失败')]));
+	  const summary=data.summary || {}; $('diagnostics-summary').textContent=['Node: '+(summary.node || '—'),'Hub: '+(summary.hub || '—'),'Agent: '+(summary.agent || '—'),'Workspace: '+(summary.workspace || '—'),'Local: '+(summary.local || '—')].join('\n');
+	}
+	async function refreshDiagnostics() {
+	  if(diagnosticsBusy)return; diagnosticsBusy=true; $('diagnostics-refresh').disabled=true;
+	  try{renderDiagnostics(await api('/api/diagnostics'));message('诊断状态已刷新。');}catch(e){message(e.message,true);}finally{diagnosticsBusy=false;$('diagnostics-refresh').disabled=false;}
+	}
+	function componentRows(component) {
+	  return [['状态',component.status || 'unknown'],['已安装',boolText(component.installed)],['版本',component.version || '—'],['平台',component.platform || 'unknown'],['可执行就绪',boolText(component.executableReady)],['引擎就绪',boolText(component.engineReady)]];
+	}
+	function renderSearchFileStatus(data) {
+	  const read=data.fileRead || {}, edit=data.fileEdit || {};
+	  renderData('search-file-status',[
+		['搜索引擎',data.searchEngine || 'native'],['ripgrep installed',boolText(data.ripgrepInstalled)],['ripgrep verified',boolText(data.ripgrepVerified)],['native fallback',boolText(data.nativeReady)],
+		['file_read',(read.version || 'unknown')+' · '+(read.actions || []).join(', ')],['file_edit',(edit.version || 'unknown')+' · '+(edit.actions || []).join(', ')],
+	  ]);
+	}
+	async function refreshComponents() {
+	  if(componentsBusy)return; componentsBusy=true; $('components-refresh').disabled=true;
+	  try {
+		const [components,capabilities]=await Promise.all([api('/api/components'),api('/api/search-file/status')]);
+		const byId={}; (components.components || []).forEach(item=>{byId[item.id]=item;});
+		renderData('component-browser-data',componentRows(byId.browser || {})); renderData('component-ripgrep-data',componentRows(byId['search-ripgrep'] || {})); renderSearchFileStatus(capabilities);
+	  } catch(e) { message(e.message,true); }
+	  finally { componentsBusy=false; $('components-refresh').disabled=false; }
+	}
+	async function ensureComponent(componentId,buttonId,statusId) {
+	  if(componentsBusy)return; componentsBusy=true; $(buttonId).disabled=true; $(statusId).textContent='正在下载并校验组件…';
+	  try { const data=await api('/api/components/ensure',{method:'POST',body:JSON.stringify({componentId})}); $(statusId).textContent=(data.component && data.component.version ? data.component.version : '组件')+' 已安装'; message('组件安装完成。'); }
+	  catch(e) { $(statusId).textContent='安装失败'; message(e.message,true); }
+	  finally { componentsBusy=false; $(buttonId).disabled=false; await refreshComponents(); }
+	}
+	async function runSearchFileSelfTest() {
+	  if(selfTestBusy)return; selfTestBusy=true; $('search-file-self-test').disabled=true; $('search-file-self-test-result').textContent='正在运行隔离的本地自检…';
+	  try { const data=await api('/api/search-file/self-test',{method:'POST',body:'{}'}); $('search-file-self-test-result').textContent=['Status: '+data.status,'Engine: '+(data.engine || '—'),'Fallback: '+(data.fallbackReason || '—'),'Elapsed: '+String(data.elapsedMs || 0)+' ms','file_read: '+data.fileRead,'file_edit preview: '+data.fileEditPreview,'Error: '+(data.errorClass ? data.errorClass+' · '+(data.publicMessage || '') : '—')].join('\n'); message(data.status === 'PASS' ? '搜索与文件能力自检完成。' : (data.publicMessage || '本地自检未通过。'),data.status !== 'PASS'); }
+	  catch(e) { $('search-file-self-test-result').textContent='FAIL\n'+e.message; message(e.message,true); }
+	  finally { selfTestBusy=false; $('search-file-self-test').disabled=false; }
+	}
+
+  function renderWorking(result, markdown) {
+    workingState = result.state || null;
+    workingRevision = result.revision || '';
+    const state = workingState || {};
+    const tasks = Array.isArray(state.tasks) ? state.tasks : [];
+    const currentTasks = tasks.filter(task => task.status === 'in_progress' || task.status === 'pending');
+    const blockedTasks = tasks.filter(task => task.status === 'blocked');
+    const completion = tasks.length ? Math.round(tasks.reduce((sum,task) => sum + Number(task.completion || 0),0) / tasks.length) : 0;
+    const git = result.currentGit || {};
+    $('working-binding').textContent = result.exists ? (state.planId || 'default') + ' · ' + (state.projectPath || $('working-project').value) : '未初始化';
+    $('working-version').textContent = state.targetVersion || '—';
+    $('working-git').textContent = git.isRepository ? ((git.branch || 'detached') + ' · ' + (git.head || '—').slice(0,12) + (git.dirty ? ' · dirty' : ' · clean')) : '非 Git 仓库';
+    $('working-completion').textContent = completion + '%';
+    $('working-progress').style.width = completion + '%';
+    $('working-revision').textContent = workingRevision || '—';
+    $('working-current-tasks').innerHTML = taskRows(currentTasks,'当前没有待处理任务');
+    $('working-blocked-tasks').innerHTML = taskRows(blockedTasks,'当前没有阻塞任务');
+    const select = $('working-task');
+    const selected = select.value;
+    select.textContent='';
+    if(tasks.length){tasks.forEach(task=>{const option=document.createElement('option');option.value=task.id;option.textContent=task.id+' · '+task.title;select.appendChild(option);});}
+    else{const option=document.createElement('option');option.value='';option.textContent='暂无任务';select.appendChild(option);}
+    if (tasks.some(task => task.id === selected)) select.value=selected;
+    const active = tasks.find(task => task.id === select.value);
+    if (active) { $('working-task-status').value=active.status; $('working-task-completion').value=active.completion; }
+    $('working-task-save').disabled = !result.exists || !tasks.length;
+    $('working-evidence-add').disabled = !result.exists || !tasks.length;
+    $('working-sync').disabled = !result.exists;
+    $('working-open').disabled = !result.exists;
+    const evidences=[];
+    tasks.forEach(task => (task.evidences || []).forEach(item => evidences.push(Object.assign({taskId:task.id},item))));
+    evidences.sort((a,b) => String(b.acceptedAt || '').localeCompare(String(a.acceptedAt || '')));
+    $('working-evidences').innerHTML = evidences.length ? evidences.slice(0,8).map(item => '<div class="task-row"><strong>' + escapeText(item.taskId + ' · ' + item.summary) + '</strong><small>' + escapeText((item.kind || 'evidence') + (item.reference ? ' · ' + item.reference : '')) + '</small></div>').join('') : '<span class="empty">暂无验收证据</span>';
+    renderWorkingFiles(markdown || []);
+  }
+
+  function renderWorkingFiles(files) {
+    $('working-workspace').textContent = files.length ? ('正常 · ' + files.length + ' 个文件') : '未初始化或为空';
+    const box=$('working-files'); box.textContent='';
+    if (!files.length) { box.innerHTML='<span class="empty">暂无 Markdown 文件</span>'; return; }
+    files.forEach(file => { const button=document.createElement('button'); button.type='button'; button.className='secondary'; button.textContent=file.path + ' · ' + file.size + ' B'; button.addEventListener('click',() => readWorkingMarkdown(file.path)); box.appendChild(button); });
+  }
+
+  async function refreshWorking() {
+    if (workingBusy || !$('working-project').value.trim() || !$('working-plan').value.trim()) return;
+    workingBusy=true;
+    try {
+      const result=await workingCall('plan.get');
+      let files=[];
+      if (result.exists) { const listed=await workingCall('markdown.list'); files=listed.markdown || []; }
+      workingDirty=false; renderWorking(result,files); message(result.exists ? '任务与进度已刷新。' : '尚未初始化该计划。');
+    } catch(e) { message(e.message,true); } finally { workingBusy=false; }
+  }
+
+  async function readWorkingMarkdown(path) {
+    if (workingBusy) return; workingBusy=true;
+    try { const result=await workingCall('markdown.read',{markdownPath:path}); $('working-markdown').textContent=result.content || ''; }
+    catch(e){message(e.message,true);} finally{workingBusy=false;}
+  }
+
   document.querySelectorAll('.nav button').forEach(button => button.addEventListener('click', () => {
     document.querySelectorAll('.nav button').forEach(x => x.classList.toggle('active', x === button));
     document.querySelectorAll('.section').forEach(x => x.classList.toggle('active', x.id === 'tab-' + button.dataset.tab));
+    if (button.dataset.tab === 'working' && $('working-project').value.trim()) refreshWorking();
+	if (button.dataset.tab === 'ai') refreshAI();
+	if (button.dataset.tab === 'diagnostics') refreshDiagnostics();
+	if (button.dataset.tab === 'components') refreshComponents();
   }));
+	$('ai-refresh').addEventListener('click',refreshAI);
+	$('diagnostics-refresh').addEventListener('click',refreshDiagnostics);
+	$('components-refresh').addEventListener('click',refreshComponents);
+	$('search-file-self-test').addEventListener('click',runSearchFileSelfTest);
+
+  $('working-project').addEventListener('input',()=>{workingDirty=true;});
+  $('working-plan').addEventListener('input',()=>{workingDirty=true;});
+  $('working-target').addEventListener('input',()=>{workingDirty=true;});
+  $('working-init').addEventListener('click',async()=>{
+    if(workingBusy)return; workingBusy=true;
+    try { const result=await workingCall('plan.init',{targetVersion:$('working-target').value.trim()}); const listed=await workingCall('markdown.list'); workingDirty=false; renderWorking(result,listed.markdown || []); message('项目计划已绑定，docs/progress 已验证或初始化。'); }
+    catch(e){message(e.message,true);} finally{workingBusy=false;}
+  });
+  $('working-refresh').addEventListener('click',refreshWorking);
+  $('working-task').addEventListener('change',()=>{ const task=(workingState && workingState.tasks || []).find(item=>item.id===$('working-task').value); if(task){$('working-task-status').value=task.status;$('working-task-completion').value=task.completion;} });
+  $('working-task-save').addEventListener('click',async()=>{
+    if(workingBusy)return; workingBusy=true;
+    try { const result=await workingCall('task.update',{expectedRevision:workingRevision,taskId:$('working-task').value,taskStatus:$('working-task-status').value,completion:Number($('working-task-completion').value)}); const listed=await workingCall('markdown.list'); renderWorking(result,listed.markdown || []); message('任务状态已更新。'); }
+    catch(e){message(e.message,true);} finally{workingBusy=false;}
+  });
+  $('working-evidence-add').addEventListener('click',async()=>{
+    const summary=$('working-evidence-summary').value.trim(); if(!summary){message('请填写验收证据摘要。',true);return;} if(workingBusy)return; workingBusy=true;
+    try { const result=await workingCall('task.update',{expectedRevision:workingRevision,taskId:$('working-task').value,evidence:{summary:summary,kind:$('working-evidence-kind').value.trim(),reference:$('working-evidence-reference').value.trim()}}); const listed=await workingCall('markdown.list'); renderWorking(result,listed.markdown || []); $('working-evidence-summary').value=''; $('working-evidence-kind').value=''; $('working-evidence-reference').value=''; message('验收证据已添加。'); }
+    catch(e){message(e.message,true);} finally{workingBusy=false;}
+  });
+  $('working-sync').addEventListener('click',async()=>{
+    if(workingBusy)return; workingBusy=true;
+    try { await workingCall('plan.sync',{expectedRevision:workingRevision}); const result=await workingCall('plan.get'); const listed=await workingCall('markdown.list'); renderWorking(result,listed.markdown || []); message('受管区块已同步，Manual 内容保持不变。'); }
+    catch(e){message(e.message,true);} finally{workingBusy=false;}
+  });
+  $('working-open').addEventListener('click',async()=>{
+    if(workingBusy)return; workingBusy=true;
+    try { await api('/api/working',{method:'POST',body:JSON.stringify({action:'folder.open'})}); message('已打开 Markdown 文件夹。'); }
+    catch(e){message(e.message,true);} finally{workingBusy=false;}
+  });
 
   $('toggle-token').addEventListener('click', () => {
     const input = $('connect-token'); input.type = input.type === 'password' ? 'text' : 'password'; $('toggle-token').textContent = input.type === 'password' ? '显示' : '隐藏';
@@ -210,14 +543,8 @@ const localUIHTML = `<!doctype html>
     catch(e){message(e.message,true);busy=false;}
   });
 
-  $('browser-install').addEventListener('click', async () => {
-    if (busy) return; busy=true; $('browser-install').disabled=true; $('browser-status').textContent='正在下载并校验 Browser 组件…'; message('正在安装 Browser 组件…');
-    try {
-      const data=await api('/api/components/ensure',{method:'POST',body:JSON.stringify({componentId:'browser'})});
-      renderStatus(data.status); $('browser-status').textContent='Browser ' + data.component.version + ' 已安装'; message('Browser 组件已安装并接入 Node，运行时正在刷新能力。');
-    } catch(e) { $('browser-status').textContent='Browser 安装失败'; message(e.message,true); }
-    finally { busy=false; $('browser-install').disabled=false; }
-  });
+	$('browser-install').addEventListener('click',()=>ensureComponent('browser','browser-install','browser-status'));
+	$('ripgrep-install').addEventListener('click',()=>ensureComponent('search-ripgrep','ripgrep-install','ripgrep-status'));
 
   $('exit-app').addEventListener('click', async () => {
     const ownsRuntime = current && current.runtimeOwned;
@@ -226,7 +553,7 @@ const localUIHTML = `<!doctype html>
     try { await api('/api/exit',{method:'POST',body:'{}'}); document.body.textContent=ownsRuntime ? 'Fast Spider Node 已退出，可以关闭此窗口。' : '本地界面已关闭；旧的无界面 Node 仍在运行。'; } catch(e) { message(e.message,true); }
   });
 
-  refresh(); setInterval(refresh, 2000);
+  refresh(); setInterval(refresh, 10000);
 })();
 </script>
 </body>

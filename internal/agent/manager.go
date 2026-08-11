@@ -3,19 +3,17 @@ package agent
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/url"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/isguang2024/fast-spider/internal/node"
-	_ "modernc.org/sqlite"
 )
 
 type agentControlParams struct {
@@ -82,6 +80,7 @@ type AgentManager struct {
 	ccswitch       *CCSwitchInspector
 	logger         *slog.Logger
 	codexStatePath string
+	registry       providerRegistry
 }
 
 func New(dataDir string, logger *slog.Logger) *AgentManager {
@@ -95,6 +94,7 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 		ccswitch:       ccswitch,
 		logger:         logger,
 		codexStatePath: defaultCodexDesktopStatePath(),
+		registry:       staticProviderRegistry(),
 	}
 }
 
@@ -135,14 +135,14 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 	if providerID == "" {
 		providerID = "codex"
 	}
+	if _, ok := m.registry.get(providerID); !ok {
+		return nil, fmt.Errorf("unsupported providerId %q", providerID)
+	}
 	if providerID == "claude_code" {
 		if m.claude == nil {
 			return nil, node.ErrAgentProviderUnavailable
 		}
 		return m.controlClaude(ctx, action, input)
-	}
-	if providerID != "codex" {
-		return nil, fmt.Errorf("unsupported providerId %q", providerID)
 	}
 	if m.codex == nil {
 		return nil, node.ErrAgentProviderUnavailable
@@ -529,67 +529,24 @@ func validateClaudeTurnInput(input agentControlParams) error {
 	return nil
 }
 
-func (m *AgentManager) providers(ctx context.Context) map[string]any {
-	providers := make([]any, 0, 2)
-
-	codexVersion, codexErr := m.codex.Availability(ctx)
-	codexProvider := map[string]any{
-		"providerId":         "codex",
-		"name":               "Codex",
-		"available":          codexErr == nil,
-		"executionModes":     []string{"bridge_owned"},
-		"credentialLocation": "local_only",
-		"supportedActions": []string{
-			"models.list", "provider.capabilities", "projects.list", "skills.list", "hooks.list", "permissions.list",
-			"plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list",
-			"session.list", "session.get", "session.create", "session.send", "session.steer", "session.respond", "session.watch", "session.cancel", "session.result", "session.rename", "session.archive", "session.unarchive", "session.delete", "session.fork", "session.compact", "session.rollback", "session.goal.get", "session.goal.set", "session.goal.clear", "session.settings.update", "session.review",
-		},
-	}
-	if codexErr == nil {
-		codexProvider["version"] = codexVersion
-	} else {
-		codexProvider["reason"] = "Codex executable is unavailable on this Node"
-	}
-	if m.ccswitch != nil {
-		if route, routeErr := m.ccswitch.InspectApp(ctx, "codex"); routeErr == nil {
-			codexProvider["route"] = route
-		}
-	}
-	providers = append(providers, codexProvider)
-
-	claudeVersion, claudeErr := m.claude.Availability(ctx)
-	claudeProvider := map[string]any{
-		"providerId":         "claude_code",
-		"name":               "Claude Code",
-		"available":          claudeErr == nil,
-		"runtimeAvailable":   claudeErr == nil,
-		"executionHealth":    "unknown_until_turn",
-		"authConfiguration":  m.claude.AuthConfiguration(ctx),
-		"executionModes":     []string{"cli_stream_json"},
-		"credentialLocation": "local_or_cc_switch",
-		"sessionPersistence": "native_claude_session_id+fast_spider_index",
-		"supportedActions": []string{
-			"models.list", "provider.capabilities", "projects.list",
-			"session.list", "session.get", "session.create", "session.send", "session.watch", "session.cancel", "session.result", "session.rename", "session.archive", "session.unarchive",
-		},
-	}
-	if claudeErr == nil {
-		claudeProvider["version"] = claudeVersion
-	} else {
-		claudeProvider["reason"] = "Claude Code executable is unavailable on this Node"
-	}
-	if m.ccswitch != nil {
-		if route, routeErr := m.ccswitch.InspectApp(ctx, "claude"); routeErr == nil {
-			claudeProvider["route"] = route
-		}
-	}
-	providers = append(providers, claudeProvider)
-
-	return map[string]any{"providers": providers, "routingSource": "cc_switch_db"}
-}
-
 func (m *AgentManager) models(ctx context.Context) (map[string]any, error) {
-	result, err := m.codex.ListModels(ctx)
+	var result map[string]any
+	var route map[string]any
+	var err error
+	var wait sync.WaitGroup
+	wait.Add(1)
+	go func() {
+		defer wait.Done()
+		result, err = m.codex.ListModels(ctx)
+	}()
+	if m.ccswitch != nil {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			route, _ = m.ccswitch.InspectApp(ctx, "codex")
+		}()
+	}
+	wait.Wait()
 	if err != nil {
 		return nil, err
 	}
@@ -613,13 +570,11 @@ func (m *AgentManager) models(ctx context.Context) (map[string]any, error) {
 		models = append(models, model)
 	}
 	out := map[string]any{"models": models, "source": "codex_app_server_model_list", "authoritative": true}
-	if m.ccswitch != nil {
-		if route, routeErr := m.ccswitch.InspectApp(ctx, "codex"); routeErr == nil {
-			out["route"] = route
-			if current, ok := route["currentProvider"].(map[string]any); ok {
-				if upstreamModels, ok := current["models"].([]map[string]any); ok && len(upstreamModels) > 0 {
-					out["upstreamModels"] = upstreamModels
-				}
+	if route != nil {
+		out["route"] = route
+		if current, ok := route["currentProvider"].(map[string]any); ok {
+			if upstreamModels, ok := current["models"].([]map[string]any); ok && len(upstreamModels) > 0 {
+				out["upstreamModels"] = upstreamModels
 			}
 		}
 	}
@@ -627,7 +582,23 @@ func (m *AgentManager) models(ctx context.Context) (map[string]any, error) {
 }
 
 func (m *AgentManager) codexCapabilities(ctx context.Context) (map[string]any, error) {
-	native, err := m.codex.ProviderCapabilities(ctx)
+	var native map[string]any
+	var route map[string]any
+	var err error
+	var wait sync.WaitGroup
+	wait.Add(1)
+	go func() {
+		defer wait.Done()
+		native, err = m.codex.ProviderCapabilities(ctx)
+	}()
+	if m.ccswitch != nil {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			route, _ = m.ccswitch.InspectApp(ctx, "codex")
+		}()
+	}
+	wait.Wait()
 	if err != nil {
 		return nil, err
 	}
@@ -638,12 +609,8 @@ func (m *AgentManager) codexCapabilities(ctx context.Context) (map[string]any, e
 		"authoritativeInputs": true,
 		"derived":             true,
 	}
-	var route map[string]any
-	if m.ccswitch != nil {
-		if current, routeErr := m.ccswitch.InspectApp(ctx, "codex"); routeErr == nil {
-			route = current
-			out["route"] = current
-		}
+	if route != nil {
+		out["route"] = route
 	}
 	mode := "direct"
 	var routed map[string]any
@@ -1413,590 +1380,6 @@ func finalAgentMessageFromCodexTurn(turn map[string]any) string {
 		}
 	}
 	return ""
-}
-
-type CCSwitchInspector struct {
-	logger       *slog.Logger
-	dbPath       string
-	settingsPath string
-}
-
-func NewCCSwitchInspector(logger *slog.Logger) *CCSwitchInspector {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	home, _ := os.UserHomeDir()
-	root := filepath.Join(home, ".cc-switch")
-	return &CCSwitchInspector{
-		logger:       logger,
-		dbPath:       filepath.Join(root, "cc-switch.db"),
-		settingsPath: filepath.Join(root, "settings.json"),
-	}
-}
-
-func (m *AgentManager) routingStatus(ctx context.Context, input agentControlParams) (map[string]any, error) {
-	if m == nil || m.ccswitch == nil {
-		return map[string]any{"available": false, "source": "cc_switch"}, nil
-	}
-	appType := strings.TrimSpace(input.AppType)
-	if appType != "" {
-		if !stringInSet(appType, "claude", "codex", "claude-desktop") {
-			return nil, fmt.Errorf("appType must be claude, codex, or claude-desktop")
-		}
-		route, err := m.ccswitch.InspectApp(ctx, appType)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"available": route["available"], "route": route, "source": "cc_switch_db", "authoritative": true}, nil
-	}
-	routes := make([]map[string]any, 0, 3)
-	for _, app := range []string{"claude", "codex", "claude-desktop"} {
-		route, err := m.ccswitch.InspectApp(ctx, app)
-		if err != nil {
-			m.logger.Warn("inspect CC Switch route", "appType", app, "error", err)
-			route = map[string]any{"appType": app, "available": false, "error": boundedAgentText(err.Error(), 512)}
-		}
-		routes = append(routes, route)
-	}
-	return map[string]any{"available": true, "routes": routes, "source": "cc_switch_db", "authoritative": true}, nil
-}
-
-func (i *CCSwitchInspector) InspectApp(ctx context.Context, appType string) (map[string]any, error) {
-	appType = strings.TrimSpace(appType)
-	if appType == "" {
-		return nil, fmt.Errorf("appType is required")
-	}
-	out := map[string]any{
-		"appType":       appType,
-		"harness":       ccSwitchHarnessName(appType),
-		"source":        "cc_switch_db",
-		"authoritative": true,
-		"capturedAt":    protocolTimestampNow(),
-	}
-	if info, err := os.Stat(i.dbPath); err != nil || !info.Mode().IsRegular() {
-		out["available"] = false
-		out["reason"] = "cc-switch.db is unavailable"
-		return out, nil
-	}
-	settings := i.readDeviceSettings()
-	if enabled, ok := settings["enableLocalProxy"].(bool); ok {
-		out["localProxyEnabled"] = enabled
-	}
-	if current := ccSwitchCurrentProviderSetting(settings, appType); current != "" {
-		out["deviceCurrentProviderId"] = current
-	}
-
-	dsn := "file:" + filepath.ToSlash(i.dbPath) + "?mode=ro"
-	db, err := sql.Open("sqlite", dsn)
-	if err != nil {
-		return nil, fmt.Errorf("open CC Switch database: %w", err)
-	}
-	defer db.Close()
-	db.SetMaxOpenConns(1)
-	db.SetMaxIdleConns(1)
-	if err := db.PingContext(ctx); err != nil {
-		return nil, fmt.Errorf("read CC Switch database: %w", err)
-	}
-	out["available"] = true
-
-	proxy := inspectCCSwitchProxy(ctx, db, appType)
-	out["proxy"] = proxy
-	providers, current, err := inspectCCSwitchProviders(ctx, db, appType)
-	if err != nil {
-		return nil, err
-	}
-	out["providers"] = providers
-	if current != nil {
-		out["currentProvider"] = current
-		if dbCurrent, _ := current["providerId"].(string); dbCurrent != "" {
-			out["dbCurrentProviderId"] = dbCurrent
-			if deviceCurrent, _ := out["deviceCurrentProviderId"].(string); deviceCurrent != "" {
-				out["selectionConsistent"] = deviceCurrent == dbCurrent
-			}
-		}
-		out["routingMode"] = ccSwitchRoutingMode(proxy, current)
-		out["effectiveCapabilities"] = deriveCCSwitchEffectiveCapabilities(appType, out["routingMode"], current)
-	} else {
-		out["routingMode"] = "direct"
-	}
-	if last := inspectCCSwitchLastRequest(ctx, db, appType); last != nil {
-		out["lastRequest"] = last
-	}
-	return out, nil
-}
-
-func (i *CCSwitchInspector) readDeviceSettings() map[string]any {
-	raw, err := os.ReadFile(i.settingsPath)
-	if err != nil || len(raw) > 256<<10 {
-		return map[string]any{}
-	}
-	var settings map[string]any
-	if json.Unmarshal(raw, &settings) != nil {
-		return map[string]any{}
-	}
-	return settings
-}
-
-func ccSwitchHarnessName(appType string) string {
-	switch appType {
-	case "claude":
-		return "claude_code"
-	case "claude-desktop":
-		return "claude_desktop"
-	case "codex":
-		return "codex"
-	default:
-		return appType
-	}
-}
-
-func ccSwitchCurrentProviderSetting(settings map[string]any, appType string) string {
-	key := ""
-	switch appType {
-	case "claude":
-		key = "currentProviderClaude"
-	case "claude-desktop":
-		key = "currentProviderClaudeDesktop"
-	case "codex":
-		key = "currentProviderCodex"
-	}
-	value, _ := settings[key].(string)
-	return strings.TrimSpace(value)
-}
-
-func inspectCCSwitchProxy(ctx context.Context, db *sql.DB, appType string) map[string]any {
-	out := map[string]any{"takeoverEnabled": false, "liveTakeoverActive": false, "proxyEnabled": false}
-	var proxyEnabled, takeoverEnabled, liveTakeoverActive, autoFailover int
-	var address string
-	var port int
-	err := db.QueryRowContext(ctx, `SELECT proxy_enabled, enabled, live_takeover_active, listen_address, listen_port, auto_failover_enabled FROM proxy_config WHERE app_type = ?`, appType).Scan(&proxyEnabled, &takeoverEnabled, &liveTakeoverActive, &address, &port, &autoFailover)
-	if err != nil {
-		return out
-	}
-	out["proxyEnabled"] = proxyEnabled != 0
-	out["takeoverEnabled"] = takeoverEnabled != 0
-	out["liveTakeoverActive"] = liveTakeoverActive != 0
-	out["autoFailoverEnabled"] = autoFailover != 0
-	out["listenAddress"] = address
-	out["listenPort"] = port
-	return out
-}
-
-func inspectCCSwitchProviders(ctx context.Context, db *sql.DB, appType string) ([]map[string]any, map[string]any, error) {
-	endpointByProvider := map[string]string{}
-	if rows, err := db.QueryContext(ctx, `SELECT provider_id, url FROM provider_endpoints WHERE app_type = ? ORDER BY id`, appType); err == nil {
-		for rows.Next() {
-			var id, endpoint string
-			if rows.Scan(&id, &endpoint) == nil && endpointByProvider[id] == "" {
-				endpointByProvider[id] = endpoint
-			}
-		}
-		rows.Close()
-	}
-	healthByProvider := map[string]map[string]any{}
-	if rows, err := db.QueryContext(ctx, `SELECT provider_id, is_healthy, consecutive_failures, last_success_at, last_failure_at FROM provider_health WHERE app_type = ?`, appType); err == nil {
-		for rows.Next() {
-			var id string
-			var healthy, failures int
-			var success, failure sql.NullString
-			if rows.Scan(&id, &healthy, &failures, &success, &failure) == nil {
-				h := map[string]any{"healthy": healthy != 0, "consecutiveFailures": failures}
-				if success.Valid {
-					h["lastSuccessAt"] = success.String
-				}
-				if failure.Valid {
-					h["lastFailureAt"] = failure.String
-				}
-				healthByProvider[id] = h
-			}
-		}
-		rows.Close()
-	}
-
-	rows, err := db.QueryContext(ctx, `SELECT id, name, settings_config, category, meta, is_current, in_failover_queue, provider_type FROM providers WHERE app_type = ? ORDER BY is_current DESC, sort_index ASC, name ASC LIMIT 128`, appType)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read CC Switch providers: %w", err)
-	}
-	defer rows.Close()
-	providers := make([]map[string]any, 0)
-	var current map[string]any
-	for rows.Next() {
-		var id, name, settingsRaw, metaRaw string
-		var category, providerType sql.NullString
-		var isCurrent, failover int
-		if err := rows.Scan(&id, &name, &settingsRaw, &category, &metaRaw, &isCurrent, &failover, &providerType); err != nil {
-			return nil, nil, err
-		}
-		settings := decodeCCSwitchJSON(settingsRaw)
-		meta := decodeCCSwitchJSON(metaRaw)
-		provider := map[string]any{
-			"providerId":        id,
-			"name":              name,
-			"appType":           appType,
-			"isCurrent":         isCurrent != 0,
-			"inFailoverQueue":   failover != 0,
-			"credentialPresent": ccSwitchCredentialPresent(settings),
-		}
-		if category.Valid && category.String != "" {
-			provider["category"] = category.String
-		}
-		if providerType.Valid && providerType.String != "" {
-			provider["providerType"] = providerType.String
-		}
-		apiFormat := ccSwitchAPIFormat(meta, settings)
-		if apiFormat != "" {
-			provider["apiFormat"] = apiFormat
-		}
-		if appType == "codex" {
-			if config, ok := settings["config"].(string); ok {
-				fields := parseCCSwitchTopLevelConfig(config)
-				if value := fields["model_provider"]; value != "" {
-					provider["modelProvider"] = value
-				}
-				if value := fields["wire_api"]; value != "" {
-					provider["wireAPI"] = value
-				}
-				if value := fields["service_tier"]; value != "" {
-					provider["serviceTier"] = value
-				}
-			}
-		}
-		if endpoint := endpointByProvider[id]; endpoint != "" {
-			if host := ccSwitchEndpointHost(endpoint); host != "" {
-				provider["endpointHost"] = host
-			}
-		}
-		if health := healthByProvider[id]; health != nil {
-			provider["health"] = health
-		}
-		models := extractCCSwitchModels(appType, settings, meta)
-		if len(models) > 0 {
-			provider["models"] = models
-		}
-		if required, known := ccSwitchNeedsRouting(appType, apiFormat, meta); known {
-			provider["needsLocalRouting"] = required
-		}
-		providers = append(providers, provider)
-		if isCurrent != 0 {
-			current = provider
-		}
-	}
-	return providers, current, rows.Err()
-}
-
-func inspectCCSwitchLastRequest(ctx context.Context, db *sql.DB, appType string) map[string]any {
-	var providerID, model string
-	var requestModel, sessionID sql.NullString
-	var createdAt int64
-	err := db.QueryRowContext(ctx, `SELECT provider_id, model, request_model, session_id, created_at FROM proxy_request_logs WHERE app_type = ? ORDER BY created_at DESC LIMIT 1`, appType).Scan(&providerID, &model, &requestModel, &sessionID, &createdAt)
-	if err != nil {
-		return nil
-	}
-	out := map[string]any{"providerId": providerID, "upstreamModel": model, "createdAt": createdAt}
-	if requestModel.Valid && requestModel.String != "" {
-		out["requestModel"] = requestModel.String
-	}
-	if sessionID.Valid && sessionID.String != "" {
-		out["sessionId"] = sessionID.String
-	}
-	return out
-}
-
-func decodeCCSwitchJSON(raw string) map[string]any {
-	if len(raw) == 0 || len(raw) > 2<<20 {
-		return map[string]any{}
-	}
-	var out map[string]any
-	if json.Unmarshal([]byte(raw), &out) != nil {
-		return map[string]any{}
-	}
-	return out
-}
-
-func ccSwitchAPIFormat(meta, settings map[string]any) string {
-	for _, record := range []map[string]any{meta, settings} {
-		for _, key := range []string{"api_format", "apiFormat", "wire_api", "wireApi"} {
-			if value, ok := record[key].(string); ok && strings.TrimSpace(value) != "" {
-				return strings.TrimSpace(value)
-			}
-		}
-	}
-	return ""
-}
-
-func ccSwitchNeedsRouting(appType, apiFormat string, meta map[string]any) (bool, bool) {
-	for _, key := range []string{"needsLocalRouting", "needs_local_routing", "requiresRouting", "requires_routing", "routingRequired"} {
-		if value, ok := meta[key].(bool); ok {
-			return value, true
-		}
-	}
-	format := strings.ToLower(strings.TrimSpace(apiFormat))
-	switch appType {
-	case "claude", "claude-desktop":
-		if format == "anthropic" {
-			return false, true
-		}
-		if format == "openai_chat" || format == "openai_responses" {
-			return true, true
-		}
-	case "codex":
-		if format == "openai_responses" {
-			return false, true
-		}
-		if format == "openai_chat" {
-			return true, true
-		}
-	}
-	return false, false
-}
-
-func ccSwitchCredentialPresent(settings map[string]any) bool {
-	var walk func(map[string]any, int) bool
-	walk = func(record map[string]any, depth int) bool {
-		if depth > 4 {
-			return false
-		}
-		for key, value := range record {
-			lower := strings.ToLower(key)
-			if strings.Contains(lower, "token") || strings.Contains(lower, "api_key") || strings.Contains(lower, "apikey") || strings.Contains(lower, "secret") || strings.Contains(lower, "authorization") {
-				if text, ok := value.(string); ok && strings.TrimSpace(text) != "" {
-					return true
-				}
-			}
-			if child, ok := value.(map[string]any); ok && walk(child, depth+1) {
-				return true
-			}
-		}
-		return false
-	}
-	return walk(settings, 0)
-}
-
-func ccSwitchEndpointHost(raw string) string {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed.Hostname() == "" {
-		return ""
-	}
-	host := parsed.Hostname()
-	if port := parsed.Port(); port != "" {
-		host += ":" + port
-	}
-	return host
-}
-
-func extractCCSwitchModels(appType string, settings, meta map[string]any) []map[string]any {
-	models := make([]map[string]any, 0)
-	seen := map[string]bool{}
-	add := func(role, model, display string, contextWindow int64, supports1M bool) {
-		model = strings.TrimSpace(model)
-		if model == "" {
-			return
-		}
-		key := strings.ToLower(strings.TrimSpace(role) + "\x00" + model)
-		if seen[key] {
-			return
-		}
-		seen[key] = true
-		entry := map[string]any{"model": model}
-		if role != "" {
-			entry["clientRole"] = role
-		}
-		if display != "" {
-			entry["displayName"] = display
-		}
-		if contextWindow > 0 {
-			entry["contextWindow"] = contextWindow
-		}
-		if supports1M {
-			entry["supports1m"] = true
-		}
-		models = append(models, entry)
-	}
-	if catalog, ok := meta["modelCatalog"].(map[string]any); ok {
-		if entries, ok := catalog["models"].([]any); ok {
-			for _, raw := range entries {
-				entry, _ := raw.(map[string]any)
-				add("", ccSwitchString(entry, "model", "id", "slug"), ccSwitchString(entry, "displayName", "display_name", "name"), ccSwitchInt64(entry, "contextWindow", "context_window"), false)
-			}
-		}
-	}
-	for _, key := range []string{"modelMapping", "modelMappings", "model_mapping", "modelRoute", "modelRoutes", "claudeDesktopModelRoutes"} {
-		collectCCSwitchRoleModels(meta[key], "", add)
-	}
-	if appType == "codex" {
-		if config, ok := settings["config"].(string); ok {
-			fields := parseCCSwitchTopLevelConfig(config)
-			add("main", fields["model"], "", 0, false)
-			add("review", fields["review_model"], "", 0, false)
-		}
-	}
-	if env, ok := settings["env"].(map[string]any); ok {
-		for _, spec := range []struct{ role, key string }{
-			{"main", "ANTHROPIC_MODEL"}, {"sonnet", "ANTHROPIC_DEFAULT_SONNET_MODEL"},
-			{"opus", "ANTHROPIC_DEFAULT_OPUS_MODEL"}, {"haiku", "ANTHROPIC_DEFAULT_HAIKU_MODEL"},
-		} {
-			if value, ok := env[spec.key].(string); ok {
-				add(spec.role, value, "", 0, false)
-			}
-		}
-	}
-	sort.SliceStable(models, func(a, b int) bool {
-		ar, _ := models[a]["clientRole"].(string)
-		br, _ := models[b]["clientRole"].(string)
-		if ar != br {
-			return ar < br
-		}
-		am, _ := models[a]["model"].(string)
-		bm, _ := models[b]["model"].(string)
-		return am < bm
-	})
-	if len(models) > 128 {
-		models = models[:128]
-	}
-	return models
-}
-
-func collectCCSwitchRoleModels(raw any, roleHint string, add func(string, string, string, int64, bool)) {
-	switch value := raw.(type) {
-	case map[string]any:
-		model := ccSwitchString(value, "model", "requestedModel", "requested_model", "modelId", "model_id")
-		role := ccSwitchString(value, "role", "modelRole", "model_role")
-		if role == "" {
-			role = roleHint
-		}
-		if model != "" {
-			supports1M, _ := value["supports1m"].(bool)
-			if !supports1M {
-				supports1M, _ = value["supports1M"].(bool)
-			}
-			add(role, model, ccSwitchString(value, "displayName", "display_name", "labelOverride", "label_override", "name"), ccSwitchInt64(value, "contextWindow", "context_window"), supports1M)
-			return
-		}
-		for key, child := range value {
-			lower := strings.ToLower(key)
-			if lower == "main" || strings.Contains(lower, "sonnet") || strings.Contains(lower, "opus") || strings.Contains(lower, "haiku") || strings.Contains(lower, "fable") || strings.HasPrefix(lower, "claude-") {
-				collectCCSwitchRoleModels(child, key, add)
-			}
-		}
-	case []any:
-		for _, child := range value {
-			collectCCSwitchRoleModels(child, roleHint, add)
-		}
-	case string:
-		if roleHint != "" {
-			add(roleHint, value, "", 0, false)
-		}
-	}
-}
-
-func parseCCSwitchTopLevelConfig(raw string) map[string]string {
-	out := map[string]string{}
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if strings.HasPrefix(line, "[") {
-			break
-		}
-		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(parts[0])
-		if !stringInSet(key, "model", "review_model", "model_provider", "wire_api", "service_tier") {
-			continue
-		}
-		value := strings.TrimSpace(parts[1])
-		if index := strings.Index(value, " #"); index >= 0 {
-			value = strings.TrimSpace(value[:index])
-		}
-		value = strings.Trim(value, "\"'")
-		if value != "" {
-			out[key] = value
-		}
-	}
-	return out
-}
-
-func ccSwitchString(record map[string]any, keys ...string) string {
-	for _, key := range keys {
-		if value, ok := record[key].(string); ok && strings.TrimSpace(value) != "" {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
-}
-
-func ccSwitchInt64(record map[string]any, keys ...string) int64 {
-	for _, key := range keys {
-		switch value := record[key].(type) {
-		case float64:
-			if value > 0 {
-				return int64(value)
-			}
-		case int64:
-			if value > 0 {
-				return value
-			}
-		case json.Number:
-			if parsed, err := value.Int64(); err == nil && parsed > 0 {
-				return parsed
-			}
-		}
-	}
-	return 0
-}
-
-func ccSwitchRoutingMode(proxy map[string]any, provider map[string]any) string {
-	takeover, _ := proxy["takeoverEnabled"].(bool)
-	live, _ := proxy["liveTakeoverActive"].(bool)
-	if takeover || live {
-		return "cc_switch"
-	}
-	return "direct"
-}
-
-func deriveCCSwitchEffectiveCapabilities(appType string, routingMode any, provider map[string]any) map[string]any {
-	mode, _ := routingMode.(string)
-	apiFormat, _ := provider["apiFormat"].(string)
-	capability := func(state, reason string) map[string]any {
-		out := map[string]any{"state": state}
-		if reason != "" {
-			out["reason"] = reason
-		}
-		return out
-	}
-	out := map[string]any{
-		"toolCalls": capability("supported", "supported by the AI harness"),
-		"mcp":       capability("supported", "supported by the AI harness"),
-		"webSearch": capability("unknown", "depends on upstream provider and routed tool compatibility"),
-		"vision":    capability("unknown", "depends on upstream model and request conversion"),
-		"thinking":  capability("unknown", "depends on upstream reasoning interface"),
-	}
-	if appType == "claude" {
-		out["resume"] = capability("supported", "Claude Code persists and resumes sessions by session ID")
-		out["imageGeneration"] = capability("unsupported", "Claude Code is not an image generation harness")
-		providerID, _ := provider["providerId"].(string)
-		category, _ := provider["category"].(string)
-		providerType, _ := provider["providerType"].(string)
-		official := providerID == "claude-official" || category == "official" || providerType == "official"
-		if official {
-			out["webSearch"] = capability("supported", "current route is the official Claude provider; actual availability still depends on account and service state")
-		} else if providerID != "" {
-			out["webSearch"] = capability("unsupported", "Claude hosted WebSearch is not treated as portable to a non-official upstream provider")
-		}
-		if mode == "cc_switch" && apiFormat != "" && apiFormat != "anthropic" {
-			out["thinking"] = capability("supported", "CC Switch converts common reasoning interfaces; exact effort tiers remain model-dependent")
-		}
-	}
-	if appType == "codex" {
-		out["resume"] = capability("supported", "Codex threads are persistent")
-		if mode == "cc_switch" {
-			out["thinking"] = capability("supported", "CC Switch adapts common third-party reasoning interfaces; exact effort tiers remain model-dependent")
-		}
-	}
-	return out
 }
 
 func decodeParams(input map[string]any, output any) error {

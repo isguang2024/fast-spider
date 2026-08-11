@@ -21,6 +21,7 @@
 16. **file_edit 2.0**：保持同一 MCP 工具，以 Go 原生实现 `create/replace/editMany/preview`；CAS、原子写、fsync、BOM/换行/权限保留；0.4.2 不增加 delete/move/copy。
 17. **正式连接保护**：开发与测试禁止停止正式 PCa Node/生产 Hub、写正式 data-dir、替换正式 EXE或启动第二正式 Node；仅最终 0.4.2 更新验收允许正式 Node 短暂断线并要求自动恢复/必要时 `.previous` 回滚。
 18. **发布策略**：0.4.0 先形成唯一 baseline commit；0.4.1 不独立发布；全部 Gate 通过后直接提交、推送并部署 0.4.2。
+19. **组件中心 allowlist**：本地 UI 只管理 `browser` 与 `search-ripgrep`，拒绝任意 componentId/path/URL；安装继续复用 component manager 且必须由用户手动触发，搜索/文件自检不联网下载组件。
 <!-- fast-spider:managed:decisions:end -->
 
 ## Manual Decisions

@@ -41,7 +41,9 @@ Codex 保留 Provider/Model、Skills/Hooks/Permission Profiles/Plugins/MCP disco
 - ai_control routing.status: 可选 `appType=claude|codex|claude-desktop`，只读 CC Switch 路由事实
 - working_context: `projectPath`
 
-`working_context` 只保存每个项目当前任务的有界状态快照，不保存聊天原文；`get` 会同时返回实时 Git branch/HEAD/dirty，用于在聊天压缩后重建工作上下文。
+`working_context` 保留 `get/set/clear` 默认 plan 兼容入口，并在同一工具中提供 `plan.init/plan.get/plan.list/plan.sync/task.update/markdown.list/markdown.read/markdown.append/progress.watch`。Plan 状态在 Node data-dir 中按 `projectPath + planId` 隔离；Markdown workspace 只操作项目内受绑定普通 `.md` 与受管区块，不保存聊天原文或凭据。
+
+`code_search` 同一工具支持 content/files、glob/context，并返回 Managed ripgrep 或 native fallback 的安全引擎事实。`file_read` 2.0 同一工具支持 byte/line/head/tail/around/stat selectors；`file_edit` 2.0 同一工具支持 legacy edit、create、replace、editMany 与 preview。preview 不写盘并可安全重试；其余文件写 action 使用 CAS/原子替换且不自动重放。
 
 Job 后续操作只用 machineId + jobId。Artifact 获取只用 artifactId；Node 上传本机文件时使用 machineId + absolute path。`artifact_get.publishFile` 使用同样的绝对路径，但文件由 Node 直接上传 Hub Temporary Presentation Relay；Relay 不创建 Artifact/数据库记录，只生成 20 分钟短期 `ResourceLink`。
 

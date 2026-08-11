@@ -41,27 +41,29 @@ type Options struct {
 type App struct {
 	opts Options
 
-	mu             sync.Mutex
-	ctx            context.Context
-	cancel         context.CancelFunc
-	config         LocalConfig
-	uiToken        string
-	runtimeCancel  context.CancelFunc
-	runtimeDone    chan struct{}
-	runtimeOwned   bool
-	runtimeStatus  string
-	runtimeError   string
-	updateStatus   updateStatusResponse
-	updateArtifact string
-	updateRunning  bool
-	trayActive     bool
+	mu              sync.Mutex
+	ctx             context.Context
+	cancel          context.CancelFunc
+	config          LocalConfig
+	uiToken         string
+	runtimeCancel   context.CancelFunc
+	runtimeDone     chan struct{}
+	runtimeOwned    bool
+	runtimeStatus   string
+	runtimeError    string
+	updateStatus    updateStatusResponse
+	updateArtifact  string
+	updateRunning   bool
+	trayActive      bool
+	openFolder      func(string) error
+	agentController node.AgentController
+	componentEnsure componentEnsureFunc
 }
 
 type statusResponse struct {
 	Version              string               `json:"version"`
 	DataDir              string               `json:"dataDir"`
 	Registered           bool                 `json:"registered"`
-	MachineID            string               `json:"machineId,omitempty"`
 	HubURL               string               `json:"hubUrl,omitempty"`
 	HubFingerprint       string               `json:"hubFingerprint,omitempty"`
 	RegistrationMode     string               `json:"registrationMode"`
@@ -128,14 +130,24 @@ func New(opts Options) (*App, error) {
 		return nil, err
 	}
 	return &App{
-		opts:          opts,
-		config:        cfg,
-		uiToken:       uiToken,
-		runtimeStatus: "stopped",
+		opts:            opts,
+		config:          cfg,
+		uiToken:         uiToken,
+		runtimeStatus:   "stopped",
+		openFolder:      openLocalFolder,
+		agentController: agent.New(opts.DataDir, opts.Logger),
+		componentEnsure: componentmgr.Ensure,
 	}, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if a.agentController != nil {
+			_ = a.agentController.Close(closeCtx)
+		}
+	}()
 	a.mu.Lock()
 	autoStart := a.config.AutoStartEnabled
 	a.mu.Unlock()
@@ -258,7 +270,17 @@ func (a *App) handler() http.Handler {
 	mux.HandleFunc("POST /api/config", a.apiOnly(a.handleConfig))
 	mux.HandleFunc("POST /api/update/check", a.apiOnly(a.handleUpdateCheck))
 	mux.HandleFunc("POST /api/update/install", a.apiOnly(a.handleUpdateInstall))
+	mux.HandleFunc("GET /api/components", a.apiOnly(a.handleComponents))
+	mux.HandleFunc("POST /api/components", a.apiOnly(methodNotAllowed))
 	mux.HandleFunc("POST /api/components/ensure", a.apiOnly(a.handleComponentEnsure))
+	mux.HandleFunc("GET /api/components/ensure", a.apiOnly(methodNotAllowed))
+	mux.HandleFunc("GET /api/search-file/status", a.apiOnly(a.handleSearchFileStatus))
+	mux.HandleFunc("POST /api/search-file/status", a.apiOnly(methodNotAllowed))
+	mux.HandleFunc("POST /api/search-file/self-test", a.apiOnly(a.handleSearchFileSelfTest))
+	mux.HandleFunc("GET /api/search-file/self-test", a.apiOnly(methodNotAllowed))
+	mux.HandleFunc("POST /api/working", a.apiOnly(a.handleWorking))
+	mux.HandleFunc("GET /api/ai-routing", a.apiOnly(a.handleAIRouting))
+	mux.HandleFunc("GET /api/diagnostics", a.apiOnly(a.handleDiagnostics))
 	mux.HandleFunc("POST /api/exit", a.apiOnly(a.handleExit))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -266,6 +288,10 @@ func (a *App) handler() http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func methodNotAllowed(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 }
 
 func (a *App) apiOnly(next http.HandlerFunc) http.HandlerFunc {
@@ -392,6 +418,8 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		AutoStartEnabled:      req.AutoStartEnabled,
 		AutoUpdateEnabled:     req.AutoUpdateEnabled,
 		AllowInsecureLocalHub: req.AllowInsecureLocalHub,
+		WorkingProjectPath:    old.WorkingProjectPath,
+		WorkingPlanID:         old.WorkingPlanID,
 	}
 	if next.MachineName == "" {
 		writeAPIError(w, http.StatusBadRequest, errors.New("设备名称不能为空"))
@@ -429,44 +457,6 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.snapshot())
 }
 
-func (a *App) handleComponentEnsure(w http.ResponseWriter, r *http.Request) {
-	var req componentEnsureRequest
-	if err := decodeJSON(r, &req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, err)
-		return
-	}
-	state, err := node.LoadState(filepath.Join(a.opts.DataDir, "state.json"))
-	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, errors.New("请先连接并登记设备"))
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
-	defer cancel()
-	installed, err := componentmgr.Ensure(ctx, a.opts.DataDir, state.HubURL, state.HubPublicKey, req.ComponentID)
-	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, err)
-		return
-	}
-	a.mu.Lock()
-	current := a.config
-	a.mu.Unlock()
-	next, changed := configureInstalledComponent(current, installed)
-	if changed {
-		if err := saveLocalConfig(a.opts.DataDir, next); err != nil {
-			writeAPIError(w, http.StatusInternalServerError, err)
-			return
-		}
-		a.mu.Lock()
-		a.config = next
-		a.mu.Unlock()
-		a.restartRuntime()
-	}
-	if err := componentmgr.CleanupInstalled(a.opts.DataDir, installed); err != nil {
-		a.opts.Logger.Warn("cleanup installed component files failed", "componentId", installed.ID, "version", installed.Version, "error", err)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"component": installed, "status": a.snapshot()})
-}
-
 func (a *App) snapshot() statusResponse {
 	a.mu.Lock()
 	cfg := a.config
@@ -497,7 +487,6 @@ func (a *App) snapshot() statusResponse {
 	state, err := node.LoadState(filepath.Join(a.opts.DataDir, "state.json"))
 	if err == nil {
 		response.Registered = true
-		response.MachineID = state.MachineID
 		response.HubURL = state.HubURL
 		response.HubFingerprint = state.HubFingerprint
 	}
@@ -537,14 +526,13 @@ func (a *App) startRuntime() {
 
 	go func() {
 		defer close(done)
-		agentController := agent.New(a.opts.DataDir, a.opts.Logger)
 		client, err := node.New(node.Config{
 			DataDir:           a.opts.DataDir,
 			Version:           a.opts.Version,
 			DisplayName:       cfg.MachineName,
 			AllowInsecure:     cfg.AllowInsecureLocalHub,
 			BrowserSidecarDir: cfg.BrowserSidecarDir,
-			Agent:             agentController,
+			Agent:             a.agentController,
 			Logger:            a.opts.Logger,
 			ConnectionStatus:  a.setConnectionStatus,
 		})

@@ -25,27 +25,57 @@ type capabilityListInput struct {
 }
 
 type fileReadInput struct {
-	MachineID string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	Path      string `json:"path" jsonschema:"absolute file path on the Node machine"`
-	Offset    int64  `json:"offset,omitempty" jsonschema:"byte offset, default 0"`
-	Limit     int64  `json:"limit,omitempty" jsonschema:"maximum bytes to return, default and maximum 131072; use offset for larger files"`
+	MachineID          string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	Path               string `json:"path" jsonschema:"absolute regular UTF-8 text file path on the Node machine"`
+	Offset             *int64 `json:"offset,omitempty" jsonschema:"byte offset, default 0; cannot be combined with line selectors or statOnly"`
+	Limit              *int64 `json:"limit,omitempty" jsonschema:"maximum byte chunk, default and maximum 131072; cannot be combined with line selectors or statOnly"`
+	LineStart          *int   `json:"lineStart,omitempty" jsonschema:"1-based first line; requires lineCount"`
+	LineCount          *int   `json:"lineCount,omitempty" jsonschema:"number of lines from lineStart, 1 through 2000"`
+	HeadLines          *int   `json:"headLines,omitempty" jsonschema:"first 1 through 2000 lines; mutually exclusive with other selectors"`
+	TailLines          *int   `json:"tailLines,omitempty" jsonschema:"last 1 through 2000 lines; scanned with bounded memory"`
+	AroundLine         *int   `json:"aroundLine,omitempty" jsonschema:"1-based center line; requires contextLines"`
+	ContextLines       *int   `json:"contextLines,omitempty" jsonschema:"lines before and after aroundLine, 0 through 1000"`
+	StatOnly           *bool  `json:"statOnly,omitempty" jsonschema:"return regular-file metadata and original-file SHA-256 without a content chunk"`
+	IncludeLineNumbers *bool  `json:"includeLineNumbers,omitempty" jsonschema:"prefix selected lines with their 1-based line numbers; chunkSha256 then hashes the rendered content"`
+}
+
+func addOptionalFileReadParam[T any](params map[string]any, key string, value *T) {
+	if value != nil {
+		params[key] = *value
+	}
 }
 
 type codeSearchInput struct {
-	MachineID  string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	Query      string `json:"query" jsonschema:"literal text or regular expression to search"`
-	Path       string `json:"path" jsonschema:"absolute directory path to search on the Node machine"`
-	Regex      bool   `json:"regex,omitempty" jsonschema:"interpret query as a Go regular expression"`
-	IgnoreCase bool   `json:"ignoreCase,omitempty" jsonschema:"case-insensitive matching"`
-	Limit      int    `json:"limit,omitempty" jsonschema:"maximum matches, default 100 and maximum 200"`
+	MachineID     string   `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	Query         string   `json:"query" jsonschema:"literal text or regular expression to search"`
+	Path          string   `json:"path" jsonschema:"absolute directory path to search on the Node machine"`
+	Mode          string   `json:"mode,omitempty" jsonschema:"content (default) returns line matches; files returns paths whose contents match"`
+	Regex         bool     `json:"regex,omitempty" jsonschema:"interpret query as a regular expression"`
+	IgnoreCase    bool     `json:"ignoreCase,omitempty" jsonschema:"case-insensitive matching"`
+	Include       []string `json:"include,omitempty" jsonschema:"up to 32 bounded include globs relative to path"`
+	Exclude       []string `json:"exclude,omitempty" jsonschema:"up to 32 bounded exclude globs relative to path"`
+	Context       int      `json:"context,omitempty" jsonschema:"before and after context lines, 0 through 10"`
+	BeforeContext int      `json:"beforeContext,omitempty" jsonschema:"before-match context lines, 0 through 10"`
+	AfterContext  int      `json:"afterContext,omitempty" jsonschema:"after-match context lines, 0 through 10"`
+	Limit         int      `json:"limit,omitempty" jsonschema:"maximum matches or files, default 100 and maximum 200"`
 }
 
 type fileEditInput struct {
-	MachineID          string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	Path               string `json:"path" jsonschema:"absolute file path on the Node machine"`
-	OldText            string `json:"oldText" jsonschema:"text that must occur exactly once"`
-	NewText            string `json:"newText" jsonschema:"replacement text"`
-	ExpectedFileSHA256 string `json:"expectedFileSha256" jsonschema:"full file SHA-256 from file_read; required for optimistic concurrency"`
+	MachineID          string          `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	Action             string          `json:"action,omitempty" jsonschema:"edit (legacy default), create, replace, editMany, or preview"`
+	PreviewOf          string          `json:"previewOf,omitempty" jsonschema:"create, replace, or editMany when action is preview"`
+	Path               string          `json:"path" jsonschema:"absolute file path on the Node machine"`
+	Content            string          `json:"content,omitempty" jsonschema:"bounded UTF-8 file content for create"`
+	OldText            string          `json:"oldText,omitempty" jsonschema:"text that must occur exactly once for edit or replace"`
+	NewText            string          `json:"newText,omitempty" jsonschema:"replacement text for edit or replace"`
+	Edits              []fileEditEntry `json:"edits,omitempty" jsonschema:"bounded exact replacements for editMany; all are planned against one original revision"`
+	ExpectedFileSHA256 string          `json:"expectedFileSha256,omitempty" jsonschema:"full file SHA-256 from file_read; required for existing-file actions"`
+	ExpectedAbsent     *bool           `json:"expectedAbsent,omitempty" jsonschema:"must be true for create and preview create"`
+}
+
+type fileEditEntry struct {
+	OldText string `json:"oldText" jsonschema:"text that must occur exactly once in the original file"`
+	NewText string `json:"newText" jsonschema:"replacement text; may be empty"`
 }
 
 type shellRunInput struct {
@@ -101,17 +131,36 @@ type artifactGetInput struct {
 }
 
 type workingContextInput struct {
-	MachineID      string   `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	Action         string   `json:"action" jsonschema:"get, set, or clear"`
-	ProjectPath    string   `json:"projectPath" jsonschema:"absolute project directory on the Node machine"`
-	Goal           string   `json:"goal,omitempty" jsonschema:"current development goal; required for set"`
-	BaselineBranch string   `json:"baselineBranch,omitempty" jsonschema:"optional saved task baseline branch; set auto-fills from current Git when both baseline fields are omitted"`
-	BaselineCommit string   `json:"baselineCommit,omitempty" jsonschema:"optional saved task baseline commit; set auto-fills from current Git when both baseline fields are omitted"`
-	Completed      []string `json:"completed,omitempty" jsonschema:"bounded completed-work summary for set"`
-	Constraints    []string `json:"constraints,omitempty" jsonschema:"bounded active constraints for set; never put secrets here"`
-	Pending        []string `json:"pending,omitempty" jsonschema:"bounded remaining work for set"`
-	KeyFiles       []string `json:"keyFiles,omitempty" jsonschema:"project-relative or in-project absolute key file paths for set"`
-	Facts          []string `json:"facts,omitempty" jsonschema:"bounded project/task facts for set; never chat transcripts or secrets"`
+	MachineID            string           `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	Action               string           `json:"action" jsonschema:"get,set,clear,plan.init,plan.get,plan.list,plan.sync,task.update,markdown.list,markdown.read,markdown.append,or progress.watch"`
+	ProjectPath          string           `json:"projectPath" jsonschema:"absolute project directory on the Node machine"`
+	PlanID               string           `json:"planId,omitempty" jsonschema:"bounded plan identifier; omitted by legacy get/set/clear to use the default plan"`
+	ExpectedRevision     string           `json:"expectedRevision,omitempty" jsonschema:"working-context revision required by CAS mutations such as task.update and plan.sync"`
+	Goal                 string           `json:"goal,omitempty" jsonschema:"current development goal; required for set"`
+	Title                string           `json:"title,omitempty" jsonschema:"plan title for plan.init"`
+	TargetVersion        string           `json:"targetVersion,omitempty" jsonschema:"plan target version"`
+	MarkdownRoot         string           `json:"markdownRoot,omitempty" jsonschema:"project-relative Markdown workspace directory; defaults to docs/progress"`
+	InitializeMarkdown   bool             `json:"initializeMarkdown,omitempty" jsonschema:"create missing default docs/progress Markdown files without replacing existing content"`
+	BaselineBranch       string           `json:"baselineBranch,omitempty" jsonschema:"optional saved task baseline branch; set auto-fills from current Git when both baseline fields are omitted"`
+	BaselineCommit       string           `json:"baselineCommit,omitempty" jsonschema:"optional saved task baseline commit; set auto-fills from current Git when both baseline fields are omitted"`
+	Completed            []string         `json:"completed,omitempty" jsonschema:"bounded completed-work summary for set"`
+	Constraints          []string         `json:"constraints,omitempty" jsonschema:"bounded active constraints for set; never put secrets here"`
+	Pending              []string         `json:"pending,omitempty" jsonschema:"bounded remaining work for set"`
+	KeyFiles             []string         `json:"keyFiles,omitempty" jsonschema:"project-relative or in-project absolute key file paths for set"`
+	Facts                []string         `json:"facts,omitempty" jsonschema:"bounded project/task facts for set; never chat transcripts or secrets"`
+	Tasks                []map[string]any `json:"tasks,omitempty" jsonschema:"plan.init task objects with id,title,status,completion,blockedReason,and evidences; maximum 500"`
+	TaskID               string           `json:"taskId,omitempty" jsonschema:"task identifier for task.update"`
+	TaskTitle            string           `json:"taskTitle,omitempty" jsonschema:"task title when creating or updating a task"`
+	TaskStatus           string           `json:"taskStatus,omitempty" jsonschema:"pending,in_progress,blocked,or done"`
+	BlockedReason        string           `json:"blockedReason,omitempty" jsonschema:"bounded blocked reason without secrets or raw upstream errors"`
+	Completion           *int             `json:"completion,omitempty" jsonschema:"task completion from 0 through 100"`
+	Evidence             map[string]any   `json:"evidence,omitempty" jsonschema:"optional acceptance evidence with summary,kind,and reference; maximum 32 per task"`
+	MarkdownPath         string           `json:"markdownPath,omitempty" jsonschema:"project-relative .md path inside the bound workspace"`
+	Content              string           `json:"content,omitempty" jsonschema:"bounded UTF-8 content for markdown.append"`
+	ManagedBlock         string           `json:"managedBlock,omitempty" jsonschema:"optional managed block name to replace instead of appending"`
+	ExpectedFileRevision string           `json:"expectedFileRevision,omitempty" jsonschema:"required file revision for markdown.append CAS"`
+	SinceRevision        string           `json:"sinceRevision,omitempty" jsonschema:"last observed plan revision for progress.watch"`
+	WaitSeconds          int              `json:"waitSeconds,omitempty" jsonschema:"progress.watch long poll from 0 to 15 seconds"`
 }
 
 type browserLocatorInput struct {
@@ -242,22 +291,30 @@ type capabilityListOutput struct {
 }
 
 type fileReadOutput struct {
-	Path        string `json:"path"`
-	Content     string `json:"content"`
-	Offset      int64  `json:"offset"`
-	BytesRead   int64  `json:"bytesRead"`
-	Size        int64  `json:"size"`
-	Truncated   bool   `json:"truncated"`
-	ChunkSHA256 string `json:"chunkSha256"`
-	FileSHA256  string `json:"fileSha256,omitempty"`
-	Encoding    string `json:"encoding"`
+	Path            string  `json:"path"`
+	Content         *string `json:"content,omitempty"`
+	Offset          int64   `json:"offset"`
+	BytesRead       int64   `json:"bytesRead"`
+	SourceBytesRead int64   `json:"sourceBytesRead,omitempty"`
+	Size            int64   `json:"size"`
+	LineStart       int     `json:"lineStart,omitempty"`
+	LineEnd         int     `json:"lineEnd,omitempty"`
+	StatOnly        bool    `json:"statOnly,omitempty"`
+	Truncated       bool    `json:"truncated"`
+	ChunkSHA256     string  `json:"chunkSha256,omitempty"`
+	FileSHA256      string  `json:"fileSha256"`
+	Encoding        string  `json:"encoding"`
 }
 
 type fileEditOutput struct {
 	Path          string `json:"path"`
-	BeforeSHA256  string `json:"beforeSha256"`
+	Action        string `json:"action"`
+	PreviewOf     string `json:"previewOf,omitempty"`
+	BeforeSHA256  string `json:"beforeSha256,omitempty"`
 	AfterSHA256   string `json:"afterSha256"`
 	Bytes         int64  `json:"bytes"`
+	Changed       bool   `json:"changed"`
+	EditCount     int    `json:"editCount,omitempty"`
 	Diff          string `json:"diff"`
 	DiffTruncated bool   `json:"diffTruncated"`
 }
@@ -282,16 +339,27 @@ type jobOutput struct {
 }
 
 type codeSearchMatch struct {
-	Path   string `json:"path"`
-	Line   int    `json:"line"`
-	Column int    `json:"column"`
-	Text   string `json:"text"`
+	Path   string                  `json:"path"`
+	Line   int                     `json:"line"`
+	Column int                     `json:"column"`
+	Text   string                  `json:"text"`
+	Before []codeSearchContextLine `json:"before,omitempty"`
+	After  []codeSearchContextLine `json:"after,omitempty"`
+}
+
+type codeSearchContextLine struct {
+	Line int    `json:"line"`
+	Text string `json:"text"`
 }
 
 type codeSearchOutput struct {
-	Matches      []codeSearchMatch `json:"matches"`
-	ScannedFiles int               `json:"scannedFiles"`
-	Truncated    bool              `json:"truncated"`
+	Matches        []codeSearchMatch `json:"matches"`
+	Files          []string          `json:"files,omitempty"`
+	ScannedFiles   int               `json:"scannedFiles"`
+	Engine         string            `json:"engine"`
+	FallbackReason string            `json:"fallbackReason,omitempty"`
+	ElapsedMs      int64             `json:"elapsedMs"`
+	Truncated      bool              `json:"truncated"`
 }
 
 func (s *Server) newMCPHandler() http.Handler {
@@ -369,10 +437,21 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "file_read",
-		Description: "Read UTF-8 text from an absolute path on the selected Node. Access is limited only by the operating-system account running Fast Spider Node.",
+		Description: "Read a bounded byte or line selection, or stat and hash a regular UTF-8 text file at an absolute path on the selected Node. Selectors are mutually exclusive.",
 		Annotations: toolAnnotations(true, false, true, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input fileReadInput) (*mcp.CallToolResult, fileReadOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "file.read", "read", map[string]any{"path": input.Path, "offset": input.Offset, "limit": input.Limit})
+		params := map[string]any{"path": input.Path}
+		addOptionalFileReadParam(params, "offset", input.Offset)
+		addOptionalFileReadParam(params, "limit", input.Limit)
+		addOptionalFileReadParam(params, "lineStart", input.LineStart)
+		addOptionalFileReadParam(params, "lineCount", input.LineCount)
+		addOptionalFileReadParam(params, "headLines", input.HeadLines)
+		addOptionalFileReadParam(params, "tailLines", input.TailLines)
+		addOptionalFileReadParam(params, "aroundLine", input.AroundLine)
+		addOptionalFileReadParam(params, "contextLines", input.ContextLines)
+		addOptionalFileReadParam(params, "statOnly", input.StatOnly)
+		addOptionalFileReadParam(params, "includeLineNumbers", input.IncludeLineNumbers)
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "file.read", "read", params)
 		if err != nil {
 			return nil, fileReadOutput{}, err
 		}
@@ -385,10 +464,14 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "code_search",
-		Description: "Search text files below an absolute directory on the selected Node with bounded files, file sizes, matches and request deadline.",
+		Description: "Search content or matching-content file paths below an absolute Node directory using a managed ripgrep component with a safe native fallback.",
 		Annotations: toolAnnotations(true, false, true, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input codeSearchInput) (*mcp.CallToolResult, codeSearchOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "code.search", "search", map[string]any{"query": input.Query, "path": input.Path, "regex": input.Regex, "ignoreCase": input.IgnoreCase, "limit": input.Limit})
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "code.search", "search", map[string]any{
+			"query": input.Query, "path": input.Path, "mode": input.Mode, "regex": input.Regex, "ignoreCase": input.IgnoreCase,
+			"include": input.Include, "exclude": input.Exclude, "context": input.Context, "beforeContext": input.BeforeContext,
+			"afterContext": input.AfterContext, "limit": input.Limit,
+		})
 		if err != nil {
 			return nil, codeSearchOutput{}, err
 		}
@@ -401,10 +484,18 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "file_edit",
-		Description: "Perform one exact optimistic-concurrency text replacement on an absolute Node file path. Access follows the operating-system account running Fast Spider Node.",
+		Description: "Create, exactly replace, batch-edit, or preview a bounded UTF-8 file change on a Node. Existing-file writes use optimistic concurrency; preview never writes.",
 		Annotations: toolAnnotations(false, true, false, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input fileEditInput) (*mcp.CallToolResult, fileEditOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "file.write", "edit", map[string]any{"path": input.Path, "oldText": input.OldText, "newText": input.NewText, "expectedFileSha256": input.ExpectedFileSHA256})
+		action := input.Action
+		if action == "" {
+			action = "edit"
+		}
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "file.write", action, map[string]any{
+			"path": input.Path, "previewOf": input.PreviewOf, "content": input.Content,
+			"oldText": input.OldText, "newText": input.NewText, "edits": input.Edits,
+			"expectedFileSha256": input.ExpectedFileSHA256, "expectedAbsent": input.ExpectedAbsent,
+		})
 		if err != nil {
 			return nil, fileEditOutput{}, err
 		}
@@ -558,14 +649,20 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "working_context",
-		Description: "Read, replace, or clear one small project-scoped development working-context snapshot on the selected Node. It stores bounded task facts only, never chat transcripts; get also reports live Git branch/HEAD/dirty facts.",
+		Description: "Manage project-scoped Working Context plans, tasks, acceptance evidence, and a bounded in-project Markdown task workspace on the selected Node. Legacy get/set/clear use the default plan; reads include live Git facts. Secrets, full prompts, chat transcripts, and raw upstream errors are not accepted.",
 		Annotations: toolAnnotations(false, false, false, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input workingContextInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		params := map[string]any{
 			"projectPath": input.ProjectPath, "goal": input.Goal,
+			"planId": input.PlanID, "expectedRevision": input.ExpectedRevision, "title": input.Title,
+			"targetVersion": input.TargetVersion, "markdownRoot": input.MarkdownRoot, "initializeMarkdown": input.InitializeMarkdown,
 			"baselineBranch": input.BaselineBranch, "baselineCommit": input.BaselineCommit,
 			"completed": input.Completed, "constraints": input.Constraints, "pending": input.Pending,
 			"keyFiles": input.KeyFiles, "facts": input.Facts,
+			"tasks": input.Tasks, "taskId": input.TaskID, "taskTitle": input.TaskTitle, "taskStatus": input.TaskStatus,
+			"blockedReason": input.BlockedReason, "completion": input.Completion, "evidence": input.Evidence,
+			"markdownPath": input.MarkdownPath, "content": input.Content, "managedBlock": input.ManagedBlock,
+			"expectedFileRevision": input.ExpectedFileRevision, "sinceRevision": input.SinceRevision, "waitSeconds": input.WaitSeconds,
 		}
 		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "working.context", input.Action, params)
 		if err != nil {

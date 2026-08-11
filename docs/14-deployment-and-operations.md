@@ -1,4 +1,4 @@
-# 部署与运维（0.4.0）
+# 部署与运维（0.4.2）
 
 ## Hub
 
@@ -33,9 +33,17 @@ Fast Spider 不捆绑用户的 AI 账号或 Provider：
 
 Hub 发布签名 Node manifest。Node 验证签名、SHA-256 和大小。Web 后台首页提供“下载最新版 Windows 客户端”入口，直接复用同一份 `windows-amd64` Release 下载路径，因此后台手动下载与 Node 自动更新共享同一个发布事实源。手动升级可立即替换；自动更新可检查/预下载。Windows 替换助手等待旧 PID 真正退出后替换原 EXE，再按原模式重启。Node 启动时清理早于当前版本的 staging 目录和已消费的 `ready.json`，新版本 staging 只保留当前/待升级版本，避免长期累积升级 EXE；正式目录仍保留一个 `.previous` 回滚副本。
 
-大型组件按需安装到 Node data-dir 的 `components/<id>/<version>`。Browser 组件通过本地 UI 的“安装 / 更新 Browser”下载；安装完成后自动写入 Sidecar 路径并重启 Node 运行时，不需要用户手填目录。运行时切换完成后删除组件 ZIP 下载缓存和旧组件版本，只保留当前已启用组件，避免组件包与解压目录双份长期占盘。
+大型组件按需安装到 Node data-dir 的 `components/<id>/<version>`。0.4.2 只支持 `browser` 与 `search-ripgrep` 两个 Managed Component，安装/更新必须由用户在本地组件中心明确触发，不允许输入任意组件 ID、路径或下载 URL。Browser 安装完成后自动写入 Sidecar 路径并重启 Node 运行时；search-ripgrep 安装后由下一次搜索从受管组件目录解析，不要求重启。运行时切换完成后复用组件管理器清理 ZIP 下载缓存和旧版本。
 
 Windows Browser 组件发布包使用 `cmd/browserpack` 生成，组件根目录必须包含 Sidecar、Playwright、当前 Chromium/headless shell/ffmpeg 浏览器缓存以及 `node.exe`。Hub 发布路径为 `release-dir/components/browser/windows-amd64/component.zip` 和同目录 `version.txt`；Hub 会动态生成签名 manifest。
+
+Windows ripgrep 组件发布包使用已准备好的本地可执行文件生成，不联网，也不从 `PATH` 探测：
+
+```bash
+go run ./cmd/ripgreppack --rg-exe <prepared rg.exe> --out <release-dir/components/search-ripgrep/windows-amd64/component.zip>
+```
+
+发布路径为 `release-dir/components/search-ripgrep/windows-amd64/component.zip` 与同目录 `version.txt`，ZIP 根目录只包含 `rg.exe`。Release operator 必须从官方或其它可信来源取得 ripgrep，在写入 release-dir 前自行固定版本并校验 SHA-256。Hub 根据 `component.zip`、`version.txt` 和发布签名密钥动态生成签名 manifest；Node 只通过组件管理器显式安装/更新，`code_search` 不会在搜索时联网下载，也不会信任系统 `PATH`。
 
 ## 备份
 
@@ -58,4 +66,4 @@ spiderctl backup-verify --file /srv/backups/fast-spider-<timestamp>.zip
 - Node release manifest 的版本/哈希与正式 EXE 一致。
 - ChatGPT OAuth + MCP tools/list 可获取当前工具。
 
-0.3.x 完成权限模型收敛；0.4.0 增加多 AI Harness/CC Switch 只读 Routing，但不新增常驻服务或第二套权限/凭据管理面。
+0.3.x 完成权限模型收敛；0.4.2 包含 Task Workspace、多 AI Harness/CC Switch 只读 Routing、Managed ripgrep 与文件能力 2.0，但不新增常驻服务或第二套权限/凭据管理面。

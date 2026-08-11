@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -111,13 +112,40 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	var names []string
+	var codeSearchSchema []byte
+	var fileReadSchema []byte
+	var fileEditSchema []byte
 	for _, tool := range tools.Tools {
 		names = append(names, tool.Name)
+		if tool.Name == "code_search" {
+			codeSearchSchema, _ = json.Marshal(tool.InputSchema)
+		}
+		if tool.Name == "file_read" {
+			fileReadSchema, _ = json.Marshal(tool.InputSchema)
+		}
+		if tool.Name == "file_edit" {
+			fileEditSchema, _ = json.Marshal(tool.InputSchema)
+		}
 	}
 	sort.Strings(names)
 	want := []string{"ai_control", "artifact_get", "browser_control", "build_control", "capability_list", "code_search", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "screenshot_take", "shell_run", "working_context"}
 	if stringJSON(names) != stringJSON(want) {
 		t.Fatalf("tools=%v want=%v", names, want)
+	}
+	for _, field := range []string{"mode", "include", "exclude", "context", "beforeContext", "afterContext"} {
+		if !bytes.Contains(codeSearchSchema, []byte(`"`+field+`"`)) {
+			t.Fatalf("code_search schema missing %q: %s", field, codeSearchSchema)
+		}
+	}
+	for _, field := range []string{"lineStart", "lineCount", "headLines", "tailLines", "aroundLine", "contextLines", "statOnly", "includeLineNumbers"} {
+		if !bytes.Contains(fileReadSchema, []byte(`"`+field+`"`)) {
+			t.Fatalf("file_read schema missing %q: %s", field, fileReadSchema)
+		}
+	}
+	for _, field := range []string{"action", "previewOf", "content", "oldText", "newText", "edits", "expectedFileSha256", "expectedAbsent"} {
+		if !bytes.Contains(fileEditSchema, []byte(`"`+field+`"`)) {
+			t.Fatalf("file_edit schema missing %q: %s", field, fileEditSchema)
+		}
 	}
 
 	machineResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "machine_list", Arguments: map[string]any{}})
@@ -141,6 +169,16 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(raw, &read); err != nil || read.FileSHA256 == "" || !strings.Contains(read.Content, "needle value") {
 		t.Fatalf("file_read err=%v raw=%s", err, raw)
 	}
+	lineResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "file_read", Arguments: map[string]any{
+		"machineId": state.MachineID, "path": filePath, "headLines": 1, "includeLineNumbers": true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = json.Marshal(lineResult.StructuredContent)
+	if !strings.Contains(string(raw), `"lineStart":1`) || !strings.Contains(string(raw), "1: alpha") {
+		t.Fatalf("file_read line selector=%s", raw)
+	}
 
 	searchResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "code_search", Arguments: map[string]any{"machineId": state.MachineID, "path": root, "query": "needle", "limit": 10}})
 	if err != nil {
@@ -151,12 +189,53 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		t.Fatalf("code_search=%s", raw)
 	}
 
+	previewResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "file_edit", Arguments: map[string]any{
+		"machineId": state.MachineID, "action": "preview", "previewOf": "replace", "path": filePath,
+		"oldText": "needle value", "newText": "needle preview", "expectedFileSha256": read.FileSHA256,
+	}})
+	if err != nil || previewResult.IsError {
+		t.Fatalf("file_edit preview=%+v err=%v", previewResult, err)
+	}
+	previewRaw, _ := json.Marshal(previewResult.StructuredContent)
+	if !strings.Contains(string(previewRaw), `"previewOf":"replace"`) || !strings.Contains(string(previewRaw), `"changed":true`) {
+		t.Fatalf("file_edit preview output=%s", previewRaw)
+	}
+	unchanged, err := os.ReadFile(filePath)
+	if err != nil || !strings.Contains(string(unchanged), "needle value") || strings.Contains(string(unchanged), "needle preview") {
+		t.Fatalf("preview changed file err=%v content=%q", err, unchanged)
+	}
+
 	editResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "file_edit", Arguments: map[string]any{"machineId": state.MachineID, "path": filePath, "oldText": "needle value", "newText": "needle changed", "expectedFileSha256": read.FileSHA256}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if editResult.IsError {
 		t.Fatalf("file_edit=%+v", editResult)
+	}
+
+	createdPath := filepath.Join(root, "created.txt")
+	createResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "file_edit", Arguments: map[string]any{
+		"machineId": state.MachineID, "action": "create", "path": createdPath, "content": "one two three\n", "expectedAbsent": true,
+	}})
+	if err != nil || createResult.IsError {
+		t.Fatalf("file_edit create=%+v err=%v", createResult, err)
+	}
+	createRaw, _ := json.Marshal(createResult.StructuredContent)
+	var created struct {
+		AfterSHA256 string `json:"afterSha256"`
+	}
+	if err := json.Unmarshal(createRaw, &created); err != nil || created.AfterSHA256 == "" {
+		t.Fatalf("file_edit create output=%s err=%v", createRaw, err)
+	}
+	manyResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "file_edit", Arguments: map[string]any{
+		"machineId": state.MachineID, "action": "editMany", "path": createdPath, "expectedFileSha256": created.AfterSHA256,
+		"edits": []map[string]any{{"oldText": "one", "newText": "1"}, {"oldText": "three", "newText": "3"}},
+	}})
+	if err != nil || manyResult.IsError {
+		t.Fatalf("file_edit editMany=%+v err=%v", manyResult, err)
+	}
+	if content, err := os.ReadFile(createdPath); err != nil || string(content) != "1 two 3\n" {
+		t.Fatalf("file_edit editMany content=%q err=%v", content, err)
 	}
 
 	gitResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "git_control", Arguments: map[string]any{"machineId": state.MachineID, "repositoryPath": root, "action": "status"}})
@@ -189,6 +268,37 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	raw, _ = json.Marshal(contextGet.StructuredContent)
 	if !strings.Contains(string(raw), "keep a compact task snapshot") || !strings.Contains(string(raw), `"currentGit"`) {
 		t.Fatalf("working_context get=%s", raw)
+	}
+	planInit, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "working_context", Arguments: map[string]any{
+		"machineId": state.MachineID, "action": "plan.init", "projectPath": root, "planId": "e2e-plan", "goal": "verify plan actions", "targetVersion": "0.4.1",
+		"tasks": []map[string]any{{"id": "FS-041-E2E", "title": "MCP plan flow", "status": "in_progress"}}, "initializeMarkdown": true,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = json.Marshal(planInit.StructuredContent)
+	var planEnvelope struct {
+		Result struct {
+			Revision string `json:"revision"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &planEnvelope); err != nil || planEnvelope.Result.Revision == "" {
+		t.Fatalf("working_context plan.init err=%v raw=%s", err, raw)
+	}
+	planUpdate, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "working_context", Arguments: map[string]any{
+		"machineId": state.MachineID, "action": "task.update", "projectPath": root, "planId": "e2e-plan", "expectedRevision": planEnvelope.Result.Revision,
+		"taskId": "FS-041-E2E", "taskStatus": "done", "completion": 100, "evidence": map[string]any{"summary": "MCP task update passed", "kind": "e2e"},
+	}})
+	if err != nil || planUpdate.IsError {
+		t.Fatalf("working_context task.update err=%v result=%+v", err, planUpdate)
+	}
+	markdownList, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "working_context", Arguments: map[string]any{"machineId": state.MachineID, "action": "markdown.list", "projectPath": root, "planId": "e2e-plan"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ = json.Marshal(markdownList.StructuredContent)
+	if !strings.Contains(string(raw), "00-current-state.md") {
+		t.Fatalf("working_context markdown.list=%s", raw)
 	}
 
 	buildResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "build_control", Arguments: map[string]any{"machineId": state.MachineID, "action": "run", "argv": e2eEchoArgv(), "cwd": root, "timeoutSeconds": 10, "idempotencyKey": "idem_e2e_build_0001"}})

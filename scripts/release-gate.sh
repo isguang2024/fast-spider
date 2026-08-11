@@ -14,9 +14,10 @@ Usage: bash scripts/release-gate.sh [--full]
 
 core: formatting, module integrity, vet, all unit/integration tests,
       current + Windows/Linux builds, Hub restore E2E, Local Bridge E2E.
-full: core + repeated Node tests, short fuzzing where supported, race where
-      supported, real Browser/CC Switch/Claude Code/Codex E2E, multi-provider
-      Local Bridge discovery, and the complete Local Bridge→Codex smoke.
+full: core + explicit 0.4.2 Task Workspace/Search/file_read/file_edit/update/
+      reconnect gates, repeated Node tests, short fuzzing/race where supported,
+      real Browser/CC Switch/Claude Code/Codex E2E, multi-provider Local Bridge
+      discovery, and the complete Local Bridge→Codex smoke.
 
 The script never installs tools, downloads update payloads, or modifies Git state.
 EOF
@@ -38,7 +39,10 @@ printf 'Fast Spider release gate: %s\n' "$mode"
 printf 'Go: %s\n' "$(go version)"
 
 mapfile -d '' go_files < <(find cmd internal -type f -name '*.go' -print0)
-mapfile -d '' public_source_files < <(git ls-files -co --exclude-standard -z -- . ':!.learnings/**')
+public_source_files=()
+while IFS= read -r -d '' file; do
+  [[ -f "$file" ]] && public_source_files+=("$file")
+done < <(git ls-files -co --exclude-standard -z -- . ':!.learnings/**')
 format_output="$(gofmt -l "${go_files[@]}")"
 if [[ -n "$format_output" ]]; then
   echo "gofmt is required for:" >&2
@@ -86,6 +90,13 @@ step "Restored Hub health E2E" go test -tags opse2e ./internal/opsbackup -run Te
 step "Local Bridge E2E" go test -tags localbridgee2e ./internal/localbridge -count=1
 
 if [[ "$mode" == "full" ]]; then
+  step "0.4.2 Task Workspace gate" go test ./internal/node ./internal/nodeui -run 'Test(WorkingPlan|WorkingMarkdown|WorkingProgress)' -count=1
+  step "0.4.2 Managed ripgrep/native search gate" go test ./internal/node ./internal/nodeui -run 'Test(ManagedRipgrep|NativeSearch|RipgrepJSON|SearchFileSelfTest)' -count=1
+  step "0.4.2 ripgrep component packager gate" go test ./cmd/ripgreppack -count=1
+  step "0.4.2 file_read gate" go test ./internal/node ./internal/protocol/v1 ./internal/hub/server -run 'Test(FileReadV2|FileReadCapability|MachineBoundaryEndToEnd)' -count=1
+  step "0.4.2 file_edit gate" go test ./internal/node ./internal/protocol/v1 ./internal/hub/core ./internal/hub/server -run 'Test(FileEdit|FileWrite|MachineBoundaryEndToEnd)' -count=1
+  step "0.4.2 updater temp E2E" go test ./internal/nodeupdate -run 'Test(CheckAndStageSignedNodeUpdate|CleanupStaleNodeUpdates)' -count=1
+  step "0.4.2 reconnect temp E2E" go test ./internal/node -run 'Test(NodeReconnectAfterRevokedMachineCreatesFreshMachineIdentity|ReconnectBackoffsResetAfterStableSession)' -count=1
   step "Repeated Node regression" go test ./internal/node -count=3
 
   goarch="$(go env GOARCH)"

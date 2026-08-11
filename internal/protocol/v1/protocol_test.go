@@ -35,3 +35,53 @@ func TestAgentCapabilityAdvertisesCurrentActionContract(t *testing.T) {
 		t.Fatalf("agent.control actions=%v want=%v", AgentCapability.Actions, want)
 	}
 }
+
+func TestWorkingContextCapabilityAdvertisesPlanAndMarkdownActions(t *testing.T) {
+	want := []string{"get", "set", "clear", "plan.init", "plan.get", "plan.list", "plan.sync", "task.update", "markdown.list", "markdown.read", "markdown.append", "progress.watch"}
+	for _, capability := range NodeCapabilities {
+		if capability.CapabilityId == "working.context" {
+			if capability.Version != "1.1" || !reflect.DeepEqual(capability.Actions, want) {
+				t.Fatalf("working.context=%+v want actions=%v", capability, want)
+			}
+			return
+		}
+	}
+	t.Fatal("working.context capability is missing")
+}
+
+func TestCodeSearchCapabilityAdvertisesVersionTwoWithoutNewAction(t *testing.T) {
+	for _, capability := range NodeCapabilities {
+		if capability.CapabilityId == "code.search" {
+			if capability.Version != "2.0" || !reflect.DeepEqual(capability.Actions, []string{"search"}) {
+				t.Fatalf("code.search=%+v", capability)
+			}
+			return
+		}
+	}
+	t.Fatal("code.search capability is missing")
+}
+
+func TestFileReadCapabilityAdvertisesVersionTwoWithoutNewAction(t *testing.T) {
+	for _, capability := range NodeCapabilities {
+		if capability.CapabilityId == "file.read" {
+			if capability.Version != "2.0" || !reflect.DeepEqual(capability.Actions, []string{"read"}) {
+				t.Fatalf("file.read=%+v", capability)
+			}
+			return
+		}
+	}
+	t.Fatal("file.read capability is missing")
+}
+
+func TestFileWriteCapabilityAdvertisesVersionTwoAndLegacyEdit(t *testing.T) {
+	want := []string{"edit", "create", "replace", "editMany", "preview"}
+	for _, capability := range NodeCapabilities {
+		if capability.CapabilityId == "file.write" {
+			if capability.Version != "2.0" || !reflect.DeepEqual(capability.Actions, want) {
+				t.Fatalf("file.write=%+v want actions=%v", capability, want)
+			}
+			return
+		}
+	}
+	t.Fatal("file.write capability is missing")
+}

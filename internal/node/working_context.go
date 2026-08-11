@@ -11,28 +11,52 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
 
 const (
-	workingContextSchemaVersion = 1
-	maxWorkingContextBytes      = 64 << 10
+	workingContextSchemaVersion = 2
+	maxWorkingContextBytes      = 4 << 20
 	maxWorkingContextItems      = 64
 	maxWorkingContextGoalBytes  = 4 << 10
 	maxWorkingContextItemBytes  = 1 << 10
 )
 
+const defaultWorkingPlanID = "default"
+
+var workingContextWriteMu sync.Mutex
+
 type workingContextParams struct {
-	ProjectPath    string   `json:"projectPath"`
-	Goal           string   `json:"goal,omitempty"`
-	BaselineBranch string   `json:"baselineBranch,omitempty"`
-	BaselineCommit string   `json:"baselineCommit,omitempty"`
-	Completed      []string `json:"completed,omitempty"`
-	Constraints    []string `json:"constraints,omitempty"`
-	Pending        []string `json:"pending,omitempty"`
-	KeyFiles       []string `json:"keyFiles,omitempty"`
-	Facts          []string `json:"facts,omitempty"`
+	ProjectPath          string                    `json:"projectPath"`
+	PlanID               string                    `json:"planId,omitempty"`
+	ExpectedRevision     string                    `json:"expectedRevision,omitempty"`
+	Goal                 string                    `json:"goal,omitempty"`
+	Title                string                    `json:"title,omitempty"`
+	TargetVersion        string                    `json:"targetVersion,omitempty"`
+	MarkdownRoot         string                    `json:"markdownRoot,omitempty"`
+	InitializeMarkdown   bool                      `json:"initializeMarkdown,omitempty"`
+	BaselineBranch       string                    `json:"baselineBranch,omitempty"`
+	BaselineCommit       string                    `json:"baselineCommit,omitempty"`
+	Completed            []string                  `json:"completed,omitempty"`
+	Constraints          []string                  `json:"constraints,omitempty"`
+	Pending              []string                  `json:"pending,omitempty"`
+	KeyFiles             []string                  `json:"keyFiles,omitempty"`
+	Facts                []string                  `json:"facts,omitempty"`
+	Tasks                []workingPlanTaskInput    `json:"tasks,omitempty"`
+	TaskID               string                    `json:"taskId,omitempty"`
+	TaskTitle            string                    `json:"taskTitle,omitempty"`
+	TaskStatus           string                    `json:"taskStatus,omitempty"`
+	BlockedReason        string                    `json:"blockedReason,omitempty"`
+	Completion           *int                      `json:"completion,omitempty"`
+	Evidence             *workingPlanEvidenceInput `json:"evidence,omitempty"`
+	MarkdownPath         string                    `json:"markdownPath,omitempty"`
+	Content              string                    `json:"content,omitempty"`
+	ManagedBlock         string                    `json:"managedBlock,omitempty"`
+	ExpectedFileRevision string                    `json:"expectedFileRevision,omitempty"`
+	SinceRevision        string                    `json:"sinceRevision,omitempty"`
+	WaitSeconds          int                       `json:"waitSeconds,omitempty"`
 }
 
 type workingContextBaseline struct {
@@ -43,6 +67,10 @@ type workingContextBaseline struct {
 type workingContextState struct {
 	SchemaVersion int                    `json:"schemaVersion"`
 	ProjectPath   string                 `json:"projectPath"`
+	PlanID        string                 `json:"planId"`
+	Title         string                 `json:"title,omitempty"`
+	TargetVersion string                 `json:"targetVersion,omitempty"`
+	MarkdownRoot  string                 `json:"markdownRoot,omitempty"`
 	Goal          string                 `json:"goal"`
 	Baseline      workingContextBaseline `json:"baseline"`
 	Completed     []string               `json:"completed,omitempty"`
@@ -50,6 +78,7 @@ type workingContextState struct {
 	Pending       []string               `json:"pending,omitempty"`
 	KeyFiles      []string               `json:"keyFiles,omitempty"`
 	Facts         []string               `json:"facts,omitempty"`
+	Tasks         []workingPlanTask      `json:"tasks,omitempty"`
 	UpdatedAt     time.Time              `json:"updatedAt"`
 }
 
@@ -61,12 +90,18 @@ type workingContextGitFacts struct {
 }
 
 type workingContextResult struct {
-	Action     string                 `json:"action"`
-	Exists     bool                   `json:"exists"`
-	State      *workingContextState   `json:"state,omitempty"`
-	CurrentGit workingContextGitFacts `json:"currentGit"`
-	Revision   string                 `json:"revision,omitempty"`
-	Cleared    bool                   `json:"cleared,omitempty"`
+	Action       string                 `json:"action"`
+	Exists       bool                   `json:"exists"`
+	State        *workingContextState   `json:"state,omitempty"`
+	CurrentGit   workingContextGitFacts `json:"currentGit"`
+	Revision     string                 `json:"revision,omitempty"`
+	Cleared      bool                   `json:"cleared,omitempty"`
+	Plans        []workingPlanSummary   `json:"plans,omitempty"`
+	Markdown     []workingMarkdownFile  `json:"markdown,omitempty"`
+	Content      string                 `json:"content,omitempty"`
+	FileRevision string                 `json:"fileRevision,omitempty"`
+	Synced       []string               `json:"synced,omitempty"`
+	Changed      bool                   `json:"changed,omitempty"`
 }
 
 func (c *Client) workingContextControl(ctx context.Context, action string, params map[string]any) (workingContextResult, error) {
@@ -82,7 +117,14 @@ func (c *Client) workingContextControl(ctx context.Context, action string, param
 		return workingContextResult{}, err
 	}
 	currentGit := inspectWorkingContextGit(ctx, projectPath)
-	filePath := c.workingContextPath(projectPath)
+	planID, err := normalizeWorkingPlanID(input.PlanID)
+	if err != nil {
+		return workingContextResult{}, err
+	}
+	if action == "get" || action == "set" || action == "clear" {
+		planID = defaultWorkingPlanID
+	}
+	filePath := c.workingContextPathForPlan(projectPath, planID)
 
 	switch action {
 	case "get":
@@ -97,6 +139,8 @@ func (c *Client) workingContextControl(ctx context.Context, action string, param
 		}
 		return result, nil
 	case "set":
+		workingContextWriteMu.Lock()
+		defer workingContextWriteMu.Unlock()
 		state, err := buildWorkingContextState(projectPath, input, currentGit)
 		if err != nil {
 			return workingContextResult{}, err
@@ -109,13 +153,15 @@ func (c *Client) workingContextControl(ctx context.Context, action string, param
 		if len(raw) > maxWorkingContextBytes {
 			return workingContextResult{}, fmt.Errorf("working context exceeds %d bytes", maxWorkingContextBytes)
 		}
-		if err := atomicWriteWorkingContext(filePath, raw); err != nil {
+		if err := atomicWriteWorkingContextCAS(filePath, raw, input.ExpectedRevision); err != nil {
 			return workingContextResult{}, err
 		}
 		return workingContextResult{
 			Action: action, Exists: true, State: &state, CurrentGit: currentGit, Revision: workingContextRevision(raw),
 		}, nil
 	case "clear":
+		workingContextWriteMu.Lock()
+		defer workingContextWriteMu.Unlock()
 		_, statErr := os.Stat(filePath)
 		existed := statErr == nil
 		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
@@ -126,7 +172,7 @@ func (c *Client) workingContextControl(ctx context.Context, action string, param
 		}
 		return workingContextResult{Action: action, Exists: false, Cleared: existed, CurrentGit: currentGit}, nil
 	default:
-		return workingContextResult{}, fmt.Errorf("unsupported working context action %q", action)
+		return c.workingPlanControl(ctx, action, input, projectPath, planID, currentGit)
 	}
 }
 
@@ -149,9 +195,16 @@ func resolveWorkingContextProject(value string) (string, error) {
 }
 
 func (c *Client) workingContextPath(projectPath string) string {
+	return c.workingContextPathForPlan(projectPath, defaultWorkingPlanID)
+}
+
+func (c *Client) workingContextPathForPlan(projectPath, planID string) string {
 	key := filepath.Clean(projectPath)
 	if runtime.GOOS == "windows" {
 		key = strings.ToLower(key)
+	}
+	if planID != defaultWorkingPlanID {
+		key += "\n" + planID
 	}
 	sum := sha256.Sum256([]byte(key))
 	return filepath.Join(c.cfg.DataDir, "working-contexts", hex.EncodeToString(sum[:16])+".json")
@@ -197,6 +250,7 @@ func buildWorkingContextState(projectPath string, input workingContextParams, cu
 	return workingContextState{
 		SchemaVersion: workingContextSchemaVersion,
 		ProjectPath:   projectPath,
+		PlanID:        defaultWorkingPlanID,
 		Goal:          goal,
 		Baseline:      workingContextBaseline{Branch: branch, Commit: commit},
 		Completed:     completed,
@@ -215,6 +269,9 @@ func normalizeWorkingContextText(value string, maxBytes int, required bool) (str
 	}
 	if !utf8.ValidString(value) || strings.IndexByte(value, 0) >= 0 || len([]byte(value)) > maxBytes {
 		return "", fmt.Errorf("value is invalid or exceeds %d bytes", maxBytes)
+	}
+	if containsSensitiveWorkspaceMaterial(value) {
+		return "", fmt.Errorf("value appears to contain sensitive or raw conversation material")
 	}
 	return value, nil
 }
@@ -301,15 +358,35 @@ func loadWorkingContext(filePath, projectPath string) (workingContextState, []by
 	if err := json.Unmarshal(raw, &state); err != nil {
 		return workingContextState{}, nil, false, fmt.Errorf("decode working context: %w", err)
 	}
-	if state.SchemaVersion != workingContextSchemaVersion || !samePath(state.ProjectPath, projectPath) {
+	if (state.SchemaVersion != 1 && state.SchemaVersion != workingContextSchemaVersion) || !samePath(state.ProjectPath, projectPath) {
 		return workingContextState{}, nil, false, fmt.Errorf("stored working context does not match this project")
 	}
+	if state.PlanID == "" {
+		state.PlanID = defaultWorkingPlanID
+	}
+	state.SchemaVersion = workingContextSchemaVersion
 	return state, raw, true, nil
 }
 
 func atomicWriteWorkingContext(filePath string, raw []byte) error {
+	return atomicWriteWorkingContextCAS(filePath, raw, "")
+}
+
+func atomicWriteWorkingContextCAS(filePath string, raw []byte, expectedRevision string) error {
 	if err := os.MkdirAll(filepath.Dir(filePath), 0o700); err != nil {
 		return err
+	}
+	if expectedRevision != "" {
+		current, err := os.ReadFile(filePath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return ErrRevisionConflict
+			}
+			return err
+		}
+		if workingContextRevision(current) != expectedRevision {
+			return ErrRevisionConflict
+		}
 	}
 	temp, err := os.CreateTemp(filepath.Dir(filePath), ".working-context-*.tmp")
 	if err != nil {
@@ -332,13 +409,16 @@ func atomicWriteWorkingContext(filePath string, raw []byte) error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tempPath, filePath); err == nil {
-		return nil
+	if expectedRevision != "" {
+		current, err := os.ReadFile(filePath)
+		if err != nil || workingContextRevision(current) != expectedRevision {
+			return ErrRevisionConflict
+		}
 	}
-	if err := os.Remove(filePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := replaceFile(tempPath, filePath); err != nil {
 		return err
 	}
-	return os.Rename(tempPath, filePath)
+	return syncParentDirectory(filepath.Dir(filePath))
 }
 
 func workingContextRevision(raw []byte) string {

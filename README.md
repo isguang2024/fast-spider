@@ -4,12 +4,16 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 ## Current 当前事实
 
+- 当前源码版本为 `0.4.2`；`0.4.1` 只作为连续开发阶段，不单独发布。
 - Machine 是唯一远程资源边界。Fast Spider 不再维护旧目录对象、目录列表工具、目录授权、目录白名单或路径注册表。
 - Node 以启动它的当前 OS 用户运行，直接使用该用户对整台电脑的操作系统权限；Fast Spider 不把文件系统再切成一层目录权限。
 - 同一 OS 用户只允许运行一个 Fast Spider Node 主实例；重复双击、开机自启动与手动启动、不同 EXE 位置或不同 `--data-dir` 都不能建立第二条 Node 连接。重复启动只打开现有本地界面后退出。
 - `file_read`、`file_edit`、`code_search` 使用绝对 `path`；`shell_run` 和 `build_control` 使用绝对 `cwd`；`git_control` 使用绝对 `repositoryPath`；`ai_control.session.create` 使用绝对 `workingDirectory`。Git 子目录和 linked worktree 会自动归到主工作树对应的 Codex Desktop 项目，实际执行目录保持不变；非 Git 临时目录不会自动注册成项目。
 - 浏览器在 Node 可访问的公网、localhost 和私网中运行，不需要 Fast Spider Origin 白名单；仍由 Node 的 OS、网络和浏览器运行时条件决定是否可达。
 - MCP 当前固定提供 16 个工具，包含 `working_context`，不包含旧目录列表能力。
+- `working_context` 已扩展为同一套 Plan/Task + Markdown Task Workspace：保留 `get/set/clear` 默认 plan 兼容入口，并提供 `plan.init/plan.get/plan.list/plan.sync/task.update/markdown.list/markdown.read/markdown.append/progress.watch`；状态按 Machine 路由、`projectPath + planId` 隔离。
+- `code_search` 支持 content/files、include/exclude glob 与 bounded context；优先使用 data-dir 中已验证的 Managed `search-ripgrep`，缺失或失败时回退 Go native，不信任 PATH、不读取用户 ripgrep 配置，也不在搜索时自动下载。
+- `file_read` 2.0 保留 byte range，并支持 line/head/tail/around/statOnly/line numbers；`file_edit` 2.0 在同一工具内提供 legacy edit、create、replace、editMany、preview，现有文件写入使用 SHA CAS 与原子替换，preview 不写磁盘。
 - `ai_control` 已是多 AI Harness 控制面：当前支持 `codex` 与 `claude_code`，并通过 `routing.status` 只读 CC Switch SSOT，区分 Harness、Routing Runtime、上游 Provider 与真实模型映射。
 - Codex 保留 Provider/Model 能力发现、Skills/Hooks/Permission Profiles/Plugins/MCP 状态、Thread/Goal/Settings/Review、steer/respond、原生 Turn input 与 `outputSchema`；app-server 重启后按需 resume 持久 Thread。
 - Claude Code 使用原生 Session UUID + `stream-json` + `--resume`，Prompt 通过 stdin 传入；Fast Spider 只保存小型 Session 控制索引，不复制完整对话。模型和有效能力以 CC Switch Route + Harness 能力共同解释，不把 `sonnet`/`opus` 等别名直接当真实上游模型。
@@ -27,6 +31,7 @@ Fast Spider 不是远程桌面，也不是通用内网穿透软件：不提供�
 - Provider-neutral AI 控制：Codex + Claude Code；CC Switch 作为只读 Routing SSOT，返回 RouteSnapshot、模型映射和 EffectiveCapabilities。
 - Codex 支持原生 Skill/Image/Mention、结构化输出、steer/respond 与持久 Thread 自动恢复；Claude Code 支持 create/send/watch/cancel/result/resume、stream-json 与结构化输出。
 - MCP、Web Console、CLI、Local Bridge 共用同一 Capability Engine。
+- Node 本地 Edge App Window + loopback UI 提供概览/连接、任务与进度、AI 与路由、组件、诊断页面；组件中心只允许手动管理 Browser 与 `search-ripgrep`，搜索/文件自检只使用隔离临时目录。
 
 ## 技术组合
 
@@ -105,7 +110,7 @@ ai_control
 working_context
 ```
 
-`file_read`、`file_edit`、`code_search` 的目标字段是绝对 `path`；`shell_run`/`build_control` 使用绝对 `cwd`；`git_control` 使用绝对 `repositoryPath`；`ai_control.session.create` 使用绝对 `workingDirectory`。`providerId` 选择 AI Harness；`routing.status` 独立返回 CC Switch Route。Codex 会把 Git worktree 归并到主工作树展示项目；Claude Code Session 固定其创建时工作目录并使用原生 Session UUID。`browser_control` 允许 Node 能访问的公网、localhost 和私网地址，不额外维护 Origin 白名单。远程权限只绑定 `machineId`，Node 是最终执行边界。
+`file_read`、`file_edit`、`code_search` 的目标字段是绝对 `path`；`shell_run`/`build_control` 使用绝对 `cwd`；`git_control` 使用绝对 `repositoryPath`；`ai_control.session.create` 使用绝对 `workingDirectory`。`working_context` 使用 `projectPath + planId`。`providerId` 选择 AI Harness；`routing.status` 独立返回 CC Switch Route。Codex 会把 Git worktree 归并到主工作树展示项目；Claude Code Session 固定其创建时工作目录并使用原生 Session UUID。`browser_control` 允许 Node 能访问的公网、localhost 和私网地址，不额外维护 Origin 白名单。远程权限只绑定 `machineId`，Node 是最终执行边界。
 
 ## 文档导航
 
@@ -149,4 +154,4 @@ bash scripts/release-gate.sh
 bash scripts/release-gate.sh --full
 ```
 
-门禁覆盖格式、秘密模式、模块校验、`go vet`、测试、构建、恢复后 Hub 健康检查，以及完整模式下的 Browser、真实 CC Switch 只读路由、Claude Code、Codex、Local Bridge 多 Provider discovery 和产品 smoke。具体平台限制以门禁输出为准。
+门禁覆盖格式、秘密模式、模块校验、`go vet`、测试、构建、恢复后 Hub 健康检查；完整模式显式运行 Task Workspace、Managed ripgrep/native、file_read 2.0、file_edit 2.0、Node update/reconnect 专项，以及 Browser、真实 CC Switch 只读路由、Claude Code、Codex、Local Bridge 多 Provider discovery 和产品 smoke。具体平台限制以门禁输出为准。
