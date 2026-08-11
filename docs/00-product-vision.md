@@ -4,7 +4,7 @@
 
 Fast Spider 是面向个人开发者、小型团队和自托管场景的跨平台远程开发与自动化执行平台。它把公网控制面与真实机器执行面分离：Hub 负责身份、路由、任务状态和审计，Node 负责在当前 OS 用户权限下执行文件、Shell、Git、构建、浏览器、截图和本地 AI 操作。
 
-0.3.0 的远程边界只有 Machine。Fast Spider 不建立目录授权、路径注册或白名单层；Node 直接使用启动它的 OS 用户权限操作整台电脑。文件类请求使用绝对路径，执行类请求使用绝对工作目录或仓库路径。
+当前远程边界只有 Machine。Fast Spider 不建立目录授权、路径注册或白名单层；Node 直接使用启动它的 OS 用户权限操作整台电脑。文件类请求使用绝对路径，执行类请求使用绝对工作目录或仓库路径。0.3.0 是完成该模型迁移的历史版本。
 
 ## 2. 要解决的问题
 
@@ -35,7 +35,7 @@ Hub 是一个 Go 模块化单体，使用 SQLite WAL 和本地 Artifact 存储�
 
 ### 4.4 适合 AI 协作
 
-MCP 固定 16 个工具；长任务通过 Job 和事件流表达；结果包括结构化摘要、Diff、日志和 Artifact；轻量 `working_context` 只保存项目当前任务状态，Git/文件仍是最终事实源；AI 只能调用 Machine 上真实宣告的能力。
+MCP 固定 16 个工具；`ai_control` 以 Harness 为执行对象，当前支持 Codex + Claude Code，并把 CC Switch 作为只读 Routing SSOT。Harness 模型、客户端 alias 与真实 upstream Provider/model 分层，最终能力按实际 Harness/转换/upstream/policy 派生。长任务、Diff、日志、Artifact 与轻量 `working_context` 继续使用 Fast Spider 自己的可观察事实，Git/文件仍是最终代码事实源。
 
 ## 5. 产品原则
 
@@ -47,8 +47,9 @@ MCP 固定 16 个工具；长任务通过 Job 和事件流表达；结果包括�
 6. 高风险操作必须可见、可审计、可取消、可超时。
 7. 协议与 MCP 解耦。
 8. 优先单进程、单数据库、少组件。
-9. 0.3.0 删除旧目录对象模型，不保留兼容执行路径。
-10. UTF-8、结构化错误和版本化契约是基础要求。
+9. 旧目录对象模型已在 0.3.0 删除；当前不保留兼容执行路径。
+10. AI Harness、Routing Runtime 与 upstream Provider/model 必须分层；第三方模型能力不靠品牌名猜测。
+11. UTF-8、结构化错误和版本化契约是基础要求。
 
 ## 6. 成功指标
 

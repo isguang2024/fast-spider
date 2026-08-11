@@ -1,4 +1,4 @@
-# 数据模型（0.3.x）
+# 数据模型（0.4.0）
 
 Hub 只持久化远程控制真正需要的事实：Owner、Web Session、OAuth Client/Authorization/Token、Connection Token、Machine、Device Credential、Job/Artifact 元数据和审计。
 
@@ -20,8 +20,9 @@ Node 本地保存：
 - state.json
 - Device Key
 - Job/Browser/更新/组件等受管运行数据
+- `agent/claude-code-sessions.json`：有界 Claude Session 控制索引，只保存 session/status/model/result/usage/RouteSnapshot，不复制完整 Prompt/对话
 
-0.3.x 不再读取目录授权注册表。旧版本遗留的目录授权文件不是当前产品事实，也不会影响新 Node 权限。
+CC Switch `~/.cc-switch/cc-switch.db` 与 Claude/Codex 原生会话存储属于外部产品事实，不复制进 Fast Spider Hub 数据库；Inspector 只读并返回脱敏摘要。0.3.x 起不再读取目录授权注册表。旧版本遗留的目录授权文件不是当前产品事实，也不会影响新 Node 权限。
 
 ## 隐私
 

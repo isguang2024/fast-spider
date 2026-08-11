@@ -1,4 +1,4 @@
-# 09 安全威胁模型（0.3.0）
+# 09 安全威胁模型（Current）
 
 ## 1. 文档目的
 
@@ -23,7 +23,7 @@ Fast Spider 能在真实开发机上读取和修改代码、执行命令、控�
 - Node 设备私钥、Hub 签名/加密密钥、OAuth Token 和 Web Session。
 - Node 当前 OS 用户可访问的源码、配置、密钥文件、Git 凭据和进程环境。
 - 浏览器 Profile、Cookie、下载内容和 Node 可达网络。
-- 本地 AI Provider Token、Session 历史和模型权限。
+- 本地 AI/CC Switch Provider Token、Session 历史、Routing 配置、真实上游模型映射和模型权限。
 - Job、Artifact、截图、Diff、报告、日志、备份和设备吊销状态。
 
 ### 完整性与可用性资产
@@ -68,7 +68,7 @@ flowchart LR
       Local[Local Bridge]
       Cap[Capability Engine]
       FS[全电脑文件、进程与网络]
-      Agent[Local AI Provider]
+      Agent[Local AI Harness / Routing Runtime]
     end
 
     MCP --> Edge
@@ -90,7 +90,7 @@ flowchart LR
 4. Node ↔ Shell/Git/Build 子进程边界。
 5. Node ↔ Browser/桌面边界。
 6. Node ↔ Local Bridge/本地进程边界。
-7. Node ↔ Agent Provider 边界。
+7. Node ↔ AI Harness / CC Switch Routing 边界。
 8. Owner ↔ 备份介质/人工升级文件边界。
 
 ## 6. 安全基线
@@ -132,9 +132,15 @@ Client 可尝试枚举 Machine、切换绝对路径、注入命令、重复提�
 
 Browser 允许 Node 可达的公网、localhost 和私网，意味着它确实具备该 Node 网络视角下的访问能力。控制措施：只开放固定动作和隔离 Profile，不暴露原始 CDP/任意脚本；拒绝危险 scheme，限制页面、下载、输出、并发和生命周期；结果通过结构化数据和 Artifact 返回。私网访问不通过 Fast Spider 白名单授权。
 
-### T07 Provider 与 Session 泄露
+### T07 AI Harness、Routing 与 Session 泄露
 
-Provider Token、Codex 本地认证和原始环境不进入 Hub。`session.create` 使用绝对 `workingDirectory`，但日志只记录脱敏摘要；Session/Turn 使用单 active Run、幂等和真实终态，Provider 崩溃只影响 Agent Adapter。
+Provider Token、Codex/Claude 本地认证、CC Switch raw `settings_config`/`meta` 和原始环境不进入 Hub。`routing.status` 对 CC Switch 只使用 SQLite read-only 连接；Endpoint 只返回 host[:port]，Provider health 不返回 raw upstream error，凭据只返回 `credentialPresent` 布尔值。
+
+Session/Turn 保持单 active execution 和真实终态。Codex 继续用 expected Turn ID 的 steer、bounded pending request respond、Thread/Goal/Settings/Review 与自动 `thread/resume`；Codex 自带 fs/command/process/MCP tool-call 不通过 `ai_control` 暴露。
+
+Claude Code 使用原生 UUID + `--resume`，Prompt 通过 stdin，避免 argv/进程列表泄露正文；Fast Spider 的 Claude Session index 不保存完整 Prompt/历史，只保存控制状态和 bounded result/usage/RouteSnapshot。Claude `actualUpstream` 只在 CC Switch request log 的 session ID 与 native Claude Session ID 精确匹配时声明，防止并发请求错误归因。`claude auth status` 只视为认证配置，不视为实际健康；真实 Turn 失败仍按 failed 记录。
+
+EffectiveCapabilities 不按模型品牌猜测；第三方路由无法证明的能力保持 unknown，明确不支持的能力保持 unsupported。所有副作用在连接中断后先查询状态再决定，不自动重放。
 
 ### T08 Local Bridge 与本地进程
 
@@ -156,9 +162,12 @@ Local Bridge 使用当前用户 AF_UNIX/UDS、0700/0600 或等价 Windows ACL，
 
 - OAuth、IDOR、跨 Machine、设备吊销和旧 generation 测试。
 - 绝对路径格式、NUL、设备路径、symlink/TOCTOU、并发替换和大文件测试。
-- argv、shell profile、环境变量、Git remote/hooks、Build、超时、取消和幂等测试。
+- 结构化 argv、显式 shell executable、Git remote/hooks、Build、超时、取消和幂等测试。
 - Browser 的公网、localhost、RFC1918/ULA/CGNAT 访问，以及危险 scheme、任意脚本和隔离 Profile 测试。
 - Local Bridge ACL、断线重连、Job/Event sequence、Artifact hash、备份恢复和更新签名测试。
+- Codex 原生 Skill/Plugin 参数、Provider/Hook/Permission/MCP discovery、`outputSchema`、Goal/Review/rollback/steer/respond、app-server auto-resume 与 mutation retry/audit 测试。
+- CC Switch DB read-only、secret sanitizer、model mapping、takeover/routingMode、DB/settings current selection 一致性和 request-log Session correlation 测试。
+- Claude Code stdin Prompt、stream-json、Session UUID/resume、单 active Turn、结构化输出、Session index 重载、取消/终态归一化和真实 CLI E2E。
 - Hub 被攻破假设下 Node 仍只代表自身 Machine，不能代表其他设备。
 
 ## 9. 发布阻断条件

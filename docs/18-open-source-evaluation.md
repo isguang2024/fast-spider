@@ -52,7 +52,7 @@
 
 | 项目 | 解决的问题 / 语言 | 许可证 | 活跃度与平台 | 安全历史与体积 | 集成复杂度 | 结论 / 许可证影响 |
 |---|---|---|---|---|---|---|
-| ripgrep | 高速递归正则搜索、gitignore/binary 处理；Rust | MIT OR Unlicense | 成熟活跃；Windows/Linux/macOS | 作为外部工具仍需限制 pattern/flags/输出；小到中 | 低 | **推荐直接使用独立可执行程序**，参数结构化白名单；提供 Go 有限 fallback/明确不可用错误 |
+| ripgrep | 高速递归正则搜索、gitignore/binary 处理；Rust | MIT OR Unlicense | 成熟活跃；Windows/Linux/macOS | 作为外部工具仍需限制 pattern/flags/输出；小到中 | 低 | **历史候选，当前未采用**；现有 `code.search` 使用有界 Go 实现，只有真实性能需求出现时再评估外部可执行程序 |
 
 退出策略：`code.search` 契约不绑定 ripgrep flags。若版本、许可证或平台出现问题，可替换为 Go 搜索实现或其他工具，结果仍归一化为相同 Match Schema。
 
@@ -128,15 +128,15 @@ PTY 会扩大交互、转义序列、会话保持和资源风险，因此不阻�
 
 ## 13. 三套技术组合
 
-### 组合 A：Go/Go 简洁自托管（推荐）
+### 组合 A：Go/Go 简洁自托管（已采用）
 
 - Hub Go + Node Go。
-- WSS + JSON 控制 +二进制块。
+- WSS 承载 JSON 控制消息；Artifact/Presentation 大文件使用 HTTP 数据面，不在 WSS 内另造二进制文件协议。
 - JSON Schema 2020-12 契约源。
-- SQLite WAL + 本地 Artifact。
-- 官方 MCP Go SDK、coder/websocket、OpenTelemetry Go。
-- 系统 Git + ripgrep 外部工具。
-- Playwright 私有 sidecar（Phase 5）。
+- SQLite WAL + Hub 本地 Artifact/Temporary Presentation 存储。
+- 当前直接依赖官方 MCP Go SDK、coder/websocket、modernc SQLite、kbinani/screenshot、必要平台包。
+- Git 使用系统 Git；当前 `code.search` 使用内置有界 Go 实现，不要求用户安装 ripgrep。
+- Playwright 私有 sidecar 作为可选 Browser 组件。
 
 ### 组合 B：Go Hub + Rust Node
 
@@ -171,19 +171,21 @@ PTY 会扩大交互、转义序列、会话保持和资源风险，因此不阻�
 
 ## 15. MVP 依赖建议清单
 
-### 直接依赖候选
+### 当前直接依赖
 
 - 官方 MCP Go SDK：MCP Adapter。
 - coder/websocket：Hub↔Node WSS。
-- OpenTelemetry Go API/SDK：可选 Trace/Metric Export。
-- 经过 ADR 选定的 SQLite Driver。
-- 最小必要的 JSON Schema validator/generator（需单独评估）。
+- modernc SQLite：Hub 单机 WAL 数据库。
+- kbinani/screenshot + 平台包：桌面/显示器/窗口截图。
+- Go/x/sys、Windows UI 相关窄依赖：平台执行和本地 UI。
+
+OpenTelemetry 仍只是后续可选 exporter，不是当前运行时必需依赖；JSON Schema 主契约由仓库 `contracts/v1` + contract generator 维护。
 
 ### 独立工具/sidecar
 
 - 系统 Git：Git Adapter。
-- ripgrep：Code Search Adapter，可随发布包提供或发现系统版本。
-- Playwright driver/browser：Phase 5，可选组件包。
+- Playwright driver/browser + Node runtime：Browser 可选组件包。
+- ripgrep 保留为历史评估候选；当前 Code Search 不依赖它，只有真实性能需求出现并通过适配/发布评估后才考虑接入。
 
 ### 仅原型/参考
 
@@ -227,15 +229,14 @@ PTY 会扩大交互、转义序列、会话保持和资源风险，因此不阻�
 - XCap：`github.com/nashaofu/xcap`
 - coder/websocket：`github.com/coder/websocket`
 
-## 18. 未完成的引入前验证
+## 18. 当前验证状态与仍保留的候选
 
-以下不阻塞 Phase 0 架构，但阻塞对应编码：
+早期“编码前必须决定”的大部分技术选型已经由实现和 release gate 收敛：
 
-- SQLite Driver 的 CGO/pure-Go 选择和 backup API 原型。
-- Playwright Go sidecar 具体封装与实际安装体积。
-- Windows/Linux 截图与窗口枚举的真实平台原型。
-- coder/websocket 在目标反向代理、长连接和大日志背压下的测试。
-- ripgrep 捆绑还是系统发现的发布策略。
-- 若未来真实引入自动更新/Windows 安装器，再单独验证代码签名工具链与发布密钥方案；当前 Phase 7 不阻塞于此。
+- SQLite 已选择 modernc pure-Go 路线，并有 backup/verify/restore E2E。
+- Browser 已采用 Node 管理的 Playwright sidecar + 可选组件包，并进入 real Browser E2E。
+- Windows/Linux 截图路径已有平台实现和测试；Windows 额外支持窗口枚举/窗口截图。
+- coder/websocket 已进入真实 Hub↔Node 长连接，并有断线、generation、in-flight/重连测试。
+- Code Search 当前使用有界 Go 实现；ripgrep 不属于发布前置条件。
 
-这些在 [20-open-questions.md](20-open-questions.md) 分类为“编码前必须决定”或“进入对应阶段前决定”。
+仍保留为后续真实需求触发的评估项：更完整的安装器/代码签名、可选 telemetry exporter、macOS/更多架构，以及 Code Search 在数据证明有性能瓶颈后是否切换外部搜索引擎。具体开放问题以 [20-open-questions.md](20-open-questions.md) 为准。

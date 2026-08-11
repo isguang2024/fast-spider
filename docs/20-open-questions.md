@@ -1,21 +1,25 @@
-# 20 开放问题（0.3.0）
+# 20 开放问题（Current）
 
 ## 1. 当前已关闭的边界
 
-以下决定属于 0.3.0 当前事实，不作为开放设计项重新讨论：
+以下决定属于当前事实，不作为开放设计项重新讨论；0.3.0 是完成 Machine-only 边界迁移的历史版本：
 
 - Machine 是唯一远程资源边界。
 - Node 以当前 OS 用户权限操作整台电脑；Fast Spider 不维护目录授权、路径白名单、目录注册表或目录 ID。
-- `file_read`、`file_edit`、`code_search` 使用绝对 `path`；`shell_run`、`build_control` 使用绝对 `cwd`；`git_control` 使用绝对 `repositoryPath`；`ai_control.session.create` 使用绝对 `workingDirectory`。
+- `file_read`、`file_edit`、`code_search` 使用绝对 `path`；`shell_run`、`build_control` 使用绝对 `cwd`；`git_control` 使用绝对 `repositoryPath`；`ai_control` 在 create/send/fork/settings 等涉及 cwd 的动作中使用绝对 `workingDirectory`。
 - Browser 允许 Node 可访问的公网、localhost 和私网 HTTP/HTTPS/WS/WSS；不维护 Fast Spider Origin 白名单。
 - MCP 固定 16 个工具，不提供目录列表工具；`working_context` 只保存项目当前任务快照，不演化成长期 AI Memory。
-- Local Bridge 使用当前用户 AF_UNIX/UDS，Codex 使用本机 `codex app-server --stdio`。
+- `agent.control` 已是多 Harness 控制面：当前 `codex` + `claude_code`；CC Switch 是只读 Routing SSOT。Harness、Routing Runtime、upstream Provider/model 与 EffectiveCapabilities 分层，不按模型品牌/客户端 alias 猜真实上游。
+- CC Switch raw provider settings/meta/credential 不离开 Node；Fast Spider 不修改 Provider/Token/Takeover/Failover。真实 upstream 只有可验证 request/session correlation 时才声明。
+- Codex 0.141.0 app-server 继续映射受控 discovery/Thread/Turn/Goal/Review/steer/respond 子集，不暴露 fs/command/process/MCP tool-call 第二执行链；同版本仍未公开 Automation API，因此不映射 Automations。
+- Claude Code 当前以原生 CLI 2.1.207 `stream-json` + UUID/`--resume` 接入；Prompt 走 stdin，第一版只映射 text/session lifecycle，不开放 permission bypass 或伪造 Codex 输入类型。
+- Local Bridge 使用当前用户 AF_UNIX/UDS；Codex app-server 与 Claude Code CLI 都由 Node Agent Manager 管理。
 
 ## 2. 进入后续阶段前决定
 
 ### Q1. 支持的平台与工具链
 
-继续按 Windows 11/10、Ubuntu LTS amd64 为主基线；Linux arm64、其他发行版和 macOS 在实际发布需求出现时加入构建和 E2E 矩阵。Go、Playwright、Codex CLI 和 MCP SDK 版本必须在 release gate 中固定并记录。
+继续按 Windows 11/10、Ubuntu LTS amd64 为主基线；Linux arm64、其他发行版和 macOS 在实际发布需求出现时加入构建和 E2E 矩阵。Go、Playwright、Codex CLI、Claude Code CLI、CC Switch schema compatibility 和 MCP SDK 必须由 release gate/真实 E2E 持续验证。
 
 ### Q2. 文件编码与换行
 

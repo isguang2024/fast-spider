@@ -1,8 +1,8 @@
-# ADR 0003：契约格式（0.3.0 当前有效部分）
+# ADR 0003：契约格式
 
 ## 状态
 
-已接受。本文以当前 Machine-only Capability Contract 为准，旧目录对象字段不属于公共契约。
+Current：已接受。JSON Schema 契约决策仍有效；当前以 Machine-only Capability Contract 为准，旧目录对象字段不属于公共契约。
 
 ## 决策
 

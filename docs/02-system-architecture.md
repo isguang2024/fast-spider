@@ -9,7 +9,7 @@ Fast Spider 采用 **Hub + Node + Adapter** 架构：
 - **Contracts**：与传输和 MCP 解耦的版本化契约，是 Request、Event、Error、Job、Artifact 和 Capability 的唯一模型来源。
 - **Adapters**：MCP、REST、WebSocket、Web Console、CLI 和 Local Bridge 只做协议转换与身份绑定。
 
-0.3.0 的远程边界只有 Machine。Node 不维护目录注册表、目录授权、路径白名单或目录 ID 映射。
+当前远程边界只有 Machine。Node 不维护目录注册表、目录授权、路径白名单或目录 ID 映射；0.3.0 是完成该边界迁移的历史版本。
 
 ## 2. 系统上下文图
 
@@ -22,7 +22,8 @@ flowchart LR
     Hub[Fast Spider Hub<br/>Control Plane]
     NodeW[Windows Node]
     NodeL[Linux Node]
-    LocalAI[Local Codex / AI Provider]
+    LocalAI[Local AI Harnesses<br/>Codex / Claude Code]
+    CCS[CC Switch<br/>Routing SSOT]
     Browser[Managed Browser]
     FS[全电脑文件系统 / Git / Shell]
 
@@ -38,6 +39,8 @@ flowchart LR
     NodeL --> Browser
     NodeW --> LocalAI
     NodeL --> LocalAI
+    NodeW -. read-only route facts .-> CCS
+    LocalAI -. optional routed API .-> CCS
 ```
 
 ## 3. 控制面与执行面
@@ -121,7 +124,8 @@ flowchart TB
     BUILD[Build/Test]
     GIT[Git]
     BROWSER[Browser/Screenshot]
-    AGENT[Agent Provider Adapters]
+    AGENT[AI Harness Adapters<br/>Codex / Claude Code]
+    ROUTE[CC Switch Inspector<br/>read-only routing facts]
     PLATFORM[Platform Layer]
     STATE[(Local State)]
 
@@ -135,6 +139,7 @@ flowchart TB
     CAP --> GIT
     CAP --> BROWSER
     CAP --> AGENT
+    AGENT --> ROUTE
     FILE --> PLATFORM
     SHELL --> PLATFORM
     BUILD --> PLATFORM

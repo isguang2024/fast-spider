@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,20 +40,34 @@ type codexPending struct {
 	ch chan codexRPCMessage
 }
 
+type codexServerRequest struct {
+	RawID      json.RawMessage
+	RequestID  string
+	Method     string
+	SessionID  string
+	TurnID     string
+	Params     map[string]any
+	ReceivedAt time.Time
+}
+
 type AgentEvent struct {
-	Sequence  int64  `json:"sequence"`
-	Type      string `json:"type"`
-	SessionID string `json:"sessionId,omitempty"`
-	TurnID    string `json:"turnId,omitempty"`
-	Text      string `json:"text,omitempty"`
-	State     string `json:"state,omitempty"`
-	Timestamp string `json:"timestamp"`
+	Sequence    int64          `json:"sequence"`
+	Type        string         `json:"type"`
+	SessionID   string         `json:"sessionId,omitempty"`
+	TurnID      string         `json:"turnId,omitempty"`
+	RequestID   string         `json:"requestId,omitempty"`
+	RequestType string         `json:"requestType,omitempty"`
+	Text        string         `json:"text,omitempty"`
+	State       string         `json:"state,omitempty"`
+	Detail      map[string]any `json:"detail,omitempty"`
+	Timestamp   string         `json:"timestamp"`
 }
 
 type CodexAdapter struct {
 	logger *slog.Logger
 
 	startMu     sync.Mutex
+	loadMu      sync.Mutex
 	mu          sync.Mutex
 	rpcWriteMu  sync.Mutex
 	cmd         *exec.Cmd
@@ -61,12 +76,16 @@ type CodexAdapter struct {
 	nextID      int64
 	closed      bool
 	processDone chan struct{}
+	loaded      map[string]struct{}
 
 	eventMu     sync.Mutex
 	events      []AgentEvent
 	nextEvent   int64
 	eventNotify chan struct{}
 	activeTurns map[string]string
+
+	serverMu       sync.Mutex
+	serverRequests map[string]codexServerRequest
 }
 
 func NewCodexAdapter(logger *slog.Logger) *CodexAdapter {
@@ -74,10 +93,12 @@ func NewCodexAdapter(logger *slog.Logger) *CodexAdapter {
 		logger = slog.Default()
 	}
 	return &CodexAdapter{
-		logger:      logger,
-		pending:     make(map[int64]codexPending),
-		eventNotify: make(chan struct{}),
-		activeTurns: make(map[string]string),
+		logger:         logger,
+		pending:        make(map[int64]codexPending),
+		loaded:         make(map[string]struct{}),
+		eventNotify:    make(chan struct{}),
+		activeTurns:    make(map[string]string),
+		serverRequests: make(map[string]codexServerRequest),
 	}
 }
 
@@ -160,8 +181,7 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 			"version": "0.1.0",
 		},
 		"capabilities": map[string]any{
-			"experimentalApi":                true,
-			"mcpServerOpenaiFormElicitation": false,
+			"experimentalApi": true,
 		},
 	}); err != nil {
 		_ = a.stopProcess(context.Background(), cmd)
@@ -320,7 +340,7 @@ func (a *CodexAdapter) readLoop(reader io.Reader) {
 			continue
 		}
 		if len(message.ID) > 0 && message.Method != "" {
-			a.replyUnsupportedServerRequest(message.ID, message.Method)
+			a.handleServerRequest(message.ID, message.Method, message.Params)
 			continue
 		}
 		if message.Method != "" {
@@ -344,7 +364,155 @@ func codexResponseID(raw json.RawMessage) (int64, error) {
 	return 0, fmt.Errorf("invalid Codex RPC response ID")
 }
 
-func (a *CodexAdapter) replyUnsupportedServerRequest(id json.RawMessage, method string) {
+func (a *CodexAdapter) handleServerRequest(id json.RawMessage, method string, rawParams json.RawMessage) {
+	requestID, err := codexRequestIDString(id)
+	if err != nil {
+		a.replyServerRequestError(id, -32600, "invalid Codex server request id")
+		return
+	}
+	var params map[string]any
+	if len(rawParams) > 0 && string(rawParams) != "null" {
+		if err := json.Unmarshal(rawParams, &params); err != nil {
+			a.replyServerRequestError(id, -32602, "invalid Codex server request params")
+			return
+		}
+	}
+	if params == nil {
+		params = map[string]any{}
+	}
+	sessionID := mapString(params, "threadId")
+	turnID := mapString(params, "turnId")
+	requestType, respondable := codexServerRequestType(method)
+	if !respondable {
+		event := AgentEvent{
+			Type:        requestType,
+			SessionID:   sessionID,
+			TurnID:      turnID,
+			RequestID:   requestID,
+			RequestType: method,
+			State:       "unsupported",
+			Detail:      codexServerRequestDetail(method, params),
+			Timestamp:   protocolTimestampNow(),
+		}
+		a.recordEvent(event)
+		a.replyServerRequestError(id, -32601, "Fast Spider bridge does not expose this Codex server request: "+method)
+		return
+	}
+
+	a.serverMu.Lock()
+	if len(a.serverRequests) >= 64 {
+		a.serverMu.Unlock()
+		a.replyServerRequestError(id, -32000, "too many pending Codex server requests")
+		return
+	}
+	a.serverRequests[requestID] = codexServerRequest{
+		RawID:      append(json.RawMessage(nil), id...),
+		RequestID:  requestID,
+		Method:     method,
+		SessionID:  sessionID,
+		TurnID:     turnID,
+		Params:     params,
+		ReceivedAt: time.Now().UTC(),
+	}
+	a.serverMu.Unlock()
+
+	a.recordEvent(AgentEvent{
+		Type:        requestType,
+		SessionID:   sessionID,
+		TurnID:      turnID,
+		RequestID:   requestID,
+		RequestType: method,
+		State:       "pending",
+		Detail:      codexServerRequestDetail(method, params),
+		Timestamp:   protocolTimestampNow(),
+	})
+}
+
+func anyRequestIDString(value any) string {
+	switch current := value.(type) {
+	case string:
+		return strings.TrimSpace(current)
+	case float64:
+		if current == float64(int64(current)) {
+			return strconv.FormatInt(int64(current), 10)
+		}
+	case int64:
+		return strconv.FormatInt(current, 10)
+	case json.Number:
+		return current.String()
+	}
+	return ""
+}
+
+func codexRequestIDString(raw json.RawMessage) (string, error) {
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return "", fmt.Errorf("empty request id")
+		}
+		return text, nil
+	}
+	var number int64
+	if err := json.Unmarshal(raw, &number); err == nil {
+		return strconv.FormatInt(number, 10), nil
+	}
+	return "", fmt.Errorf("invalid request id")
+}
+
+func codexServerRequestType(method string) (string, bool) {
+	switch method {
+	case "item/tool/requestUserInput":
+		return "user_input.requested", true
+	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
+		return "approval.requested", true
+	case "mcpServer/elicitation/request":
+		return "mcp_elicitation.requested", true
+	case "item/permissions/requestApproval":
+		return "permission.requested", false
+	default:
+		return "server_request.unsupported", false
+	}
+}
+
+func codexServerRequestDetail(method string, params map[string]any) map[string]any {
+	detail := map[string]any{}
+	copyKeys := func(keys ...string) {
+		for _, key := range keys {
+			if value, ok := params[key]; ok {
+				detail[key] = value
+			}
+		}
+	}
+	switch method {
+	case "item/tool/requestUserInput":
+		copyKeys("itemId", "questions", "autoResolutionMs")
+	case "item/commandExecution/requestApproval":
+		copyKeys("itemId", "command", "cwd", "reason")
+	case "item/fileChange/requestApproval":
+		copyKeys("itemId", "reason", "grantRoot")
+	case "item/permissions/requestApproval":
+		copyKeys("itemId", "cwd", "reason")
+	case "mcpServer/elicitation/request":
+		copyKeys("serverName", "mode", "message", "url", "requestedSchema", "elicitationId")
+	default:
+		copyKeys("itemId")
+	}
+	return boundedAgentMap(detail, 32<<10)
+}
+
+func boundedAgentMap(value map[string]any, maxBytes int) map[string]any {
+	if len(value) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err == nil && len(raw) <= maxBytes {
+		return value
+	}
+	return map[string]any{"truncated": true}
+}
+
+func (a *CodexAdapter) replyServerRequestError(id json.RawMessage, code int, message string) {
 	a.mu.Lock()
 	stdin := a.stdin
 	a.mu.Unlock()
@@ -358,8 +526,8 @@ func (a *CodexAdapter) replyUnsupportedServerRequest(id json.RawMessage, method 
 	_ = a.writeLine(stdin, map[string]any{
 		"id": rawID,
 		"error": map[string]any{
-			"code":    -32601,
-			"message": "Fast Spider bridge does not handle interactive Codex server request: " + method,
+			"code":    code,
+			"message": message,
 		},
 	})
 }
@@ -386,8 +554,17 @@ func (a *CodexAdapter) waitLoop(cmd *exec.Cmd) {
 	}
 	pending := a.pending
 	a.pending = make(map[int64]codexPending)
+	isCurrent := a.cmd == nil
+	if isCurrent {
+		a.loaded = make(map[string]struct{})
+	}
 	closed := a.closed
 	a.mu.Unlock()
+	if isCurrent {
+		a.serverMu.Lock()
+		a.serverRequests = make(map[string]codexServerRequest)
+		a.serverMu.Unlock()
+	}
 	if done != nil {
 		close(done)
 	}
@@ -448,6 +625,14 @@ func (a *CodexAdapter) handleNotification(method string, raw json.RawMessage) {
 	case "thread/status/changed":
 		event.Type = "session.status"
 		event.State = mapNestedString(params, "status", "type")
+	case "serverRequest/resolved":
+		event.Type = "request.resolved"
+		event.RequestID = anyRequestIDString(params["requestId"])
+		if event.RequestID != "" {
+			a.serverMu.Lock()
+			delete(a.serverRequests, event.RequestID)
+			a.serverMu.Unlock()
+		}
 	case "warning", "error":
 		event.Type = method
 		event.Text = boundedAgentText(firstNonEmptyString(
@@ -528,8 +713,79 @@ func (a *CodexAdapter) ActiveTurn(sessionID string) string {
 	return a.activeTurns[sessionID]
 }
 
+func (a *CodexAdapter) PendingRequests(sessionID string) []map[string]any {
+	a.serverMu.Lock()
+	items := make([]codexServerRequest, 0, len(a.serverRequests))
+	for _, item := range a.serverRequests {
+		if sessionID == "" || item.SessionID == sessionID {
+			items = append(items, item)
+		}
+	}
+	a.serverMu.Unlock()
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].ReceivedAt.Equal(items[j].ReceivedAt) {
+			return items[i].RequestID < items[j].RequestID
+		}
+		return items[i].ReceivedAt.Before(items[j].ReceivedAt)
+	})
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, map[string]any{
+			"requestId":   item.RequestID,
+			"requestType": item.Method,
+			"turnId":      item.TurnID,
+			"receivedAt":  item.ReceivedAt.Format(time.RFC3339Nano),
+			"detail":      codexServerRequestDetail(item.Method, item.Params),
+		})
+	}
+	return out
+}
+
 func (a *CodexAdapter) ListModels(ctx context.Context) (map[string]any, error) {
 	return a.request(ctx, "model/list", map[string]any{})
+}
+
+func (a *CodexAdapter) ProviderCapabilities(ctx context.Context) (map[string]any, error) {
+	return a.request(ctx, "modelProvider/capabilities/read", map[string]any{})
+}
+
+func (a *CodexAdapter) ListHooks(ctx context.Context, cwd string) (map[string]any, error) {
+	params := map[string]any{}
+	if strings.TrimSpace(cwd) != "" {
+		params["cwds"] = []string{cwd}
+	}
+	return a.request(ctx, "hooks/list", params)
+}
+
+func (a *CodexAdapter) ListPermissionProfiles(ctx context.Context, cwd string, limit int, cursor string) (map[string]any, error) {
+	params := map[string]any{}
+	if strings.TrimSpace(cwd) != "" {
+		params["cwd"] = cwd
+	}
+	if limit > 0 {
+		params["limit"] = limit
+	}
+	if strings.TrimSpace(cursor) != "" {
+		params["cursor"] = cursor
+	}
+	return a.request(ctx, "permissionProfile/list", params)
+}
+
+func (a *CodexAdapter) ListMCPServerStatus(ctx context.Context, sessionID, detail string, limit int, cursor string) (map[string]any, error) {
+	params := map[string]any{}
+	if strings.TrimSpace(sessionID) != "" {
+		params["threadId"] = sessionID
+	}
+	if strings.TrimSpace(detail) != "" {
+		params["detail"] = detail
+	}
+	if limit > 0 {
+		params["limit"] = limit
+	}
+	if strings.TrimSpace(cursor) != "" {
+		params["cursor"] = cursor
+	}
+	return a.request(ctx, "mcpServerStatus/list", params)
 }
 
 func (a *CodexAdapter) ListThreads(ctx context.Context, root string, limit int) (map[string]any, error) {
@@ -564,7 +820,48 @@ func isCodexThreadNotMaterialized(err error) bool {
 
 func (a *CodexAdapter) StartThread(ctx context.Context, workingDirectory, projectDirectory, model, thinking string) (map[string]any, error) {
 	params := codexThreadStartParams(workingDirectory, projectDirectory, model, thinking)
-	return a.request(ctx, "thread/start", params)
+	result, err := a.request(ctx, "thread/start", params)
+	if err != nil {
+		return nil, err
+	}
+	if sessionID := mapNestedString(result, "thread", "id"); sessionID != "" {
+		a.markThreadLoaded(sessionID)
+	}
+	return result, nil
+}
+
+func (a *CodexAdapter) markThreadLoaded(sessionID string) {
+	if strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	a.mu.Lock()
+	a.loaded[sessionID] = struct{}{}
+	a.mu.Unlock()
+}
+
+func (a *CodexAdapter) ensureThreadLoaded(ctx context.Context, sessionID string) error {
+	if strings.TrimSpace(sessionID) == "" {
+		return fmt.Errorf("sessionId is required")
+	}
+	a.mu.Lock()
+	_, loaded := a.loaded[sessionID]
+	a.mu.Unlock()
+	if loaded {
+		return nil
+	}
+	a.loadMu.Lock()
+	defer a.loadMu.Unlock()
+	a.mu.Lock()
+	_, loaded = a.loaded[sessionID]
+	a.mu.Unlock()
+	if loaded {
+		return nil
+	}
+	if _, err := a.request(ctx, "thread/resume", map[string]any{"threadId": sessionID}); err != nil {
+		return err
+	}
+	a.markThreadLoaded(sessionID)
+	return nil
 }
 
 func codexThreadStartParams(workingDirectory, projectDirectory, model, thinking string) map[string]any {
@@ -594,29 +891,103 @@ func codexThreadStartParams(workingDirectory, projectDirectory, model, thinking 
 	return params
 }
 
+type codexTurnOptions struct {
+	WorkingDirectory string
+	Model            string
+	Effort           string
+	Summary          string
+	Personality      string
+	ServiceTier      string
+	OutputSchema     map[string]any
+}
+
 func (a *CodexAdapter) StartTurn(ctx context.Context, sessionID, prompt, workingDirectory, model, thinking string) (map[string]any, error) {
-	if strings.TrimSpace(prompt) == "" {
-		return nil, fmt.Errorf("prompt is required")
+	return a.StartTurnWithInputs(ctx, sessionID, buildAgentTurnInputs(prompt, nil, nil, nil, nil, workingDirectory), workingDirectory, model, thinking, nil)
+}
+
+func buildAgentTurnInputs(prompt string, skills []agentSkillInput, images, localImages []string, mentions []agentMentionInput, workingDirectory string) []map[string]any {
+	return buildAgentTurnInputsWithDetail(prompt, skills, images, localImages, mentions, "")
+}
+
+func buildAgentTurnInputsWithDetail(prompt string, skills []agentSkillInput, images, localImages []string, mentions []agentMentionInput, imageDetail string) []map[string]any {
+	inputs := make([]map[string]any, 0, 1+len(skills)+len(images)+len(localImages)+len(mentions))
+	if strings.TrimSpace(prompt) != "" {
+		inputs = append(inputs, map[string]any{"type": "text", "text": prompt, "text_elements": []any{}})
+	}
+	for _, skill := range skills {
+		if strings.TrimSpace(skill.Name) != "" && strings.TrimSpace(skill.Path) != "" {
+			inputs = append(inputs, map[string]any{"type": "skill", "name": skill.Name, "path": skill.Path})
+		}
+	}
+	for _, image := range images {
+		if strings.TrimSpace(image) != "" {
+			entry := map[string]any{"type": "image", "url": image}
+			if strings.TrimSpace(imageDetail) != "" {
+				entry["detail"] = imageDetail
+			}
+			inputs = append(inputs, entry)
+		}
+	}
+	for _, image := range localImages {
+		if strings.TrimSpace(image) != "" {
+			entry := map[string]any{"type": "localImage", "path": image}
+			if strings.TrimSpace(imageDetail) != "" {
+				entry["detail"] = imageDetail
+			}
+			inputs = append(inputs, entry)
+		}
+	}
+	for _, mention := range mentions {
+		if strings.TrimSpace(mention.Name) != "" && strings.TrimSpace(mention.Path) != "" {
+			inputs = append(inputs, map[string]any{"type": "mention", "name": mention.Name, "path": mention.Path})
+		}
+	}
+	return inputs
+}
+
+func (a *CodexAdapter) StartTurnWithInputs(ctx context.Context, sessionID string, inputs []map[string]any, workingDirectory, model, thinking string, outputSchema map[string]any) (map[string]any, error) {
+	return a.StartTurnWithOptions(ctx, sessionID, inputs, codexTurnOptions{
+		WorkingDirectory: workingDirectory,
+		Model:            model,
+		Effort:           thinking,
+		OutputSchema:     outputSchema,
+	})
+}
+
+func (a *CodexAdapter) StartTurnWithOptions(ctx context.Context, sessionID string, inputs []map[string]any, options codexTurnOptions) (map[string]any, error) {
+	if len(inputs) == 0 {
+		return nil, fmt.Errorf("at least one valid turn input is required")
+	}
+	if len(inputs) > 64 {
+		return nil, fmt.Errorf("turn input count exceeds 64")
 	}
 	if active := a.ActiveTurn(sessionID); active != "" {
 		return nil, node.ErrAgentSessionBusy
 	}
+	if err := a.ensureThreadLoaded(ctx, sessionID); err != nil {
+		return nil, err
+	}
 	params := map[string]any{
 		"threadId": sessionID,
-		"input": []map[string]any{{
-			"type":          "text",
-			"text":          prompt,
-			"text_elements": []any{},
-		}},
+		"input":    inputs,
 	}
-	if workingDirectory != "" {
-		params["cwd"] = workingDirectory
+	if options.OutputSchema != nil {
+		if err := validateOutputSchema(options.OutputSchema); err != nil {
+			return nil, err
+		}
+		params["outputSchema"] = options.OutputSchema
 	}
-	if model != "" {
-		params["model"] = model
-	}
-	if thinking != "" {
-		params["effort"] = thinking
+	for key, value := range map[string]string{
+		"cwd":         options.WorkingDirectory,
+		"model":       options.Model,
+		"effort":      options.Effort,
+		"summary":     options.Summary,
+		"personality": options.Personality,
+		"serviceTier": options.ServiceTier,
+	} {
+		if strings.TrimSpace(value) != "" {
+			params[key] = value
+		}
 	}
 	result, err := a.request(ctx, "turn/start", params)
 	if err != nil {
@@ -629,6 +1000,269 @@ func (a *CodexAdapter) StartTurn(ctx context.Context, sessionID, prompt, working
 		a.eventMu.Unlock()
 	}
 	return result, nil
+}
+
+func (a *CodexAdapter) SteerTurn(ctx context.Context, sessionID, expectedTurnID string, inputs []map[string]any) (map[string]any, error) {
+	if len(inputs) == 0 {
+		return nil, fmt.Errorf("at least one valid turn input is required")
+	}
+	if len(inputs) > 64 {
+		return nil, fmt.Errorf("turn input count exceeds 64")
+	}
+	if strings.TrimSpace(expectedTurnID) == "" {
+		return nil, fmt.Errorf("expectedTurnId is required")
+	}
+	if err := a.ensureThreadLoaded(ctx, sessionID); err != nil {
+		return nil, err
+	}
+	return a.request(ctx, "turn/steer", map[string]any{
+		"threadId":       sessionID,
+		"expectedTurnId": expectedTurnID,
+		"input":          inputs,
+	})
+}
+
+func (a *CodexAdapter) RespondPendingRequest(ctx context.Context, sessionID, requestID string, input agentControlParams) (map[string]any, error) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return nil, fmt.Errorf("requestId is required")
+	}
+	a.serverMu.Lock()
+	pending, ok := a.serverRequests[requestID]
+	a.serverMu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("pending Codex request %q was not found", requestID)
+	}
+	if pending.SessionID != "" && pending.SessionID != sessionID {
+		return nil, fmt.Errorf("pending Codex request belongs to a different session")
+	}
+	result, state, err := codexServerRequestResponse(pending, input)
+	if err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	stdin := a.stdin
+	a.mu.Unlock()
+	if stdin == nil {
+		return nil, node.ErrAgentProviderUnavailable
+	}
+	var rawID any
+	if err := json.Unmarshal(pending.RawID, &rawID); err != nil {
+		return nil, fmt.Errorf("decode pending Codex request id: %w", err)
+	}
+	if err := a.writeLine(stdin, map[string]any{"id": rawID, "result": result}); err != nil {
+		return nil, err
+	}
+	a.serverMu.Lock()
+	delete(a.serverRequests, requestID)
+	a.serverMu.Unlock()
+	a.recordEvent(AgentEvent{
+		Type:        "request.responded",
+		SessionID:   sessionID,
+		TurnID:      pending.TurnID,
+		RequestID:   requestID,
+		RequestType: pending.Method,
+		State:       state,
+		Timestamp:   protocolTimestampNow(),
+	})
+	return map[string]any{
+		"sessionId":   sessionID,
+		"turnId":      pending.TurnID,
+		"requestId":   requestID,
+		"requestType": pending.Method,
+		"responded":   true,
+		"decision":    state,
+	}, nil
+}
+
+func codexServerRequestResponse(pending codexServerRequest, input agentControlParams) (map[string]any, string, error) {
+	switch pending.Method {
+	case "item/tool/requestUserInput":
+		if len(input.Answers) == 0 {
+			return nil, "", fmt.Errorf("answers are required for requestUserInput")
+		}
+		questions, _ := pending.Params["questions"].([]any)
+		allowed := make(map[string]struct{}, len(questions))
+		for _, raw := range questions {
+			question, _ := raw.(map[string]any)
+			if id := mapString(question, "id"); id != "" {
+				allowed[id] = struct{}{}
+			}
+		}
+		answers := make(map[string]any, len(input.Answers))
+		for id, values := range input.Answers {
+			if _, ok := allowed[id]; !ok {
+				return nil, "", fmt.Errorf("answer references unknown question %q", id)
+			}
+			if len(values) == 0 || len(values) > 16 {
+				return nil, "", fmt.Errorf("question %q must contain 1-16 answers", id)
+			}
+			for _, value := range values {
+				if len(value) > 4096 {
+					return nil, "", fmt.Errorf("answer for question %q exceeds 4096 characters", id)
+				}
+			}
+			answers[id] = map[string]any{"answers": values}
+		}
+		return map[string]any{"answers": answers}, "answered", nil
+	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
+		decision := strings.TrimSpace(input.Decision)
+		if !stringInSet(decision, "accept", "decline", "cancel") {
+			return nil, "", fmt.Errorf("decision must be accept, decline, or cancel")
+		}
+		return map[string]any{"decision": decision}, decision, nil
+	case "mcpServer/elicitation/request":
+		decision := strings.TrimSpace(input.Decision)
+		if !stringInSet(decision, "accept", "decline", "cancel") {
+			return nil, "", fmt.Errorf("decision must be accept, decline, or cancel")
+		}
+		result := map[string]any{"action": decision}
+		if decision == "accept" {
+			mode := mapString(pending.Params, "mode")
+			if mode == "form" && len(input.ResponseContent) == 0 {
+				return nil, "", fmt.Errorf("responseContent is required when accepting a form MCP elicitation")
+			}
+			if len(input.ResponseContent) > 0 {
+				if raw, err := json.Marshal(input.ResponseContent); err != nil || len(raw) > 64<<10 {
+					return nil, "", fmt.Errorf("responseContent must be valid JSON and at most 65536 bytes")
+				}
+				result["content"] = input.ResponseContent
+			}
+		}
+		return result, decision, nil
+	default:
+		return nil, "", fmt.Errorf("Codex request type %q is not respondable", pending.Method)
+	}
+}
+
+func validateOutputSchema(schema map[string]any) error {
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return err
+	}
+	if len(raw) > 64<<10 {
+		return fmt.Errorf("outputSchema exceeds 65536 bytes")
+	}
+	var walk func(any, int) error
+	walk = func(value any, depth int) error {
+		if depth > 12 {
+			return fmt.Errorf("outputSchema nesting exceeds 12 levels")
+		}
+		switch v := value.(type) {
+		case map[string]any:
+			for _, child := range v {
+				if err := walk(child, depth+1); err != nil {
+					return err
+				}
+			}
+		case []any:
+			for _, child := range v {
+				if err := walk(child, depth+1); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	return walk(schema, 0)
+}
+
+func codexRollbackParams(sessionID string, numTurns int) map[string]any {
+	return map[string]any{"threadId": sessionID, "numTurns": numTurns}
+}
+
+func codexGoalSetParams(sessionID, objective, status string, tokenBudget int64) map[string]any {
+	params := map[string]any{"threadId": sessionID}
+	if strings.TrimSpace(objective) != "" {
+		params["objective"] = objective
+	}
+	if strings.TrimSpace(status) != "" {
+		params["status"] = status
+	}
+	if tokenBudget != 0 {
+		params["tokenBudget"] = tokenBudget
+	}
+	return params
+}
+
+func codexSettingsUpdateParams(sessionID string, input agentControlParams) map[string]any {
+	params := map[string]any{"threadId": sessionID}
+	for key, value := range map[string]string{
+		"model":       input.Model,
+		"effort":      input.Effort,
+		"cwd":         input.WorkingDirectory,
+		"permissions": input.Permissions,
+		"personality": input.Personality,
+		"serviceTier": input.ServiceTier,
+		"summary":     input.Summary,
+	} {
+		if strings.TrimSpace(value) != "" {
+			params[key] = value
+		}
+	}
+	return params
+}
+
+func codexReviewStartParams(sessionID string, input agentControlParams) map[string]any {
+	delivery := strings.TrimSpace(input.ReviewDelivery)
+	if delivery == "" {
+		delivery = "inline"
+	}
+	targetType := strings.TrimSpace(input.ReviewType)
+	if targetType == "" {
+		targetType = "uncommittedChanges"
+	}
+	target := map[string]any{"type": targetType}
+	switch targetType {
+	case "baseBranch":
+		target["branch"] = input.ReviewBranch
+	case "commit":
+		target["sha"] = input.ReviewSHA
+		if strings.TrimSpace(input.ReviewTitle) != "" {
+			target["title"] = input.ReviewTitle
+		}
+	case "custom":
+		target["instructions"] = input.ReviewInstructions
+	}
+	return map[string]any{"threadId": sessionID, "delivery": delivery, "target": target}
+}
+
+func codexSkillsListParams(cwd string, forceReload bool) map[string]any {
+	params := map[string]any{"forceReload": forceReload}
+	if strings.TrimSpace(cwd) != "" {
+		params["cwds"] = []string{cwd}
+	}
+	return params
+}
+
+func codexPluginListParams(cwd string, marketplaceKinds []string) map[string]any {
+	params := map[string]any{}
+	if strings.TrimSpace(cwd) != "" {
+		params["cwds"] = []string{cwd}
+	}
+	if len(marketplaceKinds) > 0 {
+		params["marketplaceKinds"] = marketplaceKinds
+	}
+	return params
+}
+
+func codexPluginReadParams(pluginName, marketplacePath, remoteMarketplaceName string) map[string]any {
+	params := map[string]any{"pluginName": pluginName}
+	if strings.TrimSpace(marketplacePath) != "" {
+		params["marketplacePath"] = marketplacePath
+	}
+	if strings.TrimSpace(remoteMarketplaceName) != "" {
+		params["remoteMarketplaceName"] = remoteMarketplaceName
+	}
+	return params
+}
+
+func codexPluginSkillReadParams(remoteMarketplaceName, remotePluginID, skillName string) map[string]any {
+	return map[string]any{
+		"remoteMarketplaceName": remoteMarketplaceName,
+		"remotePluginId":        remotePluginID,
+		"skillName":             skillName,
+	}
 }
 
 func (a *CodexAdapter) InterruptTurn(ctx context.Context, sessionID, turnID string) error {
@@ -650,6 +1284,73 @@ func (a *CodexAdapter) RenameThread(ctx context.Context, sessionID, name string)
 func (a *CodexAdapter) ArchiveThread(ctx context.Context, sessionID string) error {
 	_, err := a.request(ctx, "thread/archive", map[string]any{"threadId": sessionID})
 	return err
+}
+
+func (a *CodexAdapter) UnarchiveThread(ctx context.Context, sessionID string) error {
+	_, err := a.request(ctx, "thread/unarchive", map[string]any{"threadId": sessionID})
+	return err
+}
+func (a *CodexAdapter) DeleteThread(ctx context.Context, sessionID string) error {
+	_, err := a.request(ctx, "thread/delete", map[string]any{"threadId": sessionID})
+	return err
+}
+func (a *CodexAdapter) ForkThread(ctx context.Context, sessionID, cwd string) (map[string]any, error) {
+	p := map[string]any{"threadId": sessionID}
+	if cwd != "" {
+		p["cwd"] = cwd
+	}
+	return a.request(ctx, "thread/fork", p)
+}
+func (a *CodexAdapter) CompactThread(ctx context.Context, sessionID string) error {
+	_, err := a.request(ctx, "thread/compact/start", map[string]any{"threadId": sessionID})
+	return err
+}
+func (a *CodexAdapter) RollbackThread(ctx context.Context, sessionID string, numTurns int) error {
+	_, err := a.request(ctx, "thread/rollback", codexRollbackParams(sessionID, numTurns))
+	return err
+}
+func (a *CodexAdapter) GetGoal(ctx context.Context, sessionID string) (map[string]any, error) {
+	return a.request(ctx, "thread/goal/get", map[string]any{"threadId": sessionID})
+}
+func (a *CodexAdapter) SetGoal(ctx context.Context, sessionID, objective, status string, tokenBudget int64) (map[string]any, error) {
+	return a.request(ctx, "thread/goal/set", codexGoalSetParams(sessionID, objective, status, tokenBudget))
+}
+func (a *CodexAdapter) ClearGoal(ctx context.Context, sessionID string) (map[string]any, error) {
+	return a.request(ctx, "thread/goal/clear", map[string]any{"threadId": sessionID})
+}
+func (a *CodexAdapter) UpdateSettings(ctx context.Context, sessionID string, input agentControlParams) (map[string]any, error) {
+	return a.request(ctx, "thread/settings/update", codexSettingsUpdateParams(sessionID, input))
+}
+
+func (a *CodexAdapter) StartReview(ctx context.Context, sessionID string, input agentControlParams) (map[string]any, error) {
+	if err := a.ensureThreadLoaded(ctx, sessionID); err != nil {
+		return nil, err
+	}
+	return a.request(ctx, "review/start", codexReviewStartParams(sessionID, input))
+}
+
+func (a *CodexAdapter) ListSkills(ctx context.Context, cwd string, forceReload bool) (map[string]any, error) {
+	return a.request(ctx, "skills/list", codexSkillsListParams(cwd, forceReload))
+}
+
+func (a *CodexAdapter) ListPlugins(ctx context.Context, cwd string, marketplaceKinds []string) (map[string]any, error) {
+	return a.request(ctx, "plugin/list", codexPluginListParams(cwd, marketplaceKinds))
+}
+
+func (a *CodexAdapter) ListInstalledPlugins(ctx context.Context, cwd string) (map[string]any, error) {
+	params := map[string]any{}
+	if strings.TrimSpace(cwd) != "" {
+		params["cwds"] = []string{cwd}
+	}
+	return a.request(ctx, "plugin/installed", params)
+}
+
+func (a *CodexAdapter) ReadPlugin(ctx context.Context, pluginName, marketplacePath, remoteMarketplaceName string) (map[string]any, error) {
+	return a.request(ctx, "plugin/read", codexPluginReadParams(pluginName, marketplacePath, remoteMarketplaceName))
+}
+
+func (a *CodexAdapter) ReadPluginSkill(ctx context.Context, remoteMarketplaceName, remotePluginID, skillName string) (map[string]any, error) {
+	return a.request(ctx, "plugin/skill/read", codexPluginSkillReadParams(remoteMarketplaceName, remotePluginID, skillName))
 }
 
 func mapString(record map[string]any, key string) string {

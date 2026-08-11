@@ -428,7 +428,7 @@ func isRetryableCapability(capability, action string) bool {
 		"working.context/get",
 		"browser.automation/pages.list", "browser.automation/snapshot", "browser.automation/events",
 		"screenshot.capture/listDisplays", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/listWindows", "screenshot.capture/window",
-		"agent.control/providers.list", "agent.control/models.list", "agent.control/projects.list", "agent.control/session.list", "agent.control/session.get", "agent.control/session.watch", "agent.control/session.result":
+		"agent.control/routing.status", "agent.control/providers.list", "agent.control/models.list", "agent.control/provider.capabilities", "agent.control/projects.list", "agent.control/skills.list", "agent.control/hooks.list", "agent.control/permissions.list", "agent.control/plugins.list", "agent.control/plugins.installed", "agent.control/plugins.get", "agent.control/plugin.skill.read", "agent.control/mcp.status.list", "agent.control/session.list", "agent.control/session.get", "agent.control/session.watch", "agent.control/session.result", "agent.control/session.goal.get":
 		return true
 	default:
 		return false
@@ -445,9 +445,9 @@ func capabilityCallTimeout(capability, action string) time.Duration {
 		return 2 * time.Minute
 	case "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/window":
 		return 2 * time.Minute
-	case "agent.control/session.create", "agent.control/session.send":
+	case "agent.control/session.create", "agent.control/session.send", "agent.control/session.fork", "agent.control/session.compact", "agent.control/session.rollback", "agent.control/session.goal.set", "agent.control/session.goal.clear", "agent.control/session.settings.update", "agent.control/session.review", "agent.control/session.unarchive", "agent.control/session.delete":
 		return 2 * time.Minute
-	case "agent.control/session.watch", "agent.control/session.cancel":
+	case "agent.control/session.watch", "agent.control/session.cancel", "agent.control/session.steer", "agent.control/session.respond":
 		return 30 * time.Second
 	case "job.control/watch":
 		return 30 * time.Second
@@ -458,7 +458,7 @@ func capabilityCallTimeout(capability, action string) time.Duration {
 
 func shouldAuditCapability(capability, action string) bool {
 	switch capability + "/" + action {
-	case "file.write/edit", "shell.exec/run", "job.control/cancel", "git.repository/add", "git.repository/commit", "git.repository/fetch", "git.repository/pull", "git.repository/push", "git.repository/createWorktree", "git.repository/deleteWorktree", "build.profile/run", "working.context/set", "working.context/clear", "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/screenshot", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/window", "agent.control/session.create", "agent.control/session.send", "agent.control/session.cancel", "agent.control/session.rename", "agent.control/session.archive":
+	case "file.write/edit", "shell.exec/run", "job.control/cancel", "git.repository/add", "git.repository/commit", "git.repository/fetch", "git.repository/pull", "git.repository/push", "git.repository/createWorktree", "git.repository/deleteWorktree", "build.exec/run", "working.context/set", "working.context/clear", "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/screenshot", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/window", "agent.control/session.create", "agent.control/session.send", "agent.control/session.steer", "agent.control/session.respond", "agent.control/session.cancel", "agent.control/session.rename", "agent.control/session.archive", "agent.control/session.unarchive", "agent.control/session.delete", "agent.control/session.fork", "agent.control/session.compact", "agent.control/session.rollback", "agent.control/session.goal.set", "agent.control/session.goal.clear", "agent.control/session.settings.update", "agent.control/session.review":
 		return true
 	default:
 		return false

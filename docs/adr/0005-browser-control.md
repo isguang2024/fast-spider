@@ -1,8 +1,8 @@
-# ADR 0005：浏览器控制（0.3.0 当前有效部分）
+# ADR 0005：浏览器控制
 
 ## 状态
 
-已接受。浏览器网络能力按 Node 当前 OS 和网络可达性执行，不维护 Fast Spider Origin 白名单。
+Current：已接受。隔离 Browser + fixed actions 决策仍有效；网络能力按 Node 当前 OS 和网络可达性执行，不维护 Fast Spider Origin 白名单。
 
 ## 决策
 
@@ -17,7 +17,7 @@ MVP 使用 Node 管理的隔离 Browser Profile，通过 Go Browser Manager 和 
 
 ## 截图与生命周期
 
-页面截图、桌面截图、显示器截图和窗口截图都通过 Artifact 返回；窗口先由 `listWindows` 取得短期 `windowId`。取消时先中断动作，再清理 Context、Browser、Sidecar 和临时文件；清理不完整不得报告成功。
+页面截图、桌面截图、显示器截图和窗口截图通过 Hub Temporary Presentation Relay 返回 AI 展示资源，不创建普通 Artifact 记录；MCP 可同时返回原生 `ImageContent` 与短期 `ResourceLink`。窗口先由 `listWindows` 取得短期 `windowId`。取消时先中断动作，再清理 Context、Browser、Sidecar 和临时文件；清理不完整不得报告成功。
 
 ## 后续
 

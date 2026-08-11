@@ -60,6 +60,9 @@ func TestWebSetupLoginAndDashboard(t *testing.T) {
 	if status != http.StatusOK || !strings.Contains(string(body), "设备与授权中心") {
 		t.Fatalf("dashboard status=%d body=%s", status, body)
 	}
+	if !strings.Contains(string(body), `href="/api/v1/node/releases/windows-amd64/download"`) || !strings.Contains(string(body), "下载最新版 Windows 客户端") {
+		t.Fatalf("dashboard latest Windows Node download entry missing: %s", body)
+	}
 	if strings.Contains(string(body), "Owner Token") {
 		t.Fatal("dashboard exposed legacy Owner Token UI")
 	}

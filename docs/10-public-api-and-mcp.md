@@ -1,4 +1,4 @@
-# 公共 API 与 MCP（0.3.x）
+# 公共 API 与 MCP（Current）
 
 ## 公网 MCP
 
@@ -23,7 +23,11 @@ artifact_get
 working_context
 ```
 
-0.3.0 不提供目录列表工具。
+Current 不提供目录列表工具；`working_context` 是第 16 个工具。
+
+`ai_control` 现在是 Provider-neutral 多 AI Harness 控制面。`routing.status` 独立只读 CC Switch SSOT；`providers.list` 当前发现 `codex` 与 `claude_code` 并返回各自 `supportedActions`。`providerId` 决定 Harness，CC Switch Route 另行说明 `direct|cc_switch`、真实 Provider/model mapping 与 EffectiveCapabilities；客户端模型 alias 不等于 upstream model。
+
+Codex 保留 Provider/Model、Skills/Hooks/Permission Profiles/Plugins/MCP discovery、Thread/Goal/Settings/Review、原生多类型 Turn、`outputSchema`、steer/respond 和 app-server auto-resume。Claude Code 第一版提供 models/capabilities 与 session list/get/create/send/watch/cancel/result/rename/archive/unarchive，使用原生 UUID + `stream-json` + `--resume`，Prompt 经 stdin。FS 不映射 Codex 的 `fs/*`/`command/exec/*`/`mcpServer/tool/call`，也不提供 CC Switch Provider/Token/Takeover 写入或 Claude permission bypass 第二执行链。
 
 ## 资源模型
 
@@ -33,7 +37,8 @@ working_context
 - code_search: `path`
 - shell_run/build_control: `cwd`
 - git_control: `repositoryPath`
-- ai_control session.create: `workingDirectory`
+- ai_control session.create: `providerId + workingDirectory`; `providerId` 选择 Harness，不是上游 API Provider
+- ai_control routing.status: 可选 `appType=claude|codex|claude-desktop`，只读 CC Switch 路由事实
 - working_context: `projectPath`
 
 `working_context` 只保存每个项目当前任务的有界状态快照，不保存聊天原文；`get` 会同时返回实时 Git branch/HEAD/dirty，用于在聊天压缩后重建工作上下文。

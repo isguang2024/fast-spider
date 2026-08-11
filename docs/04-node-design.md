@@ -14,7 +14,7 @@ Node 默认：
 
 ## 2. 进程模型
 
-MVP 使用单 Node 进程。Windows 的 Edge app window、系统托盘、CLI 和 Node 本地控制 UI 都由同一进程提供；Linux 可用当前用户的 systemd unit。Local Bridge、Browser sidecar 和 Codex `app-server --stdio` 都由 Node 管理。
+MVP 使用单 Node 进程。Windows 的 Edge app window、系统托盘、CLI 和 Node 本地控制 UI 都由同一进程提供；Linux 可用当前用户的 systemd unit。Local Bridge、Browser sidecar、Codex `app-server --stdio` 和 Claude Code CLI 子进程都由 Node 管理；CC Switch 仍是用户已有的独立 Routing Runtime，Fast Spider 只读其数据库事实，不启动第二个 CC Switch 服务。
 
 同一 OS 用户只能持有一个 Fast Spider Node 主实例。实例锁与 data-dir 无关，因此复制 EXE、修改启动目录或切换 `--data-dir` 都不能建立第二个 Node；重复 UI 启动会短暂等待现有本地 UI 上线，打开已有界面后立即退出新进程。
 
@@ -30,8 +30,8 @@ MVP 使用单 Node 进程。Windows 的 Edge app window、系统托盘、CLI 和
 | Capability Engine | 统一能力注册和执行接口 |
 | Platform Layer | Windows/Linux 文件、进程、截图和凭据差异 |
 | Local Bridge | 当前用户 AF_UNIX/UDS Adapter |
-| Agent Adapters | Codex 等本地 Provider 的独立适配器 |
-| Local Audit | Hub 不可用时保留必要的本机安全记录 |
+| Agent Adapters | Codex/Claude Code 等 AI Harness 的独立适配器；Provider-specific action 不强行统一 |
+| CC Switch Inspector | 只读 Routing SSOT，提供脱敏 Provider/Model/Health/Takeover/Request facts 与 EffectiveCapabilities |
 
 Node 不维护目录注册表、目录授权、路径白名单或目录 ID 到根目录的映射。
 
@@ -47,6 +47,7 @@ Node 不维护目录注册表、目录授权、路径白名单或目录 ID 到�
 ├─ jobs/
 ├─ artifacts/
 ├─ browser/
+├─ agent/claude-code-sessions.json   # 仅 Claude Session 控制索引，不复制完整对话
 └─ local/bridge.sock
 ```
 
@@ -62,7 +63,7 @@ Linux 使用 `~/.local/share/fast-spider/`、`~/.config/fast-spider/` 和 `~/.ca
 | `shell_run` | 绝对 `cwd`、结构化 `argv[]` |
 | `build_control` | 绝对 `cwd`、受控构建命令和超时 |
 | `git_control` | 绝对 `repositoryPath` |
-| `ai_control.session.create` | 绝对 `workingDirectory` |
+| `ai_control.session.create` / `session.send` / `session.fork` / `session.settings.update` 与 Skill/Hook/Permission/Plugin discovery | 需要时使用绝对 `workingDirectory`；Skill/Mention/localImage 也使用绝对本机路径 |
 
 Node 按平台语法、目标类型、文件/进程存在性、符号链接行为、大小、编码、网络和资源限制校验这些字段，然后以当前 OS 用户执行。绝对路径不再被改写成相对路径，也不需要先注册或加入目录名单。
 
@@ -77,7 +78,7 @@ Capability Descriptor 声明 capabilityId、版本、actions、输入上限、�
 ## 7. 文件、Shell、Git 与 Build
 
 - 文件写入使用临时文件、flush、expected hash/revision 和原子替换；编辑要求唯一匹配，默认拒绝二进制和过大文件。
-- Shell 优先 `executable + args`；显式 shell profile 仅用于解释命令字符串。环境变量显式传递并脱敏，cwd 必须是绝对路径。
+- Shell 只接受显式 `argv[]` 与绝对 cwd；需要 `cmd.exe`、PowerShell 或 bash 时，shell executable 本身必须明确出现在 argv 中，不存在另一条任意 command-string 协议。
 - Git 使用系统 `git`，`repositoryPath` 必须是绝对路径；读写、网络、副作用、hooks/filter 风险进入 Action 和审计，不额外创建目录权限。
 - Build 使用绝对 cwd 和受控 argv/timeout；Windows 仅额外接受纯盘符 `C:`/`D:`/`V:` 作为对应盘符根目录的简写，`V:folder` 等 drive-relative 形式仍拒绝。配置文件可以保存默认值，但远程请求不能以其他相对路径隐式选择目录。
 
@@ -85,7 +86,13 @@ Capability Descriptor 声明 capabilityId、版本、actions、输入上限、�
 
 浏览器不叠加 Fast Spider Origin 白名单。Node 可访问的公网、localhost 和私网 HTTP/HTTPS/WS/WSS 目标均可作为导航目标；仍拒绝危险 scheme、任意 CDP/Playwright API 和把浏览器变成通用远控的能力。Browser Session、页面和截图受 Job、大小、超时和清理规则约束。
 
-Codex 通过本机 `codex app-server --stdio` 运行。`session.create` 的 `workingDirectory` 是绝对路径，直接交给 Codex/Node 当前 OS 用户权限，不绑定额外目录对象。Provider Token 和本机认证状态留在 Node。
+AI 控制先选择 Harness，再解释 Routing：`providerId=codex|claude_code`；`routing.status` 独立只读 CC Switch SSOT。Harness model、客户端 alias 与真实 upstream model 是不同事实，`EffectiveCapabilities` 按 Harness、转换层、upstream 与 Fast Spider policy 取交集，未知项保持 unknown。
+
+Codex 通过本机 `codex app-server --stdio` 运行，保留 Provider/Model、Skills/Hooks/Permission Profiles/Plugins/MCP 状态、原生多类型 Turn、`outputSchema`、steer/respond、Thread/Goal/Settings/Review 与自动 `thread/resume`。Codex 自带 fs/command/process/MCP tool-call 不通过 Agent Adapter 暴露。
+
+Claude Code 通过原生 CLI `stream-json` 运行：首 Turn 使用 Session UUID，后续 `--resume`；Prompt 走 stdin，Session 同时只允许一个 active CLI 进程。Node 只保存小型 Claude Session 控制索引和脱敏 RouteSnapshot，不复制完整 Prompt/对话。Claude 第一版只映射已验证的 text/session lifecycle，不开放 permission bypass，也不把 Codex Skill/Image/Mention 结构伪装成 Claude 输入。
+
+CC Switch SQLite 使用只读连接，Provider raw settings/meta、凭据和原始 endpoint 不进入 Hub。Provider Token、本机认证和 CC Switch secret 均留在本机。Codex 0.141.0 app-server 当前没有公开 Automation API，因此 Node 仍不逆向其内部存储或桌面 UI。
 
 ## 9. Local Bridge 与紧急控制
 

@@ -1,4 +1,4 @@
-# 部署与运维（0.3.x）
+# 部署与运维（0.4.0）
 
 ## Hub
 
@@ -12,6 +12,15 @@ Hub data-dir 与 release-dir 分离：数据库/密钥/Artifact 进入备份，W
 
 客户端只有“连接”和“本地配置”等本机运行设置，不需要登记目录。连接后的文件/进程权限就是当前 Windows 用户权限。
 
+### AI Runtime
+
+Fast Spider 不捆绑用户的 AI 账号或 Provider：
+
+- Codex Harness 要求本机已有可执行的 Codex CLI/app-server。
+- Claude Code Harness 要求本机已有 `claude` CLI；Fast Spider 只探测版本/安全的 auth 配置并运行原生 Session。
+- CC Switch 若安装，则 `~/.cc-switch/cc-switch.db` 作为只读 Routing SSOT；Fast Spider 不创建、迁移或修改该数据库，也不负责启动/更新 CC Switch。
+- Node data-dir 中的 `agent/claude-code-sessions.json` 只是 Fast Spider 本地控制索引；Claude 原生会话、CC Switch 数据和 Provider 凭据仍由各自产品管理。
+
 ### 托盘
 
 - 普通启动：打开 UI + 托盘。
@@ -22,7 +31,7 @@ Hub data-dir 与 release-dir 分离：数据库/密钥/Artifact 进入备份，W
 
 ## 更新
 
-Hub 发布签名 Node manifest。Node 验证签名、SHA-256 和大小。手动升级可立即替换；自动更新可检查/预下载。Windows 替换助手等待旧 PID 真正退出后替换原 EXE，再按原模式重启。Node 启动时清理早于当前版本的 staging 目录和已消费的 `ready.json`，新版本 staging 只保留当前/待升级版本，避免长期累积升级 EXE；正式目录仍保留一个 `.previous` 回滚副本。
+Hub 发布签名 Node manifest。Node 验证签名、SHA-256 和大小。Web 后台首页提供“下载最新版 Windows 客户端”入口，直接复用同一份 `windows-amd64` Release 下载路径，因此后台手动下载与 Node 自动更新共享同一个发布事实源。手动升级可立即替换；自动更新可检查/预下载。Windows 替换助手等待旧 PID 真正退出后替换原 EXE，再按原模式重启。Node 启动时清理早于当前版本的 staging 目录和已消费的 `ready.json`，新版本 staging 只保留当前/待升级版本，避免长期累积升级 EXE；正式目录仍保留一个 `.previous` 回滚副本。
 
 大型组件按需安装到 Node data-dir 的 `components/<id>/<version>`。Browser 组件通过本地 UI 的“安装 / 更新 Browser”下载；安装完成后自动写入 Sidecar 路径并重启 Node 运行时，不需要用户手填目录。运行时切换完成后删除组件 ZIP 下载缓存和旧组件版本，只保留当前已启用组件，避免组件包与解压目录双份长期占盘。
 
@@ -49,4 +58,4 @@ spiderctl backup-verify --file /srv/backups/fast-spider-<timestamp>.zip
 - Node release manifest 的版本/哈希与正式 EXE 一致。
 - ChatGPT OAuth + MCP tools/list 可获取当前工具。
 
-0.3.x 是一次明确的权限模型收敛，不维护旧目录授权协议的长期兼容入口。
+0.3.x 完成权限模型收敛；0.4.0 增加多 AI Harness/CC Switch 只读 Routing，但不新增常驻服务或第二套权限/凭据管理面。

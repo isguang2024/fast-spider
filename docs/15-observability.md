@@ -1,12 +1,12 @@
-# 可观测性（0.3.x）
+# 可观测性（0.4.0）
 
 Fast Spider 的日志和指标以低噪音、低基数、可排障为目标。
 
 ## 日志
 
-结构化日志允许记录：requestId、machineId、capability、action、jobId、artifactId、状态、耗时和错误码。不要记录密码、Connection Token、Device Key 私钥、OAuth 明文 Token、Cookie 或文件正文。
+结构化日志允许记录：requestId、machineId、capability、action、jobId、artifactId、AI harness providerId、routingMode、脱敏 route provider ID、状态、耗时和错误码。不要记录密码、Connection Token、Device Key 私钥、OAuth/API 明文 Token、Cookie、Prompt/文件正文、CC Switch raw settings/meta 或完整 endpoint。
 
-0.3.x 不再记录目录授权 ID。绝对路径只在确有排障价值时进入受控日志字段，默认避免把用户文件路径写进长期普通日志。
+0.3.x 起不再记录目录授权 ID。绝对路径只在确有排障价值时进入受控日志字段；0.4.0 的 CC Switch/Claude RouteSnapshot 也只保留脱敏、有界事实，默认不把用户路径、Prompt 或上游秘密写进长期普通日志。
 
 ## 指标
 

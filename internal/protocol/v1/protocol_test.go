@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -23,11 +24,14 @@ func TestMessageTypeAndTimestamp(t *testing.T) {
 	}
 }
 
-func TestAgentCapabilityAdvertisesProjectsList(t *testing.T) {
-	for _, action := range AgentCapability.Actions {
-		if action == "projects.list" {
-			return
-		}
+func TestAgentCapabilityAdvertisesCurrentActionContract(t *testing.T) {
+	want := []string{
+		"routing.status", "providers.list", "models.list", "provider.capabilities", "projects.list", "skills.list", "hooks.list", "permissions.list",
+		"plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list",
+		"session.list", "session.get", "session.create", "session.send", "session.steer", "session.respond", "session.watch", "session.cancel", "session.result", "session.rename", "session.archive",
+		"session.unarchive", "session.delete", "session.fork", "session.compact", "session.rollback", "session.goal.get", "session.goal.set", "session.goal.clear", "session.settings.update", "session.review",
 	}
-	t.Fatal("agent.control does not advertise projects.list")
+	if !reflect.DeepEqual(AgentCapability.Actions, want) {
+		t.Fatalf("agent.control actions=%v want=%v", AgentCapability.Actions, want)
+	}
 }

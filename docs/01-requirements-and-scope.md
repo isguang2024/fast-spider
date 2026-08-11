@@ -16,7 +16,8 @@
 | Local Client | 通过当前用户 AF_UNIX/UDS Local Bridge 访问 Node 的本机工具 |
 | Hub | 身份、路由、状态、审计和 Artifact 控制面 |
 | Node | 当前 OS 用户上下文中的本机执行面和最终裁决者 |
-| Agent Provider | Codex 或其他本地 AI 服务，不持有 Hub 权限 |
+| AI Harness | Codex、Claude Code 等本机 AI 执行环境，不持有 Hub 权限 |
+| Routing Runtime | CC Switch 等模型/上游路由层；当前 Fast Spider 只读其事实，不管理凭据或切换状态 |
 
 ## 3. 功能需求
 
@@ -44,7 +45,7 @@
 ### 3.3 文件和代码
 
 - MUST 接受绝对 `path`，并按平台规则验证存在性、类型、大小和 UTF-8 编码。
-- MUST 提供文件读取、分段读取、代码搜索、原子写入、精确编辑和 Diff。
+- MUST 提供有界分段文件读取、代码搜索，以及带 expected SHA/CAS 的原子精确编辑和 Diff；当前不提供通用覆盖写文件 API。
 - MUST 防御 NUL、无效路径格式、TOCTOU、符号链接和平台特殊文件导致的意外行为。
 - MUST 在结果中报告真实目标的结构化摘要；不得把秘密、Token 或不必要的环境信息写入日志。
 - MUST 对大文件、二进制、搜索结果、事件和 Artifact 设置硬上限。
@@ -85,9 +86,16 @@
 - 当前用户 AF_UNIX/UDS Local Bridge MUST 默认随 Node 启用，并可由本机开关关闭。
 - Local Bridge 不监听 TCP/loopback HTTP，不建立 Local Client 注册、Token、Grant 或 Approval。
 - Local Bridge MUST 直接复用 Machine、Capability、Job、资源限制和审计语义。
-- MUST 提供 provider/model/project/session create/list/get/send/watch/cancel/result/rename/archive 能力。
-- `ai_control.session.create` MUST 使用绝对 `workingDirectory`。
-- Provider Token MUST 保留在 Node 本机，不能经 Hub 传播。
+- MUST 提供 Provider-neutral `routing.status` 与 `providers.list`，明确区分 AI Harness、Routing Runtime、Upstream Provider/Model；当前 Harness 至少包括 `codex` 与 `claude_code`。
+- CC Switch discovery MUST 只读 `~/.cc-switch/cc-switch.db`，不得返回 raw `settings_config`/`meta`、API Key、Token、Cookie、Authorization 或带 userinfo/query 的 Endpoint；不得通过 Fast Spider 修改 Provider、Takeover、Failover 或凭据。
+- `providers.list` MUST 返回每个 Harness 的 `supportedActions`；调用方不得假设 Codex 与 Claude Code 支持完全相同的 action。
+- `ai_control.session.create` MUST 使用绝对 `workingDirectory`；各 Harness 在提供 cwd 类参数时同样按绝对路径校验。
+- Codex `session.create/send/steer` MUST 使用公开原生 text/skill/image/localImage/mention UserInput；`session.steer` MUST 带 active `turnId`。Codex `outputSchema`、rollback/Goal/Settings/Review/respond/resume MUST 继续按公开 app-server schema 和现有安全边界执行。
+- Claude Code MUST 使用原生 Session UUID、`stream-json` 与 `--resume`；Prompt MUST 从 stdin 传入而不是写入 argv。第一版只公开经过真实 CLI 验证的 text/session lifecycle，不用提示词伪造 Codex Skill/Image/Mention 协议。
+- Claude Code Session index MUST 只保存控制事实、终态摘要、usage 与 RouteSnapshot，不复制完整 Prompt/对话；`actualUpstream` 只有在 CC Switch request log session ID 与 Claude native Session ID 精确匹配时才能声明。
+- EffectiveCapabilities MUST 按 Harness ∩ Routing/conversion ∩ Upstream ∩ Fast Spider policy 派生；不确定能力必须保持 `unknown`，不得只按模型品牌或 UI 别名推断。
+- Codex `fs/*`、`command/exec/*`、`process/*`、`mcpServer/tool/call` 以及 Claude/CC Switch 的任意配置写入/权限绕过 MUST NOT 通过 `ai_control` 形成第二执行链。
+- AI/Provider 凭据 MUST 保留在 Node/原生 Provider/CC Switch 本机，不能经 Hub 传播。
 
 ## 4. 非功能需求
 
@@ -118,7 +126,7 @@
 ### MVP 包含
 
 - Owner 单用户模式、单实例 Hub、SQLite WAL、WSS 长连接和 Windows/Linux Node。
-- Machine 登记、能力发现、绝对路径文件/搜索/编辑、Shell Job、绝对仓库路径 Git、Build、Event、Artifact、浏览器、截图、Local Bridge、Codex 和 15 个 MCP 工具。
+- Machine 登记、能力发现、绝对路径文件/搜索/编辑、Shell Job、绝对仓库路径 Git、Build、Event、Artifact、浏览器、截图、Local Bridge、Working Context、Codex + Claude Code Harness、只读 CC Switch Routing facts 和 16 个 MCP 工具。
 
 ### MVP 不包含
 
@@ -126,3 +134,4 @@
 - 实时远程桌面、远程音频、通用输入控制、任意 TCP 转发或 P2P 打洞。
 - 自动提权、隐蔽运行、未经明确请求的真实浏览器登录态接管。
 - 0.3.0 之前的目录 API、目录授权或兼容双路径。
+- Codex Automations 不属于本项目映射范围：0.141.0 app-server 当前没有公开 Automation API。

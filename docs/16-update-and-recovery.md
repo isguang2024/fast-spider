@@ -155,7 +155,7 @@ GET 已签名 latest manifest
 
 - Hub：一个 `fast-spider-hub` 进程；Linux 推荐由一个 systemd unit 管理。
 - Node：一台机器一个当前用户 `fast-spider-node` 进程；Windows 桌面模式为 `ui`（打开 Edge app window + 驻留托盘），自启动为 `ui --background`（不弹窗口、直接驻留托盘）。
-- Local Bridge 与 Codex stdio 都由 Node 自己管理，不单独启动 helper/daemon。
+- Local Bridge、Codex app-server 与 Claude Code CLI 子进程都由 Node 自己管理；CC Switch 若存在仍由用户自己的 CC Switch 应用管理，Fast Spider 只读其数据库，不启动第二个 Routing daemon。
 - 升级替换阶段会短暂出现下载好的新版 `fast-spider-node.exe`，只负责等待旧进程退出并替换文件，完成后退出，不是常驻 updater。
 
 源码 `go run` 仅用于开发，不作为生产安装方式。

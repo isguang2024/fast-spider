@@ -102,6 +102,79 @@ func TestLocalBridgeCodexProductE2E(t *testing.T) {
 	t.Logf("PRODUCT_E2E_OK model=%s sessionId=%s turnId=%s final=%q", model, sessionID, turnID, final)
 }
 
+func TestLocalBridgeProviderDiscoveryE2E(t *testing.T) {
+	base, err := os.MkdirTemp("", "fs-provider-e2e-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(base)
+	dataDir := filepath.Join(base, "data")
+	agentController := agent.New(dataDir, nil)
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := agentController.Close(closeCtx); err != nil {
+			t.Errorf("close agent controller: %v", err)
+		}
+	}()
+	client, err := node.New(node.Config{DataDir: dataDir, Version: "provider-discovery-e2e", Agent: agentController})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
+	bridgeDone := make(chan error, 1)
+	go func() { bridgeDone <- localbridge.Run(bridgeCtx, dataDir, client.HandleLocalCapability) }()
+	defer func() {
+		bridgeCancel()
+		select {
+		case err := <-bridgeDone:
+			if err != nil {
+				t.Errorf("local bridge shutdown: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Error("local bridge did not stop")
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	routing := callAgent(t, ctx, dataDir, "routing.status", map[string]any{"appType": "claude"})
+	if route, ok := routing["route"].(map[string]any); !ok || route["source"] != "cc_switch_db" {
+		t.Fatalf("routing.status=%#v", routing)
+	}
+	providers := callAgent(t, ctx, dataDir, "providers.list", map[string]any{})
+	items, _ := providers["providers"].([]any)
+	foundCodex := false
+	foundClaude := false
+	for _, raw := range items {
+		provider, _ := raw.(map[string]any)
+		switch provider["providerId"] {
+		case "codex":
+			foundCodex = true
+		case "claude_code":
+			foundClaude = true
+			if provider["route"] == nil || provider["authConfiguration"] == nil {
+				t.Fatalf("Claude provider missing route/auth facts: %#v", provider)
+			}
+		}
+	}
+	if !foundCodex || !foundClaude {
+		t.Fatalf("providers.list missing multi-provider catalog: %#v", providers)
+	}
+	models := callAgent(t, ctx, dataDir, "models.list", map[string]any{"providerId": "claude_code"})
+	if models["route"] == nil || models["models"] == nil {
+		t.Fatalf("Claude models.list=%#v", models)
+	}
+	capabilities := callAgent(t, ctx, dataDir, "provider.capabilities", map[string]any{"providerId": "claude_code"})
+	if capabilities["providerId"] != "claude_code" || capabilities["effectiveCapabilities"] == nil {
+		t.Fatalf("Claude provider.capabilities=%#v", capabilities)
+	}
+	codexCapabilities := callAgent(t, ctx, dataDir, "provider.capabilities", map[string]any{"providerId": "codex"})
+	if codexCapabilities["providerId"] != "codex" || codexCapabilities["harnessCapabilities"] == nil || codexCapabilities["effectiveCapabilities"] == nil || codexCapabilities["route"] == nil {
+		t.Fatalf("Codex provider.capabilities=%#v", codexCapabilities)
+	}
+}
+
 func callAgent(t *testing.T, ctx context.Context, dataDir, action string, params map[string]any) map[string]any {
 	t.Helper()
 	result, err := callAgentResult(ctx, dataDir, action, params)

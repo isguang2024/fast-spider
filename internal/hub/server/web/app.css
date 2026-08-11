@@ -124,6 +124,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--text-subtle); bo
 .hero-copy > .muted { max-width: 760px; margin-bottom: 8px; }
 .quick-links { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 14px; }
 .quick-links a { background: var(--surface-soft); }
+.quick-links .download-link { background: var(--primary); color: var(--primary-text); }
+.quick-links .download-link:hover { background: var(--primary-hover); color: var(--primary-text); }
 .hero-meta { min-width: 0; display: grid; gap: 7px; padding: 17px; border-radius: 15px; background: var(--surface-strong); color: var(--bg); }
 .hero-meta > div { display: flex; gap: 11px; align-items: center; margin-bottom: 2px; }
 .hero-meta .status-dot { box-shadow: none; }

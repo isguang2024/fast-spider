@@ -1,4 +1,4 @@
-# 身份与权限（0.3.x）
+# 身份与权限（0.4.0）
 
 ## 身份链
 
@@ -25,6 +25,10 @@ Connection Token 只用于首次登记，不保存到 Node。MCP OAuth 不参与
 
 这个模型是明确的个人自用设计，不适用于把同一 Machine 暴露给不可信租户。
 
+## AI Harness 与 Routing 身份
+
+`providerId=codex|claude_code` 只是 Fast Spider 的 Harness 标识，不是上游 API Provider 凭据。CC Switch 的 Provider ID、模型映射和 health 属于本机 Routing facts；API Key/OAuth Token/Claude auth/Codex auth 仍由各自产品持有。Fast Spider 只读 CC Switch DB 并返回脱敏摘要，不创建自己的 Provider Token 副本，也不提供远程 Provider/Takeover 切换权限。
+
 ## 吊销
 
 - 撤销 Connection Token：只阻止新机器登记，不影响已经登记机器。
@@ -34,4 +38,4 @@ Connection Token 只用于首次登记，不保存到 Node。MCP OAuth 不参与
 
 ## 敏感信息
 
-普通日志、MCP 输出和后台列表不得返回 Connection Token、Device Key 私钥、OAuth 明文 Token、密码或 Session Cookie。
+普通日志、MCP 输出和后台列表不得返回 Connection Token、Device Key 私钥、OAuth/API 明文 Token、Claude/Codex auth secret、CC Switch raw provider settings、密码或 Session Cookie。

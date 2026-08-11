@@ -164,6 +164,28 @@ func TestScreenshotWindowCallDeadlineAndAuditPolicy(t *testing.T) {
 	}
 }
 
+func TestAgentCapabilityRetryAndAuditPolicy(t *testing.T) {
+	for _, action := range []string{"routing.status", "provider.capabilities", "skills.list", "hooks.list", "permissions.list", "plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list", "session.goal.get"} {
+		if !isRetryableCapability("agent.control", action) {
+			t.Fatalf("%s should be retryable", action)
+		}
+	}
+	for _, action := range []string{"session.create", "session.send", "session.steer", "session.respond", "session.delete", "session.rollback", "session.settings.update", "session.review"} {
+		if isRetryableCapability("agent.control", action) {
+			t.Fatalf("%s must not be retryable", action)
+		}
+	}
+	if !shouldAuditCapability("agent.control", "session.delete") || !shouldAuditCapability("agent.control", "session.goal.set") || !shouldAuditCapability("agent.control", "session.steer") || !shouldAuditCapability("agent.control", "session.respond") {
+		t.Fatal("destructive/state-changing agent actions must be audited")
+	}
+	if shouldAuditCapability("agent.control", "skills.list") {
+		t.Fatal("skill discovery should not be audited as a mutation")
+	}
+	if !shouldAuditCapability("build.exec", "run") {
+		t.Fatal("build.exec/run must be audited as a mutation")
+	}
+}
+
 func TestListMachinesLoadsCapabilitiesForOwnerBatch(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()

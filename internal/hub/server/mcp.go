@@ -156,19 +156,54 @@ type screenshotTakeInput struct {
 }
 
 type aiControlInput struct {
-	MachineID        string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	Action           string `json:"action" jsonschema:"providers.list,models.list,projects.list,session.list,session.get,session.create,session.send,session.watch,session.cancel,session.result,session.rename,session.archive"`
-	ProviderID       string `json:"providerId,omitempty" jsonschema:"provider ID; defaults to codex"`
-	SessionID        string `json:"sessionId,omitempty" jsonschema:"opaque provider session ID"`
-	TurnID           string `json:"turnId,omitempty" jsonschema:"active turn ID for cancel when known"`
-	Prompt           string `json:"prompt,omitempty" jsonschema:"prompt for session.create/session.send"`
-	WorkingDirectory string `json:"workingDirectory,omitempty" jsonschema:"absolute working directory on the Node machine; required for session.create and recommended for session.list/session.send"`
-	Model            string `json:"model,omitempty" jsonschema:"optional provider model ID"`
-	Thinking         string `json:"thinking,omitempty" jsonschema:"optional provider reasoning effort"`
-	Cursor           int64  `json:"cursor,omitempty" jsonschema:"last consumed normalized event sequence"`
-	WaitSeconds      int64  `json:"waitSeconds,omitempty" jsonschema:"session.watch long-poll from 0 to 15 seconds"`
-	Limit            int    `json:"limit,omitempty" jsonschema:"session.list maximum, default 50 and maximum 100"`
-	Name             string `json:"name,omitempty" jsonschema:"new session name for session.rename"`
+	MachineID             string              `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	Action                string              `json:"action" jsonschema:"routing.status,providers.list,models.list,provider.capabilities,projects.list,skills.list,hooks.list,permissions.list,plugins.list,plugins.installed,plugins.get,plugin.skill.read,mcp.status.list,session.list,session.get,session.create,session.send,session.steer,session.respond,session.watch,session.cancel,session.result,session.rename,session.archive,session.unarchive,session.delete,session.fork,session.compact,session.rollback,session.goal.get,session.goal.set,session.goal.clear,session.settings.update,session.review"`
+	ProviderID            string              `json:"providerId,omitempty" jsonschema:"AI harness provider ID; defaults to codex"`
+	AppType               string              `json:"appType,omitempty" jsonschema:"routing.status app scope: claude,codex,or claude-desktop; omit to inspect all supported CC Switch routes"`
+	SessionID             string              `json:"sessionId,omitempty" jsonschema:"opaque provider session ID; optional thread scope for mcp.status.list"`
+	TurnID                string              `json:"turnId,omitempty" jsonschema:"active turn ID for cancel and required expected active turn ID for session.steer"`
+	RequestID             string              `json:"requestId,omitempty" jsonschema:"pending Codex server request ID required for session.respond"`
+	Prompt                string              `json:"prompt,omitempty" jsonschema:"text input for session.create/session.send/session.steer; a turn may instead contain skills/images/localImages/mentions"`
+	WorkingDirectory      string              `json:"workingDirectory,omitempty" jsonschema:"absolute working directory on the Node machine; required for session.create and used by session.list/send/fork/settings plus skills/plugins discovery when supplied"`
+	Model                 string              `json:"model,omitempty" jsonschema:"optional provider model ID"`
+	Thinking              string              `json:"thinking,omitempty" jsonschema:"optional provider reasoning effort for session.create/session.send"`
+	Cursor                int64               `json:"cursor,omitempty" jsonschema:"last consumed normalized event sequence"`
+	WaitSeconds           int64               `json:"waitSeconds,omitempty" jsonschema:"session.watch long-poll from 0 to 15 seconds"`
+	Limit                 int                 `json:"limit,omitempty" jsonschema:"session.list maximum, default 50 and maximum 100"`
+	Name                  string              `json:"name,omitempty" jsonschema:"new session name for session.rename"`
+	ForceReload           bool                `json:"forceReload,omitempty" jsonschema:"skills.list only; bypass the local Codex skill cache"`
+	MarketplaceKinds      []string            `json:"marketplaceKinds,omitempty" jsonschema:"plugins.list filter: local,vertical,workspace-directory,shared-with-me,created-by-me-remote"`
+	PluginName            string              `json:"pluginName,omitempty" jsonschema:"plugin name required for plugins.get"`
+	MarketplacePath       string              `json:"marketplacePath,omitempty" jsonschema:"optional absolute local marketplace path for plugins.get"`
+	RemoteMarketplaceName string              `json:"remoteMarketplaceName,omitempty" jsonschema:"remote marketplace name for plugins.get or plugin.skill.read"`
+	RemotePluginID        string              `json:"remotePluginId,omitempty" jsonschema:"remote plugin identifier required for plugin.skill.read"`
+	SkillName             string              `json:"skillName,omitempty" jsonschema:"skill name required for plugin.skill.read"`
+	NumTurns              int                 `json:"numTurns,omitempty" jsonschema:"session.rollback only; number of trailing Codex turns to remove, 1-1000; does not revert working-tree changes"`
+	Objective             string              `json:"objective,omitempty" jsonschema:"goal objective for session.goal.set"`
+	GoalStatus            string              `json:"goalStatus,omitempty" jsonschema:"session.goal.set status: active,paused,blocked,usageLimited,budgetLimited,complete"`
+	TokenBudget           int64               `json:"tokenBudget,omitempty" jsonschema:"optional non-negative Codex goal token budget"`
+	Skills                []map[string]string `json:"skills,omitempty" jsonschema:"native Codex skill inputs with name and absolute path for session.create/session.send/session.steer"`
+	Images                []string            `json:"images,omitempty" jsonschema:"absolute http(s) image URLs for session.create/session.send/session.steer"`
+	LocalImages           []string            `json:"localImages,omitempty" jsonschema:"absolute local image paths for session.create/session.send/session.steer"`
+	Mentions              []map[string]string `json:"mentions,omitempty" jsonschema:"native Codex mention inputs with name and absolute path for session.create/session.send/session.steer"`
+	ImageDetail           string              `json:"imageDetail,omitempty" jsonschema:"image detail for all image/localImage inputs: auto,low,high,original"`
+	OutputSchema          map[string]any      `json:"outputSchema,omitempty" jsonschema:"bounded JSON Schema object constraining the final assistant message for session.create/session.send"`
+	Decision              string              `json:"decision,omitempty" jsonschema:"session.respond decision for approval/elicitation: accept,decline,cancel"`
+	Answers               map[string][]string `json:"answers,omitempty" jsonschema:"session.respond answers keyed by Codex request_user_input question ID"`
+	ResponseContent       map[string]any      `json:"responseContent,omitempty" jsonschema:"session.respond structured content when accepting an MCP elicitation"`
+	PageCursor            string              `json:"pageCursor,omitempty" jsonschema:"opaque pagination cursor for permissions.list or mcp.status.list"`
+	MCPDetail             string              `json:"mcpDetail,omitempty" jsonschema:"mcp.status.list detail: full or toolsAndAuthOnly"`
+	Effort                string              `json:"effort,omitempty" jsonschema:"session.settings.update reasoning effort: low,medium,high,xhigh"`
+	Permissions           string              `json:"permissions,omitempty" jsonschema:"session.settings.update named Codex permission profile ID"`
+	Personality           string              `json:"personality,omitempty" jsonschema:"session.create/session.send turn override or session.settings.update personality: none,friendly,pragmatic"`
+	ServiceTier           string              `json:"serviceTier,omitempty" jsonschema:"session.create/session.send turn override or session.settings.update service tier"`
+	Summary               string              `json:"summary,omitempty" jsonschema:"session.create/session.send turn override or session.settings.update reasoning summary: auto,concise,detailed,none"`
+	ReviewType            string              `json:"reviewType,omitempty" jsonschema:"session.review target: uncommittedChanges,baseBranch,commit,custom; defaults to uncommittedChanges"`
+	ReviewDelivery        string              `json:"reviewDelivery,omitempty" jsonschema:"session.review delivery: inline or detached; defaults to inline"`
+	ReviewBranch          string              `json:"reviewBranch,omitempty" jsonschema:"branch required for reviewType=baseBranch"`
+	ReviewSHA             string              `json:"reviewSha,omitempty" jsonschema:"commit SHA required for reviewType=commit"`
+	ReviewTitle           string              `json:"reviewTitle,omitempty" jsonschema:"optional title for reviewType=commit"`
+	ReviewInstructions    string              `json:"reviewInstructions,omitempty" jsonschema:"instructions required for reviewType=custom"`
 }
 
 type genericCapabilityOutput struct {
@@ -483,14 +518,36 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ai_control",
-		Description: "Discover local AI providers/models and control provider sessions through the Node. Codex sessions use an absolute workingDirectory on the same machine; provider credentials remain local.",
+		Description: "Discover AI harnesses, CC Switch routing/upstream model facts, and control supported local provider sessions through the Node. Current harnesses are Codex and Claude Code; credentials and raw CC Switch provider settings remain local.",
 		Annotations: toolAnnotations(false, true, false, true),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input aiControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		params := map[string]any{
-			"providerId": input.ProviderID, "sessionId": input.SessionID, "turnId": input.TurnID,
+			"providerId": input.ProviderID, "appType": input.AppType, "sessionId": input.SessionID, "turnId": input.TurnID, "requestId": input.RequestID,
 			"prompt": input.Prompt, "workingDirectory": input.WorkingDirectory, "model": input.Model,
 			"thinking": input.Thinking, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds,
-			"limit": input.Limit, "name": input.Name,
+			"limit": input.Limit, "pageCursor": input.PageCursor, "mcpDetail": input.MCPDetail, "name": input.Name, "forceReload": input.ForceReload,
+			"marketplaceKinds": input.MarketplaceKinds, "pluginName": input.PluginName, "marketplacePath": input.MarketplacePath,
+			"remoteMarketplaceName": input.RemoteMarketplaceName, "remotePluginId": input.RemotePluginID, "skillName": input.SkillName,
+			"numTurns": input.NumTurns, "objective": input.Objective, "goalStatus": input.GoalStatus, "tokenBudget": input.TokenBudget,
+			"skills": input.Skills, "images": input.Images, "localImages": input.LocalImages, "mentions": input.Mentions, "imageDetail": input.ImageDetail, "outputSchema": input.OutputSchema,
+			"decision": input.Decision, "answers": input.Answers, "responseContent": input.ResponseContent,
+			"effort": input.Effort, "permissions": input.Permissions, "personality": input.Personality, "serviceTier": input.ServiceTier, "summary": input.Summary,
+			"reviewType": input.ReviewType, "reviewDelivery": input.ReviewDelivery, "reviewBranch": input.ReviewBranch,
+			"reviewSha": input.ReviewSHA, "reviewTitle": input.ReviewTitle, "reviewInstructions": input.ReviewInstructions,
+		}
+		if len(input.Skills) > 0 {
+			converted := make([]map[string]any, len(input.Skills))
+			for i, item := range input.Skills {
+				converted[i] = map[string]any{"name": item["name"], "path": item["path"]}
+			}
+			params["skills"] = converted
+		}
+		if len(input.Mentions) > 0 {
+			converted := make([]map[string]any, len(input.Mentions))
+			for i, item := range input.Mentions {
+				converted[i] = map[string]any{"name": item["name"], "path": item["path"]}
+			}
+			params["mentions"] = converted
 		}
 		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "agent.control", input.Action, params)
 		if err != nil {

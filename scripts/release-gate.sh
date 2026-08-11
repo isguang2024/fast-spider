@@ -15,7 +15,8 @@ Usage: bash scripts/release-gate.sh [--full]
 core: formatting, module integrity, vet, all unit/integration tests,
       current + Windows/Linux builds, Hub restore E2E, Local Bridge E2E.
 full: core + repeated Node tests, short fuzzing where supported, race where
-      supported, real Browser/Codex E2E, and the complete Local Bridge→Codex smoke.
+      supported, real Browser/CC Switch/Claude Code/Codex E2E, multi-provider
+      Local Bridge discovery, and the complete Local Bridge→Codex smoke.
 
 The script never installs tools, downloads update payloads, or modifies Git state.
 EOF
@@ -37,6 +38,7 @@ printf 'Fast Spider release gate: %s\n' "$mode"
 printf 'Go: %s\n' "$(go version)"
 
 mapfile -d '' go_files < <(find cmd internal -type f -name '*.go' -print0)
+mapfile -d '' public_source_files < <(git ls-files -co --exclude-standard -z -- . ':!.learnings/**')
 format_output="$(gofmt -l "${go_files[@]}")"
 if [[ -n "$format_output" ]]; then
   echo "gofmt is required for:" >&2
@@ -45,16 +47,16 @@ if [[ -n "$format_output" ]]; then
 fi
 
 step "Git whitespace check" git diff --check
-secret_matches="$(git grep -nE 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}' -- . ':!.learnings' || true)"
+secret_matches="$(grep -nE 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}' -- "${public_source_files[@]}" || true)"
 if [[ -n "$secret_matches" ]]; then
-  echo "tracked files contain a likely private key or token pattern:" >&2
+  echo "public-source files contain a likely private key or token pattern:" >&2
   printf '%s\n' "$secret_matches" >&2
   exit 1
 fi
-echo "==> Tracked secret pattern scan: PASS"
-private_marker_matches="$(git grep -nE 'mach_[A-Za-z0-9_-]{24,}|[A-Za-z]:\\\\repos\\\\GitHub' -- . ':!.learnings' || true)"
+echo "==> Public-source secret pattern scan: PASS"
+private_marker_matches="$(grep -nE 'mach_[A-Za-z0-9_-]{24,}|[A-Za-z]:\\\\repos\\\\GitHub' -- "${public_source_files[@]}" || true)"
 if [[ -n "$private_marker_matches" ]]; then
-  echo "tracked public-source files contain a machine identifier or local repository path:" >&2
+  echo "public-source files contain a machine identifier or local repository path:" >&2
   printf '%s\n' "$private_marker_matches" >&2
   exit 1
 fi
@@ -63,9 +65,9 @@ if [[ -f "$private_marker_file" ]]; then
   while IFS= read -r marker || [[ -n "$marker" ]]; do
     marker="${marker%$'\r'}"
     [[ -z "$marker" || "$marker" == \#* ]] && continue
-    marker_matches="$(git grep -nFi -- "$marker" -- . ':!.learnings' || true)"
+    marker_matches="$(grep -nFi -- "$marker" "${public_source_files[@]}" || true)"
     if [[ -n "$marker_matches" ]]; then
-      echo "tracked public-source files contain a locally configured private marker:" >&2
+      echo "public-source files contain a locally configured private marker:" >&2
       printf '%s\n' "$marker_matches" >&2
       exit 1
     fi
@@ -104,7 +106,10 @@ if [[ "$mode" == "full" ]]; then
   fi
 
   step "Real Browser E2E" env FAST_SPIDER_BROWSER_E2E=1 go test ./internal/node -run TestBrowserRealSidecarE2E -count=1
+  step "Real CC Switch routing E2E" go test -tags codexe2e ./internal/agent -run TestCCSwitchInspectorRealE2E -count=1
+  step "Real Claude Code E2E" env FAST_SPIDER_CLAUDE_E2E=1 go test -tags codexe2e ./internal/agent -run TestClaudeCodeAdapterRealE2E -count=1
   step "Real Codex E2E" env FAST_SPIDER_CODEX_E2E=1 go test -tags codexe2e ./internal/agent -run TestCodexAdapterRealE2E -count=1
+  step "Local Bridge multi-provider discovery" go test -tags producte2e ./internal/e2e -run TestLocalBridgeProviderDiscoveryE2E -count=1
   step "Local Bridge to Codex product smoke" env FAST_SPIDER_CODEX_E2E=1 go test -tags producte2e ./internal/e2e -run TestLocalBridgeCodexProductE2E -count=1
 fi
 
