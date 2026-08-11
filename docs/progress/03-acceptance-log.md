@@ -144,6 +144,24 @@
 - `FS-043-004`: PASS；Windows Git for Windows 执行 `scripts/release-gate.sh --full` 终态 `PASS: Fast Spider full release gate`，exitCode=0。
 - Gate 明确通过新增 `0.4.3 updater consumed staging gate`，并继续通过全仓 test/vet、Windows/Linux build、Task Workspace、Managed ripgrep/native、file_read/file_edit 2.0、updater/reconnect temp E2E、Repeated Node、Real Browser、Real CC Switch、Real Claude、Real Codex 与 Local Bridge multi-provider/product smoke。
 - full gate 未操作正式 0.4.2 Node/Hub/data-dir；正式升级继续复用 0.4.2 已验证的 Hub 独立替换 + Node 内置签名 updater 流程。
+
+## 2026-08-11 — 0.4.3 Formal Release / Production Verification
+
+- 0.4.3 已由 baseline/release commit `44597ac0` 正式发布部署；生产自更新完成后 `updates` staging 已验证自动归零，当前 EXE 与 `.previous` rollback 状态正常。
+- 后续文件审计确认仍存在旧手工安装链路生成的严格命名 backups、legacy temp 与 marker；当前 self-updater 不引用这些文件，0.4.4 以独立 fail-closed 迁移清理处理。
+
+## 2026-08-11 — FS-044-001..003 Windows Legacy Install Cleanup
+
+- `FS-044-001`: PASS；新增 Windows-only legacy install cleanup API，只接受 basename `fast-spider-node.exe` 的绝对当前 executable，并只操作其同级目录。Win32 `FILE_ATTRIBUTE_REPARSE_POINT` 用于 executable、目录与候选项检查；非 Windows no-op。
+- `FS-044-002`: PASS；只删除 32-hex GUID legacy temp、普通 marker 与 `backups` 直接子级中严格 UTC timestamp/三段 pre-version 命名的普通 EXE；unknown、嵌套目录、reparse、current 与 `.previous` 保留，空 backups 才删除且重复执行幂等。
+- `FS-044-003`: PASS；NodeUI 在 Ready/consumed/stale maintenance 之后、runtime/listener 之前调用一次，错误仅 warning；源码版本更新为 0.4.4，文档与 `0.4.4 legacy install artifacts cleanup gate` 已同步，原 Real E2E Gate 均保留。
+- 验证终态：`go test ./internal/nodeupdate ./internal/nodeui`、`go test ./...`、`go vet ./...`、`git diff --check` 与 Git for Windows Bash 语法检查全部 PASS；未运行 full release gate。
+
+## 2026-08-11 — FS-044-004 Final 0.4.4 Release Gate
+
+- `FS-044-004`: PASS；Windows Git for Windows 执行 `scripts/release-gate.sh --full` 终态 `PASS: Fast Spider full release gate`，exitCode=0。
+- Gate 明确通过新增 `0.4.4 legacy install artifacts cleanup gate`，并继续通过全仓 test/vet、Windows/Linux build、Task Workspace、Managed ripgrep/native、file_read/file_edit 2.0、0.4.3 consumed staging、updater/reconnect temp E2E、Repeated Node、Real Browser、Real CC Switch、Real Claude、Real Codex 与 Local Bridge multi-provider/product smoke。
+- full gate 未操作正式 0.4.3 Node/Hub/data-dir 或真实 legacy artifacts；生产验收留给 0.4.4 自更新后对正式 bin 目录实物检查。
 <!-- fast-spider:managed:acceptance:end -->
 
 ## Manual Acceptance Notes

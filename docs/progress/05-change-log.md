@@ -24,6 +24,9 @@
 - 完成 FS-042-013：最终 `scripts/release-gate.sh --full` 终态 PASS / exitCode=0，覆盖全仓测试、跨平台构建、0.4.2 专项能力、更新重连与 Real Browser/CC Switch/Claude/Codex/Local Bridge；进入唯一 0.4.2 release commit + push。
 - 0.4.2 已由 release commit `4c263b0` 正式发布部署，Hub、Node 与 Managed search-ripgrep 三边生产验收 PASS。
 - 完成 FS-043-001..003：新增独立 consumed-current staging cleanup，严格保持 Ready/apply→cleanup 顺序和 marker/error fail-safe；版本更新为 0.4.3，文档、专项 Gate、全仓 test/vet/diff/bash syntax 全部 PASS。
+- 0.4.3 已正式发布部署，生产自更新后的 `updates` staging 验证归零；后续审计将旧手工安装遗留物收敛为 0.4.4 小版本任务。
+- 完成 FS-044-001..003：新增 Windows-only legacy install artifacts cleanup，以 Win32 reparse attribute、严格文件名、同级/非递归范围保护 current/previous 和未知项；NodeUI 安全启动时机接线、0.4.4 版本/文档/专项 Gate 与全仓验证均 PASS。
+- 完成 FS-044-004：最终 `scripts/release-gate.sh --full` 终态 PASS / exitCode=0，新增 legacy install artifacts cleanup 专项门禁与全部既有 Real E2E 均通过；无人值守进入 0.4.4 release commit/push 与生产迁移验收。
 <!-- fast-spider:managed:change-log:end -->
 
 ## Manual Change Notes

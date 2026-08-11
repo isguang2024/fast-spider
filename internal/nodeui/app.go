@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -176,6 +177,9 @@ func (a *App) Run(ctx context.Context) error {
 	}
 	if err := nodeupdate.CleanupStale(a.opts.DataDir, a.opts.Version); err != nil {
 		a.opts.Logger.Warn("cleanup stale Node updates failed", "error", err)
+	}
+	if err := cleanupLegacyInstallArtifactsOnStartup(os.Executable, nodeupdate.CleanupLegacyInstallArtifacts); err != nil {
+		a.opts.Logger.Warn("cleanup legacy Node install artifacts failed", "error", err)
 	}
 	a.mu.Lock()
 	browserSidecarDir := a.config.BrowserSidecarDir

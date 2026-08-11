@@ -203,3 +203,11 @@ func runStartupUpdateMaintenance(applyReady func() (bool, error), cleanupConsume
 	}
 	return false, nil
 }
+
+func cleanupLegacyInstallArtifactsOnStartup(executablePath func() (string, error), cleanup func(string) error) error {
+	path, err := executablePath()
+	if err != nil {
+		return fmt.Errorf("resolve current Node executable: %w", err)
+	}
+	return cleanup(path)
+}

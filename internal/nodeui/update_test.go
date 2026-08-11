@@ -59,3 +59,44 @@ func TestStartupUpdateMaintenanceDoesNotCleanupAfterApplyStarts(t *testing.T) {
 		t.Fatal("consumed-current cleanup ran after update apply started")
 	}
 }
+
+func TestCleanupLegacyInstallArtifactsOnStartupUsesCurrentExecutableOnce(t *testing.T) {
+	t.Parallel()
+	want := `C:\FastSpider\bin\fast-spider-node.exe`
+	resolveCalls := 0
+	cleanupCalls := 0
+	err := cleanupLegacyInstallArtifactsOnStartup(func() (string, error) {
+		resolveCalls++
+		return want, nil
+	}, func(got string) error {
+		cleanupCalls++
+		if got != want {
+			t.Fatalf("cleanup path=%q want=%q", got, want)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolveCalls != 1 || cleanupCalls != 1 {
+		t.Fatalf("resolveCalls=%d cleanupCalls=%d", resolveCalls, cleanupCalls)
+	}
+}
+
+func TestCleanupLegacyInstallArtifactsOnStartupStopsOnExecutableError(t *testing.T) {
+	t.Parallel()
+	resolveErr := errors.New("executable unavailable")
+	cleanupCalled := false
+	err := cleanupLegacyInstallArtifactsOnStartup(func() (string, error) {
+		return "", resolveErr
+	}, func(string) error {
+		cleanupCalled = true
+		return nil
+	})
+	if !errors.Is(err, resolveErr) {
+		t.Fatalf("error=%v want=%v", err, resolveErr)
+	}
+	if cleanupCalled {
+		t.Fatal("cleanup ran without a resolved executable")
+	}
+}

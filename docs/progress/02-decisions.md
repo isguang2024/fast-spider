@@ -23,6 +23,7 @@
 18. **发布策略**：0.4.0 先形成唯一 baseline commit；0.4.1 不独立发布；全部 Gate 通过后直接提交、推送并部署 0.4.2。
 19. **组件中心 allowlist**：本地 UI 只管理 `browser` 与 `search-ripgrep`，拒绝任意 componentId/path/URL；安装继续复用 component manager 且必须由用户手动触发，搜索/文件自检不联网下载组件。
 20. **Node staging 生命周期**：`CleanupConsumedCurrent` 与 `CleanupStale` 职责分离；启动必须先处理 Ready/apply，只有 `(applied=false, err=nil)` 才尝试清理 current staging，且 `ready.json` 存在时 API 自身 fail-safe 不删。future/unknown 目录与正式 `.previous` 回滚副本不属于 consumed-current cleanup。
+21. **Windows legacy install cleanup**：独立 API 只在当前 executable basename 为 `fast-spider-node.exe` 时检查同级目录；使用 Win32 reparse attribute fail-closed，只删除严格命名的旧 temp/marker/直接 backup 文件，未知项和嵌套目录保留。当前 EXE 与 `.previous` 是保护对象，`.previous` 继续作为唯一正式 rollback SSOT；非 Windows no-op。
 <!-- fast-spider:managed:decisions:end -->
 
 ## Manual Decisions
