@@ -177,6 +177,40 @@ func TestManagedRipgrepIgnoresOnlyVCSRulesByDefault(t *testing.T) {
 	}
 }
 
+func TestManagedRipgrepPushesStaticIncludePrefixesIntoSearchTargets(t *testing.T) {
+	root := t.TempDir()
+	scoped := "project/clients/browser-extension/src"
+	targets := ripgrepSearchTargets(root, []string{scoped + "/**/*.ts", scoped + "/features/**/*.tsx"})
+	if len(targets) != 1 || targets[0] != scoped {
+		t.Fatalf("scoped targets=%v", targets)
+	}
+	if broad := ripgrepSearchTargets(root, []string{"**/*.ts"}); len(broad) != 1 || broad[0] != root {
+		t.Fatalf("broad targets=%v", broad)
+	}
+	exactDir := filepath.Join(root, filepath.FromSlash(scoped))
+	if err := os.MkdirAll(exactDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	exactFile := filepath.Join(exactDir, "index.ts")
+	if err := os.WriteFile(exactFile, []byte("needle"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if exact := ripgrepSearchTargets(root, []string{scoped + "/index.ts"}); len(exact) != 1 || exact[0] != scoped {
+		t.Fatalf("exact-file targets=%v", exact)
+	}
+	args := buildRipgrepArgs(codeSearchParams{Query: "needle", Include: []string{scoped + "/**/*.ts"}}, root)
+	separator := -1
+	for index, arg := range args {
+		if arg == "--" {
+			separator = index
+			break
+		}
+	}
+	if separator < 0 || separator+2 != len(args) || args[separator+1] != scoped {
+		t.Fatalf("ripgrep search targets were not pushed down: %v", args)
+	}
+}
+
 func stringSliceContains(values []string, wanted string) bool {
 	for _, value := range values {
 		if value == wanted {

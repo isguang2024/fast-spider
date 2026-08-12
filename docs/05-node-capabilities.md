@@ -74,7 +74,7 @@ mutation 返回 `success/changed/path/operation/editsApplied/oldSha256/newSha256
 
 `code.search/search` 输入为绝对 `path`、`query`、`mode=content|files`、`regex`、`ignoreCase`、bounded include/exclude glob、context/beforeContext/afterContext 与 `limit`。结果公开 `engine`、`scannedFiles/matchedFiles/bytesScanned/matchCount/skippedFiles/skipReasons/incomplete`、`primaryElapsedMs/fallbackElapsedMs/elapsedMs` 和 `truncated`；`matchCount` 在两个引擎中统一表示匹配行数，同一行多个 occurrence 只计一行。Node 对实际 JSON 结果实施 640 KiB 预算，超出时保留聚合统计并截断明细，避免冲破控制面 1 MiB 上限。
 
-Node 只从 `<data-dir>/components/search-ripgrep/<version>/rg(.exe)` 解析已验证 Managed Component，绝不信任 PATH，也不在每次搜索时联网安装。rg 固定安全参数并清空 `RIPGREP_CONFIG_PATH`；fallback reason 固定为 `RG_NOT_FOUND/RG_START_FAILED/RG_EXIT_ERROR/RG_TIMEOUT/RG_OUTPUT_LIMIT/RG_OUTPUT_INVALID`。默认遵守 VCS ignore 并排除通用生成目录；显式 include 可精确覆盖 ignore/生成目录策略，exclude 随后生效。
+Node 只从 `<data-dir>/components/search-ripgrep/<version>/rg(.exe)` 解析已验证 Managed Component，绝不信任 PATH，也不在每次搜索时联网安装。rg 固定安全参数并清空 `RIPGREP_CONFIG_PATH`；fallback reason 固定为 `RG_NOT_FOUND/RG_START_FAILED/RG_EXIT_ERROR/RG_TIMEOUT/RG_OUTPUT_LIMIT/RG_OUTPUT_INVALID`。默认遵守 VCS ignore 并排除通用生成目录；显式 include 可精确覆盖 ignore/生成目录策略，exclude 随后生效。带静态目录前缀的 include 会把该前缀作为 rg search target 下推，避免为了匹配窄源码范围仍从大型仓库根遍历；`**/*.ext` 这类无静态前缀的广域 include 仍按调用方明确范围执行。
 
 native fallback 支持同一 content/files、glob、context 与 limit 语义；当前上限包括单文件 2 MiB、最多扫描 5000 个文件、默认 100 条、最大 200 条结果。搜索为只读动作，连接中断后可安全重新发起。
 

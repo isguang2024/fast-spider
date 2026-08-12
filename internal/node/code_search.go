@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -573,8 +575,83 @@ func buildRipgrepArgs(input codeSearchParams, searchRoot string) []string {
 			args = append(args, "--glob", "!"+directory+"/**", "--glob", "!**/"+directory+"/**")
 		}
 	}
-	args = append(args, "--regexp", input.Query, "--", searchRoot)
+	args = append(args, "--regexp", input.Query, "--")
+	args = append(args, ripgrepSearchTargets(searchRoot, input.Include)...)
 	return args
+}
+
+func ripgrepSearchTargets(searchRoot string, includes []string) []string {
+	if len(includes) == 0 {
+		return []string{searchRoot}
+	}
+	prefixes := make([]string, 0, len(includes))
+	for _, pattern := range includes {
+		normalized := strings.Trim(strings.ReplaceAll(strings.TrimSpace(pattern), "\\", "/"), "/")
+		parts := strings.Split(normalized, "/")
+		literalParts := make([]string, 0, len(parts))
+		for _, part := range parts {
+			if strings.ContainsAny(part, "*?") {
+				break
+			}
+			literalParts = append(literalParts, part)
+		}
+		if len(literalParts) == 0 {
+			return []string{searchRoot}
+		}
+		prefix := strings.Join(literalParts, "/")
+		if len(literalParts) == len(parts) {
+			candidate := filepath.Join(searchRoot, filepath.FromSlash(prefix))
+			if info, err := os.Stat(candidate); err != nil || !info.IsDir() {
+				prefix = path.Dir(prefix)
+			}
+		}
+		if prefix == "" || prefix == "." {
+			return []string{searchRoot}
+		}
+		prefixes = append(prefixes, prefix)
+	}
+	sort.Slice(prefixes, func(i, j int) bool {
+		if len(prefixes[i]) == len(prefixes[j]) {
+			return prefixes[i] < prefixes[j]
+		}
+		return len(prefixes[i]) < len(prefixes[j])
+	})
+	targets := make([]string, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		covered := false
+		for _, target := range targets {
+			if searchPathEqual(prefix, target) || searchPathHasPrefix(prefix, target) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			targets = append(targets, prefix)
+		}
+	}
+	if len(targets) == 0 {
+		return []string{searchRoot}
+	}
+	return targets
+}
+
+func searchPathEqual(left, right string) bool {
+	left = strings.Trim(strings.ReplaceAll(left, "\\", "/"), "/")
+	right = strings.Trim(strings.ReplaceAll(right, "\\", "/"), "/")
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
+}
+
+func searchPathHasPrefix(candidate, parent string) bool {
+	candidate = strings.Trim(strings.ReplaceAll(candidate, "\\", "/"), "/")
+	parent = strings.Trim(strings.ReplaceAll(parent, "\\", "/"), "/")
+	if runtime.GOOS == "windows" {
+		candidate = strings.ToLower(candidate)
+		parent = strings.ToLower(parent)
+	}
+	return strings.HasPrefix(candidate, parent+"/")
 }
 
 func ripgrepEnvironment(input []string) []string {
