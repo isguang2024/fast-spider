@@ -5,16 +5,150 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/isguang2024/fast-spider/internal/node"
 )
+
+func TestCodexExecutableCandidatesHonorExplicitOverride(t *testing.T) {
+	explicit := filepath.Join(t.TempDir(), "codex-test")
+	t.Setenv("FAST_SPIDER_CODEX_EXECUTABLE", explicit)
+	candidates := codexExecutableCandidates()
+	if len(candidates) != 1 || !sameAgentPath(candidates[0], explicit) {
+		t.Fatalf("explicit candidates=%#v", candidates)
+	}
+}
+
+func TestCodexExecutableCandidatesPreferNewestDesktopRuntime(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Codex Desktop runtime discovery is Windows-specific")
+	}
+	base := t.TempDir()
+	t.Setenv("FAST_SPIDER_CODEX_EXECUTABLE", "")
+	t.Setenv("LOCALAPPDATA", base)
+	older := filepath.Join(base, "OpenAI", "Codex", "bin", "old", "codex.exe")
+	newer := filepath.Join(base, "OpenAI", "Codex", "bin", "new", "codex.exe")
+	for _, path := range []string{older, newer} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("test"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now()
+	if err := os.Chtimes(older, now.Add(-time.Hour), now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newer, now, now); err != nil {
+		t.Fatal(err)
+	}
+	candidates := codexExecutableCandidates()
+	if len(candidates) == 0 || !sameAgentPath(candidates[0], newer) {
+		t.Fatalf("desktop candidates=%#v", candidates)
+	}
+}
+
+func TestCodexExecutableCandidatesIgnoreMissingOrRelativeLocalAppData(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Codex Desktop runtime discovery is Windows-specific")
+	}
+	base := t.TempDir()
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(base); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(original) })
+	fake := filepath.Join(base, "OpenAI", "Codex", "bin", "fake", "codex.exe")
+	if err := os.MkdirAll(filepath.Dir(fake), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fake, []byte("test"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"", "relative"} {
+		t.Setenv("FAST_SPIDER_CODEX_EXECUTABLE", "")
+		t.Setenv("LOCALAPPDATA", value)
+		for _, candidate := range codexExecutableCandidates() {
+			if sameAgentPath(candidate, fake) {
+				t.Fatalf("LOCALAPPDATA=%q selected relative Desktop candidate %q", value, candidate)
+			}
+		}
+	}
+}
+
+func TestCodexConfigWarningBecomesSanitizedCapabilityError(t *testing.T) {
+	adapter := NewCodexAdapter(nil)
+	adapter.handleNotification("configWarning", json.RawMessage(`{"message":"Invalid configuration; using defaults","details":"config.toml token=secret-value"}`))
+	adapter.mu.Lock()
+	err := adapter.configErr
+	adapter.mu.Unlock()
+	if err == nil || err.Class != ErrorConfigInvalid {
+		t.Fatalf("config warning error=%#v", err)
+	}
+	code, message, retryable := err.CapabilityError()
+	if code != "AGENT_CONFIG_INVALID" || retryable || message != "AI runtime configuration is incompatible" {
+		t.Fatalf("config warning capability error=(%q, %q, %v)", code, message, retryable)
+	}
+	if strings.Contains(err.debugText, "secret-value") || strings.Contains(err.debugText, "config.toml") {
+		t.Fatalf("config warning retained raw details: %q", err.debugText)
+	}
+}
+
+func TestCodexWaitLoopClearsActiveTurnsForExitedProcess(t *testing.T) {
+	if os.Getenv("FAST_SPIDER_CODEX_WAIT_HELPER") == "1" {
+		os.Exit(1)
+	}
+	adapter := NewCodexAdapter(nil)
+	cmd := exec.Command(os.Args[0], "-test.run=TestCodexWaitLoopClearsActiveTurnsForExitedProcess")
+	cmd.Env = append(os.Environ(), "FAST_SPIDER_CODEX_WAIT_HELPER=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	adapter.mu.Lock()
+	adapter.cmd = cmd
+	adapter.processDone = make(chan struct{})
+	adapter.mu.Unlock()
+	adapter.eventMu.Lock()
+	adapter.activeTurns["session-1"] = "turn-1"
+	adapter.eventMu.Unlock()
+	adapter.waitLoop(cmd)
+	if active := adapter.ActiveTurn("session-1"); active != "" {
+		t.Fatalf("active turn survived app-server exit: %q", active)
+	}
+	events, _, _, err := adapter.Watch(context.Background(), "session-1", 0, 0)
+	if err != nil || len(events) != 1 || events[0].Type != "turn.failed" || events[0].TurnID != "turn-1" {
+		t.Fatalf("process exit events=%#v err=%v", events, err)
+	}
+}
+
+func TestCodexInterruptRejectsInactiveOrMismatchedTurnWithoutRPC(t *testing.T) {
+	adapter := NewCodexAdapter(nil)
+	if err := adapter.InterruptTurn(context.Background(), "session-1", "old-turn"); !errors.Is(err, node.ErrAgentSessionNotFound) {
+		t.Fatalf("inactive interrupt error=%v", err)
+	}
+	adapter.eventMu.Lock()
+	adapter.activeTurns["session-1"] = "active-turn"
+	adapter.eventMu.Unlock()
+	if err := adapter.InterruptTurn(context.Background(), "session-1", "old-turn"); !errors.Is(err, node.ErrAgentSessionNotFound) {
+		t.Fatalf("mismatched interrupt error=%v", err)
+	}
+}
 
 func TestCodexThreadStartParamsUsesProjectRootWithoutLosingWorktree(t *testing.T) {
 	projectDirectory := filepath.Join(string(filepath.Separator), "repos", "project")

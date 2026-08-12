@@ -1,4 +1,4 @@
-# 部署与运维（0.4.7）
+# 部署与运维（0.4.8）
 
 ## Hub
 
@@ -17,6 +17,7 @@ Hub data-dir 与 release-dir 分离：数据库/密钥/Artifact 进入备份，W
 Fast Spider 不捆绑用户的 AI 账号或 Provider：
 
 - Codex Harness 要求本机已有可执行的 Codex CLI/app-server。
+- Windows 上若 Codex Desktop 提供 `%LOCALAPPDATA%/OpenAI/Codex/bin/<runtime>/codex.exe`，Node 优先使用最近更新且可正常执行的 Desktop runtime，以保证它与 Desktop 写入的 `CODEX_HOME` 配置格式一致；否则回退到 `PATH`。可用绝对路径环境变量 `FAST_SPIDER_CODEX_EXECUTABLE` 明确覆盖该选择。
 - Claude Code Harness 要求本机已有 `claude` CLI；Fast Spider 只探测版本/安全的 auth 配置并运行原生 Session。
 - CC Switch 若安装，则 `~/.cc-switch/cc-switch.db` 作为只读 Routing SSOT；Fast Spider 不创建、迁移或修改该数据库，也不负责启动/更新 CC Switch。
 - Node data-dir 中的 `agent/claude-code-sessions.json` 只是 Fast Spider 本地控制索引；Claude 原生会话、CC Switch 数据和 Provider 凭据仍由各自产品管理。
@@ -43,7 +44,7 @@ Hub 发布签名 Node manifest。Node 验证签名、SHA-256 和大小。Web 后
 
 大型组件按需安装到 Node data-dir 的 `components/<id>/<version>`。0.4.4 继续只支持 `browser` 与 `search-ripgrep` 两个 Managed Component，安装/更新必须由用户在本地组件中心明确触发，不允许输入任意组件 ID、路径或下载 URL。Browser 安装完成后自动写入 Sidecar 路径并重启 Node 运行时；search-ripgrep 安装后由下一次搜索从受管组件目录解析，不要求重启。运行时切换完成后复用组件管理器清理 ZIP 下载缓存和旧版本。
 
-Windows Browser 组件发布包使用 `cmd/browserpack` 生成，组件根目录必须包含 Sidecar、Playwright、当前 Chromium/headless shell/ffmpeg 浏览器缓存以及 `node.exe`。Hub 发布路径为 `release-dir/components/browser/windows-amd64/component.zip` 和同目录 `version.txt`；Hub 会动态生成签名 manifest。
+Windows Browser 组件发布包使用 `cmd/browserpack` 生成，组件根目录必须包含 Sidecar、Playwright、当前 Chromium/headless shell/ffmpeg 浏览器缓存以及 `node.exe`。Hub 发布路径为 `release-dir/components/browser/windows-amd64/component.zip` 和同目录 `version.txt`；Hub 会动态生成签名 manifest。组件版本的源码事实源是 `sidecar/browser/package.json` 中的 `fastSpider.componentVersion`，当前为 `1.62.1`，发布时的 `version.txt` 必须与它一致。Browser 网络策略或 Sidecar 协议变化必须提升组件版本并重打包；Node 会拒绝缺少当前 `fastSpider.sidecarProtocol` 的旧组件，发布门禁必须从打包后的安装目录运行真实 Browser E2E。
 
 Windows ripgrep 组件发布包使用已准备好的本地可执行文件生成，不联网，也不从 `PATH` 探测：
 
@@ -94,4 +95,4 @@ spiderctl staging-prune --dir /tmp --layout server --through 0.4.6 --apply
 - Node release manifest 的版本/哈希与正式 EXE 一致。
 - ChatGPT OAuth + MCP tools/list 可获取当前工具。
 
-0.3.x 完成权限模型收敛；0.4.2 正式交付 Task Workspace、多 AI Harness/CC Switch 只读 Routing、Managed ripgrep 与文件能力 2.0；0.4.3/0.4.4 收敛 Node 更新文件生命周期；0.4.5 收敛标准 release backup retention；0.4.6 收敛本机/服务器 release staging 生命周期；0.4.7 升级 Browser Automation 1.1，使用 snapshot ref + bounded batch 减少 Agent/Hub/Node 往返，并移除逐请求 DNS/IP 审查，不新增常驻服务或第二套浏览器控制面。
+0.3.x 完成权限模型收敛；0.4.2 正式交付 Task Workspace、多 AI Harness/CC Switch 只读 Routing、Managed ripgrep 与文件能力 2.0；0.4.3/0.4.4 收敛 Node 更新文件生命周期；0.4.5 收敛标准 release backup retention；0.4.6 收敛本机/服务器 release staging 生命周期；0.4.7 升级 Browser Automation 1.1 与 WSL 生命周期；0.4.8 强制 Browser Sidecar 策略协议一致，并统一 Codex Desktop runtime 与配置格式。

@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	browserSidecarProtocolVersion = "1.0"
+	browserSidecarProtocolVersion = "1.1"
 	maxBrowserSidecarLineBytes    = 2 << 20
 )
 
@@ -127,6 +127,18 @@ func (s *BrowserSidecar) Available() error {
 		if info, err := os.Stat(filepath.Join(s.dir, required)); err != nil || (required == "index.mjs" && !info.Mode().IsRegular()) {
 			return fmt.Errorf("%w: missing %s", ErrBrowserUnavailable, required)
 		}
+	}
+	packageRaw, err := os.ReadFile(filepath.Join(s.dir, "package.json"))
+	if err != nil {
+		return fmt.Errorf("%w: browser sidecar package metadata is unavailable", ErrBrowserUnavailable)
+	}
+	var packageMetadata struct {
+		FastSpider struct {
+			SidecarProtocol string `json:"sidecarProtocol"`
+		} `json:"fastSpider"`
+	}
+	if json.Unmarshal(packageRaw, &packageMetadata) != nil || packageMetadata.FastSpider.SidecarProtocol != browserSidecarProtocolVersion {
+		return fmt.Errorf("%w: browser sidecar protocol %q is incompatible with required %s", ErrBrowserUnavailable, packageMetadata.FastSpider.SidecarProtocol, browserSidecarProtocolVersion)
 	}
 	probeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

@@ -2,8 +2,64 @@ package node
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
+
+func TestValidateBrowserNavigationURLPolicy(t *testing.T) {
+	allowed := []string{
+		"https://example.com",
+		"http://localhost:8080",
+		"http://127.0.0.1:8080",
+		"http://[::1]:8080",
+		"http://192.168.1.10",
+		"http://10.0.0.10",
+		"http://172.20.0.10",
+		"http://integration-postgres:5432",
+		"http://host.docker.internal:8080",
+		"http://wsl-development.local:3000",
+		"http://lan-hostname",
+	}
+	for _, raw := range allowed {
+		t.Run("allow_"+raw, func(t *testing.T) {
+			if err := validateBrowserNavigationURL(raw); err != nil {
+				t.Fatalf("URL %q rejected: %v", raw, err)
+			}
+		})
+	}
+
+	rejected := []string{
+		"file:///c:/test.txt",
+		"javascript:alert(1)",
+		"data:text/html,hello",
+		"ftp://example.com/file",
+		"https://user:password@example.com",
+		"https://user@example.com",
+		"https://@example.com",
+		"https://example.com:bad",
+		"http://",
+		"not a URL",
+		"/relative/path",
+	}
+	for _, raw := range rejected {
+		t.Run("reject_"+raw, func(t *testing.T) {
+			err := validateBrowserNavigationURL(raw)
+			var browserErr *BrowserActionError
+			if !errors.As(err, &browserErr) || browserErr.Code != "BROWSER_NETWORK_DENIED" {
+				t.Fatalf("URL %q error=%v", raw, err)
+			}
+		})
+	}
+}
+
+func TestSanitizeBrowserParamsEnforcesNavigationURLPolicy(t *testing.T) {
+	if _, err := sanitizeBrowserParams("page.open", map[string]any{"browserSessionId": "brs_test", "url": "http://integration-postgres:5432"}); err != nil {
+		t.Fatalf("integration hostname rejected: %v", err)
+	}
+	if _, err := sanitizeBrowserParams("page.navigate", map[string]any{"browserSessionId": "brs_test", "pageId": "pg_test", "url": "https://user:password@example.com"}); err == nil {
+		t.Fatal("credentialed navigation URL was accepted")
+	}
+}
 
 func TestBrowserManagerUsesMachineBoundary(t *testing.T) {
 	manager := NewBrowserManager(t.TempDir(), t.TempDir(), nil)

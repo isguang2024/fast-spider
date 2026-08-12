@@ -11,6 +11,20 @@ import (
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
 
+type testAgentCapabilityError struct{}
+
+func (testAgentCapabilityError) Error() string { return "sensitive config detail" }
+func (testAgentCapabilityError) CapabilityError() (string, string, bool) {
+	return "AGENT_CONFIG_INVALID", "AI runtime configuration is incompatible", false
+}
+
+func TestCapabilityErrorPreservesSanitizedAgentClassification(t *testing.T) {
+	err := capabilityError(testAgentCapabilityError{})
+	if err.Code != "AGENT_CONFIG_INVALID" || err.Message != "AI runtime configuration is incompatible" || err.Retryable {
+		t.Fatalf("protocol error=%+v", err)
+	}
+}
+
 func TestClientCapabilitiesAdvertiseOSSpecificScreenshot(t *testing.T) {
 	for _, descriptor := range protocolv1.NodeCapabilities {
 		if descriptor.CapabilityId == protocolv1.ScreenshotCapability.CapabilityId {

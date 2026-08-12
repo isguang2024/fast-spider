@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 ## Current 当前事实
 
-- 当前源码版本为 `0.4.7`；0.4.6 已正式发布部署并完成最终验收。0.4.7 聚焦 Browser Automation 1.1，并收敛 Windows 本地 WSL 执行生命周期：结构化 snapshot refs、ref 直接交互、bounded batch、stale-ref 快速失败，以及 WSL 按需常驻复用。
+- 当前源码版本为 `0.4.8`；0.4.7 已正式发布部署。0.4.8 修复 Browser 组件策略漂移与 Codex Desktop/CLI 运行时漂移：旧 Browser Sidecar 会被协议握手拒绝，HTTP(S) 允许公网/localhost/私网/WSL/Docker/LAN/开发 hostname 且拒绝内嵌凭据；Windows Node 优先使用可访问的 Codex Desktop runtime，并保留稳定、脱敏的运行时配置错误分类。
 - Machine 是唯一远程资源边界。Fast Spider 不再维护旧目录对象、目录列表工具、目录授权、目录白名单或路径注册表。
 - Node 以启动它的当前 OS 用户运行，直接使用该用户对整台电脑的操作系统权限；Fast Spider 不把文件系统再切成一层目录权限。
 - 同一 OS 用户只允许运行一个 Fast Spider Node 主实例；重复双击、开机自启动与手动启动、不同 EXE 位置或不同 `--data-dir` 都不能建立第二条 Node 连接。重复启动只打开现有本地界面后退出。

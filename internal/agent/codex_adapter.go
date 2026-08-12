@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -54,6 +56,8 @@ type CodexAdapter struct {
 	logger       *slog.Logger
 	versionCache *ttlCache[versionProbe]
 	modelsCache  *ttlCache[map[string]any]
+	executable   string
+	configErr    *ExecutionError
 
 	startMu     sync.Mutex
 	loadMu      sync.Mutex
@@ -97,28 +101,80 @@ func (a *CodexAdapter) Availability(ctx context.Context) (string, error) {
 	if value, ok := a.versionCache.get("version"); ok {
 		return value.version, value.err
 	}
-	path, err := exec.LookPath("codex")
-	if err != nil {
-		err = fmt.Errorf("%w: codex executable not found", node.ErrAgentProviderUnavailable)
-		a.versionCache.set("version", versionProbe{err: err})
-		return "", err
+	for _, path := range codexExecutableCandidates() {
+		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		output, err := exec.CommandContext(probeCtx, path, "--version").Output()
+		cancel()
+		if err != nil || strings.TrimSpace(string(output)) == "" {
+			continue
+		}
+		version := strings.TrimSpace(string(output))
+		a.mu.Lock()
+		a.executable = path
+		a.mu.Unlock()
+		a.versionCache.set("version", versionProbe{version: version})
+		return version, nil
 	}
-	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	output, err := exec.CommandContext(probeCtx, path, "--version").Output()
-	if err != nil {
-		err = fmt.Errorf("%w: codex --version failed", node.ErrAgentProviderUnavailable)
-		a.versionCache.set("version", versionProbe{err: err})
-		return "", err
+	err := fmt.Errorf("%w: compatible Codex executable not found", node.ErrAgentProviderUnavailable)
+	a.versionCache.set("version", versionProbe{err: err})
+	return "", err
+}
+
+func codexExecutableCandidates() []string {
+	if explicit := strings.TrimSpace(os.Getenv("FAST_SPIDER_CODEX_EXECUTABLE")); explicit != "" {
+		if absolute, err := filepath.Abs(explicit); err == nil {
+			return []string{absolute}
+		}
+		return []string{explicit}
 	}
-	version := strings.TrimSpace(string(output))
-	if version == "" {
-		err = fmt.Errorf("%w: codex version is empty", node.ErrAgentProviderUnavailable)
-		a.versionCache.set("version", versionProbe{err: err})
-		return "", err
+	type candidate struct {
+		path    string
+		modTime time.Time
 	}
-	a.versionCache.set("version", versionProbe{version: version})
-	return version, nil
+	var desktop []candidate
+	if runtime.GOOS == "windows" {
+		localAppData := strings.TrimSpace(os.Getenv("LOCALAPPDATA"))
+		root := ""
+		if filepath.IsAbs(localAppData) {
+			root = filepath.Join(localAppData, "OpenAI", "Codex", "bin")
+		}
+		if root != "" {
+			if entries, err := os.ReadDir(root); err == nil {
+				for _, entry := range entries {
+					path := filepath.Join(root, entry.Name(), "codex.exe")
+					if info, statErr := os.Stat(path); statErr == nil && info.Mode().IsRegular() {
+						desktop = append(desktop, candidate{path: path, modTime: info.ModTime()})
+					}
+				}
+			}
+		}
+	}
+	sort.Slice(desktop, func(i, j int) bool {
+		if desktop[i].modTime.Equal(desktop[j].modTime) {
+			return desktop[i].path < desktop[j].path
+		}
+		return desktop[i].modTime.After(desktop[j].modTime)
+	})
+	paths := make([]string, 0, len(desktop)+1)
+	seen := map[string]struct{}{}
+	add := func(path string) {
+		if path == "" {
+			return
+		}
+		key := strings.ToLower(filepath.Clean(path))
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		paths = append(paths, path)
+	}
+	for _, item := range desktop {
+		add(item.path)
+	}
+	if path, err := exec.LookPath("codex"); err == nil {
+		add(path)
+	}
+	return paths
 }
 
 func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
@@ -138,9 +194,11 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 	if _, err := a.Availability(ctx); err != nil {
 		return err
 	}
-	path, err := exec.LookPath("codex")
-	if err != nil {
-		return err
+	a.mu.Lock()
+	path := a.executable
+	a.mu.Unlock()
+	if path == "" {
+		return fmt.Errorf("%w: compatible Codex executable was not resolved", node.ErrAgentProviderUnavailable)
 	}
 	cmd := exec.Command(path, "app-server", "--stdio")
 	if home, homeErr := os.UserHomeDir(); homeErr == nil && home != "" {
@@ -168,6 +226,7 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 	a.cmd = cmd
 	a.stdin = stdin
 	a.processDone = make(chan struct{})
+	a.configErr = nil
 	a.mu.Unlock()
 	go a.readLoop(stdout)
 	go a.stderrLoop(stderr)
@@ -238,6 +297,11 @@ func (a *CodexAdapter) request(ctx context.Context, method string, params map[st
 		}
 	}
 	a.mu.Lock()
+	if a.configErr != nil {
+		err := a.configErr
+		a.mu.Unlock()
+		return nil, err
+	}
 	if a.stdin == nil || a.cmd == nil {
 		a.mu.Unlock()
 		return nil, node.ErrAgentProviderUnavailable
@@ -265,6 +329,12 @@ func (a *CodexAdapter) request(ctx context.Context, method string, params map[st
 		if response.Error != nil {
 			a.logger.Debug("Codex app-server request failed", "method", method, "rpcCode", response.Error.Code, "errorClass", classifyExecutionText(response.Error.Message))
 			return nil, newExecutionError("codex", method, response.Error.Message)
+		}
+		a.mu.Lock()
+		configErr := a.configErr
+		a.mu.Unlock()
+		if configErr != nil {
+			return nil, configErr
 		}
 		var result map[string]any
 		if len(response.Result) == 0 || string(response.Result) == "null" {
@@ -549,14 +619,15 @@ func (a *CodexAdapter) waitLoop(cmd *exec.Cmd) {
 	err := cmd.Wait()
 	a.mu.Lock()
 	done := a.processDone
-	if a.cmd == cmd {
+	isCurrent := a.cmd == cmd
+	if isCurrent {
 		a.cmd = nil
 		a.stdin = nil
 		a.processDone = nil
+		a.configErr = nil
 	}
 	pending := a.pending
 	a.pending = make(map[int64]codexPending)
-	isCurrent := a.cmd == nil
 	if isCurrent {
 		a.loaded = make(map[string]struct{})
 	}
@@ -566,6 +637,21 @@ func (a *CodexAdapter) waitLoop(cmd *exec.Cmd) {
 		a.serverMu.Lock()
 		a.serverRequests = make(map[string]codexServerRequest)
 		a.serverMu.Unlock()
+		a.eventMu.Lock()
+		activeTurns := a.activeTurns
+		a.activeTurns = make(map[string]string)
+		a.eventMu.Unlock()
+		for sessionID, turnID := range activeTurns {
+			a.recordEvent(AgentEvent{
+				Type:      "turn.failed",
+				SessionID: sessionID,
+				TurnID:    turnID,
+				State:     "failed",
+				Text:      publicErrorMessage(ErrorRuntimeUnavailable),
+				Detail:    map[string]any{"errorClass": ErrorRuntimeUnavailable},
+				Timestamp: protocolTimestampNow(),
+			})
+		}
 	}
 	if done != nil {
 		close(done)
@@ -593,6 +679,21 @@ func (a *CodexAdapter) handleNotification(method string, raw json.RawMessage) {
 		Timestamp: protocolTimestampNow(),
 	}
 	switch method {
+	case "configWarning":
+		class := classifyExecutionText(string(raw))
+		if class == ErrorConfigInvalid {
+			a.mu.Lock()
+			a.configErr = &ExecutionError{
+				Class:     ErrorConfigInvalid,
+				Provider:  "codex",
+				Operation: "configuration",
+				debugText: "Codex reported an incompatible configuration",
+			}
+			a.mu.Unlock()
+		}
+		event.Type = "warning"
+		event.Text = publicErrorMessage(class)
+		event.Detail = map[string]any{"errorClass": class}
 	case "turn/started":
 		event.Type = "turn.started"
 		event.State = "running"
@@ -603,9 +704,12 @@ func (a *CodexAdapter) handleNotification(method string, raw json.RawMessage) {
 		}
 	case "turn/completed":
 		event.Type = "turn.completed"
-		event.State = mapNestedString(params, "turn", "status")
+		event.State = normalizedCodexTurnStatus(mapNestedString(params, "turn", "status"))
 		if event.State == "" {
 			event.State = "completed"
+		}
+		if event.State == "canceled" {
+			event.Type = "turn.interrupted"
 		}
 		if sessionID != "" {
 			a.eventMu.Lock()
@@ -1278,10 +1382,14 @@ func codexPluginSkillReadParams(remoteMarketplaceName, remotePluginID, skillName
 }
 
 func (a *CodexAdapter) InterruptTurn(ctx context.Context, sessionID, turnID string) error {
-	if turnID == "" {
-		turnID = a.ActiveTurn(sessionID)
+	activeTurnID := a.ActiveTurn(sessionID)
+	if activeTurnID == "" {
+		return node.ErrAgentSessionNotFound
 	}
 	if turnID == "" {
+		turnID = activeTurnID
+	}
+	if turnID != activeTurnID {
 		return node.ErrAgentSessionNotFound
 	}
 	_, err := a.request(ctx, "turn/interrupt", map[string]any{"threadId": sessionID, "turnId": turnID})
@@ -1311,7 +1419,14 @@ func (a *CodexAdapter) ForkThread(ctx context.Context, sessionID, cwd string) (m
 	if cwd != "" {
 		p["cwd"] = cwd
 	}
-	return a.request(ctx, "thread/fork", p)
+	result, err := a.request(ctx, "thread/fork", p)
+	if err != nil {
+		return nil, err
+	}
+	if forkedID := mapNestedString(result, "thread", "id"); forkedID != "" {
+		a.markThreadLoaded(forkedID)
+	}
+	return result, nil
 }
 func (a *CodexAdapter) CompactThread(ctx context.Context, sessionID string) error {
 	_, err := a.request(ctx, "thread/compact/start", map[string]any{"threadId": sessionID})

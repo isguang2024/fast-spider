@@ -192,7 +192,7 @@ type browserControlInput struct {
 	Headed           bool                    `json:"headed,omitempty" jsonschema:"show the isolated managed browser window instead of headless mode"`
 	ViewportWidth    int                     `json:"viewportWidth,omitempty" jsonschema:"viewport width from 320 to 2560"`
 	ViewportHeight   int                     `json:"viewportHeight,omitempty" jsonschema:"viewport height from 240 to 1600"`
-	URL              string                  `json:"url,omitempty" jsonschema:"http(s) URL; public, localhost and private-network targets are allowed without DNS allowlisting"`
+	URL              string                  `json:"url,omitempty" jsonschema:"absolute HTTP(S) URL without embedded credentials; public, localhost, private-network, WSL, Docker, LAN and development hostnames are allowed without DNS allowlisting"`
 	WaitUntil        string                  `json:"waitUntil,omitempty" jsonschema:"load,domcontentloaded,networkidle, or commit"`
 	Ref              string                  `json:"ref,omitempty" jsonschema:"short-lived element ref returned by snapshot; preferred for click/type/press/wait and fails fast when stale"`
 	Locator          *browserLocatorInput    `json:"locator,omitempty" jsonschema:"fallback structured locator for click/type/press/wait when ref is unavailable"`

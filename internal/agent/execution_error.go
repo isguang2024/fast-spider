@@ -18,6 +18,7 @@ const (
 	ErrorInvalidModel        ErrorClass = "invalid_model"
 	ErrorRuntimeUnavailable  ErrorClass = "runtime_unavailable"
 	ErrorRouteMismatch       ErrorClass = "route_mismatch"
+	ErrorConfigInvalid       ErrorClass = "config_invalid"
 	ErrorUnknown             ErrorClass = "unknown"
 )
 
@@ -53,6 +54,8 @@ func classifyExecutionError(err error) ErrorClass {
 func classifyExecutionText(raw string) ErrorClass {
 	text := strings.ToLower(raw)
 	switch {
+	case containsAny(text, "failed to load configuration", "failed to resolve feature override precedence", "invalid configuration"):
+		return ErrorConfigInvalid
 	case containsAny(text, "route mismatch", "selection inconsistent", "provider drift", "wrong upstream", "route_mismatch"):
 		return ErrorRouteMismatch
 	case containsAny(text, "invalid model", "model_not_found", "model not found", "unknown model", "unsupported model"):
@@ -107,6 +110,8 @@ func publicErrorMessage(class ErrorClass) string {
 		return "AI runtime is unavailable"
 	case ErrorRouteMismatch:
 		return "AI route selection does not match the active upstream"
+	case ErrorConfigInvalid:
+		return "AI runtime configuration is incompatible"
 	default:
 		return "AI execution failed"
 	}
@@ -115,11 +120,21 @@ func publicErrorMessage(class ErrorClass) string {
 func validErrorClass(class ErrorClass) bool {
 	switch class {
 	case ErrorAuthFailed, ErrorRateLimited, ErrorProviderUnavailable, ErrorNetworkFailed,
-		ErrorInvalidModel, ErrorRuntimeUnavailable, ErrorRouteMismatch, ErrorUnknown:
+		ErrorInvalidModel, ErrorRuntimeUnavailable, ErrorRouteMismatch, ErrorConfigInvalid, ErrorUnknown:
 		return true
 	default:
 		return false
 	}
+}
+
+func (e *ExecutionError) CapabilityError() (string, string, bool) {
+	if e == nil {
+		return "AGENT_EXECUTION_FAILED", publicErrorMessage(ErrorUnknown), false
+	}
+	if e.Class == ErrorConfigInvalid {
+		return "AGENT_CONFIG_INVALID", publicErrorMessage(e.Class), false
+	}
+	return "AGENT_EXECUTION_FAILED", publicErrorMessage(e.Class), e.Class == ErrorNetworkFailed || e.Class == ErrorRateLimited || e.Class == ErrorProviderUnavailable
 }
 
 func containsAny(text string, values ...string) bool {

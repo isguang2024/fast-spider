@@ -55,13 +55,13 @@ func TestLocalBridgeCodexProductE2E(t *testing.T) {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 	providers := callAgent(t, ctx, dataDir, "providers.list", map[string]any{})
 	if providers["providers"] == nil {
 		t.Fatalf("providers.list=%#v", providers)
 	}
-	created := callAgent(t, ctx, dataDir, "session.create", map[string]any{"workingDirectory": root, "prompt": "只回复 OK，不调用任何工具。"})
+	created := callAgent(t, ctx, dataDir, "session.create", map[string]any{"workingDirectory": root, "prompt": "只回复 FASTSPIDER_SESSION_CREATE_OK"})
 	sessionID, _ := created["sessionId"].(string)
 	turnID, _ := created["turnId"].(string)
 	model, _ := created["model"].(string)
@@ -76,30 +76,174 @@ func TestLocalBridgeCodexProductE2E(t *testing.T) {
 		}
 	}()
 
-	var final string
+	final, cursor := waitAgentFinal(t, ctx, dataDir, sessionID, turnID, 0)
+	if !strings.Contains(final, "FASTSPIDER_SESSION_CREATE_OK") {
+		t.Fatalf("unexpected final message %q", final)
+	}
+	if got := callAgent(t, ctx, dataDir, "session.get", map[string]any{"sessionId": sessionID}); got["session"] == nil {
+		t.Fatalf("session.get=%#v", got)
+	}
+	listed := callAgent(t, ctx, dataDir, "session.list", map[string]any{"workingDirectory": root, "limit": 100})
+	if !sessionListContains(listed, sessionID) {
+		t.Fatalf("session.list omitted created session %s: %#v", sessionID, listed)
+	}
+	sent := callAgent(t, ctx, dataDir, "session.send", map[string]any{"sessionId": sessionID, "prompt": "只回复 FASTSPIDER_SESSION_SEND_OK"})
+	sendTurnID, _ := sent["turnId"].(string)
+	if sendTurnID == "" {
+		t.Fatalf("session.send=%#v", sent)
+	}
+	sendFinal, cursor := waitAgentFinal(t, ctx, dataDir, sessionID, sendTurnID, cursor)
+	if !strings.Contains(sendFinal, "FASTSPIDER_SESSION_SEND_OK") {
+		t.Fatalf("unexpected send final message %q", sendFinal)
+	}
+
+	forked := callAgent(t, ctx, dataDir, "session.fork", map[string]any{"sessionId": sessionID, "workingDirectory": root})
+	forkID, _ := forked["sessionId"].(string)
+	if forkID == "" || forkID == sessionID || forked["sourceSessionId"] != sessionID {
+		t.Fatalf("session.fork=%#v", forked)
+	}
+	defer func() {
+		archiveCtx, archiveCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer archiveCancel()
+		if _, err := callAgentResult(archiveCtx, dataDir, "session.archive", map[string]any{"sessionId": forkID}); err != nil {
+			t.Errorf("archive fork session: %v", err)
+		}
+	}()
+	forkSent := callAgent(t, ctx, dataDir, "session.send", map[string]any{"sessionId": forkID, "prompt": "只回复 FASTSPIDER_SESSION_FORK_OK"})
+	forkTurnID, _ := forkSent["turnId"].(string)
+	if forkTurnID == "" {
+		t.Fatalf("session.send fork=%#v", forkSent)
+	}
+	forkFinal, _ := waitAgentFinal(t, ctx, dataDir, forkID, forkTurnID, 0)
+	if !strings.Contains(forkFinal, "FASTSPIDER_SESSION_FORK_OK") {
+		t.Fatalf("unexpected fork final message %q", forkFinal)
+	}
+	originalFinal, _ := waitAgentFinal(t, ctx, dataDir, sessionID, sendTurnID, 0)
+	if !strings.Contains(originalFinal, "FASTSPIDER_SESSION_SEND_OK") {
+		t.Fatalf("fork modified original final message %q", originalFinal)
+	}
+
+	cancelCreated := callAgent(t, ctx, dataDir, "session.create", map[string]any{"workingDirectory": root})
+	cancelSessionID, _ := cancelCreated["sessionId"].(string)
+	if cancelSessionID == "" {
+		t.Fatalf("cancel session.create=%#v", cancelCreated)
+	}
+	defer func() {
+		archiveCtx, archiveCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer archiveCancel()
+		if _, err := callAgentResult(archiveCtx, dataDir, "session.archive", map[string]any{"sessionId": cancelSessionID}); err != nil {
+			t.Errorf("archive cancel session: %v", err)
+		}
+	}()
+	cancelSent := callAgent(t, ctx, dataDir, "session.send", map[string]any{
+		"sessionId": cancelSessionID,
+		"prompt":    "使用 shell_command 执行 PowerShell 命令 Start-Sleep -Seconds 30，等待结束后只回复 SHOULD_NOT_COMPLETE。",
+	})
+	cancelTurnID, _ := cancelSent["turnId"].(string)
+	if cancelTurnID == "" {
+		t.Fatalf("cancel session.send=%#v", cancelSent)
+	}
+	canceled := callAgent(t, ctx, dataDir, "session.cancel", map[string]any{"sessionId": cancelSessionID, "turnId": cancelTurnID})
+	if canceled["cancelRequested"] != true {
+		t.Fatalf("session.cancel=%#v", canceled)
+	}
+	cancelCursor := waitAgentCanceled(t, ctx, dataDir, cancelSessionID, cancelTurnID, 0)
+	if _, err := callAgentResult(ctx, dataDir, "session.cancel", map[string]any{"sessionId": cancelSessionID, "turnId": cancelTurnID}); err == nil || !strings.Contains(err.Error(), "AGENT_SESSION_NOT_FOUND") {
+		t.Fatalf("repeated session.cancel error=%v", err)
+	}
+	afterCancel := callAgent(t, ctx, dataDir, "session.send", map[string]any{"sessionId": cancelSessionID, "prompt": "只回复 FASTSPIDER_SESSION_AFTER_CANCEL_OK"})
+	afterCancelTurnID, _ := afterCancel["turnId"].(string)
+	afterCancelFinal, _ := waitAgentFinal(t, ctx, dataDir, cancelSessionID, afterCancelTurnID, cancelCursor)
+	if !strings.Contains(afterCancelFinal, "FASTSPIDER_SESSION_AFTER_CANCEL_OK") {
+		t.Fatalf("unexpected post-cancel final message %q", afterCancelFinal)
+	}
+
+	t.Logf("PRODUCT_E2E_OK model=%s sessionId=%s turnId=%s forkSessionId=%s cancelSessionId=%s", model, sessionID, turnID, forkID, cancelSessionID)
+}
+
+func waitAgentFinal(t *testing.T, ctx context.Context, dataDir, sessionID, turnID string, cursor int64) (string, int64) {
+	t.Helper()
+	terminalSeen := false
 	for ctx.Err() == nil {
+		cursor, terminalSeen = watchAgentTurn(t, ctx, dataDir, sessionID, turnID, cursor, terminalSeen, "completed")
 		result := callAgent(t, ctx, dataDir, "session.result", map[string]any{"sessionId": sessionID})
 		status, _ := result["status"].(string)
-		final, _ = result["finalAgentMessage"].(string)
-		if status == "completed" {
-			break
+		final, _ := result["finalAgentMessage"].(string)
+		resultTurnID, _ := result["id"].(string)
+		if status == "completed" && resultTurnID == turnID && terminalSeen {
+			return final, cursor
 		}
 		if status == "failed" || status == "canceled" {
-			t.Fatalf("turn ended %s: %#v", status, result)
+			t.Fatalf("session %s ended %s: %#v", sessionID, status, result)
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	if ctx.Err() != nil {
-		t.Fatal(ctx.Err())
+	t.Fatal(ctx.Err())
+	return "", cursor
+}
+
+func waitAgentCanceled(t *testing.T, ctx context.Context, dataDir, sessionID, turnID string, cursor int64) int64 {
+	t.Helper()
+	terminalSeen := false
+	for ctx.Err() == nil {
+		cursor, terminalSeen = watchAgentTurn(t, ctx, dataDir, sessionID, turnID, cursor, terminalSeen, "canceled")
+		result := callAgent(t, ctx, dataDir, "session.result", map[string]any{"sessionId": sessionID})
+		status, _ := result["status"].(string)
+		resultTurnID, _ := result["id"].(string)
+		if status == "canceled" && resultTurnID == turnID && terminalSeen {
+			return cursor
+		}
+		if status == "completed" || status == "failed" {
+			t.Fatalf("canceled session %s ended %s: %#v", sessionID, status, result)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	if !strings.Contains(strings.ToUpper(final), "OK") {
-		t.Fatalf("unexpected final message %q", final)
+	t.Fatal(ctx.Err())
+	return cursor
+}
+
+func watchAgentTurn(t *testing.T, ctx context.Context, dataDir, sessionID, turnID string, cursor int64, terminalSeen bool, terminalState string) (int64, bool) {
+	t.Helper()
+	watch := callAgent(t, ctx, dataDir, "session.watch", map[string]any{"sessionId": sessionID, "cursor": cursor, "waitSeconds": 1})
+	next, ok := watch["nextCursor"].(float64)
+	if !ok || int64(next) < cursor {
+		t.Fatalf("session.watch cursor regressed: cursor=%d response=%#v", cursor, watch)
 	}
-	watch := callAgent(t, ctx, dataDir, "session.watch", map[string]any{"sessionId": sessionID, "cursor": 0})
-	if watch["events"] == nil {
-		t.Fatalf("session.watch=%#v", watch)
+	events, ok := watch["events"].([]any)
+	if !ok && watch["events"] != nil {
+		t.Fatalf("session.watch events=%#v", watch)
 	}
-	t.Logf("PRODUCT_E2E_OK model=%s sessionId=%s turnId=%s final=%q", model, sessionID, turnID, final)
+	last := cursor
+	for _, raw := range events {
+		event, _ := raw.(map[string]any)
+		sequence, _ := event["sequence"].(float64)
+		if int64(sequence) <= last || event["sessionId"] != sessionID {
+			t.Fatalf("session.watch invalid event ordering/scope: last=%d event=%#v", last, event)
+		}
+		last = int64(sequence)
+		if event["turnId"] == turnID {
+			typeName, _ := event["type"].(string)
+			state, _ := event["state"].(string)
+			if (typeName == "turn.completed" || typeName == "turn.interrupted") && state == terminalState {
+				terminalSeen = true
+			}
+		}
+	}
+	if int64(next) != last {
+		t.Fatalf("session.watch nextCursor=%d lastSequence=%d response=%#v", int64(next), last, watch)
+	}
+	return int64(next), terminalSeen
+}
+
+func sessionListContains(result map[string]any, sessionID string) bool {
+	sessions, _ := result["sessions"].([]any)
+	for _, raw := range sessions {
+		session, _ := raw.(map[string]any)
+		if session["sessionId"] == sessionID || session["id"] == sessionID {
+			return true
+		}
+	}
+	return false
 }
 
 func TestLocalBridgeProviderDiscoveryE2E(t *testing.T) {

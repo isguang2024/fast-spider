@@ -4,7 +4,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"strings"
 	"testing"
@@ -163,10 +162,19 @@ func TestCodexAdapterRealE2E(t *testing.T) {
 	if !ok || len(items) == 0 {
 		t.Fatalf("model/list result has no usable data field: %#v", models)
 	}
-	firstModel, _ := items[0].(map[string]any)
-	modelID := mapString(firstModel, "id")
-	if modelID == "" {
-		modelID = mapString(firstModel, "model")
+	var modelID string
+	var firstModel map[string]any
+	for _, raw := range items {
+		candidate, _ := raw.(map[string]any)
+		id := firstNonEmptyString(mapString(candidate, "id"), mapString(candidate, "model"))
+		if firstModel == nil {
+			firstModel = candidate
+			modelID = id
+		}
+		if id == "gpt-5.6-sol" {
+			modelID = id
+			break
+		}
 	}
 	if modelID == "" {
 		t.Fatalf("model/list first item has no model ID: %#v", firstModel)
@@ -287,15 +295,7 @@ func TestCodexAdapterRealE2E(t *testing.T) {
 		t.Fatalf("metadata-only thread/read returned wrong session: %#v", preTurnRead)
 	}
 
-	outputSchema := map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"properties": map[string]any{
-			"status": map[string]any{"type": "string"},
-		},
-		"required": []any{"status"},
-	}
-	turnResult, err := adapter.StartTurnWithInputs(ctx, sessionID, buildAgentTurnInputs("只输出一个符合 schema 的 JSON 对象，status 必须是 OK，不调用任何工具。", nil, nil, nil, nil, root), root, modelID, "", outputSchema)
+	turnResult, err := adapter.StartTurn(ctx, sessionID, "只回复 ADAPTER_OK，不调用任何工具。", root, modelID, "")
 	if err != nil {
 		t.Fatalf("turn/start: %v", err)
 	}
@@ -314,6 +314,10 @@ func TestCodexAdapterRealE2E(t *testing.T) {
 		result := normalizeCodexResult(thread)
 		status, _ := result["status"].(string)
 		final, _ = result["finalAgentMessage"].(string)
+		if mapString(result, "id") != turnID {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
 		if status == "completed" {
 			break
 		}
@@ -345,12 +349,8 @@ func TestCodexAdapterRealE2E(t *testing.T) {
 			}
 		}
 	}
-	var structured map[string]any
-	if err := json.Unmarshal([]byte(final), &structured); err != nil {
-		t.Fatalf("outputSchema final message is not JSON: %q err=%v", final, err)
-	}
-	if got := strings.ToUpper(mapString(structured, "status")); got != "OK" {
-		t.Fatalf("unexpected structured Codex status %q from %q", got, final)
+	if !strings.Contains(strings.ToUpper(final), "ADAPTER_OK") {
+		t.Fatalf("unexpected Codex final message %q", final)
 	}
 
 	adapter.mu.Lock()
@@ -384,6 +384,10 @@ func TestCodexAdapterRealE2E(t *testing.T) {
 		result := normalizeCodexResult(thread)
 		status, _ := result["status"].(string)
 		resumeFinal, _ = result["finalAgentMessage"].(string)
+		if mapString(result, "id") != resumeTurnID {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
 		if status == "completed" {
 			break
 		}

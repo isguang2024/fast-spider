@@ -1,12 +1,33 @@
 package node
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestBrowserSidecarRejectsLegacyPolicyProtocol(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		"package.json": `{"fastSpider":{"sidecarProtocol":"1.0"}}`,
+		"index.mjs":    "export {};\n",
+		filepath.Join("node_modules", "playwright", "package.json"): `{"name":"playwright"}`,
+	} {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := NewBrowserSidecar(dir, nil).Available(); !errors.Is(err, ErrBrowserUnavailable) || !strings.Contains(err.Error(), "protocol") {
+		t.Fatalf("legacy sidecar error=%v", err)
+	}
+}
 
 func TestBrowserSidecarUsesBundledNodeAndBrowserCache(t *testing.T) {
 	dir := t.TempDir()

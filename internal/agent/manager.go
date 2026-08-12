@@ -258,7 +258,13 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		if err != nil {
 			return nil, err
 		}
-		return normalizeCodexResult(thread), nil
+		result := normalizeCodexResult(thread)
+		if activeTurnID := m.codex.ActiveTurn(input.SessionID); activeTurnID != "" {
+			result["status"] = "running"
+			result["turnId"] = activeTurnID
+			delete(result, "finalAgentMessage")
+		}
+		return result, nil
 	case "session.rename":
 		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
 			return nil, err
@@ -310,7 +316,11 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"sessionId": input.SessionID, "thread": result["thread"], "forked": true}, nil
+		forkedID := mapNestedString(result, "thread", "id")
+		if forkedID == "" || forkedID == input.SessionID {
+			return nil, fmt.Errorf("Codex did not return a distinct forked session ID")
+		}
+		return map[string]any{"sourceSessionId": input.SessionID, "sessionId": forkedID, "thread": result["thread"], "forked": true}, nil
 	case "session.compact":
 		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
 			return nil, err
@@ -1336,10 +1346,22 @@ func normalizeCodexTurn(turn map[string]any) map[string]any {
 			out[key] = value
 		}
 	}
+	if status := normalizedCodexTurnStatus(mapString(turn, "status")); status != "" {
+		out["status"] = status
+	}
 	if message := finalAgentMessageFromCodexTurn(turn); message != "" {
 		out["finalAgentMessage"] = message
 	}
 	return out
+}
+
+func normalizedCodexTurnStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "interrupted", "cancelled", "canceled":
+		return "canceled"
+	default:
+		return status
+	}
 }
 
 func normalizeCodexResult(thread map[string]any) map[string]any {

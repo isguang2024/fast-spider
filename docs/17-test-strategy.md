@@ -1,6 +1,10 @@
-# 测试策略（0.4.7）
+# 测试策略（0.4.8）
 
 发布门禁必须验证新的 Machine 边界，而不是旧目录授权模型。
+
+Browser 发布门禁必须把 Sidecar、Playwright、Chromium 与 Node runtime 打成组件包，解压到临时安装目录，再从该目录执行真实 Chromium E2E；只从仓库源码目录运行不算通过。URL 策略测试必须允许公网、localhost、loopback、RFC1918、WSL/Docker/LAN/开发 hostname，并拒绝非 HTTP(S)、非法 URL 与带 userinfo 的 URL，且不得触发 DNS 审查。
+
+Codex 发布门禁必须在实际选择的 runtime 上覆盖 create/get/list/watch/result/send/fork，确认 completed session 可 fork、新旧 session ID 不同、fork 后可继续发送且原 session 不变；运行时配置不兼容必须返回脱敏的稳定错误分类，不能退化成调用参数 `INVALID_REQUEST`。
 
 ## 必测主链
 
@@ -17,7 +21,7 @@
 11. Screenshot window token 不依赖目录授权对象。
 12. `routing.status` 真实只读 CC Switch DB：三类 app route、current Provider、takeover/live takeover、model mapping、selectionConsistent、sanitizer 和 request-log Session correlation 均通过。
 13. `providers.list` 经 Local Bridge 同时发现 Codex + Claude Code，并验证每个 Harness 的 `supportedActions`、route 与 provider-specific capabilities。
-14. Codex E2E 继续覆盖 Provider capabilities、Hooks、Permission Profiles、Installed Plugins、MCP status、原生多类型 Turn、`outputSchema`、Goal/Review/respond/steer 和 app-server auto-resume。
+14. Codex adapter 专项 E2E 覆盖 Provider capabilities、Hooks、Permission Profiles、Installed Plugins、MCP status、Goal 与 app-server auto-resume；产品发布门禁以 Local Bridge 全链路的 create/get/list/watch/result/send/fork/cancel 为准，避免重复消耗同一上游会话造成非产品链路的干扰。
 15. Claude Code E2E 覆盖 CLI availability、stdin Prompt、原生 UUID、stream-json init/result、Session index、终态归一化和 RouteSnapshot；upstream 认证失效时允许正确终止为 failed，但 Runtime/lifecycle 必须完整。
 16. Windows 托盘、隐藏自启动、自更新 PID 等待链路通过。
 17. Task Workspace 覆盖默认 plan 兼容、Plan/Task CAS、Markdown managed block、symlink/junction 边界、progress.watch 与本地页面。
@@ -52,8 +56,7 @@
 - real Browser E2E（snapshot refs、ref batch、snapshotAfter、stale-ref 快速失败、危险 scheme 拒绝）
 - real CC Switch routing read-only E2E
 - real Claude Code CLI E2E
-- real Codex E2E（model/provider capabilities、skills/hooks/permissions/plugins/MCP status、Goal、`outputSchema`、Session/Turn、app-server restart auto-resume）
 - Local Bridge multi-provider discovery E2E
-- Local Bridge → Codex product smoke
+- real Local Bridge → Codex product E2E（create/get/list/watch/result/send/fork/cancel、watch cursor/终态一致性、取消后继续发送）
 
 测试中不得重新引入旧目录对象或目录白名单来让旧断言通过。

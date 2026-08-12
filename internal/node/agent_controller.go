@@ -12,6 +12,11 @@ type AgentController interface {
 	Close(context.Context) error
 }
 
+type AgentCapabilityError interface {
+	error
+	CapabilityError() (code, message string, retryable bool)
+}
+
 var (
 	ErrAgentProviderUnavailable = errors.New("agent provider unavailable")
 	ErrAgentSessionNotFound     = errors.New("agent session not found")

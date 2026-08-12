@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "fastSpider": {
+    "componentVersion": "1.62.1",
+    "sidecarProtocol": "1.1"
+  },
   "engines": {
     "node": ">=22"
   },

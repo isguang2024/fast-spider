@@ -272,6 +272,11 @@ func capabilityError(err error) *protocolv1.ProtocolError {
 	if errors.As(err, &browserErr) {
 		return protocolError(browserErr.Code, browserErr.Message, browserErr.Retryable)
 	}
+	var agentErr AgentCapabilityError
+	if errors.As(err, &agentErr) {
+		code, message, retryable := agentErr.CapabilityError()
+		return protocolError(code, message, retryable)
+	}
 	switch {
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
 		return protocolError("DEADLINE_EXCEEDED", "request deadline exceeded or canceled", true)

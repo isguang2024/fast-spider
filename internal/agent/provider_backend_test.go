@@ -172,12 +172,13 @@ func TestExecutionErrorClassificationIsStrictAndSanitized(t *testing.T) {
 		{"invalid model selected", ErrorInvalidModel},
 		{"runtime unavailable", ErrorRuntimeUnavailable},
 		{"route mismatch", ErrorRouteMismatch},
+		{"failed to load configuration: config.toml expected struct AgentRoleToml", ErrorConfigInvalid},
 		{"something novel", ErrorUnknown},
 	}
 	allowed := map[ErrorClass]bool{
 		ErrorAuthFailed: true, ErrorRateLimited: true, ErrorProviderUnavailable: true,
 		ErrorNetworkFailed: true, ErrorInvalidModel: true, ErrorRuntimeUnavailable: true,
-		ErrorRouteMismatch: true, ErrorUnknown: true,
+		ErrorRouteMismatch: true, ErrorConfigInvalid: true, ErrorUnknown: true,
 	}
 	for _, test := range tests {
 		if got := classifyExecutionText(test.text); got != test.want || !allowed[got] {
@@ -200,5 +201,23 @@ func TestExecutionErrorClassificationIsStrictAndSanitized(t *testing.T) {
 	}
 	if got := classifyExecutionError(errors.New("unrecognized")); got != ErrorUnknown {
 		t.Fatalf("unknown error classified as %q", got)
+	}
+	configErr := newExecutionError("codex", "thread/start", "invalid configuration: token=secret-value config.toml cannot be loaded")
+	code, message, retryable := configErr.CapabilityError()
+	if code != "AGENT_CONFIG_INVALID" || retryable || message != "AI runtime configuration is incompatible" || strings.Contains(message, "secret-value") {
+		t.Fatalf("config capability error=(%q, %q, %v)", code, message, retryable)
+	}
+}
+
+func TestNormalizeCodexInterruptedTurn(t *testing.T) {
+	result := normalizeCodexResult(map[string]any{
+		"id": "session-1",
+		"turns": []any{map[string]any{
+			"id":     "turn-1",
+			"status": "interrupted",
+		}},
+	})
+	if result["status"] != "canceled" || result["id"] != "turn-1" {
+		t.Fatalf("normalizeCodexResult(interrupted)=%#v", result)
 	}
 }

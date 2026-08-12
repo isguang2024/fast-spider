@@ -5,7 +5,7 @@ import process from 'node:process';
 import readline from 'node:readline';
 import { chromium } from 'playwright';
 
-const PROTOCOL_VERSION = '1.0';
+const PROTOCOL_VERSION = '1.1';
 const MAX_SESSIONS = 1;
 const MAX_PAGES = 8;
 const MAX_EVENTS = 200;
@@ -94,6 +94,11 @@ function navigationURL(rawURL) {
   }
   if (!['http:', 'https:'].includes(parsed.protocol)) {
     throw new SidecarError('BROWSER_NETWORK_DENIED', 'navigation scheme is not allowed');
+  }
+  const authorityEnd = rawURL.search(/[/?#]/, rawURL.indexOf('//') + 2);
+  const authority = rawURL.slice(rawURL.indexOf('//') + 2, authorityEnd < 0 ? rawURL.length : authorityEnd);
+  if (parsed.username !== '' || parsed.password !== '' || authority.includes('@')) {
+    throw new SidecarError('BROWSER_NETWORK_DENIED', 'navigation URL must not contain credentials');
   }
   return parsed.toString();
 }

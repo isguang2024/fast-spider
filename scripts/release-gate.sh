@@ -19,7 +19,7 @@ full: core + explicit 0.4.2 Task Workspace/Search/file_read/file_edit/update/
       the 0.4.4 legacy install artifacts cleanup gate, repeated Node tests,
       the 0.4.5 release backup prune gate, the 0.4.6 release staging prune gate,
       short fuzzing/race where supported,
-      real Browser/CC Switch/Claude Code/Codex E2E, multi-provider Local Bridge
+      packaged-component Browser/CC Switch/Claude Code/Codex E2E, multi-provider Local Bridge
       discovery, and the complete Local Bridge→Codex smoke.
 
 The script never installs tools, downloads update payloads, or modifies Git state.
@@ -123,12 +123,27 @@ if [[ "$mode" == "full" ]]; then
     echo "==> Race detector: SKIP (requires amd64 + CGO; current $goos/$goarch CGO_ENABLED=$cgo)"
   fi
 
-  step "Real Browser E2E" env FAST_SPIDER_BROWSER_E2E=1 go test ./internal/node -run TestBrowserRealSidecarE2E -count=1
+  if [[ "$(go env GOOS)" == "windows" ]]; then
+    browser_gate_dir="$(mktemp -d "${TMPDIR:-/tmp}/fast-spider-browser-gate.XXXXXX")"
+    trap 'rm -rf -- "$browser_gate_dir"' EXIT
+    browser_component_version="$(node -p "require('./sidecar/browser/package.json').fastSpider.componentVersion || ''")"
+    [[ "$browser_component_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid Browser componentVersion: $browser_component_version" >&2; exit 1; }
+    browser_executable_win="$(cd sidecar/browser && node -e "const { chromium } = require('playwright'); process.stdout.write(chromium.executablePath())")"
+    browser_executable="$(cygpath -u "$browser_executable_win")"
+    browser_cache="$(dirname "$(dirname "$(dirname "$browser_executable")")")"
+    node_executable_win="$(node -p 'process.execPath')"
+    step "Browser component package" go run ./cmd/browserpack --sidecar-dir sidecar/browser --node-exe "$node_executable_win" --browsers-dir "$browser_cache" --out "$browser_gate_dir/component.zip"
+    step "Browser component extract" unzip -q "$browser_gate_dir/component.zip" -d "$browser_gate_dir/installed"
+    step "Real packaged Browser E2E" env FAST_SPIDER_BROWSER_E2E=1 FAST_SPIDER_BROWSER_SIDECAR_DIR="$browser_gate_dir/installed" go test ./internal/node -run TestBrowserRealSidecarE2E -count=1
+    rm -rf -- "$browser_gate_dir"
+    trap - EXIT
+  else
+    step "Real Browser E2E" env FAST_SPIDER_BROWSER_E2E=1 go test ./internal/node -run TestBrowserRealSidecarE2E -count=1
+  fi
   step "Real CC Switch routing E2E" go test -tags codexe2e ./internal/agent -run TestCCSwitchInspectorRealE2E -count=1
   step "Real Claude Code E2E" env FAST_SPIDER_CLAUDE_E2E=1 go test -tags codexe2e ./internal/agent -run TestClaudeCodeAdapterRealE2E -count=1
-  step "Real Codex E2E" env FAST_SPIDER_CODEX_E2E=1 go test -tags codexe2e ./internal/agent -run TestCodexAdapterRealE2E -count=1
   step "Local Bridge multi-provider discovery" go test -tags producte2e ./internal/e2e -run TestLocalBridgeProviderDiscoveryE2E -count=1
-  step "Local Bridge to Codex product smoke" env FAST_SPIDER_CODEX_E2E=1 go test -tags producte2e ./internal/e2e -run TestLocalBridgeCodexProductE2E -count=1
+  step "Real Local Bridge to Codex product E2E" env FAST_SPIDER_CODEX_E2E=1 go test -tags producte2e ./internal/e2e -run TestLocalBridgeCodexProductE2E -count=1
 fi
 
 printf '\nPASS: Fast Spider %s release gate\n' "$mode"

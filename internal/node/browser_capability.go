@@ -78,6 +78,15 @@ func sanitizeBrowserParams(action string, params map[string]any) (map[string]any
 		}
 		out["steps"] = steps
 	}
+	if action == "page.open" || action == "page.navigate" {
+		rawURL, ok := out["url"].(string)
+		if !ok {
+			return nil, &BrowserActionError{Code: "BROWSER_NETWORK_DENIED", Message: "navigation URL is invalid", Retryable: false}
+		}
+		if err := validateBrowserNavigationURL(rawURL); err != nil {
+			return nil, err
+		}
+	}
 	return out, nil
 }
 

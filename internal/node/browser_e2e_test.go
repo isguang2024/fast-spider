@@ -192,6 +192,11 @@ document.querySelector('#submit').addEventListener('click',()=>{status.textConte
 	if !errors.As(schemeErr, &browserErr) || browserErr.Code != "BROWSER_NETWORK_DENIED" {
 		t.Fatalf("dangerous navigation scheme error=%v", schemeErr)
 	}
+	_, credentialErr := call(ctx, "page.navigate", pageParams(map[string]any{"url": "https://user:password@example.com"}))
+	browserErr = nil
+	if !errors.As(credentialErr, &browserErr) || browserErr.Code != "BROWSER_NETWORK_DENIED" {
+		t.Fatalf("credentialed navigation URL error=%v", credentialErr)
+	}
 
 	var consumedPath string
 	screenshot, err := manager.ExecuteScreenshot(ctx, pageParams(map[string]any{"format": "png"}), func(path, logicalName, contentType string) (map[string]any, error) {
