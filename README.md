@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 ## Current 当前事实
 
-- 当前源码版本为 `0.4.9`。本版聚焦性能与稳定性：file_edit mutation 仅返回固定大小元数据、preview 才返回 16 KiB 内 diff；file_read 单次扫描完成校验/哈希/选择；code_search 修复 managed rg glob 失败根因并给出稳定 fallback code；Shell/Build 正式支持 host/WSL runtime；Agent 与 Browser 增加分层 readiness、幂等与紧凑 timing。
+- 当前源码版本为 `0.4.10`。本版完整交付 0.4.9 性能与稳定性能力，并将带静态目录前缀的 code_search include 下推为 managed rg search target，避免窄范围显式 include 仍遍历大型仓库根；file_edit mutation 仅返回固定大小元数据、preview 才返回 16 KiB 内 diff，Shell/Build 正式支持 host/WSL runtime，Agent 与 Browser 提供分层 readiness、幂等与紧凑 timing。
 - Machine 是唯一远程资源边界。Fast Spider 不再维护旧目录对象、目录列表工具、目录授权、目录白名单或路径注册表。
 - Node 以启动它的当前 OS 用户运行，直接使用该用户对整台电脑的操作系统权限；Fast Spider 不把文件系统再切成一层目录权限。
 - 同一 OS 用户只允许运行一个 Fast Spider Node 主实例；重复双击、开机自启动与手动启动、不同 EXE 位置或不同 `--data-dir` 都不能建立第二条 Node 连接。重复启动只打开现有本地界面后退出。

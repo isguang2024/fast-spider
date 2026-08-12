@@ -58,3 +58,8 @@
 - Agent 1.1 新增分层安全 readiness、Codex/Claude 持久 session.create 幂等、无 Session 的 in-doubt 显式对账释放与可续做 delete intent；Browser 1.2 新增缓存 readiness、稳定原因与 startup/operation/queue/total timing。
 - Hub/Node 所有能力响应新增紧凑通用 timing；NodeUI 诊断页增加 Agent/Browser readiness 与 WSL 可用性，仍不自动发送 Prompt。
 
+### 2026-08-13 — 0.4.10 静态 include 搜索范围收敛
+
+- 0.4.9 生产自举识别到大型仓库窄静态 include 的根目录遍历成本；managed rg 现下推静态目录前缀为 search target，宽泛 include 与显式 override 语义保持不变。
+- 版本提升为 0.4.10，避免覆盖同版本 Node release artifact，确保 updater 可验证获取修订构建并保留 0.4.9 rollback。
+

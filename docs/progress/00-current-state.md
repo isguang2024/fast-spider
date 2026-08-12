@@ -40,8 +40,8 @@
 
 此区域保留给人工设计记录。Fast Spider 自动同步不得覆盖本区域。
 
-### 2026-08-13 — 0.4.9 性能与稳定性
+### 2026-08-13 — 0.4.10 性能与稳定性
 
 - 当前任务：file_edit 响应瘦身、file_read 单次扫描、code_search managed rg/fallback、Agent readiness/create 幂等、host/WSL Runtime、Browser readiness/timing 与 requestId/traceId。
-- 版本：源码已切换 0.4.9；正式发布状态以本轮 acceptance log 的最终门禁、commit、push、Hub/Node 更新和 FastSpider_FS 自举验收为准。
+- 版本：0.4.9 部署后自举发现大型仓库窄静态 include 仍从根遍历；修订按不可变发布规则提升为 0.4.10，正式状态以最终 Node 更新和 FastSpider_FS 自举验收为准。
 - 边界：保留用户既有 Node UI 窗口尺寸改动，不混入本轮发布提交。
