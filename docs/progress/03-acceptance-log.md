@@ -231,4 +231,15 @@
 - FastSpider_FS 自举确认 Fast Spider 默认源码搜索继续使用 ripgrep、无 fallback；同时发现 Tibbs 窄静态 include 因显式 override 使用 `--no-ignore` 时仍从仓库根遍历，搜索本体 P50 约 2.4s。宽泛 include 的 `RG_OUTPUT_LIMIT/RG_TIMEOUT` 受控 fallback reason 正确，但窄范围性能未达标。
 - 修订将静态 include 目录前缀下推为 managed rg search target；exact file 使用父目录，重叠目标合并，无前缀宽泛 glob 保持根扫描。定向测试、独立搜索审计与第二轮 full release gate Job `j-7ec7b9` 均 PASS。
 - 因 Node updater 按版本比较且 release artifact 必须不可变，最终正式版本从 0.4.9 提升到 0.4.10；待重新构建、发布、自更新并重跑自举基准。
- 
+
+### 2026-08-13 — 0.4.10 最终发布与 FastSpider_FS 自举验收
+
+- release commit `019ade0` 已推送 `origin/main`；最终 full release gate Job `j-u62icj` exitCode=0，终态 `PASS: Fast Spider full release gate`，覆盖全仓 test/vet、Windows/Linux build、Hub restore、Local Bridge、Repeated Node、真实 WSL、打包 Browser、CC Switch、Claude、Codex Product E2E。
+- 生产 Hub/spiderctl/PCa Node 均为 0.4.10：Hub SHA256=`8b0f297c896ee3d7cb1dea175f7bd59c4723fcbf683c8499e82567e2836fe7b8`，spiderctl SHA256=`71bd762003c36d14fb28eee0a58a7b93274e8504b6a84938469ff453277fbfbb`，Node SHA256=`d2a2be3e0e65743a56939c768196e001bdb84287383d8dc6f3f0628e7da3e9c9`；公开 livez/readyz PASS，PCa generation=68、online/ready，Browser component=1.62.1。
+- 升级前备份 `pre-0.4.10-019ade0.zip` 与既有 `pre-0.4.9-46ef762.zip` 均 Verify PASS；标准备份按 keep=3 保留 0.4.10/0.4.9/0.4.6，Hub、spiderctl、Node `.previous` 精确保留 0.4.9。
+- file_edit 新响应为固定元数据：50 行替换由 1845B 降到 576B（-68.8%），20 项 editMany 由 1281B 降到 576B（-55.0%）；约 500KiB 文件响应仍固定约 574B，不随正文增长。
+- 最终 code_search：Fast Spider 内部查询 searchElapsed P50/P95/max=33/36/36ms；Tibbs 窄静态 include 从 0.4.9 的 2404/2855/2855ms 降至 0.4.10 的 29/35/35ms（P50 -98.8%），engine=ripgrep、fallback=none。宽泛 include 触发 `RG_OUTPUT_LIMIT`/`RG_TIMEOUT` 时 bounded native fallback 与稳定原因码正确。
+- host shell queue P50/P95/max=5/6/6ms、run=9/11/11ms；Ubuntu-24.04 WSL queue=95/118/118ms、run=96/100/100ms，host 与 WSL `go version` 分别报告 windows/386 与 linux/amd64，真实 WSL gate PASS。
+- Agent Manager 经 Local Bridge 真实创建 5 个 Codex Session，首个 667ms、后续 350–381ms；相同 idempotencyKey 重放返回 replayed 且 nodeExecutionMs=0。带 Prompt 产品 E2E 完成 create/send/watch/result/delete，终态 `FS_0410_OK`，cancel 专项亦由 full gate 覆盖且独立验收 PASS。
+- Browser 真实 DOM 自举不使用截图坐标：launch wall P50/P95/max=936/1968/1968ms，warm type operation=5/17/17ms，warm click=19/25/25ms，snapshot 文本断言 PASS；localhost/RFC1918/WSL/Docker/LAN 可访问，credentialed URL 明确拒绝。
+- **Final Acceptance: PASS / PRODUCTION READY**。自举临时 Session、Browser server、验收目录与 release staging 已清理；未触碰用户既有 `internal/nodeui/open_windows.go`、`internal/nodeui/tray_windows_test.go` 改动。

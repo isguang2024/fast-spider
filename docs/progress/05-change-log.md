@@ -63,3 +63,7 @@
 - 0.4.9 生产自举识别到大型仓库窄静态 include 的根目录遍历成本；managed rg 现下推静态目录前缀为 search target，宽泛 include 与显式 override 语义保持不变。
 - 版本提升为 0.4.10，避免覆盖同版本 Node release artifact，确保 updater 可验证获取修订构建并保留 0.4.9 rollback。
 
+### 2026-08-13 — 0.4.10 正式发布
+
+- `019ade0` 已推送并通过最终 full release gate；Hub、spiderctl、PCa Node 已升级至 0.4.10，公开健康检查、Node online/ready、自更新与回滚链路均通过。
+- FastSpider_FS 完成文件、搜索、host/WSL、Agent 生命周期和 Browser DOM 真实自举；窄静态 include 搜索 P50 相对 0.4.9 部署态下降 98.8%，最终验收为 `PASS / PRODUCTION READY`。
