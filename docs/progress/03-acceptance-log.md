@@ -223,14 +223,14 @@
 - 实现专项：Node/Agent/NodeUI/Hub/Protocol 定向测试 PASS；真实 Ubuntu-24.04 WSL 使用 V: 盘、空格和中文 cwd 连续 20 次执行，queue P50/P95/max=176/217/230ms、run=107/124/139ms，文件创建/读取/清理和 process-tree cancel PASS。
 - 独立审计终态：file/search、WSL/runtime、Browser 网络策略/组件识别均 PASS；Agent create 容量回收、delete 续做与 Claude discovery 三项阻断修复后复验 PASS。
 - 最终 `scripts/release-gate.sh --full` Job `j-e6lkxw` exitCode=0，终态 `PASS: Fast Spider full release gate`；覆盖全仓 test/vet、Windows/Linux build、真实 WSL、打包 Browser、真实 CC Switch/Claude/Codex 与 Local Bridge product E2E。当前 Go 为 windows/386 且 CGO=0，因此 race 按 Gate 规则 SKIP；fuzz seeds 已由全仓测试执行。
-- 发布前剩余：正式 commit/push、从干净 commit 构建、生产 backup/deploy/Node self-update、新版同机 benchmark 与 FastSpider_FS 自举验收。
+- 本阶段记录时的剩余项为正式 commit/push、干净构建、生产 backup/deploy、Node self-update、新版同机 benchmark 与 FastSpider_FS 自举验收；这些项目随后均已在 0.4.10 最终验收完成。
 
 ### 2026-08-13 — 0.4.10 部署后搜索性能修订
 
 - 0.4.9 Hub/spiderctl/Node 已由 commit `46ef762` 构建并部署，自更新后 PCa 正确协商 file.write/code.search/shell/build/job/Agent/Browser 新能力；升级前 `pre-0.4.9-46ef762.zip` backup Verify PASS，Hub/Node `.previous` 分别保留 0.4.6/0.4.8。
 - FastSpider_FS 自举确认 Fast Spider 默认源码搜索继续使用 ripgrep、无 fallback；同时发现 Tibbs 窄静态 include 因显式 override 使用 `--no-ignore` 时仍从仓库根遍历，搜索本体 P50 约 2.4s。宽泛 include 的 `RG_OUTPUT_LIMIT/RG_TIMEOUT` 受控 fallback reason 正确，但窄范围性能未达标。
 - 修订将静态 include 目录前缀下推为 managed rg search target；exact file 使用父目录，重叠目标合并，无前缀宽泛 glob 保持根扫描。定向测试、独立搜索审计与第二轮 full release gate Job `j-7ec7b9` 均 PASS。
-- 因 Node updater 按版本比较且 release artifact 必须不可变，最终正式版本从 0.4.9 提升到 0.4.10；待重新构建、发布、自更新并重跑自举基准。
+- 因 Node updater 按版本比较且 release artifact 必须不可变，最终正式版本从 0.4.9 提升到 0.4.10；重新构建、发布、自更新与自举基准结果见下一节，均已完成。
 
 ### 2026-08-13 — 0.4.10 最终发布与 FastSpider_FS 自举验收
 
@@ -243,3 +243,9 @@
 - Agent Manager 经 Local Bridge 真实创建 5 个 Codex Session，首个 667ms、后续 350–381ms；相同 idempotencyKey 重放返回 replayed 且 nodeExecutionMs=0。带 Prompt 产品 E2E 完成 create/send/watch/result/delete，终态 `FS_0410_OK`，cancel 专项亦由 full gate 覆盖且独立验收 PASS。
 - Browser 真实 DOM 自举不使用截图坐标：launch wall P50/P95/max=936/1968/1968ms，warm type operation=5/17/17ms，warm click=19/25/25ms，snapshot 文本断言 PASS；localhost/RFC1918/WSL/Docker/LAN 可访问，credentialed URL 明确拒绝。
 - **Final Acceptance: PASS / PRODUCTION READY**。自举临时 Session、Browser server、验收目录与 release staging 已清理；未触碰用户既有 `internal/nodeui/open_windows.go`、`internal/nodeui/tray_windows_test.go` 改动。
+
+### 2026-08-13 — 最新文档与仓库状态同步
+
+- README、架构/能力/协议/运维/可观测性/测试文档均已核对为 0.4.10；进度受管区块、路线图、决策与开放问题已同步到最终生产事实。
+- 此前保留的两个 Node UI 窗口尺寸改动经确认与 0.4.10 无关后已撤销；同步开始前 `main` 与 `origin/main` 一致且工作树 clean。
+- 当前策略为稳定使用：没有主动迭代项；仅在真实运行问题、明确性能证据或新需求出现时创建下一计划。

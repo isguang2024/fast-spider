@@ -5,26 +5,28 @@
 <!-- fast-spider:managed:current-state:start -->
 ## Managed Current State
 
-- planId: `fast-spider-0.4.6-final-acceptance`
-- targetVersion: `0.4.6`
+- planId: `perf-stability-0.4.9`
+- targetVersion: `0.4.10`
 - branch: `main`
-- sourceFixCommit: `b72f13ade86b7e147dc86536d6c20b8ca8c73879`
-- phase: `FINAL PASS / production ready`
-- acceptanceFix: `working_context goal Schema 契约说明 + plan.sync pre/post Git snapshot 语义已修复并补回归测试`
-- finalReleaseGate: `job_UHILu4nJG-nz8A286pgl4m-pYI5ttDJP / Windows Git for Windows Bash / PASS / exitCode=0`
-- productionHub: `0.4.6 / SHA256 7dca315e29b0ac699bdb460a1dd18aee11db443b2a2fc9017f94b1dce9498d5b / livez+readyz PASS`
-- productionSpiderctl: `0.4.6 / SHA256 cf2156ffe24d70a01b9a47421ae16fc5f8d2a0c030a73f4f0df8e9053a5eac9f`
-- productionNode: `PCa / 0.4.6 / windows-amd64 / generation 57 / SHA256 617c3e430c3317818641302472ae0873f5ba56384c247923838450bb6667498b / online+ready`
-- nodeRollback: `独立原生产 amd64 rollback 已保留 / SHA256 148a89c58fc4d02542edf2d4c1e862db1de232bfe49e0f36054a95373240618b`
-- hubBackup: `pre-0.4.6-b72f13a.zip / backup-verify valid=true`
-- workingContext11: `生产 Node plan.sync 已实测 dirtyBeforeSync + post-sync currentGit；round4 completion=100%`
-- schemaStatus: `服务端新 Schema 回归测试 PASS；当前既有 ChatGPT 会话仍可能显示热更新前的字段描述缓存`
+- sourceReleaseCommit: `019ade0903b89e109b00118e725752d9b5f3fe3a`
+- phase: `FINAL PASS / production ready / stable-use mode`
+- finalReleaseGate: `j-u62icj / PASS: Fast Spider full release gate / exitCode=0`
+- productionHub: `0.4.10 / SHA256 8b0f297c896ee3d7cb1dea175f7bd59c4723fcbf683c8499e82567e2836fe7b8 / livez+readyz PASS`
+- productionSpiderctl: `0.4.10 / SHA256 71bd762003c36d14fb28eee0a58a7b93274e8504b6a84938469ff453277fbfbb`
+- productionNode: `PCa / 0.4.10 / windows-amd64 / generation 68 / SHA256 d2a2be3e0e65743a56939c768196e001bdb84287383d8dc6f3f0628e7da3e9c9 / online+ready`
+- nodeRollback: `0.4.9 / SHA256 81056767d05df3344369b64526c4d4efde573e3f0cad12f8d051508b0dc80c0e`
+- verifiedBackups: `pre-0.4.10-019ade0.zip / pre-0.4.9-46ef762.zip / pre-0.4.6-0de7bf1.zip / valid=true`
+- workingContext11: `perf-stability-0.4.9 completion=100%；最终交付版本为 0.4.10`
+- schemaStatus: `file.write/code.search/shell/build/job/agent/browser 新能力已由生产 Node 协商并完成真实自举`
 - completed041: `FS-041-001..015 PASS / no 0.4.1 release`
 - completed042: `FS-042-001..017 PASS / 0.4.2 formally released and deployed`
 - completed043: `0.4.3 formally released and deployed`
 - completed044: `0.4.4 formally released and deployed`
 - completed045: `0.4.5 formally released and deployed`
 - completed046: `0.4.6 release + acceptance remediation + production verification PASS`
+- completed047048: `Browser Agent refs/batch、网络策略组件协议与 Codex runtime 修复 PASS`
+- completed049: `性能稳定性、响应瘦身、WSL runtime、Agent/Browser readiness 正式发布 PASS`
+- completed0410: `静态 include 搜索范围修订、重新发布与 FastSpider_FS 自举验收 PASS`
 - currentTask: `none`
 - nextGate: `仅在出现新的真实生产缺口时启动下一版本，不为版本号本身扩功能`
 
@@ -42,8 +44,8 @@
 
 ### 2026-08-13 — 0.4.10 性能与稳定性
 
-- 当前任务：file_edit 响应瘦身、file_read 单次扫描、code_search managed rg/fallback、Agent readiness/create 幂等、host/WSL Runtime、Browser readiness/timing 与 requestId/traceId。
-- 版本：0.4.9 部署后自举发现大型仓库窄静态 include 仍从根遍历；修订按不可变发布规则提升为 0.4.10，正式状态以最终 Node 更新和 FastSpider_FS 自举验收为准。
-- 边界：保留用户既有 Node UI 窗口尺寸改动，不混入本轮发布提交。
+- 已完成范围：file_edit 响应瘦身、file_read 单次扫描、code_search managed rg/fallback、Agent readiness/create 幂等、host/WSL Runtime、Browser readiness/timing 与 requestId/traceId。
+- 版本：0.4.9 部署后自举发现大型仓库窄静态 include 仍从根遍历；修订按不可变发布规则提升并最终发布 0.4.10。
+- 工作树：此前保留的 Node UI 窗口尺寸改动经确认与升级无关后已撤销；文档同步前工作树 clean。
 - 最终状态：0.4.10 源码修订 `019ade0` 已推送并完成 full release gate；生产 Hub/spiderctl/PCa Node 均为 0.4.10，Node generation=68、online/ready，FastSpider_FS 文件、搜索、host/WSL、Agent 与 Browser 自举验收全部 PASS。
 - 回滚与备份：Hub、spiderctl、Node `.previous` 均保留 0.4.9；`pre-0.4.10-019ade0.zip`、`pre-0.4.9-46ef762.zip`、`pre-0.4.6-0de7bf1.zip` 为最近三份标准验证备份。

@@ -5,11 +5,16 @@
 
 | ID | 类型 | 状态 | 说明 |
 |---|---|---|---|
-| EXT-CLAUDE-AUTH | external | open | 本机 Claude Code Runtime/stream 可用，但当前官方 OAuth 上游曾真实返回 revoked-token 401。该问题不阻塞 Adapter/任务系统/搜索文件能力开发；最终真实 Claude E2E 允许正确归一化为 `auth_failed`/failed，但若要求成功模型回答需用户重新认证或切换健康路由。 |
+| — | — | none | 当前没有已知的内部或外部阻塞；0.4.10 full gate、Claude/Codex 产品 E2E 与生产自举均已通过。 |
 
 ## Internal Blockers
 
 当前无内部阻塞。若后续出现外部依赖问题，应先完成所有不依赖该问题的任务，并在本表记录影响范围与恢复条件。
+
+## Resolved
+
+- `EXT-CLAUDE-AUTH`：早期 revoked-token 401 已不再构成当前问题；后续真实 Claude E2E 在最终 full gate 中通过。
+- 主动优化待办：无。进入稳定使用阶段，仅由真实故障、可复现性能瓶颈或明确新需求触发下一计划。
 <!-- fast-spider:managed:open-issues:end -->
 
 ## Manual Issues

@@ -26,6 +26,13 @@
 21. **Windows legacy install cleanup**：独立 API 只在当前 executable basename 为 `fast-spider-node.exe` 时检查同级目录；使用 Win32 reparse attribute fail-closed，只删除严格命名的旧 temp/marker/直接 backup 文件，未知项和嵌套目录保留。当前 EXE 与 `.previous` 是保护对象，`.previous` 继续作为唯一正式 rollback SSOT；非 Windows no-op。
 22. **Release backup retention**：仅显式 `backup-prune` 管理标准 `pre-<三段 semver>-<7..40 hex commit>.zip`；root 必须是绝对 non-reparse 普通目录。全部候选先执行现有 `Verify`，任一无效/特殊文件则零删除；按 manifest `CreatedAt` UTC 新到旧、basename 升序 tie-break，默认保留 3。历史异名、Hub binary backup、未知项与子目录永不自动处理，不改其它 retention 常量。
 23. **Release staging 生命周期**：仅显式 `staging-prune` 管理本机 `release-<semver>[-<commit>]` 与服务器 `fast-spider-<semver>[-<commit>]` 直接子目录；默认 plan-only，`--apply` 才写。只处理 version `<= through`；future/unknown/legacy deploy/普通文件保留。root/candidate/tree reparse、扫描 bounds 或删除前身份/内容变化时 fail-closed，递归删除逐项 `Lstat`/reparse 校验，不使用无边界 `RemoveAll`。
+24. **file_edit 2.1 响应边界**：mutation 默认只返回固定元数据，不回显正文或 diff；只有 preview 返回 16 KiB 内 bounded hunk。SHA CAS、原子替换、权限/编码/换行保留和同目标串行化不因瘦身降低。
+25. **code_search 2.1**：正常路径优先 managed ripgrep；fallback 使用稳定 reason code、统一匹配行统计与实际 JSON 预算。VCS ignore 和通用生成目录默认生效，显式 include 优先；静态目录前缀下推为搜索 target。
+26. **Execution Runtime**：Shell/Build 只增加轻量 `host|wsl` runtime，不扩展 Git 默认执行环境。Windows 绝对 cwd 由选定发行版 `wslpath` 映射；每发行版一个、全局最多八个 Node 自有 keepalive，退出不执行全局 WSL shutdown。
+27. **Agent readiness 与幂等**：route/provider/harness/session backend/create readiness 分层报告；create 幂等状态持久、确定失败释放、未知副作用保持 in-doubt 并显式对账，delete intent 先落盘且 Provider not-found 可续做。
+28. **Browser readiness 与组件协议**：readiness 缓存并共享并发启动状态；sidecar 必须声明组件协议 1.62.1，旧策略组件不得误报可用。HTTP(S) 允许公网、localhost 和私网，显式导航拒绝内嵌凭据与危险 scheme。
+29. **轻量可观测性**：沿 MCP/Hub/Node/Job 传递紧凑 `requestId/traceId/timing`，只报告可测事实；不引入 OpenTelemetry 集群、长期高频日志或额外调度系统。
+30. **不可变发布**：已发布 Node artifact 不做同版本覆盖；0.4.9 自举发现静态 include 根遍历后提升为 0.4.10，重新完成 build/deploy/self-update，并保留 0.4.9 rollback。
 <!-- fast-spider:managed:decisions:end -->
 
 ## Manual Decisions

@@ -1,9 +1,9 @@
 # Fast Spider 0.4 Roadmap
 
 <!-- fast-spider:managed:roadmap:start -->
-## Plan `fast-spider-0.4.0-to-0.4.6`
+## Plan `fast-spider-0.4.0-to-0.4.10`
 
-状态枚举：`pending` / `in_progress` / `blocked` / `done`。0.4.1 是连续开发阶段，不做独立发布。
+状态枚举：`pending` / `in_progress` / `blocked` / `done`。0.4.1 是连续开发阶段，不做独立发布；截至 0.4.10 本路线图全部完成。
 
 ### 0.4.0 基线收口
 
@@ -101,9 +101,33 @@
 | FS-046-002 `spiderctl staging-prune` plan/apply CLI + bounded JSON | done |
 | FS-046-003 local/server/future/unknown/reparse/limits/TOCTOU 测试 + version/docs/Gate | done |
 | FS-046-004 完整 Release Gate | done |
-| FS-046-005 commit + push | in_progress |
-| FS-046-006 Hub / Node 0.4.6 更新 + local/server staging-prune 生产验收 | pending |
-| FS-046-007 最终长期增长审计 | pending |
+| FS-046-005 commit + push | done |
+| FS-046-006 Hub / Node 0.4.6 更新 + local/server staging-prune 生产验收 | done |
+| FS-046-007 最终长期增长审计 | done |
+
+### 0.4.7 / 0.4.8 Browser 与 Codex runtime 收敛
+
+| Task | 状态 |
+|---|---|
+| FS-047-001 Browser snapshot refs、batch 与 locator 交互 | done |
+| FS-047-002 Browser 网络策略简化与危险 scheme 边界 | done |
+| FS-048-001 Browser sidecar 组件协议 1.62.1 与旧组件拒绝 | done |
+| FS-048-002 Codex Desktop/CLI runtime 漂移修复与真实 E2E | done |
+
+### 0.4.9 / 0.4.10 性能与稳定性
+
+| Task | 状态 |
+|---|---|
+| FS-049-001 file_edit 固定元数据响应、bounded preview 与 CAS | done |
+| FS-049-002 file_read 单次扫描 | done |
+| FS-049-003 managed rg 稳定 reason、ignore/include 与 bounded fallback | done |
+| FS-049-004 Agent readiness、持久 create 幂等与 delete 续做 | done |
+| FS-049-005 host/WSL Runtime、Job 生命周期与 timing | done |
+| FS-049-006 Browser readiness、共享启动状态与 timing | done |
+| FS-049-007 完整 Gate、0.4.9 发布与 FastSpider_FS 自举 | done |
+| FS-0410-001 静态 include 前缀下推与独立审计 | done |
+| FS-0410-002 0.4.10 full gate、发布、自更新与生产验收 | done |
+| FS-0410-003 文件/搜索/WSL/Agent/Browser 自举基准与清理 | done |
 
 ### Final Acceptance Matrix
 
@@ -119,12 +143,17 @@
 - Task Workspace E2E
 - Search ripgrep/native E2E
 - file_read 2.0 E2E
-- file_edit 2.0 E2E
+- file_edit 2.1 + bounded preview/CAS E2E
+- code_search 2.1 managed rg/fallback/timing E2E
+- host/WSL Runtime + Job timing/cancel E2E
 - update/reconnect E2E
 - consumed-current staging cleanup E2E
 - Windows legacy install artifacts cleanup E2E
 - Hub release backup prune E2E
 - Release staging prune local/server E2E
+- Agent readiness/create/send/watch/cancel/result/delete E2E
+- Browser readiness/packaged component/DOM locator E2E
+- FastSpider_FS production self-bootstrap acceptance
 - `scripts/release-gate.sh --full`
 <!-- fast-spider:managed:roadmap:end -->
 

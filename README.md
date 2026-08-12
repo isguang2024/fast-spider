@@ -88,8 +88,8 @@ cd ../..
 go run ./cmd/spiderctl backup --data-dir ./data --out ../fast-spider-backup.zip
 go run ./cmd/spiderctl backup-verify --file ../fast-spider-backup.zip
 go run ./cmd/spiderctl backup-prune --dir <absolute-backup-dir> --keep 3
-go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through 0.4.6
-go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through 0.4.6 --apply
+go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through 0.4.10
+go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through 0.4.10 --apply
 go run ./cmd/spiderctl restore --file ../fast-spider-backup.zip --data-dir ./data-restored
 ```
 

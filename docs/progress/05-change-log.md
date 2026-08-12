@@ -37,6 +37,13 @@
 - 0.4.6 正式验收收口：修正 `working_context.goal` Schema 契约描述与 `plan.sync` pre/post Git snapshot 语义，补自动回归；验收修复源码 `b72f13a` 已 push，Windows Git for Windows full release gate 全绿。
 - 生产 Hub/spiderctl 已同版本事务式更新并通过验证备份、livez/readyz；PCa Node 因 updater 正确拒绝同版本更新，采用受控原子替换。验收中识别并淘汰一次受持久 `GOARCH=386` 影响的错误构建，最终以显式 `GOOS=windows GOARCH=amd64 CGO_ENABLED=0` clean VCS 产物替换，PCa generation=57、online/ready、最终 SHA 对账 PASS。
 - Fast Spider 0.4.6 最终验收状态更新为 `FINAL PASS / PRODUCTION READY`；后续仅在出现新的真实生产缺口时开启下一版本。
+
+## 2026-08-13
+
+- 完成 0.4.7/0.4.8 Browser Agent refs/batch、网络策略组件协议和 Codex runtime 收敛。
+- 完成 0.4.9 file_edit 响应瘦身、file_read 单次扫描、code_search 2.1、host/WSL runtime、Agent/Browser readiness 与轻量 timing，并完成首轮正式发布。
+- 生产自举发现静态 include 根遍历后按不可变发布规则提升到 0.4.10；前缀下推、独立审计、最终 full gate、Hub/Node/spiderctl 部署、自更新、备份轮换与 FastSpider_FS 自举全部 PASS。
+- 0.4.10 进入稳定使用阶段；无主动迭代项，仅在真实问题或明确需求出现时继续。
 <!-- fast-spider:managed:change-log:end -->
 
 ## Manual Change Notes
@@ -47,7 +54,7 @@
 
 - 修复 Windows Node 通过短生命周期 `wsl.exe` Job 使用本地 WSL 时，Job 结束后发行版随空闲自动停止、导致 Docker/Gateway/Redis 下一次命令重新启动的问题。
 - Node 仅在首次真实 WSL 工作命令时按发行版启动一个轻量 keepalive；后续 Shell/Build 复用同一 WSL VM。管理命令不创建 keepalive，显式 shutdown/terminate 后下一次工作命令可重新按需启动。
-- 专项 Windows Node tests、全仓 `go test ./... -count=1`、`go vet ./...`、Windows Node build 与 `git diff --check` 均通过；待生产 Node 受控更新后执行 45 秒空窗 + Docker uptime 不重置真实验收。
+- 专项 Windows Node tests、全仓 `go test ./... -count=1`、`go vet ./...`、Windows Node build 与 `git diff --check` 均通过；后续 0.4.10 真实 WSL runtime、keepalive/cancel 与 full gate 验收也已通过，本项关闭。
 
 ### 2026-08-13 — 0.4.9 性能与稳定性
 
