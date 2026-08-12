@@ -3,6 +3,7 @@ package node
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -40,8 +41,11 @@ func TestFileEditCreateRequiresAbsenceAndNeverOverwrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Changed || result.BeforeSHA256 != "" || result.AfterSHA256 != sha256String([]byte("hello\n")) || string(readTestFile(t, path)) != "hello\n" {
+	if !result.Success || !result.Changed || result.OldSHA256 != "" || result.NewSHA256 != sha256String([]byte("hello\n")) || string(readTestFile(t, path)) != "hello\n" {
 		t.Fatalf("create result=%+v content=%q", result, readTestFile(t, path))
+	}
+	if result.LineDelta != 1 {
+		t.Fatalf("create lineDelta=%d want=1", result.LineDelta)
 	}
 	if _, err := client.fileEdit(context.Background(), "create", editParams(path, map[string]any{"content": "overwrite", "expectedAbsent": true})); !errors.Is(err, ErrFileAlreadyExists) {
 		t.Fatalf("existing create error=%v", err)
@@ -58,6 +62,29 @@ func TestFileEditCreateRequiresAbsenceAndNeverOverwrites(t *testing.T) {
 	}
 }
 
+func TestFileEditCanonicalLockCoversSymlinkAlias(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "target.txt")
+	alias := filepath.Join(dir, "alias.txt")
+	if err := os.WriteFile(target, []byte("before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, alias); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	realLockTarget, err := resolveFileEditLockTarget(target, "replace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasLockTarget, err := resolveFileEditLockTarget(alias, "replace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fileEditLock(realLockTarget) != fileEditLock(aliasLockTarget) {
+		t.Fatalf("real and symlink aliases selected different locks: %q / %q", realLockTarget, aliasLockTarget)
+	}
+}
+
 func TestFileEditReplaceCASUniqueAndLegacyEntry(t *testing.T) {
 	dir := t.TempDir()
 	client := &Client{}
@@ -71,7 +98,7 @@ func TestFileEditReplaceCASUniqueAndLegacyEntry(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !result.Changed || result.BeforeSHA256 != sha256String(before) || result.AfterSHA256 != sha256String([]byte("alpha\nnew\nomega")) {
+		if !result.Success || !result.Changed || result.OldSHA256 != sha256String(before) || result.NewSHA256 != sha256String([]byte("alpha\nnew\nomega")) || result.Diff != "" {
 			t.Fatalf("%s result=%+v", action, result)
 		}
 	}
@@ -116,7 +143,7 @@ func TestFileEditManyUsesOriginalRangesAndIsAllOrNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.EditCount != 2 || string(readTestFile(t, path)) != "A beta G" {
+	if result.EditsApplied != 2 || result.Diff != "" || string(readTestFile(t, path)) != "A beta G" {
 		t.Fatalf("result=%+v", result)
 	}
 
@@ -163,7 +190,7 @@ func TestFileEditPreviewReusesPlannerWithoutWriting(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !result.Changed || result.PreviewOf != tc.previewOf || result.AfterSHA256 != sha256String(tc.want) {
+			if !result.Changed || !result.Preview || result.Operation != tc.previewOf || result.NewSHA256 != sha256String(tc.want) || result.Diff == "" {
 				t.Fatalf("result=%+v", result)
 			}
 			if !bytes.Equal(readTestFile(t, path), before) {
@@ -173,7 +200,7 @@ func TestFileEditPreviewReusesPlannerWithoutWriting(t *testing.T) {
 	}
 	created := filepath.Join(dir, "new.txt")
 	result, err := client.fileEdit(context.Background(), "preview", editParams(created, map[string]any{"previewOf": "create", "content": "new", "expectedAbsent": true}))
-	if err != nil || !result.Changed || result.AfterSHA256 != sha256String([]byte("new")) {
+	if err != nil || !result.Changed || !result.Preview || result.NewSHA256 != sha256String([]byte("new")) {
 		t.Fatalf("create preview=%+v err=%v", result, err)
 	}
 	if _, err := os.Stat(created); !errors.Is(err, os.ErrNotExist) {
@@ -202,6 +229,42 @@ func TestFileEditNoOpPreservesMtime(t *testing.T) {
 	info, _ := os.Stat(path)
 	if result.Changed || !info.ModTime().Equal(oldTime) {
 		t.Fatalf("result=%+v mtime=%v", result, info.ModTime())
+	}
+}
+
+func TestFileEditMutationResponseIsMetadataOnly(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name string
+		old  string
+		new  string
+	}{
+		{name: "one-line", old: "secret-old", new: "secret-new"},
+		{name: "fifty-lines", old: strings.Repeat("secret-old\n", 50), new: strings.Repeat("secret-new\n", 50)},
+		{name: "large-file", old: "secret-target", new: "secret-result"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.name+".txt")
+			padding := ""
+			if tc.name == "large-file" {
+				padding = strings.Repeat("padding-line\n", 30000)
+			}
+			before := []byte(padding + tc.old + "\n")
+			if err := os.WriteFile(path, before, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, err := (&Client{}).fileEdit(context.Background(), "replace", editParams(path, map[string]any{"oldText": tc.old, "newText": tc.new, "expectedFileSha256": sha256String(before)}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(raw) >= 1024 || bytes.Contains(raw, []byte("secret-old")) || bytes.Contains(raw, []byte("secret-new")) || bytes.Contains(raw, []byte(`"diff"`)) {
+				t.Fatalf("mutation response is not lean: bytes=%d response=%s", len(raw), raw)
+			}
+		})
 	}
 }
 

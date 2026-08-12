@@ -4,22 +4,22 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 ## Current 当前事实
 
-- 当前源码版本为 `0.4.8`；0.4.7 已正式发布部署。0.4.8 修复 Browser 组件策略漂移与 Codex Desktop/CLI 运行时漂移：旧 Browser Sidecar 会被协议握手拒绝，HTTP(S) 允许公网/localhost/私网/WSL/Docker/LAN/开发 hostname 且拒绝内嵌凭据；Windows Node 优先使用可访问的 Codex Desktop runtime，并保留稳定、脱敏的运行时配置错误分类。
+- 当前源码版本为 `0.4.9`。本版聚焦性能与稳定性：file_edit mutation 仅返回固定大小元数据、preview 才返回 16 KiB 内 diff；file_read 单次扫描完成校验/哈希/选择；code_search 修复 managed rg glob 失败根因并给出稳定 fallback code；Shell/Build 正式支持 host/WSL runtime；Agent 与 Browser 增加分层 readiness、幂等与紧凑 timing。
 - Machine 是唯一远程资源边界。Fast Spider 不再维护旧目录对象、目录列表工具、目录授权、目录白名单或路径注册表。
 - Node 以启动它的当前 OS 用户运行，直接使用该用户对整台电脑的操作系统权限；Fast Spider 不把文件系统再切成一层目录权限。
 - 同一 OS 用户只允许运行一个 Fast Spider Node 主实例；重复双击、开机自启动与手动启动、不同 EXE 位置或不同 `--data-dir` 都不能建立第二条 Node 连接。重复启动只打开现有本地界面后退出。
 - `file_read`、`file_edit`、`code_search` 使用绝对 `path`；`shell_run` 和 `build_control` 使用绝对 `cwd`；`git_control` 使用绝对 `repositoryPath`；`ai_control.session.create` 使用绝对 `workingDirectory`。Git 子目录和 linked worktree 会自动归到主工作树对应的 Codex Desktop 项目，实际执行目录保持不变；非 Git 临时目录不会自动注册成项目。
 - 浏览器在 Node 可访问的公网、localhost 和私网中运行，不需要 Fast Spider Origin/DNS/IP 白名单，也不对页面子资源执行逐请求 DNS 审查；Agent 优先使用 snapshot 返回的短期 ref，并可用 batch 一次完成多步交互。显式 `page.open/page.navigate` 仍拒绝非 HTTP(S) 危险 scheme。
-- Windows Node 对真实 `wsl.exe` 工作命令采用懒启动常驻：第一次进入某个发行版时只启动一个轻量 keepalive，后续 Shell/Build 直接复用已经运行的 WSL VM；普通 Job 完成不会主动关闭 WSL。`--status`、`--list`、`--shutdown`、`--terminate` 等 WSL 管理命令不会创建 keepalive，显式关闭/终止后下一次真实 WSL 工作命令会重新按需启动。
+- Windows Node 的 `shell_run/build_control` 接受 `runtime={kind:"host"|"wsl",distribution?}`；WSL cwd 仍由调用方提供 Windows 绝对路径，Node 使用目标发行版的 `wslpath` 安全映射。每个发行版至多一个轻量 keepalive、全局最多 8 个，Node 退出只结束自己创建的 keepalive，不执行 `wsl --shutdown`。
 - MCP 当前固定提供 16 个工具，包含 `working_context`，不包含旧目录列表能力。
 - `working_context` 已扩展为同一套 Plan/Task + Markdown Task Workspace：保留 `get/set/clear` 默认 plan 兼容入口，并提供 `plan.init/plan.get/plan.list/plan.sync/task.update/markdown.list/markdown.read/markdown.append/progress.watch`；状态按 Machine 路由、`projectPath + planId` 隔离。
-- `code_search` 支持 content/files、include/exclude glob 与 bounded context；优先使用 data-dir 中已验证的 Managed `search-ripgrep`，缺失或失败时回退 Go native，不信任 PATH、不读取用户 ripgrep 配置，也不在搜索时自动下载。
-- `file_read` 2.0 保留 byte range，并支持 line/head/tail/around/statOnly/line numbers；`file_edit` 2.0 在同一工具内提供 legacy edit、create、replace、editMany、preview，现有文件写入使用 SHA CAS 与原子替换，preview 不写磁盘。
+- `code_search` 2.1 支持 content/files、include/exclude glob 与 bounded context；优先使用 data-dir 中已验证的 Managed `search-ripgrep`，缺失或真实失败时才回退 Go native，返回扫描/匹配/跳过/不完整与分段耗时事实。默认遵守 VCS ignore 并跳过通用生成目录，显式 include 优先。
+- `file_read` 2.0 保留 byte range，并支持 line/head/tail/around/statOnly/line numbers；校验、原文件 SHA 和选择在一次流式扫描内完成。`file_edit` 2.1 在同一工具内提供 legacy edit、create、replace、editMany、preview，现有文件写入使用 SHA CAS 与原子替换；mutation 不回显正文/diff，preview 仅返回 bounded hunk。
 - Node 自更新启动时先处理 `ready.json`；仅在没有待应用更新且 Ready 检查成功后清理 `updates/<currentVersion>` 已消费 staging。Ready/apply 失败和 future pending staging 均保留，正式 EXE 的 `.previous` 回滚副本不受 data-dir 清理影响。
 - Windows Node 在上述更新维护完成后，会对当前 `fast-spider-node.exe` 同级目录执行一次 fail-closed legacy cleanup：只清理旧手工安装器严格命名的临时 EXE、marker 和直接位于安全 `backups` 目录内的旧备份；未知项、子目录、reparse/junction、当前 EXE 与 `.previous` 永不删除。非 Windows 不执行该迁移。
 - Hub release backup rotation 由显式运维命令执行：新标准 backup 通过 Verify 且正式升级成功后，运行 `spiderctl backup-prune --dir <absolute-backup-dir> --keep 3`。它只识别直接子级 `pre-<semver>-<commit>.zip`，先验证全部候选再按 manifest `CreatedAt` 清理；历史异名、Hub binary backup、目录与 symlink/reparse 永不自动删除。
 - Release staging 清理由 `spiderctl staging-prune --dir <absolute-root> --layout local|server --through <semver> [--apply]` 显式执行；默认仅输出计划。它只识别严格的 `release-<semver>[-<commit>]` 或 `fast-spider-<semver>[-<commit>]` 直接子目录，只清理版本不高于 `--through` 的已完成 staging，并对 root/candidate/tree reparse、扫描上限与删除前身份变化 fail-closed；future/unknown/legacy deploy 目录保留。
-- `ai_control` 已是多 AI Harness 控制面：当前支持 `codex` 与 `claude_code`，并通过 `routing.status` 只读 CC Switch SSOT，区分 Harness、Routing Runtime、上游 Provider 与真实模型映射。
+- `ai_control` 1.1 已是多 AI Harness 控制面：当前支持 `codex` 与 `claude_code`；`provider.readiness` 分开报告 route/provider/harness/session backend/create readiness，Codex `session.create` 使用持久幂等记录防止重试重复 Thread。
 - Codex 保留 Provider/Model 能力发现、Skills/Hooks/Permission Profiles/Plugins/MCP 状态、Thread/Goal/Settings/Review、steer/respond、原生 Turn input 与 `outputSchema`；app-server 重启后按需 resume 持久 Thread。
 - Claude Code 使用原生 Session UUID + `stream-json` + `--resume`，Prompt 通过 stdin 传入；Fast Spider 只保存小型 Session 控制索引，不复制完整对话。模型和有效能力以 CC Switch Route + Harness 能力共同解释，不把 `sonnet`/`opus` 等别名直接当真实上游模型。
 - CC Switch 数据库只读；Fast Spider 不返回 raw `settings_config`/`meta`/API Key/Token，也不通过 `ai_control` 修改 Provider、Takeover 或凭据。Codex 0.141.0 app-server 未公开 Automation API，因此仍不映射 Automations。
@@ -162,4 +162,4 @@ bash scripts/release-gate.sh
 bash scripts/release-gate.sh --full
 ```
 
-门禁覆盖格式、秘密模式、模块校验、`go vet`、测试、构建、恢复后 Hub 健康检查；完整模式显式运行 Task Workspace、Managed ripgrep/native、file_read 2.0、file_edit 2.0、Node update/reconnect、0.4.3 consumed-current staging、0.4.4 legacy install cleanup、0.4.5 release backup prune 与 0.4.6 release staging prune 专项，以及 Browser、真实 CC Switch 只读路由、Claude Code、Codex、Local Bridge 多 Provider discovery 和产品 smoke。具体平台限制以门禁输出为准。
+门禁覆盖格式、秘密模式、模块校验、`go vet`、测试、构建、恢复后 Hub 健康检查；完整模式显式运行 Task Workspace、Managed ripgrep/native、file_read 2.0、file_edit 2.1、host/WSL runtime、Node update/reconnect、历史升级清理专项，以及 Browser readiness/真实交互、真实 CC Switch 只读路由、Claude Code、Codex readiness/幂等 Session、Local Bridge 多 Provider discovery 和产品 smoke。具体平台限制以门禁输出为准。

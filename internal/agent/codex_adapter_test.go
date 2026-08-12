@@ -704,6 +704,20 @@ func TestCodexThreadNotMaterializedClassification(t *testing.T) {
 	}
 }
 
+func TestCodexRPCRejectionDistinguishesDefinitiveAndAmbiguousFailures(t *testing.T) {
+	definitive := &codexRPCResponseError{ExecutionError: newExecutionError("codex", "thread/start", "invalid model"), code: -32602}
+	if !isDefinitiveCodexRPCRejection(definitive) {
+		t.Fatal("JSON-RPC rejection was not classified as definitive")
+	}
+	ambiguous := &codexRPCResponseError{ExecutionError: newExecutionError("codex", "thread/start", "Codex app-server exited"), code: -1}
+	if isDefinitiveCodexRPCRejection(ambiguous) {
+		t.Fatal("transport termination was classified as a definitive rejection")
+	}
+	if isDefinitiveCodexRPCRejection(context.DeadlineExceeded) {
+		t.Fatal("request timeout was classified as a definitive rejection")
+	}
+}
+
 func TestCodexAdapterWriteLineSerializesConcurrentRPCMessages(t *testing.T) {
 	adapter := NewCodexAdapter(nil)
 	writer := &concurrentLineWriter{}

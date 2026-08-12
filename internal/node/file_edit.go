@@ -7,19 +7,25 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 	"unicode/utf8"
 )
+
+var fileEditLocks [64]sync.Mutex
 
 const (
 	maxEditableFileBytes = 2 << 20
 	maxEditTextBytes     = 64 << 10
 	maxEditTotalBytes    = 512 << 10
 	maxFileEdits         = 64
-	maxReturnedDiffBytes = 64 << 10
+	maxReturnedDiffBytes = 16 << 10
 )
 
 var (
@@ -29,6 +35,15 @@ var (
 	ErrEditOverlap       = errors.New("edit ranges overlap")
 	ErrFileAlreadyExists = errors.New("file already exists")
 )
+
+type FileRevisionError struct {
+	Path     string
+	Expected string
+	Actual   string
+}
+
+func (e *FileRevisionError) Error() string { return ErrRevisionConflict.Error() }
+func (e *FileRevisionError) Unwrap() error { return ErrRevisionConflict }
 
 type fileTextEdit struct {
 	OldText string `json:"oldText"`
@@ -47,16 +62,24 @@ type fileEditParams struct {
 }
 
 type fileEditResult struct {
-	Path          string `json:"path"`
-	Action        string `json:"action"`
-	PreviewOf     string `json:"previewOf,omitempty"`
-	BeforeSHA256  string `json:"beforeSha256,omitempty"`
-	AfterSHA256   string `json:"afterSha256"`
-	Bytes         int64  `json:"bytes"`
-	Changed       bool   `json:"changed"`
-	EditCount     int    `json:"editCount,omitempty"`
-	Diff          string `json:"diff"`
-	DiffTruncated bool   `json:"diffTruncated"`
+	Success       bool           `json:"success"`
+	Changed       bool           `json:"changed"`
+	Path          string         `json:"path"`
+	Operation     string         `json:"operation"`
+	Preview       bool           `json:"preview,omitempty"`
+	EditsApplied  int            `json:"editsApplied"`
+	OldSHA256     string         `json:"oldSha256,omitempty"`
+	NewSHA256     string         `json:"newSha256"`
+	BytesChanged  int64          `json:"bytesChanged"`
+	LineDelta     int            `json:"lineDelta"`
+	Timing        fileEditTiming `json:"timing"`
+	Warnings      []string       `json:"warnings,omitempty"`
+	Diff          string         `json:"diff,omitempty"`
+	DiffTruncated bool           `json:"diffTruncated,omitempty"`
+}
+
+type fileEditTiming struct {
+	TotalMs int64 `json:"totalMs"`
 }
 
 type plannedFileEdit struct {
@@ -71,6 +94,7 @@ type plannedFileEdit struct {
 
 // fileEdit is the sole planner and writer for legacy edit and file_edit 2.0 actions.
 func (c *Client) fileEdit(ctx context.Context, action string, params map[string]any) (fileEditResult, error) {
+	started := time.Now()
 	if err := ctx.Err(); err != nil {
 		return fileEditResult{}, err
 	}
@@ -92,6 +116,13 @@ func (c *Client) fileEdit(ctx context.Context, action string, params map[string]
 	if requested != "create" && requested != "replace" && requested != "editMany" {
 		return fileEditResult{}, fmt.Errorf("action must be create, replace, editMany, or preview with previewOf")
 	}
+	lockTarget, err := resolveFileEditLockTarget(input.Path, requested)
+	if err != nil {
+		return fileEditResult{}, err
+	}
+	lock := fileEditLock(lockTarget)
+	lock.Lock()
+	defer lock.Unlock()
 
 	plan, err := planFileEdit(input, requested)
 	if err != nil {
@@ -108,20 +139,72 @@ func (c *Client) fileEdit(ctx context.Context, action string, params map[string]
 			return fileEditResult{}, err
 		}
 	}
-	diff, truncated := boundedEditDiff(filepath.Base(plan.target), requested, plan.changes)
-	resultAction := action
-	if resultAction == "edit" {
-		resultAction = "replace"
+	operation := requested
+	editsApplied := 0
+	if changed {
+		editsApplied = len(plan.changes)
 	}
 	result := fileEditResult{
-		Path: filepath.Clean(plan.target), Action: resultAction, BeforeSHA256: plan.beforeSHA,
-		AfterSHA256: sha256String(plan.after), Bytes: int64(len(plan.after)), Changed: changed,
-		EditCount: len(plan.changes), Diff: diff, DiffTruncated: truncated,
+		Success: true, Changed: changed, Path: filepath.Clean(plan.target), Operation: operation,
+		EditsApplied: editsApplied, OldSHA256: plan.beforeSHA, NewSHA256: sha256String(plan.after),
+		BytesChanged: changedByteCount(plan.changes, changed), LineDelta: logicalLineCount(plan.after) - logicalLineCount(plan.before),
 	}
 	if preview {
-		result.PreviewOf = requested
+		result.Preview = true
+		result.Diff, result.DiffTruncated = boundedEditDiff(filepath.Base(plan.target), requested, plan.changes)
 	}
+	result.Timing.TotalMs = time.Since(started).Milliseconds()
 	return result, nil
+}
+
+func resolveFileEditLockTarget(path, action string) (string, error) {
+	clean := normalizeMachinePathInput(strings.TrimSpace(path))
+	if clean == "" || strings.IndexByte(clean, 0) >= 0 || !filepath.IsAbs(clean) {
+		return "", ErrAbsolutePathRequired
+	}
+	clean = filepath.Clean(clean)
+	if action != "create" {
+		return ResolveMachinePath(clean)
+	}
+	parent, err := ResolveMachinePath(filepath.Dir(clean))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, filepath.Base(clean)), nil
+}
+
+func fileEditLock(path string) *sync.Mutex {
+	key := filepath.Clean(normalizeMachinePathInput(strings.TrimSpace(path)))
+	if runtime.GOOS == "windows" {
+		key = strings.ToLower(key)
+	}
+	hasher := fnv.New32a()
+	_, _ = hasher.Write([]byte(key))
+	return &fileEditLocks[hasher.Sum32()%uint32(len(fileEditLocks))]
+}
+
+func changedByteCount(edits []fileTextEdit, changed bool) int64 {
+	if !changed {
+		return 0
+	}
+	var total int64
+	for _, edit := range edits {
+		total += int64(len(edit.OldText) + len(edit.NewText))
+	}
+	return total
+}
+
+func newlineCount(value []byte) int { return bytes.Count(value, []byte{'\n'}) }
+
+func logicalLineCount(value []byte) int {
+	if len(value) == 0 {
+		return 0
+	}
+	count := newlineCount(value)
+	if value[len(value)-1] != '\n' {
+		count++
+	}
+	return count
 }
 
 func planFileEdit(input fileEditParams, action string) (plannedFileEdit, error) {
@@ -157,7 +240,7 @@ func planFileEdit(input fileEditParams, action string) (plannedFileEdit, error) 
 	}
 	beforeSHA := sha256String(before)
 	if input.ExpectedFileSHA256 != beforeSHA {
-		return plannedFileEdit{}, ErrRevisionConflict
+		return plannedFileEdit{}, &FileRevisionError{Path: filepath.Clean(target), Expected: input.ExpectedFileSHA256, Actual: beforeSHA}
 	}
 	edits := input.Edits
 	if action == "replace" {
@@ -308,16 +391,27 @@ func boundedEditDiff(path, action string, edits []fileTextEdit) (string, bool) {
 		if !appendDiff("@@ " + action + " @@\n") {
 			return b.String(), true
 		}
-		for _, line := range strings.Split(edit.OldText, "\n") {
-			if edit.OldText != "" && !appendDiff("-"+strings.TrimSuffix(line, "\r")+"\n") {
-				return b.String(), true
-			}
+		if edit.OldText != "" && !appendDiffLines("-", edit.OldText, appendDiff) {
+			return b.String(), true
 		}
-		for _, line := range strings.Split(edit.NewText, "\n") {
-			if edit.NewText != "" && !appendDiff("+"+strings.TrimSuffix(line, "\r")+"\n") {
-				return b.String(), true
-			}
+		if edit.NewText != "" && !appendDiffLines("+", edit.NewText, appendDiff) {
+			return b.String(), true
 		}
 	}
 	return b.String(), false
+}
+
+func appendDiffLines(prefix, value string, appendDiff func(string) bool) bool {
+	for len(value) > 0 {
+		line := value
+		if index := strings.IndexByte(value, '\n'); index >= 0 {
+			line, value = value[:index], value[index+1:]
+		} else {
+			value = ""
+		}
+		if !appendDiff(prefix + strings.TrimSuffix(line, "\r") + "\n") {
+			return false
+		}
+	}
+	return true
 }

@@ -76,9 +76,17 @@ type CapabilityCallError struct {
 	Code      string
 	Message   string
 	Retryable bool
+	Details   map[string]any
 }
 
-func (e *CapabilityCallError) Error() string { return e.Code + ": " + e.Message }
+func (e *CapabilityCallError) Error() string {
+	message := e.Code + ": " + e.Message
+	if len(e.Details) > 0 {
+		raw, _ := json.Marshal(e.Details)
+		message += " " + string(raw)
+	}
+	return message
+}
 
 type MachineView struct {
 	MachineID            string                            `json:"machineId"`
@@ -355,6 +363,7 @@ func (s *Service) CapabilityCatalog() []protocolv1.CapabilityDescriptor {
 }
 
 func (s *Service) CallCapability(ctx context.Context, ownerID, machineID, capability, action string, params any) (map[string]any, error) {
+	started := time.Now()
 	record, err := s.store.GetMachine(ctx, ownerID, machineID)
 	if err != nil {
 		return nil, capabilityCallTransportError(err, capability, action)
@@ -374,21 +383,28 @@ func (s *Service) CallCapability(ctx context.Context, ownerID, machineID, capabi
 	if err != nil {
 		return nil, err
 	}
+	traceID, err := security.RandomOpaque("tr_")
+	if err != nil {
+		return nil, err
+	}
 	deadline := s.now().UTC().Add(capabilityCallTimeout(capability, action))
 	if current, ok := ctx.Deadline(); ok && current.Before(deadline) {
 		deadline = current
 	}
 	callCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
+	dispatchStarted := time.Now()
 	response, err := s.registry.Call(callCtx, machineID, protocolv1.CapabilityRequest{
 		MessageType: protocolv1.MessageCapabilityRequest,
 		RequestId:   requestID,
+		TraceId:     traceID,
 		Capability:  capability,
 		Action:      action,
 		Params:      normalized,
 		Deadline:    protocolv1.Timestamp(deadline),
 		Timestamp:   protocolv1.Timestamp(s.now()),
 	})
+	nodeReturnedAt := time.Now()
 	if err != nil {
 		return nil, capabilityCallTransportError(err, capability, action)
 	}
@@ -396,12 +412,39 @@ func (s *Service) CallCapability(ctx context.Context, ownerID, machineID, capabi
 		if shouldAuditCapability(capability, action) {
 			_ = s.audit(ctx, store.AuditEntry{OwnerID: ownerID, MachineID: machineID, ActorType: "owner", ActorID: ownerID, Action: capability + "." + action, Result: "rejected", Detail: map[string]any{"errorCode": response.Error.Code}, CreatedAt: s.now().UTC()})
 		}
-		return nil, &CapabilityCallError{Code: response.Error.Code, Message: response.Error.Message, Retryable: response.Error.Retryable}
+		return nil, &CapabilityCallError{Code: response.Error.Code, Message: response.Error.Message, Retryable: response.Error.Retryable, Details: response.Error.Details}
 	}
 	if shouldAuditCapability(capability, action) {
 		_ = s.audit(ctx, store.AuditEntry{OwnerID: ownerID, MachineID: machineID, ActorType: "owner", ActorID: ownerID, Action: capability + "." + action, Result: "success", CreatedAt: s.now().UTC()})
 	}
+	if response.Result == nil {
+		response.Result = map[string]any{}
+	}
+	attachCapabilityCallMetadata(response.Result, requestID, traceID)
+	timing, _ := response.Result["timing"].(map[string]any)
+	if timing == nil {
+		timing = map[string]any{}
+	}
+	timing["hubPreDispatchMs"] = dispatchStarted.Sub(started).Milliseconds()
+	timing["nodeRoundTripMs"] = nodeReturnedAt.Sub(dispatchStarted).Milliseconds()
+	timing["hubTotalMs"] = time.Since(started).Milliseconds()
+	response.Result["timing"] = timing
 	return response.Result, nil
+}
+
+func attachCapabilityCallMetadata(result map[string]any, requestID, traceID string) {
+	jobRequestID, hasJobRequestID := result["requestId"].(string)
+	jobTraceID, hasJobTraceID := result["traceId"].(string)
+	if hasJobRequestID && strings.TrimSpace(jobRequestID) != "" {
+		result["callRequestId"] = requestID
+	} else {
+		result["requestId"] = requestID
+	}
+	if hasJobTraceID && strings.TrimSpace(jobTraceID) != "" {
+		result["callTraceId"] = traceID
+	} else {
+		result["traceId"] = traceID
+	}
 }
 
 func capabilityCallTransportError(err error, capability, action string) error {
@@ -427,9 +470,9 @@ func isRetryableCapability(capability, action string) bool {
 		"job.control/watch",
 		"git.repository/status", "git.repository/diff", "git.repository/stagedDiff", "git.repository/log", "git.repository/show", "git.repository/branches", "git.repository/currentBranch", "git.repository/worktrees",
 		"working.context/get", "working.context/plan.get", "working.context/plan.list", "working.context/markdown.list", "working.context/markdown.read", "working.context/progress.watch",
-		"browser.automation/pages.list", "browser.automation/snapshot", "browser.automation/events",
+		"browser.automation/readiness", "browser.automation/pages.list", "browser.automation/snapshot", "browser.automation/events",
 		"screenshot.capture/listDisplays", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/listWindows", "screenshot.capture/window",
-		"agent.control/routing.status", "agent.control/providers.list", "agent.control/models.list", "agent.control/provider.capabilities", "agent.control/projects.list", "agent.control/skills.list", "agent.control/hooks.list", "agent.control/permissions.list", "agent.control/plugins.list", "agent.control/plugins.installed", "agent.control/plugins.get", "agent.control/plugin.skill.read", "agent.control/mcp.status.list", "agent.control/session.list", "agent.control/session.get", "agent.control/session.watch", "agent.control/session.result", "agent.control/session.goal.get":
+		"agent.control/routing.status", "agent.control/providers.list", "agent.control/provider.readiness", "agent.control/models.list", "agent.control/provider.capabilities", "agent.control/projects.list", "agent.control/skills.list", "agent.control/hooks.list", "agent.control/permissions.list", "agent.control/plugins.list", "agent.control/plugins.installed", "agent.control/plugins.get", "agent.control/plugin.skill.read", "agent.control/mcp.status.list", "agent.control/session.list", "agent.control/session.get", "agent.control/session.watch", "agent.control/session.result", "agent.control/session.goal.get":
 		return true
 	default:
 		return false

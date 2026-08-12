@@ -746,6 +746,27 @@ func (a *ClaudeCodeAdapter) SetArchived(sessionID string, archived bool) (map[st
 	return map[string]any{"sessionId": sessionID, "archived": archived, "nativeHistoryPreserved": true}, nil
 }
 
+func (a *ClaudeCodeAdapter) Delete(sessionID string) (map[string]any, error) {
+	a.mu.Lock()
+	record := a.sessions[sessionID]
+	if record == nil {
+		a.mu.Unlock()
+		return nil, node.ErrAgentSessionNotFound
+	}
+	if _, busy := a.active[sessionID]; busy {
+		a.mu.Unlock()
+		return nil, fmt.Errorf("cannot delete an active Claude Code session")
+	}
+	delete(a.sessions, sessionID)
+	if err := a.saveIndexLocked(); err != nil {
+		a.sessions[sessionID] = record
+		a.mu.Unlock()
+		return nil, err
+	}
+	a.mu.Unlock()
+	return map[string]any{"sessionId": sessionID, "deleted": true, "nativeHistoryPreserved": true}, nil
+}
+
 func (a *ClaudeCodeAdapter) Watch(ctx context.Context, sessionID string, cursor int64, wait time.Duration) ([]AgentEvent, int64, int64, error) {
 	if wait < 0 || wait > 15*time.Second {
 		return nil, cursor, 0, fmt.Errorf("wait is outside the allowed range")

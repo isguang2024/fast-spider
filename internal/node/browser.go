@@ -66,9 +66,26 @@ func (m *BrowserManager) Available() error {
 }
 
 func (m *BrowserManager) Execute(ctx context.Context, action string, params map[string]any) (map[string]any, error) {
+	started := time.Now()
+	if action == "readiness" {
+		status, _ := m.sidecar.AvailabilityStatus()
+		return map[string]any{"state": status.State, "ready": status.State == "ready", "reasonCode": status.ReasonCode, "checkedAt": status.CheckedAt, "cacheHit": status.CacheHit, "timing": map[string]any{"totalMs": status.TotalMs}}, nil
+	}
+	queueStarted := time.Now()
 	m.actionMu.Lock()
 	defer m.actionMu.Unlock()
-	return m.executeLocked(ctx, action, params)
+	queueMs := time.Since(queueStarted).Milliseconds()
+	result, err := m.executeLocked(ctx, action, params)
+	if result != nil {
+		timing, _ := result["timing"].(map[string]any)
+		if timing == nil {
+			timing = map[string]any{}
+		}
+		timing["queueMs"] = queueMs
+		timing["totalMs"] = time.Since(started).Milliseconds()
+		result["timing"] = timing
+	}
+	return result, err
 }
 
 func (m *BrowserManager) executeLocked(ctx context.Context, action string, params map[string]any) (map[string]any, error) {
@@ -116,7 +133,7 @@ func (m *BrowserManager) launch(ctx context.Context, params map[string]any) (map
 	}
 	launchParams["screenshotDir"] = screenshotDir
 
-	result, err := m.sidecar.Call(ctx, "launch", launchParams)
+	result, sidecarTiming, err := m.sidecar.CallWithTiming(ctx, "launch", launchParams)
 	if err != nil {
 		_ = os.RemoveAll(sessionDir)
 		return nil, err
@@ -131,6 +148,7 @@ func (m *BrowserManager) launch(ctx context.Context, params map[string]any) (map
 		LastUsedAt:       now,
 	}
 	m.mu.Unlock()
+	attachBrowserSidecarTiming(result, sidecarTiming)
 	return result, nil
 }
 
@@ -146,7 +164,7 @@ func (m *BrowserManager) executeSessionAction(ctx context.Context, action string
 
 	callParams := cloneMap(params)
 
-	result, err := m.sidecar.Call(ctx, action, callParams)
+	result, sidecarTiming, err := m.sidecar.CallWithTiming(ctx, action, callParams)
 	if err != nil {
 		code := browserErrorCode(err)
 		if ctx.Err() != nil || errors.Is(err, ErrBrowserSidecarLost) || errors.Is(err, ErrBrowserUnavailable) || code == "BROWSER_SIDECAR_LOST" || code == "BROWSER_SESSION_NOT_FOUND" {
@@ -156,6 +174,7 @@ func (m *BrowserManager) executeSessionAction(ctx context.Context, action string
 	}
 	if action == "close" {
 		m.clearSession(session)
+		attachBrowserSidecarTiming(result, sidecarTiming)
 		return result, nil
 	}
 	m.mu.Lock()
@@ -163,12 +182,23 @@ func (m *BrowserManager) executeSessionAction(ctx context.Context, action string
 		m.session.LastUsedAt = time.Now().UTC()
 	}
 	m.mu.Unlock()
+	attachBrowserSidecarTiming(result, sidecarTiming)
 	return result, nil
 }
 
+func attachBrowserSidecarTiming(result map[string]any, timing browserCallTiming) {
+	if result == nil {
+		return
+	}
+	result["timing"] = map[string]any{"startupMs": timing.StartupMs, "operationMs": timing.OperationMs, "coldStart": timing.ColdStart}
+}
+
 func (m *BrowserManager) ExecuteScreenshot(ctx context.Context, params map[string]any, consume func(path, logicalName, contentType string) (map[string]any, error)) (map[string]any, error) {
+	started := time.Now()
+	queueStarted := time.Now()
 	m.actionMu.Lock()
 	defer m.actionMu.Unlock()
+	queueMs := time.Since(queueStarted).Milliseconds()
 	result, err := m.executeLocked(ctx, "screenshot", params)
 	if err != nil {
 		return nil, err
@@ -194,6 +224,13 @@ func (m *BrowserManager) ExecuteScreenshot(ctx context.Context, params map[strin
 	for key, value := range artifact {
 		out[key] = value
 	}
+	timing, _ := out["timing"].(map[string]any)
+	if timing == nil {
+		timing = map[string]any{}
+	}
+	timing["queueMs"] = queueMs
+	timing["totalMs"] = time.Since(started).Milliseconds()
+	out["timing"] = timing
 	return out, nil
 }
 

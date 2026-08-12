@@ -62,55 +62,252 @@ func (c *Client) fileReadV2(ctx context.Context, params map[string]any) (fileRea
 	if !info.Mode().IsRegular() {
 		return fileReadResult{}, ErrNotRegularFile
 	}
-	fileSHA256, err := hashAndValidateTextFile(ctx, file, info.Size())
+	scan, err := scanFileRead(ctx, file, info.Size(), input)
 	if err != nil {
 		return fileReadResult{}, err
 	}
 	result := fileReadResult{
-		Path: filepath.Clean(target), Size: info.Size(), FileSHA256: fileSHA256, Encoding: "utf-8",
+		Path: filepath.Clean(target), Size: info.Size(), FileSHA256: scan.fileSHA256, Encoding: "utf-8",
 	}
 	if input.selection == fileReadStat {
 		result.StatOnly = true
 		return result, nil
 	}
+	raw, err := validateReturnedUTF8(scan.content, scan.bounded || scan.endOffset < info.Size() || scan.startOffset+int64(len(scan.content)) < scan.endOffset)
+	if err != nil {
+		return fileReadResult{}, err
+	}
 	if input.selection == fileReadBytes {
-		return readFileByteSelection(file, info.Size(), input.params, result)
-	}
-
-	var startOffset, endOffset int64
-	var actualLineStart int
-	if input.selection == fileReadTail {
-		startOffset, endOffset, actualLineStart, _, err = locateTailLines(ctx, file, info.Size(), input.lineCount)
-	} else {
-		startOffset, endOffset, actualLineStart, _, err = locateForwardLines(ctx, file, info.Size(), input.lineStart, input.lineCount)
-	}
-	if err != nil {
-		return fileReadResult{}, err
-	}
-	raw, bounded, err := readFileRange(file, startOffset, endOffset, maxFileReadBytes)
-	if err != nil {
-		return fileReadResult{}, err
-	}
-	raw, err = validateReturnedUTF8(raw, bounded || startOffset+int64(len(raw)) < endOffset)
-	if err != nil {
-		return fileReadResult{}, err
+		content := string(raw)
+		result.Content = &content
+		result.Offset = scan.startOffset
+		result.BytesRead = int64(len(raw))
+		result.SourceBytesRead = int64(len(raw))
+		result.Truncated = scan.startOffset > 0 || scan.endOffset < info.Size() || scan.bounded
+		result.ChunkSHA256 = hashBytes(raw)
+		return result, nil
 	}
 	contentBytes := raw
 	sourceBytes := len(raw)
 	renderTruncated := false
-	if input.params.IncludeLineNumbers && actualLineStart > 0 {
-		contentBytes, sourceBytes, renderTruncated = renderNumberedLines(raw, actualLineStart, maxFileReadBytes)
+	if input.params.IncludeLineNumbers && scan.lineStart > 0 {
+		contentBytes, sourceBytes, renderTruncated = renderNumberedLines(raw, scan.lineStart, maxFileReadBytes)
 	}
 	content := string(contentBytes)
 	result.Content = &content
-	result.Offset = startOffset
+	result.Offset = scan.startOffset
 	result.BytesRead = int64(len(contentBytes))
 	result.SourceBytesRead = int64(sourceBytes)
-	result.LineStart = actualLineStart
-	result.LineEnd = returnedLineEnd(raw[:sourceBytes], actualLineStart)
-	result.Truncated = startOffset > 0 || endOffset < info.Size() || bounded || renderTruncated || sourceBytes < len(raw)
+	result.LineStart = scan.lineStart
+	result.LineEnd = returnedLineEnd(raw[:sourceBytes], scan.lineStart)
+	result.Truncated = scan.startOffset > 0 || scan.endOffset < info.Size() || scan.bounded || renderTruncated || sourceBytes < len(raw)
 	result.ChunkSHA256 = hashBytes(contentBytes)
 	return result, nil
+}
+
+type fileReadScan struct {
+	fileSHA256  string
+	content     []byte
+	startOffset int64
+	endOffset   int64
+	lineStart   int
+	bounded     bool
+}
+
+func scanFileRead(ctx context.Context, file *os.File, size int64, input normalizedFileRead) (fileReadScan, error) {
+	result := fileReadScan{endOffset: size}
+	hasher := sha256.New()
+	buffer := make([]byte, fileReadScanBufferSize)
+	pending := make([]byte, 0, utf8.UTFMax)
+	selected := make([]byte, 0, maxFileReadBytes+1)
+	tailWindow := make([]byte, 0, maxFileReadBytes+1)
+	currentLine := 1
+	lastWasNewline := false
+	if input.selection == fileReadBytes {
+		result.startOffset = input.params.Offset
+		if result.startOffset > size {
+			result.startOffset = size
+		}
+		result.endOffset = result.startOffset + input.params.Limit
+		if result.endOffset > size {
+			result.endOffset = size
+		}
+	} else if input.selection == fileReadLineRange {
+		result.startOffset = -1
+		if input.lineStart == 1 && size > 0 {
+			result.startOffset = 0
+			result.lineStart = 1
+		}
+	}
+	var offset int64
+	for offset < size {
+		if err := ctx.Err(); err != nil {
+			return fileReadScan{}, err
+		}
+		toRead := len(buffer)
+		if remaining := size - offset; remaining < int64(toRead) {
+			toRead = int(remaining)
+		}
+		n, err := file.ReadAt(buffer[:toRead], offset)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return fileReadScan{}, err
+		}
+		if n == 0 {
+			return fileReadScan{}, io.ErrUnexpectedEOF
+		}
+		chunk := buffer[:n]
+		if bytes.IndexByte(chunk, 0) >= 0 {
+			return fileReadScan{}, ErrBinaryOrInvalidUTF8
+		}
+		_, _ = hasher.Write(chunk)
+		combined := make([]byte, 0, len(pending)+len(chunk))
+		combined = append(combined, pending...)
+		combined = append(combined, chunk...)
+		last := offset+int64(n) >= size
+		validPrefix, suffix, ok := splitValidUTF8Chunk(combined, last)
+		if !ok || !utf8.Valid(validPrefix) {
+			return fileReadScan{}, ErrBinaryOrInvalidUTF8
+		}
+		pending = append(pending[:0], suffix...)
+
+		switch input.selection {
+		case fileReadBytes:
+			chunkStart, chunkEnd := offset, offset+int64(n)
+			start, end := maxInt64(chunkStart, result.startOffset), minInt64(chunkEnd, result.endOffset)
+			if start < end {
+				selected = append(selected, chunk[start-chunkStart:end-chunkStart]...)
+			}
+		case fileReadLineRange:
+			lastRequested := input.lineStart + input.lineCount - 1
+			for index, value := range chunk {
+				absolute := offset + int64(index)
+				if currentLine >= input.lineStart && currentLine <= lastRequested {
+					if len(selected) <= maxFileReadBytes {
+						selected = append(selected, value)
+					}
+				}
+				lastWasNewline = value == '\n'
+				if value != '\n' {
+					continue
+				}
+				if currentLine == lastRequested {
+					result.endOffset = absolute + 1
+				}
+				currentLine++
+				if currentLine == input.lineStart && absolute+1 < size {
+					result.startOffset = absolute + 1
+					result.lineStart = input.lineStart
+				}
+			}
+		case fileReadTail:
+			tailWindow = append(tailWindow, chunk...)
+			if len(tailWindow) > maxFileReadBytes+1 {
+				tailWindow = append([]byte(nil), tailWindow[len(tailWindow)-(maxFileReadBytes+1):]...)
+				result.bounded = true
+			}
+			currentLine += bytes.Count(chunk, []byte{'\n'})
+			lastWasNewline = chunk[len(chunk)-1] == '\n'
+		}
+		offset += int64(n)
+	}
+	if len(pending) != 0 {
+		return fileReadScan{}, ErrBinaryOrInvalidUTF8
+	}
+	result.fileSHA256 = "sha256:" + hex.EncodeToString(hasher.Sum(nil))
+	if input.selection == fileReadStat {
+		return result, nil
+	}
+	if input.selection == fileReadTail {
+		return finishTailScan(result, tailWindow, size, currentLine, lastWasNewline, input.lineCount), nil
+	}
+	if input.selection == fileReadLineRange && (result.startOffset < 0 || result.lineStart == 0) {
+		result.startOffset, result.endOffset, selected = size, size, nil
+	}
+	if len(selected) > maxFileReadBytes {
+		selected = selected[:maxFileReadBytes]
+		result.bounded = true
+	}
+	result.content = selected
+	return result, nil
+}
+
+func finishTailScan(result fileReadScan, window []byte, size int64, totalLines int, lastWasNewline bool, requested int) fileReadScan {
+	if size == 0 {
+		result.content, result.startOffset, result.endOffset = []byte{}, 0, 0
+		return result
+	}
+	if lastWasNewline {
+		totalLines--
+	}
+	windowStart := size - int64(len(window))
+	if windowStart > 0 {
+		// The bounded tail window may begin in the middle of a UTF-8 rune. The
+		// complete file was already validated during the same scan, so discard
+		// only leading continuation bytes before selecting line boundaries.
+		trimmed := 0
+		for trimmed < len(window) && trimmed < utf8.UTFMax && !utf8.RuneStart(window[trimmed]) {
+			trimmed++
+		}
+		if trimmed > 0 {
+			window = window[trimmed:]
+			windowStart += int64(trimmed)
+			result.bounded = true
+		}
+	}
+	starts := []int{0}
+	if windowStart > 0 {
+		starts = starts[:0]
+		if newline := bytes.IndexByte(window, '\n'); newline >= 0 && newline+1 < len(window) {
+			starts = append(starts, newline+1)
+		}
+	}
+	for index, value := range window {
+		if value == '\n' && index+1 < len(window) && (len(starts) == 0 || starts[len(starts)-1] != index+1) {
+			starts = append(starts, index+1)
+		}
+	}
+	if len(starts) == 0 {
+		starts = []int{0}
+		result.bounded = result.bounded || windowStart > 0
+	}
+	startIndex := 0
+	if len(starts) > requested {
+		startIndex = len(starts) - requested
+	}
+	contentStart := starts[startIndex]
+	result.startOffset = windowStart + int64(contentStart)
+	result.endOffset = size
+	result.lineStart = totalLines - (len(starts) - startIndex) + 1
+	if result.lineStart < 1 {
+		result.lineStart = 1
+	}
+	result.content = append([]byte(nil), window[contentStart:]...)
+	if len(result.content) > maxFileReadBytes {
+		// Tail selectors must keep the end of the file. If one logical line is
+		// larger than the response budget, drop its prefix and advance to a UTF-8
+		// rune boundary instead of truncating the EOF side.
+		trimmed := len(result.content) - maxFileReadBytes
+		for trimmed < len(result.content) && !utf8.RuneStart(result.content[trimmed]) {
+			trimmed++
+		}
+		result.content = append([]byte(nil), result.content[trimmed:]...)
+		result.startOffset += int64(trimmed)
+		result.bounded = true
+	}
+	return result
+}
+
+func maxInt64(left, right int64) int64 {
+	if left > right {
+		return left
+	}
+	return right
+}
+func minInt64(left, right int64) int64 {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func normalizeFileRead(params map[string]any) (normalizedFileRead, error) {

@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestBrowserSidecarRejectsLegacyPolicyProtocol(t *testing.T) {
@@ -26,6 +28,32 @@ func TestBrowserSidecarRejectsLegacyPolicyProtocol(t *testing.T) {
 	}
 	if err := NewBrowserSidecar(dir, nil).Available(); !errors.Is(err, ErrBrowserUnavailable) || !strings.Contains(err.Error(), "protocol") {
 		t.Fatalf("legacy sidecar error=%v", err)
+	}
+}
+
+func TestBrowserAvailabilityWaitsForHandshakeOutcome(t *testing.T) {
+	sidecar := NewBrowserSidecar(t.TempDir(), nil)
+	sidecar.beginStart()
+	var wait sync.WaitGroup
+	wait.Add(1)
+	result := make(chan struct {
+		status browserAvailabilityStatus
+		err    error
+	}, 1)
+	go func() {
+		defer wait.Done()
+		status, err := sidecar.AvailabilityStatus()
+		result <- struct {
+			status browserAvailabilityStatus
+			err    error
+		}{status: status, err: err}
+	}()
+	time.Sleep(20 * time.Millisecond)
+	sidecar.finishStart(errors.New("synthetic handshake failure"))
+	wait.Wait()
+	got := <-result
+	if got.err == nil || got.status.State != "blocked" || got.status.ReasonCode != "sidecar_start_failed" {
+		t.Fatalf("availability=%+v err=%v", got.status, got.err)
 	}
 }
 

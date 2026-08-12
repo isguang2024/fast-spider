@@ -123,8 +123,11 @@ if [[ "$mode" == "full" ]]; then
     echo "==> Race detector: SKIP (requires amd64 + CGO; current $goos/$goarch CGO_ENABLED=$cgo)"
   fi
 
-  if [[ "$(go env GOOS)" == "windows" ]]; then
-    browser_gate_dir="$(mktemp -d "${TMPDIR:-/tmp}/fast-spider-browser-gate.XXXXXX")"
+	if [[ "$(go env GOOS)" == "windows" ]]; then
+		wsl_distribution="${FAST_SPIDER_WSL_DISTRIBUTION:-Ubuntu-24.04}"
+		wsl_test_cwd="${FAST_SPIDER_WSL_TEST_CWD:-V:/tmp/fast-spider-wsl-gate}"
+		step "Real WSL runtime E2E" env FAST_SPIDER_WSL_E2E=1 FAST_SPIDER_WSL_DISTRIBUTION="$wsl_distribution" FAST_SPIDER_WSL_TEST_CWD="$wsl_test_cwd" go test ./internal/node -run TestRealWSLExecutionRuntimeAndTiming -count=1
+		browser_gate_dir="$(mktemp -d "${TMPDIR:-/tmp}/fast-spider-browser-gate.XXXXXX")"
     trap 'rm -rf -- "$browser_gate_dir"' EXIT
     browser_component_version="$(node -p "require('./sidecar/browser/package.json').fastSpider.componentVersion || ''")"
     [[ "$browser_component_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid Browser componentVersion: $browser_component_version" >&2; exit 1; }

@@ -216,4 +216,12 @@
 ## Manual Acceptance Notes
 
 人工验收补充写在本区；自动同步不得覆盖。
+
+### 2026-08-13 — 0.4.9 性能/稳定性阶段验收
+
+- 旧 0.4.8 真实 Node 基线：file_edit 单行/50行/editMany/约 500 KiB 文件响应分别 462/1845/1281/486 bytes；大文件 around read P50/P95/max=744/780/780ms；Fast Spider code_search 内部 P50/P95/max=43/59/59ms，Tibbs TypeScript include=127/148/148ms；host shell=1567/1592/1592ms，手工 wsl.exe shell=1521/2880/2880ms；routing.status=986/2238/2238ms，session.list=1000/1128/1128ms，5 次无 Prompt session.create=1040/1138/1138ms 且全部清理；Browser launch/open/snapshot/close 已采集真实旧版基线。
+- 实现专项：Node/Agent/NodeUI/Hub/Protocol 定向测试 PASS；真实 Ubuntu-24.04 WSL 使用 V: 盘、空格和中文 cwd 连续 20 次执行，queue P50/P95/max=176/217/230ms、run=107/124/139ms，文件创建/读取/清理和 process-tree cancel PASS。
+- 独立审计终态：file/search、WSL/runtime、Browser 网络策略/组件识别均 PASS；Agent create 容量回收、delete 续做与 Claude discovery 三项阻断修复后复验 PASS。
+- 最终 `scripts/release-gate.sh --full` Job `j-e6lkxw` exitCode=0，终态 `PASS: Fast Spider full release gate`；覆盖全仓 test/vet、Windows/Linux build、真实 WSL、打包 Browser、真实 CC Switch/Claude/Codex 与 Local Bridge product E2E。当前 Go 为 windows/386 且 CGO=0，因此 race 按 Gate 规则 SKIP；fuzz seeds 已由全仓测试执行。
+- 发布前剩余：正式 commit/push、从干净 commit 构建、生产 backup/deploy/Node self-update、新版同机 benchmark 与 FastSpider_FS 自举验收。
  

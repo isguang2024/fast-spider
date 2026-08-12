@@ -35,6 +35,53 @@ type browserSidecarError struct {
 	Retryable bool   `json:"retryable"`
 }
 
+type BrowserAvailabilityError struct {
+	ReasonCode string
+	Err        error
+}
+
+func (e *BrowserAvailabilityError) Error() string { return e.Err.Error() }
+func (e *BrowserAvailabilityError) Unwrap() error { return e.Err }
+
+type browserAvailabilityStatus struct {
+	State      string `json:"state"`
+	ReasonCode string `json:"reasonCode"`
+	CheckedAt  string `json:"checkedAt"`
+	CacheHit   bool   `json:"cacheHit"`
+	TotalMs    int64  `json:"totalMs"`
+}
+
+type browserAvailabilityCache struct {
+	status    browserAvailabilityStatus
+	err       error
+	expiresAt time.Time
+}
+
+type browserAvailabilityHolder struct {
+	mu    sync.Mutex
+	cache browserAvailabilityCache
+}
+
+// NodeUI builds a lightweight local capability client on every diagnostics
+// refresh. Keep availability probes keyed by the resolved component directory
+// so those clients share the same 30s/5s cache without sharing browser sessions.
+var browserAvailabilityHolders sync.Map
+
+func browserAvailabilityFor(dir string) *browserAvailabilityHolder {
+	key := filepath.Clean(strings.TrimSpace(dir))
+	if key == "." || key == "" {
+		key = "<not-configured>"
+	}
+	value, _ := browserAvailabilityHolders.LoadOrStore(key, &browserAvailabilityHolder{})
+	return value.(*browserAvailabilityHolder)
+}
+
+type browserCallTiming struct {
+	StartupMs   int64
+	OperationMs int64
+	ColdStart   bool
+}
+
 type browserSidecarResponse struct {
 	ID     string               `json:"id"`
 	OK     bool                 `json:"ok"`
@@ -46,12 +93,16 @@ type BrowserSidecar struct {
 	dir    string
 	logger *slog.Logger
 
-	startMu sync.Mutex
-	mu      sync.Mutex
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	pending map[string]chan browserSidecarResponse
-	closed  bool
+	startMu   sync.Mutex
+	mu        sync.Mutex
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	pending   map[string]chan browserSidecarResponse
+	ready     bool
+	starting  bool
+	startDone chan struct{}
+	startErr  error
+	closed    bool
 }
 
 func ResolveBrowserSidecarDir(explicit string) string {
@@ -116,21 +167,78 @@ func browserSidecarEnvironment(dir string) []string {
 }
 
 func (s *BrowserSidecar) Available() error {
+	_, err := s.AvailabilityStatus()
+	return err
+}
+
+func (s *BrowserSidecar) AvailabilityStatus() (browserAvailabilityStatus, error) {
+	started := time.Now()
+	s.mu.Lock()
+	running := s.cmd != nil && s.ready && !s.closed
+	starting := s.starting
+	startDone := s.startDone
+	s.mu.Unlock()
+	if running {
+		return browserAvailabilityStatus{State: "ready", ReasonCode: "ready", CheckedAt: time.Now().UTC().Format(time.RFC3339Nano), CacheHit: true}, nil
+	}
+	if starting && startDone != nil {
+		select {
+		case <-startDone:
+		case <-time.After(5 * time.Second):
+			return browserAvailabilityStatus{State: "blocked", ReasonCode: "probe_timeout", CheckedAt: time.Now().UTC().Format(time.RFC3339Nano), TotalMs: time.Since(started).Milliseconds()}, &BrowserAvailabilityError{ReasonCode: "probe_timeout", Err: fmt.Errorf("%w: browser sidecar startup is still in progress", ErrBrowserUnavailable)}
+		}
+		s.mu.Lock()
+		running = s.cmd != nil && s.ready && !s.closed
+		startErr := s.startErr
+		s.mu.Unlock()
+		if running {
+			return browserAvailabilityStatus{State: "ready", ReasonCode: "ready", CheckedAt: time.Now().UTC().Format(time.RFC3339Nano), CacheHit: true, TotalMs: time.Since(started).Milliseconds()}, nil
+		}
+		if startErr != nil {
+			return browserAvailabilityStatus{State: "blocked", ReasonCode: "sidecar_start_failed", CheckedAt: time.Now().UTC().Format(time.RFC3339Nano), TotalMs: time.Since(started).Milliseconds()}, startErr
+		}
+	}
+	holder := browserAvailabilityFor(s.dir)
+	holder.mu.Lock()
+	defer holder.mu.Unlock()
+	now := time.Now().UTC()
+	if now.Before(holder.cache.expiresAt) {
+		status := holder.cache.status
+		status.CacheHit = true
+		return status, holder.cache.err
+	}
+	err := s.probeAvailability()
+	status := browserAvailabilityStatus{State: "ready", ReasonCode: "ready", CheckedAt: now.Format(time.RFC3339Nano), TotalMs: time.Since(started).Milliseconds()}
+	ttl := 30 * time.Second
+	if err != nil {
+		status.State = "blocked"
+		status.ReasonCode = "sidecar_start_failed"
+		var availabilityErr *BrowserAvailabilityError
+		if errors.As(err, &availabilityErr) {
+			status.ReasonCode = availabilityErr.ReasonCode
+		}
+		ttl = 5 * time.Second
+	}
+	holder.cache = browserAvailabilityCache{status: status, err: err, expiresAt: now.Add(ttl)}
+	return status, err
+}
+
+func (s *BrowserSidecar) probeAvailability() error {
 	if s.dir == "" {
-		return fmt.Errorf("%w: sidecar directory is not configured", ErrBrowserUnavailable)
+		return &BrowserAvailabilityError{ReasonCode: "not_configured", Err: fmt.Errorf("%w: sidecar directory is not configured", ErrBrowserUnavailable)}
 	}
 	nodePath, err := s.nodeExecutable()
 	if err != nil {
-		return err
+		return &BrowserAvailabilityError{ReasonCode: "node_runtime_missing", Err: err}
 	}
 	for _, required := range []string{"package.json", "index.mjs", filepath.Join("node_modules", "playwright", "package.json")} {
 		if info, err := os.Stat(filepath.Join(s.dir, required)); err != nil || (required == "index.mjs" && !info.Mode().IsRegular()) {
-			return fmt.Errorf("%w: missing %s", ErrBrowserUnavailable, required)
+			return &BrowserAvailabilityError{ReasonCode: "sidecar_files_missing", Err: fmt.Errorf("%w: browser sidecar files are incomplete", ErrBrowserUnavailable)}
 		}
 	}
 	packageRaw, err := os.ReadFile(filepath.Join(s.dir, "package.json"))
 	if err != nil {
-		return fmt.Errorf("%w: browser sidecar package metadata is unavailable", ErrBrowserUnavailable)
+		return &BrowserAvailabilityError{ReasonCode: "sidecar_files_missing", Err: fmt.Errorf("%w: browser sidecar package metadata is unavailable", ErrBrowserUnavailable)}
 	}
 	var packageMetadata struct {
 		FastSpider struct {
@@ -138,7 +246,7 @@ func (s *BrowserSidecar) Available() error {
 		} `json:"fastSpider"`
 	}
 	if json.Unmarshal(packageRaw, &packageMetadata) != nil || packageMetadata.FastSpider.SidecarProtocol != browserSidecarProtocolVersion {
-		return fmt.Errorf("%w: browser sidecar protocol %q is incompatible with required %s", ErrBrowserUnavailable, packageMetadata.FastSpider.SidecarProtocol, browserSidecarProtocolVersion)
+		return &BrowserAvailabilityError{ReasonCode: "protocol_mismatch", Err: fmt.Errorf("%w: browser sidecar protocol is incompatible", ErrBrowserUnavailable)}
 	}
 	probeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -146,16 +254,33 @@ func (s *BrowserSidecar) Available() error {
 	probe.Dir = s.dir
 	probe.Env = browserSidecarEnvironment(s.dir)
 	if err := probe.Run(); err != nil {
-		return fmt.Errorf("%w: managed Chromium is not installed", ErrBrowserUnavailable)
+		reason := "chromium_missing"
+		if errors.Is(probeCtx.Err(), context.DeadlineExceeded) {
+			reason = "probe_timeout"
+		}
+		return &BrowserAvailabilityError{ReasonCode: reason, Err: fmt.Errorf("%w: managed Chromium probe failed", ErrBrowserUnavailable)}
 	}
 	return nil
 }
 
 func (s *BrowserSidecar) Call(ctx context.Context, action string, params map[string]any) (map[string]any, error) {
+	result, _, err := s.CallWithTiming(ctx, action, params)
+	return result, err
+}
+
+func (s *BrowserSidecar) CallWithTiming(ctx context.Context, action string, params map[string]any) (map[string]any, browserCallTiming, error) {
+	s.mu.Lock()
+	coldStart := s.cmd == nil || !s.ready || s.closed
+	s.mu.Unlock()
+	startupStarted := time.Now()
 	if err := s.ensureStarted(ctx); err != nil {
-		return nil, err
+		return nil, browserCallTiming{StartupMs: time.Since(startupStarted).Milliseconds(), ColdStart: coldStart}, err
 	}
-	return s.callStarted(ctx, action, params)
+	timing := browserCallTiming{StartupMs: time.Since(startupStarted).Milliseconds(), ColdStart: coldStart}
+	operationStarted := time.Now()
+	result, err := s.callStarted(ctx, action, params)
+	timing.OperationMs = time.Since(operationStarted).Milliseconds()
+	return result, timing, err
 }
 
 func (s *BrowserSidecar) callStarted(ctx context.Context, action string, params map[string]any) (map[string]any, error) {
@@ -219,7 +344,7 @@ func (s *BrowserSidecar) ensureStarted(ctx context.Context) error {
 	defer s.startMu.Unlock()
 
 	s.mu.Lock()
-	if s.cmd != nil && !s.closed {
+	if s.cmd != nil && s.ready && !s.closed {
 		s.mu.Unlock()
 		return nil
 	}
@@ -227,9 +352,14 @@ func (s *BrowserSidecar) ensureStarted(ctx context.Context) error {
 	if err := s.Available(); err != nil {
 		return err
 	}
+	s.beginStart()
+	failStart := func(err error) error {
+		s.finishStart(err)
+		return err
+	}
 	nodePath, err := s.nodeExecutable()
 	if err != nil {
-		return err
+		return failStart(err)
 	}
 	cmd := exec.Command(nodePath, filepath.Join(s.dir, "index.mjs"))
 	cmd.Dir = s.dir
@@ -237,21 +367,21 @@ func (s *BrowserSidecar) ensureStarted(ctx context.Context) error {
 	configureProcessTree(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return err
+		return failStart(err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
-		return err
+		return failStart(err)
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		_ = stdin.Close()
-		return err
+		return failStart(err)
 	}
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
-		return fmt.Errorf("start browser sidecar: %w", err)
+		return failStart(fmt.Errorf("start browser sidecar: %w", err))
 	}
 
 	s.mu.Lock()
@@ -263,7 +393,7 @@ func (s *BrowserSidecar) ensureStarted(ctx context.Context) error {
 	}
 	s.cmd = cmd
 	s.stdin = stdin
-	s.closed = false
+	s.ready = false
 	s.mu.Unlock()
 	go s.readResponses(stdout)
 	go s.readStderr(stderr)
@@ -274,13 +404,55 @@ func (s *BrowserSidecar) ensureStarted(ctx context.Context) error {
 	result, err := s.callStarted(probeCtx, "runtime.status", map[string]any{})
 	if err != nil {
 		_ = s.Close(context.Background())
-		return fmt.Errorf("browser sidecar handshake failed: %w", err)
+		startErr := fmt.Errorf("browser sidecar handshake failed: %w", err)
+		s.finishStart(startErr)
+		return startErr
 	}
 	if version, _ := result["protocolVersion"].(string); version != browserSidecarProtocolVersion {
 		_ = s.Close(context.Background())
-		return fmt.Errorf("browser sidecar protocol mismatch: %q", version)
+		startErr := fmt.Errorf("browser sidecar protocol mismatch: %q", version)
+		s.finishStart(startErr)
+		return startErr
 	}
+	s.mu.Lock()
+	if s.cmd == cmd && !s.closed {
+		s.ready = true
+	}
+	s.mu.Unlock()
+	s.finishStart(nil)
 	return nil
+}
+
+func (s *BrowserSidecar) beginStart() {
+	s.mu.Lock()
+	s.starting = true
+	s.startDone = make(chan struct{})
+	s.startErr = nil
+	s.closed = false
+	s.mu.Unlock()
+}
+
+func (s *BrowserSidecar) finishStart(err error) {
+	if err != nil {
+		now := time.Now().UTC()
+		availabilityErr := &BrowserAvailabilityError{ReasonCode: "sidecar_start_failed", Err: err}
+		holder := browserAvailabilityFor(s.dir)
+		holder.mu.Lock()
+		holder.cache = browserAvailabilityCache{
+			status: browserAvailabilityStatus{State: "blocked", ReasonCode: "sidecar_start_failed", CheckedAt: now.Format(time.RFC3339Nano)},
+			err:    availabilityErr, expiresAt: now.Add(5 * time.Second),
+		}
+		holder.mu.Unlock()
+	}
+	s.mu.Lock()
+	done := s.startDone
+	s.starting = false
+	s.startDone = nil
+	s.startErr = err
+	s.mu.Unlock()
+	if done != nil {
+		close(done)
+	}
 }
 
 func (s *BrowserSidecar) readResponses(reader io.Reader) {
@@ -334,6 +506,7 @@ func (s *BrowserSidecar) waitProcess(cmd *exec.Cmd) {
 	}
 	s.cmd = nil
 	s.stdin = nil
+	s.ready = false
 	pending := s.pending
 	s.pending = make(map[string]chan browserSidecarResponse)
 	s.mu.Unlock()
@@ -358,6 +531,7 @@ func (s *BrowserSidecar) Close(ctx context.Context) error {
 	s.closed = true
 	s.cmd = nil
 	s.stdin = nil
+	s.ready = false
 	pending := s.pending
 	s.pending = make(map[string]chan browserSidecarResponse)
 	s.mu.Unlock()

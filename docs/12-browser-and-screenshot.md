@@ -16,10 +16,10 @@ Fast Spider 的浏览器能力用于开发页面验证、自动化测试、结�
 - 每个 Node 最多一个受管 Browser Session、最多 8 个页面；Session 空闲 10 分钟自动关闭。
 - Browser 的远程边界是 Machine；不叠加目录授权或 Origin 白名单。
 - Node 可访问的公网、localhost 和私网 HTTP/HTTPS/WS/WSS 目标均可访问；是否可达由 Node 的 OS、网络和浏览器运行时决定。
-- `browser.automation` 1.1 固定动作：`launch/close/page.open/page.navigate/page.close/pages.list/click/type/press/wait/batch/snapshot/screenshot/events`。
+- `browser.automation` 1.2 固定动作：`readiness/launch/close/page.open/page.navigate/page.close/pages.list/click/type/press/wait/batch/snapshot/screenshot/events`。
 - 不公开任意 JavaScript、`evaluate`、CDP、Playwright 原始 API、Trace/HAR/视频。
 - 页面截图和 OS 截图由 Node 直接上传到 Hub Temporary Presentation Relay；Relay 不写数据库，系统临时目录最多保留 20 分钟，MCP 直接返回图片内容与短期下载资源。
-- Sidecar、Playwright 或受管 Chromium 缺失时，Node 不宣告 `browser.automation`。
+- Node 始终宣告 `browser.automation`，使缺失运行时也能调用 `readiness` 得到 `not_configured/node_runtime_missing/sidecar_files_missing/protocol_mismatch/chromium_missing/probe_timeout/sidecar_start_failed` 等稳定原因。正缓存 30 秒、负缓存 5 秒，不重复探测/下载。
 
 ## 3. 浏览器控制模式
 
@@ -51,8 +51,11 @@ Session 状态为 `created → launching → ready → running_action → closin
 - 交互：`click`、`type`、`press`、`wait`；优先使用 `snapshot` 返回的短期 `ref`。
 - 批量：`batch` 在 Node 内连续执行 1-32 个 `click/type/press/wait`，可用 `snapshotAfter=true` 一次返回新快照，减少 MCP 往返。
 - 诊断：`events`，返回有界 console/network/download 摘要。
+- 预检：`readiness` 不创建 Browser Session，返回 ready/state/reasonCode/cacheHit/checkedAt/totalMs。
 
 `snapshot` 同时返回完整 `ariaSnapshot`、面向 Agent 的 `agentSnapshot` 和结构化 `refs`。每次新 snapshot 会轮换当前页面 ref；页面导航或元素脱离 DOM 后旧 ref 立即返回 `BROWSER_REF_STALE`，不等待普通 Locator 超时。Client 不传可执行回调；当没有可用 ref 时，Locator 仍可使用 role、label、text、testId 和受限纯 CSS，不支持 XPath。
+
+所有真实 Browser 动作返回 `timing={startupMs,operationMs,coldStart,queueMs,totalMs}`；sidecar 内已有 locator/action/wait 等细分计时会原样保留。计时只在响应中出现，不建立长期高频 trace。
 
 ## 6. 网络策略
 

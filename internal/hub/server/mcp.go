@@ -78,12 +78,18 @@ type fileEditEntry struct {
 	NewText string `json:"newText" jsonschema:"replacement text; may be empty"`
 }
 
+type executionRuntimeInput struct {
+	Kind         string `json:"kind" jsonschema:"host or wsl; omitted runtime defaults to host"`
+	Distribution string `json:"distribution,omitempty" jsonschema:"optional WSL distribution name; only valid when kind is wsl"`
+}
+
 type shellRunInput struct {
-	MachineID      string   `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	Argv           []string `json:"argv" jsonschema:"explicit executable and arguments; no implicit shell interpolation. Windows cmd example: [\"cmd.exe\",\"/d\",\"/s\",\"/c\",\"mkdir\",\"V:\\\\target\"]"`
-	Cwd            string   `json:"cwd" jsonschema:"absolute working directory on the Node machine. On Windows, bare drive V: is accepted as shorthand for drive root V:\\; drive-relative forms such as V:folder remain invalid"`
-	TimeoutSeconds int64    `json:"timeoutSeconds,omitempty" jsonschema:"0 uses the default; maximum 1800 seconds"`
-	IdempotencyKey string   `json:"idempotencyKey" jsonschema:"12-128 character key preventing duplicate process starts on retries"`
+	MachineID      string                 `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	Argv           []string               `json:"argv" jsonschema:"explicit executable and arguments; no implicit shell interpolation. Windows cmd example: [\"cmd.exe\",\"/d\",\"/s\",\"/c\",\"mkdir\",\"V:\\\\target\"]"`
+	Cwd            string                 `json:"cwd" jsonschema:"absolute working directory on the Node machine. On Windows, bare drive V: is accepted as shorthand for drive root V:\\; drive-relative forms such as V:folder remain invalid"`
+	Runtime        *executionRuntimeInput `json:"runtime,omitempty" jsonschema:"optional host or WSL execution runtime; cwd remains a Windows absolute path"`
+	TimeoutSeconds int64                  `json:"timeoutSeconds,omitempty" jsonschema:"0 uses the default; maximum 1800 seconds"`
+	IdempotencyKey string                 `json:"idempotencyKey" jsonschema:"12-128 character key preventing duplicate process starts on retries"`
 }
 
 type jobWatchInput struct {
@@ -112,12 +118,13 @@ type gitControlInput struct {
 }
 
 type buildControlInput struct {
-	MachineID      string   `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	Action         string   `json:"action" jsonschema:"run"`
-	Argv           []string `json:"argv" jsonschema:"build executable and arguments"`
-	Cwd            string   `json:"cwd" jsonschema:"absolute working directory on the Node machine. On Windows, bare drive V: is accepted as shorthand for drive root V:\\; drive-relative forms such as V:folder remain invalid"`
-	TimeoutSeconds int64    `json:"timeoutSeconds,omitempty" jsonschema:"0 uses the default; maximum 1800 seconds"`
-	IdempotencyKey string   `json:"idempotencyKey" jsonschema:"12-128 character idempotency key"`
+	MachineID      string                 `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	Action         string                 `json:"action" jsonschema:"run"`
+	Argv           []string               `json:"argv" jsonschema:"build executable and arguments"`
+	Cwd            string                 `json:"cwd" jsonschema:"absolute working directory on the Node machine. On Windows, bare drive V: is accepted as shorthand for drive root V:\\; drive-relative forms such as V:folder remain invalid"`
+	Runtime        *executionRuntimeInput `json:"runtime,omitempty" jsonschema:"optional host or WSL execution runtime; cwd remains a Windows absolute path"`
+	TimeoutSeconds int64                  `json:"timeoutSeconds,omitempty" jsonschema:"0 uses the default; maximum 1800 seconds"`
+	IdempotencyKey string                 `json:"idempotencyKey" jsonschema:"12-128 character idempotency key"`
 }
 
 type artifactGetInput struct {
@@ -185,7 +192,7 @@ type browserBatchStepInput struct {
 
 type browserControlInput struct {
 	MachineID        string                  `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	Action           string                  `json:"action" jsonschema:"launch,close,page.open,page.navigate,page.close,pages.list,click,type,press,wait,batch,snapshot,screenshot,events"`
+	Action           string                  `json:"action" jsonschema:"readiness,launch,close,page.open,page.navigate,page.close,pages.list,click,type,press,wait,batch,snapshot,screenshot,events"`
 	BrowserSessionID string                  `json:"browserSessionId,omitempty" jsonschema:"opaque managed browser session ID"`
 	PageID           string                  `json:"pageId,omitempty" jsonschema:"opaque managed page ID"`
 	Engine           string                  `json:"engine,omitempty" jsonschema:"managed chromium"`
@@ -219,12 +226,14 @@ type screenshotTakeInput struct {
 
 type aiControlInput struct {
 	MachineID             string              `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	Action                string              `json:"action" jsonschema:"routing.status,providers.list,models.list,provider.capabilities,projects.list,skills.list,hooks.list,permissions.list,plugins.list,plugins.installed,plugins.get,plugin.skill.read,mcp.status.list,session.list,session.get,session.create,session.send,session.steer,session.respond,session.watch,session.cancel,session.result,session.rename,session.archive,session.unarchive,session.delete,session.fork,session.compact,session.rollback,session.goal.get,session.goal.set,session.goal.clear,session.settings.update,session.review"`
+	Action                string              `json:"action" jsonschema:"routing.status,providers.list,provider.readiness,models.list,provider.capabilities,projects.list,skills.list,hooks.list,permissions.list,plugins.list,plugins.installed,plugins.get,plugin.skill.read,mcp.status.list,session.list,session.get,session.create,session.send,session.steer,session.respond,session.watch,session.cancel,session.result,session.rename,session.archive,session.unarchive,session.delete,session.fork,session.compact,session.rollback,session.goal.get,session.goal.set,session.goal.clear,session.settings.update,session.review"`
 	ProviderID            string              `json:"providerId,omitempty" jsonschema:"AI harness provider ID; defaults to codex"`
 	AppType               string              `json:"appType,omitempty" jsonschema:"routing.status app scope: claude,codex,or claude-desktop; omit to inspect all supported CC Switch routes"`
 	SessionID             string              `json:"sessionId,omitempty" jsonschema:"opaque provider session ID; optional thread scope for mcp.status.list"`
 	TurnID                string              `json:"turnId,omitempty" jsonschema:"active turn ID for cancel and required expected active turn ID for session.steer"`
 	RequestID             string              `json:"requestId,omitempty" jsonschema:"pending Codex server request ID required for session.respond"`
+	IdempotencyKey        string              `json:"idempotencyKey,omitempty" jsonschema:"12-128 character key required for session.create; with session.delete and no sessionId, identifies an unresolved create reservation to release"`
+	Mode                  string              `json:"mode,omitempty" jsonschema:"provider.readiness mode: passive or safe"`
 	Prompt                string              `json:"prompt,omitempty" jsonschema:"text input for session.create/session.send/session.steer; a turn may instead contain skills/images/localImages/mentions"`
 	WorkingDirectory      string              `json:"workingDirectory,omitempty" jsonschema:"absolute working directory on the Node machine; required for session.create and used by session.list/send/fork/settings plus skills/plugins discovery when supplied"`
 	Model                 string              `json:"model,omitempty" jsonschema:"optional provider model ID"`
@@ -250,7 +259,7 @@ type aiControlInput struct {
 	Mentions              []map[string]string `json:"mentions,omitempty" jsonschema:"native Codex mention inputs with name and absolute path for session.create/session.send/session.steer"`
 	ImageDetail           string              `json:"imageDetail,omitempty" jsonschema:"image detail for all image/localImage inputs: auto,low,high,original"`
 	OutputSchema          map[string]any      `json:"outputSchema,omitempty" jsonschema:"bounded JSON Schema object constraining the final assistant message for session.create/session.send"`
-	Decision              string              `json:"decision,omitempty" jsonschema:"session.respond decision for approval/elicitation: accept,decline,cancel"`
+	Decision              string              `json:"decision,omitempty" jsonschema:"session.respond approval/elicitation decision accept,decline,cancel; or confirm_not_created for session.delete by idempotencyKey after reconciling session.list"`
 	Answers               map[string][]string `json:"answers,omitempty" jsonschema:"session.respond answers keyed by Codex request_user_input question ID"`
 	ResponseContent       map[string]any      `json:"responseContent,omitempty" jsonschema:"session.respond structured content when accepting an MCP elicitation"`
 	PageCursor            string              `json:"pageCursor,omitempty" jsonschema:"opaque pagination cursor for permissions.list or mcp.status.list"`
@@ -304,32 +313,56 @@ type capabilityListOutput struct {
 }
 
 type fileReadOutput struct {
-	Path            string  `json:"path"`
-	Content         *string `json:"content,omitempty"`
-	Offset          int64   `json:"offset"`
-	BytesRead       int64   `json:"bytesRead"`
-	SourceBytesRead int64   `json:"sourceBytesRead,omitempty"`
-	Size            int64   `json:"size"`
-	LineStart       int     `json:"lineStart,omitempty"`
-	LineEnd         int     `json:"lineEnd,omitempty"`
-	StatOnly        bool    `json:"statOnly,omitempty"`
-	Truncated       bool    `json:"truncated"`
-	ChunkSHA256     string  `json:"chunkSha256,omitempty"`
-	FileSHA256      string  `json:"fileSha256"`
-	Encoding        string  `json:"encoding"`
+	RequestID       string           `json:"requestId,omitempty"`
+	TraceID         string           `json:"traceId,omitempty"`
+	Path            string           `json:"path"`
+	Content         *string          `json:"content,omitempty"`
+	Offset          int64            `json:"offset"`
+	BytesRead       int64            `json:"bytesRead"`
+	SourceBytesRead int64            `json:"sourceBytesRead,omitempty"`
+	Size            int64            `json:"size"`
+	LineStart       int              `json:"lineStart,omitempty"`
+	LineEnd         int              `json:"lineEnd,omitempty"`
+	StatOnly        bool             `json:"statOnly,omitempty"`
+	Truncated       bool             `json:"truncated"`
+	ChunkSHA256     string           `json:"chunkSha256,omitempty"`
+	FileSHA256      string           `json:"fileSha256"`
+	Encoding        string           `json:"encoding"`
+	Timing          capabilityTiming `json:"timing"`
 }
 
 type fileEditOutput struct {
-	Path          string `json:"path"`
-	Action        string `json:"action"`
-	PreviewOf     string `json:"previewOf,omitempty"`
-	BeforeSHA256  string `json:"beforeSha256,omitempty"`
-	AfterSHA256   string `json:"afterSha256"`
-	Bytes         int64  `json:"bytes"`
-	Changed       bool   `json:"changed"`
-	EditCount     int    `json:"editCount,omitempty"`
-	Diff          string `json:"diff"`
-	DiffTruncated bool   `json:"diffTruncated"`
+	RequestID     string         `json:"requestId,omitempty"`
+	TraceID       string         `json:"traceId,omitempty"`
+	Success       bool           `json:"success"`
+	Changed       bool           `json:"changed"`
+	Path          string         `json:"path"`
+	Operation     string         `json:"operation"`
+	Preview       bool           `json:"preview,omitempty"`
+	EditsApplied  int            `json:"editsApplied"`
+	OldSHA256     string         `json:"oldSha256,omitempty"`
+	NewSHA256     string         `json:"newSha256"`
+	BytesChanged  int64          `json:"bytesChanged"`
+	LineDelta     int            `json:"lineDelta"`
+	Timing        fileEditTiming `json:"timing"`
+	Warnings      []string       `json:"warnings,omitempty"`
+	Diff          string         `json:"diff,omitempty"`
+	DiffTruncated bool           `json:"diffTruncated,omitempty"`
+}
+
+type fileEditTiming struct {
+	TotalMs          int64 `json:"totalMs"`
+	NodeExecutionMs  int64 `json:"nodeExecutionMs"`
+	HubPreDispatchMs int64 `json:"hubPreDispatchMs"`
+	NodeRoundTripMs  int64 `json:"nodeRoundTripMs"`
+	HubTotalMs       int64 `json:"hubTotalMs"`
+}
+
+type capabilityTiming struct {
+	NodeExecutionMs  int64 `json:"nodeExecutionMs"`
+	HubPreDispatchMs int64 `json:"hubPreDispatchMs"`
+	NodeRoundTripMs  int64 `json:"nodeRoundTripMs"`
+	HubTotalMs       int64 `json:"hubTotalMs"`
 }
 
 type mcpJobEvent struct {
@@ -341,6 +374,11 @@ type mcpJobEvent struct {
 
 type jobOutput struct {
 	JobID           string        `json:"jobId"`
+	RequestID       string        `json:"requestId,omitempty"`
+	TraceID         string        `json:"traceId,omitempty"`
+	CallRequestID   string        `json:"callRequestId,omitempty"`
+	CallTraceID     string        `json:"callTraceId,omitempty"`
+	Runtime         string        `json:"runtime"`
 	State           string        `json:"state"`
 	ExitCode        *int          `json:"exitCode,omitempty"`
 	Error           string        `json:"error,omitempty"`
@@ -349,6 +387,19 @@ type jobOutput struct {
 	TruncatedBefore int64         `json:"truncatedBefore,omitempty"`
 	StartedAt       string        `json:"startedAt"`
 	FinishedAt      string        `json:"finishedAt,omitempty"`
+	Timing          jobTiming     `json:"timing"`
+}
+
+type jobTiming struct {
+	NodeReceivedAt   string `json:"nodeReceivedAt"`
+	ProcessStartedAt string `json:"processStartedAt"`
+	FinishedAt       string `json:"finishedAt,omitempty"`
+	QueueMs          int64  `json:"queueMs"`
+	RunMs            int64  `json:"runMs,omitempty"`
+	NodeExecutionMs  int64  `json:"nodeExecutionMs"`
+	HubPreDispatchMs int64  `json:"hubPreDispatchMs"`
+	NodeRoundTripMs  int64  `json:"nodeRoundTripMs"`
+	HubTotalMs       int64  `json:"hubTotalMs"`
 }
 
 type codeSearchMatch struct {
@@ -366,13 +417,24 @@ type codeSearchContextLine struct {
 }
 
 type codeSearchOutput struct {
-	Matches        []codeSearchMatch `json:"matches"`
-	Files          []string          `json:"files,omitempty"`
-	ScannedFiles   int               `json:"scannedFiles"`
-	Engine         string            `json:"engine"`
-	FallbackReason string            `json:"fallbackReason,omitempty"`
-	ElapsedMs      int64             `json:"elapsedMs"`
-	Truncated      bool              `json:"truncated"`
+	RequestID         string            `json:"requestId,omitempty"`
+	TraceID           string            `json:"traceId,omitempty"`
+	Matches           []codeSearchMatch `json:"matches"`
+	Files             []string          `json:"files,omitempty"`
+	ScannedFiles      int               `json:"scannedFiles"`
+	MatchedFiles      int               `json:"matchedFiles"`
+	BytesScanned      int64             `json:"bytesScanned"`
+	MatchCount        int               `json:"matchCount"`
+	SkippedFiles      int               `json:"skippedFiles,omitempty"`
+	SkipReasons       map[string]int    `json:"skipReasons,omitempty"`
+	Incomplete        bool              `json:"incomplete,omitempty"`
+	Engine            string            `json:"engine"`
+	FallbackReason    string            `json:"fallbackReason,omitempty"`
+	PrimaryElapsedMs  int64             `json:"primaryElapsedMs"`
+	FallbackElapsedMs int64             `json:"fallbackElapsedMs"`
+	ElapsedMs         int64             `json:"elapsedMs"`
+	Truncated         bool              `json:"truncated"`
+	Timing            capabilityTiming  `json:"timing"`
 }
 
 func (s *Server) newMCPHandler() http.Handler {
@@ -488,6 +550,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		if err != nil {
 			return nil, codeSearchOutput{}, err
 		}
+		adaptRollingCodeSearchResult(result)
 		var out codeSearchOutput
 		if err := decodeCapabilityResult(result, &out); err != nil {
 			return nil, codeSearchOutput{}, err
@@ -512,9 +575,15 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		if err != nil {
 			return nil, fileEditOutput{}, err
 		}
+		adaptRollingFileEditResult(result, action)
 		var out fileEditOutput
 		if err := decodeCapabilityResult(result, &out); err != nil {
 			return nil, fileEditOutput{}, err
+		}
+		if action != "preview" {
+			// Keep MCP lean during rolling upgrades even when an older Node still sends diff text.
+			out.Diff = ""
+			out.DiffTruncated = false
 		}
 		return nil, out, nil
 	})
@@ -524,7 +593,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		Description: "Start a bounded non-interactive process on the selected Node using an explicit argv array and absolute cwd. The process runs as the same OS user as Fast Spider Node.",
 		Annotations: toolAnnotations(false, true, false, true),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input shellRunInput) (*mcp.CallToolResult, jobOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "shell.exec", "run", map[string]any{"argv": input.Argv, "cwd": input.Cwd, "timeoutSeconds": input.TimeoutSeconds, "idempotencyKey": input.IdempotencyKey})
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "shell.exec", "run", map[string]any{"argv": input.Argv, "cwd": input.Cwd, "runtime": input.Runtime, "timeoutSeconds": input.TimeoutSeconds, "idempotencyKey": input.IdempotencyKey})
 		if err != nil {
 			return nil, jobOutput{}, err
 		}
@@ -587,7 +656,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		Description: "Run one bounded build/test command on the selected Node using an explicit argv array and absolute cwd.",
 		Annotations: toolAnnotations(false, true, false, true),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input buildControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "build.exec", input.Action, map[string]any{"argv": input.Argv, "cwd": input.Cwd, "timeoutSeconds": input.TimeoutSeconds, "idempotencyKey": input.IdempotencyKey})
+		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "build.exec", input.Action, map[string]any{"argv": input.Argv, "cwd": input.Cwd, "runtime": input.Runtime, "timeoutSeconds": input.TimeoutSeconds, "idempotencyKey": input.IdempotencyKey})
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
@@ -627,6 +696,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input aiControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		params := map[string]any{
 			"providerId": input.ProviderID, "appType": input.AppType, "sessionId": input.SessionID, "turnId": input.TurnID, "requestId": input.RequestID,
+			"idempotencyKey": input.IdempotencyKey, "mode": input.Mode,
 			"prompt": input.Prompt, "workingDirectory": input.WorkingDirectory, "model": input.Model,
 			"thinking": input.Thinking, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds,
 			"limit": input.Limit, "pageCursor": input.PageCursor, "mcpDetail": input.MCPDetail, "name": input.Name, "forceReload": input.ForceReload,
@@ -638,6 +708,9 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 			"effort": input.Effort, "permissions": input.Permissions, "personality": input.Personality, "serviceTier": input.ServiceTier, "summary": input.Summary,
 			"reviewType": input.ReviewType, "reviewDelivery": input.ReviewDelivery, "reviewBranch": input.ReviewBranch,
 			"reviewSha": input.ReviewSHA, "reviewTitle": input.ReviewTitle, "reviewInstructions": input.ReviewInstructions,
+		}
+		if input.Action == "session.create" && (len(input.IdempotencyKey) < 12 || len(input.IdempotencyKey) > 128) {
+			return nil, genericCapabilityOutput{}, fmt.Errorf("idempotencyKey is required for session.create and must be 12 to 128 characters")
 		}
 		if len(input.Skills) > 0 {
 			converted := make([]map[string]any, len(input.Skills))
@@ -733,6 +806,61 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	return server
 }
 
+func adaptRollingCodeSearchResult(result map[string]any) {
+	legacyReasons := map[string]string{
+		"platform_unsupported": "RG_NOT_FOUND", "component_missing": "RG_NOT_FOUND", "component_invalid": "RG_NOT_FOUND",
+		"start_failed": "RG_START_FAILED", "command_failed": "RG_EXIT_ERROR", "output_limit": "RG_OUTPUT_LIMIT", "output_invalid": "RG_OUTPUT_INVALID",
+	}
+	if reason, _ := result["fallbackReason"].(string); reason != "" {
+		if stable := legacyReasons[reason]; stable != "" {
+			result["fallbackReason"] = stable
+		}
+	}
+}
+
+func adaptRollingFileEditResult(result map[string]any, requestedAction string) {
+	if _, current := result["newSha256"]; current {
+		return
+	}
+	afterSHA, legacy := result["afterSha256"].(string)
+	if !legacy || afterSHA == "" {
+		return
+	}
+	operation, _ := result["action"].(string)
+	if operation == "" {
+		operation = requestedAction
+	}
+	if operation == "preview" {
+		result["preview"] = true
+		if previewOf, _ := result["previewOf"].(string); previewOf != "" {
+			operation = previewOf
+		}
+	}
+	result["success"] = true
+	result["operation"] = operation
+	result["oldSha256"] = result["beforeSha256"]
+	result["newSha256"] = afterSHA
+	if editCount, ok := numberAsInt64(result["editCount"]); ok {
+		result["editsApplied"] = editCount
+	} else {
+		result["editsApplied"] = int64(0)
+	}
+	result["bytesChanged"] = int64(0)
+	if operation == "create" {
+		if bytes, ok := numberAsInt64(result["bytes"]); ok {
+			result["bytesChanged"] = bytes
+		}
+	}
+	result["lineDelta"] = int64(0)
+	result["warnings"] = []string{"rolling_upgrade_metadata_partial"}
+	delete(result, "action")
+	delete(result, "previewOf")
+	delete(result, "beforeSha256")
+	delete(result, "afterSha256")
+	delete(result, "bytes")
+	delete(result, "editCount")
+}
+
 const maxMCPPresentationImageBytes int64 = 8 << 20
 
 func (s *Server) presentationToolResult(ctx context.Context, ownerID string, result map[string]any) *mcp.CallToolResult {
@@ -823,7 +951,7 @@ func browserControlParams(input browserControlInput) map[string]any {
 	}
 
 	params := map[string]any{}
-	if input.Action != "launch" {
+	if input.Action != "launch" && input.Action != "readiness" {
 		params["browserSessionId"] = input.BrowserSessionID
 	}
 	if input.PageID != "" {

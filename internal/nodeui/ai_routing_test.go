@@ -65,6 +65,8 @@ func (f *fakeAIController) Control(_ context.Context, action string, params map[
 			},
 			{"appType": "claude", "available": false, "reason": "unsupported_schema", "schemaFingerprint": fingerprint, "error": aiSensitiveMarker},
 		}}, nil
+	case "provider.readiness":
+		return map[string]any{"readyForSessionCreate": true, "reasonCode": "READY", "elapsedMs": int64(12)}, nil
 	default:
 		return map[string]any{}, nil
 	}

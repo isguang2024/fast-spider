@@ -3,3 +3,4 @@
 package node
 
 func maybeEnsureWSLKeepAlive([]string) error { return nil }
+func stopWSLKeepAlives()                     {}

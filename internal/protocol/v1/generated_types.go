@@ -16,6 +16,7 @@ type CapabilityRequest struct {
 	Params      map[string]any `json:"params"`
 	RequestId   string         `json:"requestId"`
 	Timestamp   string         `json:"timestamp"`
+	TraceId     string         `json:"traceId,omitempty"`
 }
 
 type CapabilityResponse struct {
@@ -24,6 +25,7 @@ type CapabilityResponse struct {
 	RequestId   string         `json:"requestId"`
 	Result      map[string]any `json:"result,omitempty"`
 	Timestamp   string         `json:"timestamp"`
+	TraceId     string         `json:"traceId,omitempty"`
 }
 
 type ClientHello struct {
@@ -74,9 +76,10 @@ type NodeReady struct {
 }
 
 type ProtocolError struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	Retryable bool   `json:"retryable"`
+	Code      string         `json:"code"`
+	Details   map[string]any `json:"details,omitempty"`
+	Message   string         `json:"message"`
+	Retryable bool           `json:"retryable"`
 }
 
 type ServerHello struct {

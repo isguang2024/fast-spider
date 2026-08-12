@@ -1,4 +1,4 @@
-# 测试策略（0.4.8）
+# 测试策略（0.4.9）
 
 发布门禁必须验证新的 Machine 边界，而不是旧目录授权模型。
 
@@ -25,13 +25,17 @@ Codex 发布门禁必须在实际选择的 runtime 上覆盖 create/get/list/wat
 15. Claude Code E2E 覆盖 CLI availability、stdin Prompt、原生 UUID、stream-json init/result、Session index、终态归一化和 RouteSnapshot；upstream 认证失效时允许正确终止为 failed，但 Runtime/lifecycle 必须完整。
 16. Windows 托盘、隐藏自启动、自更新 PID 等待链路通过。
 17. Task Workspace 覆盖默认 plan 兼容、Plan/Task CAS、Markdown managed block、symlink/junction 边界、progress.watch 与本地页面。
-18. code_search 2.0 同时覆盖受管 ripgrep 安全 argv/environment/JSON parser 与 native content/files/glob/context fallback。
-19. file_read 2.0 覆盖 byte/line/head/tail/around/stat/hash/bounds；file_edit 2.0 覆盖 create/replace/editMany/preview、CAS、全有或全无和原子替换。
+18. code_search 2.1 同时覆盖受管 ripgrep 安全 argv/environment/JSON parser、稳定原因码、扫描统计与 native content/files/glob/context fallback。
+19. file_read 2.0 覆盖单次扫描的 byte/line/head/tail/around/stat/hash/bounds；file_edit 2.1 覆盖元数据-only mutation、create/replace/editMany/preview、CAS、全有或全无和原子替换。
 20. 组件中心只接受 Browser/search-ripgrep allowlist；本地自检必须使用临时 data-dir 并确认 preview 不落盘、临时目录已清理。
 21. Node updater 必须覆盖 Ready/apply→consumed-current cleanup 启动顺序、Ready error 不清理、marker fail-safe、current 删除以及 future/old/unknown 分治。
 22. Windows legacy install cleanup 必须覆盖严格 temp/marker/backup 命名、Win32 reparse fail-closed、非递归、unknown/current/previous 保留、空目录删除、幂等和 NodeUI 启动时机；非 Windows 为 no-op。
 23. Release backup prune 必须覆盖严格标准文件名、绝对 non-reparse root、全部 Verify 后再删除、CreatedAt UTC 排序和 filename tie-break、损坏/匹配 symlink 零删除、历史异名/未知/子目录保留、keep/candidate bounds、幂等与部分删除结果。
 24. Release staging prune 必须覆盖 local/server 严格目录名、绝对 non-reparse root、plan/apply、old/current/future、unknown/普通文件保留、root/candidate/nested reparse 零删除、candidate/file/byte/depth bounds、删除前 TOCTOU 复核、幂等与部分删除事实。
+25. file_edit mutation 响应不得含 diff/正文，1 行、50 行、editMany、大文件响应大小不随目标文件增长；preview diff 必须 bounded，CAS 冲突 details 不含正文。
+26. code_search 必须覆盖 stable RG reason code、VCS ignore、通用生成目录、显式 include 优先、扫描统计与 primary/fallback timing。
+27. host/WSL runtime 必须覆盖任意盘符、空格/中文 cwd、真实执行/build/cancel、keepalive 数量/关闭边界与 Job trace/timing。
+28. Agent/Browser readiness 必须证明不产生 Prompt/Session，Codex/Claude create 幂等需覆盖并发、重启重放、spec 冲突、确定失败释放、in-doubt 按 key 显式对账释放、语义损坏 fail-closed、容量上限，以及 delete intent/Provider not-found 续做回收；Browser launch/open/click/type/snapshot/screenshot 必须带 timing，readiness 并发不得在握手完成前误报 ready。
 
 ## Release Gate
 
@@ -48,7 +52,7 @@ Codex 发布门禁必须在实际选择的 runtime 上覆盖 create/get/list/wat
 - Task Workspace 专项
 - Managed ripgrep/native 搜索专项
 - file_read 2.0 专项
-- file_edit 2.0 + MCP/Hub policy 专项
+- file_edit 2.1 + response-size/CAS/preview 专项
 - Node updater staging/cleanup、0.4.3 consumed-current cleanup 与 reconnect/backoff 临时 E2E
 - 0.4.4 Windows legacy install artifacts cleanup 专项
 - 0.4.5 release backup prune 专项

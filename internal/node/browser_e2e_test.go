@@ -16,14 +16,14 @@ import (
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
 
-func TestClientCapabilitiesOmitBrowserWhenChromiumMissing(t *testing.T) {
+func TestClientCapabilitiesAdvertiseBrowserReadinessWhenChromiumMissing(t *testing.T) {
 	sidecarDir := t.TempDir()
 	playwrightDir := filepath.Join(sidecarDir, "node_modules", "playwright")
 	if err := os.MkdirAll(playwrightDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	for name, contents := range map[string]string{
-		"package.json": `{"name":"test-browser-sidecar","type":"module"}`,
+		"package.json": `{"name":"test-browser-sidecar","type":"module","fastSpider":{"sidecarProtocol":"1.1"}}`,
 		"index.mjs":    "export {};\n",
 		filepath.Join("node_modules", "playwright", "package.json"): `{"name":"playwright","type":"module","exports":"./index.mjs"}`,
 		filepath.Join("node_modules", "playwright", "index.mjs"):    "export const chromium = { executablePath: () => '/definitely-missing-fast-spider-chromium' };\n",
@@ -44,10 +44,21 @@ func TestClientCapabilitiesOmitBrowserWhenChromiumMissing(t *testing.T) {
 	if err := client.browser.Available(); !errors.Is(err, ErrBrowserUnavailable) {
 		t.Fatalf("missing Chromium probe error=%v", err)
 	}
+	found := false
 	for _, capability := range client.Capabilities() {
 		if capability.CapabilityId == protocolv1.BrowserCapability.CapabilityId {
-			t.Fatal("Client advertised browser without a Chromium executable")
+			found = true
+			if len(capability.Actions) == 0 || capability.Actions[0] != "readiness" {
+				t.Fatalf("browser actions=%v", capability.Actions)
+			}
 		}
+	}
+	if !found {
+		t.Fatal("Client did not advertise diagnosable browser readiness")
+	}
+	readiness, err := client.browser.Execute(context.Background(), "readiness", nil)
+	if err != nil || readiness["reasonCode"] != "chromium_missing" || readiness["ready"] != false {
+		t.Fatalf("readiness=%v err=%v", readiness, err)
 	}
 }
 
@@ -107,6 +118,28 @@ document.querySelector('#submit').addEventListener('click',()=>{status.textConte
 	call := func(callCtx context.Context, action string, params map[string]any) (map[string]any, error) {
 		return client.browserControl(callCtx, action, params)
 	}
+	assertTiming := func(name string, result map[string]any) {
+		t.Helper()
+		timing, _ := result["timing"].(map[string]any)
+		for _, field := range []string{"queueMs", "startupMs", "operationMs", "totalMs"} {
+			value, ok := timing[field]
+			if !ok {
+				t.Fatalf("%s timing missing %s: %+v", name, field, timing)
+			}
+			switch number := value.(type) {
+			case int64:
+				if number < 0 {
+					t.Fatalf("%s timing %s=%d", name, field, number)
+				}
+			case int:
+				if number < 0 {
+					t.Fatalf("%s timing %s=%d", name, field, number)
+				}
+			default:
+				t.Fatalf("%s timing %s=%T(%v)", name, field, value, value)
+			}
+		}
+	}
 	launch, err := call(ctx, "launch", map[string]any{"headless": true})
 	if err != nil {
 		t.Fatalf("launch: %v", err)
@@ -115,6 +148,7 @@ document.querySelector('#submit').addEventListener('click',()=>{status.textConte
 	if sessionID == "" {
 		t.Fatalf("launch returned invalid session: %+v", launch)
 	}
+	assertTiming("launch", launch)
 
 	opened, err := call(ctx, "page.open", map[string]any{"browserSessionId": sessionID, "url": pageServer.URL + "/", "waitUntil": "domcontentloaded"})
 	if err != nil {
@@ -124,6 +158,7 @@ document.querySelector('#submit').addEventListener('click',()=>{status.textConte
 	if pageID == "" {
 		t.Fatalf("page.open returned invalid page: %+v", opened)
 	}
+	assertTiming("page.open", opened)
 	pageParams := func(extra map[string]any) map[string]any {
 		params := map[string]any{"browserSessionId": sessionID, "pageId": pageID}
 		for k, v := range extra {
@@ -147,6 +182,7 @@ document.querySelector('#submit').addEventListener('click',()=>{status.textConte
 	if err != nil {
 		t.Fatalf("initial snapshot: %v", err)
 	}
+	assertTiming("snapshot", initialSnapshot)
 	agentSnapshot, _ := initialSnapshot["agentSnapshot"].(string)
 	nameRef := findRef(initialSnapshot, "textbox", "Name")
 	submitRef := findRef(initialSnapshot, "button", "Apply")
@@ -164,6 +200,7 @@ document.querySelector('#submit').addEventListener('click',()=>{status.textConte
 	if err != nil {
 		t.Fatalf("ref batch: %v", err)
 	}
+	assertTiming("batch", batchResult)
 	if completed, _ := batchResult["completedSteps"].(float64); completed != 2 {
 		t.Fatalf("batch completedSteps=%v", batchResult["completedSteps"])
 	}
@@ -222,6 +259,7 @@ document.querySelector('#submit').addEventListener('click',()=>{status.textConte
 	if screenshot["artifactId"] != "art_browser_e2e" || consumedPath == "" {
 		t.Fatalf("screenshot=%+v", screenshot)
 	}
+	assertTiming("screenshot", screenshot)
 	if _, err := os.Stat(consumedPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("managed screenshot not cleaned: %v", err)
 	}

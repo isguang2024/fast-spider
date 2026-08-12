@@ -30,6 +30,9 @@ func sanitizeBrowserParams(action string, params map[string]any) (map[string]any
 	}
 	page := []string{"browserSessionId", "pageId", "timeoutMs"}
 	switch action {
+	case "readiness":
+		// Readiness is a process-local, read-only probe and accepts no session
+		// identifiers or browser action parameters.
 	case "launch":
 		add("engine", "headless", "viewport")
 	case "close", "pages.list":

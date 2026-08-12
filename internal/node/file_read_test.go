@@ -133,6 +133,13 @@ func TestFileReadV2LongLineAndLargeTailStayBounded(t *testing.T) {
 	if err != nil || tail.Content == nil || *tail.Content != "final-no-newline" || tail.LineEnd != 30002 || len(*tail.Content) > maxFileReadBytes {
 		t.Fatalf("bounded large tail=%+v err=%v", tail, err)
 	}
+
+	sentinel := "EOF-哨兵"
+	singleLongLine := []byte(strings.Repeat("界", maxFileReadBytes) + sentinel)
+	longTail, err := client.fileRead(context.Background(), map[string]any{"path": writeFileReadFixture(t, singleLongLine), "tailLines": 1})
+	if err != nil || longTail.Content == nil || !utf8.ValidString(*longTail.Content) || !longTail.Truncated || len(*longTail.Content) > maxFileReadBytes || !strings.HasSuffix(*longTail.Content, sentinel) || longTail.Offset <= 0 || longTail.ChunkSHA256 != hashBytes([]byte(*longTail.Content)) {
+		t.Fatalf("bounded UTF-8 long-line tail=%+v err=%v", longTail, err)
+	}
 }
 
 func TestFileReadV2RejectsAmbiguousAndOutOfRangeSelectors(t *testing.T) {

@@ -49,3 +49,12 @@
 - Node 仅在首次真实 WSL 工作命令时按发行版启动一个轻量 keepalive；后续 Shell/Build 复用同一 WSL VM。管理命令不创建 keepalive，显式 shutdown/terminate 后下一次工作命令可重新按需启动。
 - 专项 Windows Node tests、全仓 `go test ./... -count=1`、`go vet ./...`、Windows Node build 与 `git diff --check` 均通过；待生产 Node 受控更新后执行 45 秒空窗 + Docker uptime 不重置真实验收。
 
+### 2026-08-13 — 0.4.9 性能与稳定性
+
+- file_edit 2.1 将 mutation 响应收敛为固定元数据，preview 才返回 bounded hunk；保留 SHA CAS/原子替换并增加同路径并发串行化。
+- file_read 将 UTF-8 校验、原文件 SHA 与 byte/line/head/tail/around/stat 选择合并为一次有界扫描。
+- code_search 2.1 修复不兼容 glob 导致的 managed rg exit 2，新增稳定 RG reason code、VCS ignore/显式 include 语义、扫描/跳过/不完整统计与 primary/fallback timing。
+- Shell/Build/Job 1.1 正式支持 host/WSL runtime、Windows cwd 安全映射、bounded WSL keepalive、requestId/traceId 与 queue/run timing。
+- Agent 1.1 新增分层安全 readiness、Codex/Claude 持久 session.create 幂等、无 Session 的 in-doubt 显式对账释放与可续做 delete intent；Browser 1.2 新增缓存 readiness、稳定原因与 startup/operation/queue/total timing。
+- Hub/Node 所有能力响应新增紧凑通用 timing；NodeUI 诊断页增加 Agent/Browser readiness 与 WSL 可用性，仍不自动发送 Prompt。
+

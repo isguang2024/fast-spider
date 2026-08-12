@@ -204,7 +204,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		t.Fatalf("file_edit preview=%+v err=%v", previewResult, err)
 	}
 	previewRaw, _ := json.Marshal(previewResult.StructuredContent)
-	if !strings.Contains(string(previewRaw), `"previewOf":"replace"`) || !strings.Contains(string(previewRaw), `"changed":true`) {
+	if !strings.Contains(string(previewRaw), `"preview":true`) || !strings.Contains(string(previewRaw), `"operation":"replace"`) || !strings.Contains(string(previewRaw), `"changed":true`) {
 		t.Fatalf("file_edit preview output=%s", previewRaw)
 	}
 	unchanged, err := os.ReadFile(filePath)
@@ -229,13 +229,13 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	}
 	createRaw, _ := json.Marshal(createResult.StructuredContent)
 	var created struct {
-		AfterSHA256 string `json:"afterSha256"`
+		NewSHA256 string `json:"newSha256"`
 	}
-	if err := json.Unmarshal(createRaw, &created); err != nil || created.AfterSHA256 == "" {
+	if err := json.Unmarshal(createRaw, &created); err != nil || created.NewSHA256 == "" || strings.Contains(string(createRaw), `"diff"`) {
 		t.Fatalf("file_edit create output=%s err=%v", createRaw, err)
 	}
 	manyResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "file_edit", Arguments: map[string]any{
-		"machineId": state.MachineID, "action": "editMany", "path": createdPath, "expectedFileSha256": created.AfterSHA256,
+		"machineId": state.MachineID, "action": "editMany", "path": createdPath, "expectedFileSha256": created.NewSHA256,
 		"edits": []map[string]any{{"oldText": "one", "newText": "1"}, {"oldText": "three", "newText": "3"}},
 	}})
 	if err != nil || manyResult.IsError {
@@ -315,12 +315,18 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	raw, _ = json.Marshal(buildResult.StructuredContent)
 	var build struct {
 		Result struct {
-			Job struct {
-				JobID string `json:"jobId"`
+			RequestID string `json:"requestId"`
+			TraceID   string `json:"traceId"`
+			Job       struct {
+				JobID     string       `json:"jobId"`
+				RequestID string       `json:"requestId"`
+				TraceID   string       `json:"traceId"`
+				Runtime   string       `json:"runtime"`
+				Timing    e2eJobTiming `json:"timing"`
 			} `json:"job"`
 		} `json:"result"`
 	}
-	if err := json.Unmarshal(raw, &build); err != nil || build.Result.Job.JobID == "" {
+	if err := json.Unmarshal(raw, &build); err != nil || build.Result.Job.JobID == "" || build.Result.RequestID != build.Result.Job.RequestID || build.Result.TraceID != build.Result.Job.TraceID || build.Result.Job.Runtime != "host" || build.Result.Job.Timing.ProcessStartedAt == "" {
 		t.Fatalf("build decode=%v raw=%s", err, raw)
 	}
 	waitFor(t, 10*time.Second, func() bool {
@@ -360,9 +366,13 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	}
 	raw, _ = json.Marshal(shellResult.StructuredContent)
 	var job struct {
-		JobID string `json:"jobId"`
+		JobID     string       `json:"jobId"`
+		RequestID string       `json:"requestId"`
+		TraceID   string       `json:"traceId"`
+		Runtime   string       `json:"runtime"`
+		Timing    e2eJobTiming `json:"timing"`
 	}
-	if err := json.Unmarshal(raw, &job); err != nil || job.JobID == "" {
+	if err := json.Unmarshal(raw, &job); err != nil || job.JobID == "" || job.RequestID == "" || job.TraceID == "" || job.Runtime != "host" || job.Timing.ProcessStartedAt == "" || job.Timing.QueueMs < 0 {
 		t.Fatalf("shell=%v raw=%s", err, raw)
 	}
 	if _, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "job_cancel", Arguments: map[string]any{"machineId": state.MachineID, "jobId": job.JobID}}); err != nil {
@@ -381,6 +391,14 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 type bearerTransport struct {
 	token string
 	base  http.RoundTripper
+}
+
+type e2eJobTiming struct {
+	NodeReceivedAt   string `json:"nodeReceivedAt"`
+	ProcessStartedAt string `json:"processStartedAt"`
+	FinishedAt       string `json:"finishedAt,omitempty"`
+	QueueMs          int64  `json:"queueMs"`
+	RunMs            int64  `json:"runMs,omitempty"`
 }
 
 func (t bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {

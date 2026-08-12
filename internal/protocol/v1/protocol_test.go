@@ -26,7 +26,7 @@ func TestMessageTypeAndTimestamp(t *testing.T) {
 
 func TestAgentCapabilityAdvertisesCurrentActionContract(t *testing.T) {
 	want := []string{
-		"routing.status", "providers.list", "models.list", "provider.capabilities", "projects.list", "skills.list", "hooks.list", "permissions.list",
+		"routing.status", "providers.list", "provider.readiness", "models.list", "provider.capabilities", "projects.list", "skills.list", "hooks.list", "permissions.list",
 		"plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list",
 		"session.list", "session.get", "session.create", "session.send", "session.steer", "session.respond", "session.watch", "session.cancel", "session.result", "session.rename", "session.archive",
 		"session.unarchive", "session.delete", "session.fork", "session.compact", "session.rollback", "session.goal.get", "session.goal.set", "session.goal.clear", "session.settings.update", "session.review",
@@ -52,7 +52,7 @@ func TestWorkingContextCapabilityAdvertisesPlanAndMarkdownActions(t *testing.T) 
 func TestCodeSearchCapabilityAdvertisesVersionTwoWithoutNewAction(t *testing.T) {
 	for _, capability := range NodeCapabilities {
 		if capability.CapabilityId == "code.search" {
-			if capability.Version != "2.0" || !reflect.DeepEqual(capability.Actions, []string{"search"}) {
+			if capability.Version != "2.1" || !reflect.DeepEqual(capability.Actions, []string{"search"}) {
 				t.Fatalf("code.search=%+v", capability)
 			}
 			return
@@ -77,7 +77,7 @@ func TestFileWriteCapabilityAdvertisesVersionTwoAndLegacyEdit(t *testing.T) {
 	want := []string{"edit", "create", "replace", "editMany", "preview"}
 	for _, capability := range NodeCapabilities {
 		if capability.CapabilityId == "file.write" {
-			if capability.Version != "2.0" || !reflect.DeepEqual(capability.Actions, want) {
+			if capability.Version != "2.1" || !reflect.DeepEqual(capability.Actions, want) {
 				t.Fatalf("file.write=%+v want actions=%v", capability, want)
 			}
 			return

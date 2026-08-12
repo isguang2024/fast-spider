@@ -23,8 +23,8 @@ const (
 )
 
 var BrowserCapability = CapabilityDescriptor{
-	CapabilityId: "browser.automation", Version: "1.1",
-	Actions: []string{"launch", "close", "page.open", "page.navigate", "page.close", "pages.list", "click", "type", "press", "wait", "batch", "snapshot", "screenshot", "events"},
+	CapabilityId: "browser.automation", Version: "1.2",
+	Actions: []string{"readiness", "launch", "close", "page.open", "page.navigate", "page.close", "pages.list", "click", "type", "press", "wait", "batch", "snapshot", "screenshot", "events"},
 }
 
 var ScreenshotCapability = CapabilityDescriptor{
@@ -33,8 +33,8 @@ var ScreenshotCapability = CapabilityDescriptor{
 }
 
 var AgentCapability = CapabilityDescriptor{
-	CapabilityId: "agent.control", Version: "1.0",
-	Actions: []string{"routing.status", "providers.list", "models.list", "provider.capabilities", "projects.list", "skills.list", "hooks.list", "permissions.list", "plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list", "session.list", "session.get", "session.create", "session.send", "session.steer", "session.respond", "session.watch", "session.cancel", "session.result", "session.rename", "session.archive", "session.unarchive", "session.delete", "session.fork", "session.compact", "session.rollback", "session.goal.get", "session.goal.set", "session.goal.clear", "session.settings.update", "session.review"},
+	CapabilityId: "agent.control", Version: "1.1",
+	Actions: []string{"routing.status", "providers.list", "provider.readiness", "models.list", "provider.capabilities", "projects.list", "skills.list", "hooks.list", "permissions.list", "plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list", "session.list", "session.get", "session.create", "session.send", "session.steer", "session.respond", "session.watch", "session.cancel", "session.result", "session.rename", "session.archive", "session.unarchive", "session.delete", "session.fork", "session.compact", "session.rollback", "session.goal.get", "session.goal.set", "session.goal.clear", "session.settings.update", "session.review"},
 }
 
 func ScreenshotCapabilityForOS(goos string) CapabilityDescriptor {
@@ -50,12 +50,12 @@ func ScreenshotCapabilityForOS(goos string) CapabilityDescriptor {
 var NodeCapabilities = []CapabilityDescriptor{
 	{CapabilityId: "machine.status", Version: "1.0", Actions: []string{"report"}},
 	{CapabilityId: "file.read", Version: "2.0", Actions: []string{"read"}},
-	{CapabilityId: "file.write", Version: "2.0", Actions: []string{"edit", "create", "replace", "editMany", "preview"}},
-	{CapabilityId: "code.search", Version: "2.0", Actions: []string{"search"}},
-	{CapabilityId: "shell.exec", Version: "1.0", Actions: []string{"run"}},
-	{CapabilityId: "job.control", Version: "1.0", Actions: []string{"watch", "cancel"}},
+	{CapabilityId: "file.write", Version: "2.1", Actions: []string{"edit", "create", "replace", "editMany", "preview"}},
+	{CapabilityId: "code.search", Version: "2.1", Actions: []string{"search"}},
+	{CapabilityId: "shell.exec", Version: "1.1", Actions: []string{"run"}},
+	{CapabilityId: "job.control", Version: "1.1", Actions: []string{"watch", "cancel"}},
 	{CapabilityId: "git.repository", Version: "1.0", Actions: []string{"status", "diff", "stagedDiff", "log", "show", "branches", "currentBranch", "worktrees", "add", "commit", "fetch", "pull", "push", "createWorktree", "deleteWorktree"}},
-	{CapabilityId: "build.exec", Version: "1.0", Actions: []string{"run"}},
+	{CapabilityId: "build.exec", Version: "1.1", Actions: []string{"run"}},
 	{CapabilityId: "artifact.store", Version: "1.0", Actions: []string{"uploadFile", "uploadJobLog", "publishFile"}},
 	{CapabilityId: "working.context", Version: "1.1", Actions: []string{"get", "set", "clear", "plan.init", "plan.get", "plan.list", "plan.sync", "task.update", "markdown.list", "markdown.read", "markdown.append", "progress.watch"}},
 	AgentCapability,

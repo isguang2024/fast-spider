@@ -115,6 +115,7 @@
       "properties": {
         "messageType": {"const": "capability.request"},
         "requestId": {"type": "string", "minLength": 12, "maxLength": 128},
+		"traceId": {"type": "string", "minLength": 12, "maxLength": 128},
         "capability": {"type": "string", "minLength": 1, "maxLength": 128},
         "action": {"type": "string", "minLength": 1, "maxLength": 64},
         "params": {"type": "object"},
@@ -129,6 +130,7 @@
       "properties": {
         "messageType": {"const": "capability.response"},
         "requestId": {"type": "string", "minLength": 12, "maxLength": 128},
+		"traceId": {"type": "string", "minLength": 12, "maxLength": 128},
         "result": {"type": "object"},
         "error": {"$ref": "#/$defs/ProtocolError"},
         "timestamp": {"type": "string", "format": "date-time"}
@@ -141,7 +143,8 @@
       "properties": {
         "code": {"type": "string", "minLength": 1, "maxLength": 64},
         "message": {"type": "string", "minLength": 1, "maxLength": 512},
-        "retryable": {"type": "boolean"}
+        "retryable": {"type": "boolean"},
+        "details": {"type": "object"}
       }
     }
   }

@@ -123,7 +123,7 @@ func (c *Client) Capabilities() []protocolv1.CapabilityDescriptor {
 	out := make([]protocolv1.CapabilityDescriptor, len(protocolv1.NodeCapabilities), len(protocolv1.NodeCapabilities)+2)
 	copy(out, protocolv1.NodeCapabilities)
 	out = append(out, protocolv1.ScreenshotCapabilityForOS(runtime.GOOS))
-	if c.browser != nil && c.browser.Available() == nil {
+	if c.browser != nil {
 		out = append(out, protocolv1.BrowserCapability)
 	}
 	return out

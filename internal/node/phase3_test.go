@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -55,6 +56,11 @@ func TestPhase3EditShellAndJobsUseMachineBoundary(t *testing.T) {
 	stale := call("file.write", "edit", map[string]any{"path": path, "oldText": "new value", "newText": "again", "expectedFileSha256": fileSHA})
 	if stale.Error == nil || stale.Error.Code != "REVISION_CONFLICT" {
 		t.Fatalf("stale edit=%+v", stale)
+	}
+	detailPath, _ := stale.Error.Details["path"].(string)
+	expectedPath, _ := ResolveMachinePath(path)
+	if !strings.EqualFold(filepath.Clean(detailPath), filepath.Clean(expectedPath)) || fmt.Sprint(stale.Error.Details["expectedSha256"]) != fileSHA || fmt.Sprint(stale.Error.Details["actualSha256"]) == "" {
+		t.Fatalf("stale edit details=%+v", stale.Error.Details)
 	}
 	relative := call("file.write", "edit", map[string]any{"path": "main.txt", "oldText": "new value", "newText": "again", "expectedFileSha256": fileSHA})
 	if relative.Error == nil || relative.Error.Code != "ABSOLUTE_PATH_REQUIRED" {

@@ -1,22 +1,52 @@
 package node
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
 
 func writeAtomicEditedFile(path string, data []byte, mode os.FileMode, expectedSHA string) error {
 	return writePreparedEdit(path, data, mode, func(temp string) error {
-		current, err := os.ReadFile(path)
+		currentSHA, err := boundedFileSHA256(path, maxEditableFileBytes)
 		if err != nil {
 			return fmt.Errorf("re-read target file: %w", err)
 		}
-		if sha256String(current) != expectedSHA {
-			return ErrRevisionConflict
+		if currentSHA != expectedSHA {
+			return &FileRevisionError{Path: filepath.Clean(path), Expected: expectedSHA, Actual: currentSHA}
 		}
 		return atomicReplaceEditedFile(temp, path)
 	})
+}
+
+func boundedFileSHA256(path string, limit int64) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", ErrNotRegularFile
+	}
+	if info.Size() > limit {
+		return "", ErrRevisionConflict
+	}
+	hasher := sha256.New()
+	written, err := io.Copy(hasher, io.LimitReader(file, limit+1))
+	if err != nil {
+		return "", err
+	}
+	if written > limit {
+		return "", ErrRevisionConflict
+	}
+	return "sha256:" + hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
 func writeAtomicCreatedFile(path string, data []byte, mode os.FileMode) error {

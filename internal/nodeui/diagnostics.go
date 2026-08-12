@@ -5,8 +5,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"time"
 
@@ -50,6 +52,9 @@ type diagnosticAgentRuntimeView struct {
 	Route          string `json:"route,omitempty"`
 	ErrorClass     string `json:"errorClass,omitempty"`
 	ErrorMessage   string `json:"errorMessage,omitempty"`
+	ReadyForCreate *bool  `json:"readyForSessionCreate,omitempty"`
+	ReadinessCode  string `json:"readinessReasonCode,omitempty"`
+	ReadinessMs    int64  `json:"readinessMs,omitempty"`
 }
 
 type diagnosticAgentView struct {
@@ -79,12 +84,16 @@ type diagnosticWorkspaceView struct {
 }
 
 type diagnosticLocalView struct {
-	LocalBridgeConfigured bool `json:"localBridgeConfigured"`
-	BrowserConfigured     bool `json:"browserConfigured"`
-	BrowserPresent        bool `json:"browserPresent"`
-	ComponentRootPresent  bool `json:"componentRootPresent"`
-	TraySupported         bool `json:"traySupported"`
-	TrayActive            bool `json:"trayActive"`
+	LocalBridgeConfigured bool   `json:"localBridgeConfigured"`
+	BrowserConfigured     bool   `json:"browserConfigured"`
+	BrowserPresent        bool   `json:"browserPresent"`
+	ComponentRootPresent  bool   `json:"componentRootPresent"`
+	TraySupported         bool   `json:"traySupported"`
+	TrayActive            bool   `json:"trayActive"`
+	BrowserReady          bool   `json:"browserReady"`
+	BrowserReasonCode     string `json:"browserReasonCode,omitempty"`
+	BrowserReadinessMs    int64  `json:"browserReadinessMs,omitempty"`
+	WSLAvailable          bool   `json:"wslAvailable"`
 }
 
 type diagnosticErrorView struct {
@@ -144,6 +153,21 @@ func (a *App) buildDiagnostics(ctx context.Context) diagnosticsResponse {
 		ComponentRootPresent:  diagnosticDirectoryPresent(filepath.Join(a.opts.DataDir, "components")),
 		TraySupported:         traySupported(), TrayActive: trayActive,
 	}
+	if runtime.GOOS == "windows" {
+		_, wslErr := exec.LookPath("wsl.exe")
+		local.WSLAvailable = wslErr == nil
+	}
+	localClient := node.NewLocalCapabilityClient(node.Config{DataDir: a.opts.DataDir, BrowserSidecarDir: cfg.BrowserSidecarDir, Version: a.opts.Version, Logger: a.opts.Logger})
+	browserReadiness := localClient.HandleLocalCapability(ctx, protocolv1.CapabilityRequest{
+		RequestId: "nodeui-diagnostics-browser", Capability: "browser.automation", Action: "readiness", Params: map[string]any{},
+	})
+	if browserReadiness.Error == nil {
+		local.BrowserReady, _ = browserReadiness.Result["ready"].(bool)
+		local.BrowserReasonCode = publicAIText(browserReadiness.Result["reasonCode"], 64)
+		if timing, ok := browserReadiness.Result["timing"].(map[string]any); ok {
+			local.BrowserReadinessMs = diagnosticInt64(timing["totalMs"])
+		}
+	}
 	errorsOut := append([]diagnosticErrorView(nil), agentErrors...)
 	if class := classifyDiagnosticError(runtimeError); class != "" {
 		errorsOut = append(errorsOut, diagnosticErrorView{Area: "node_connection", ErrorClass: class, PublicMessage: publicAIErrorMessage(class)})
@@ -173,9 +197,16 @@ func (a *App) buildDiagnosticAgent(ctx context.Context) (diagnosticAgentView, []
 	}
 	providers, providersErr := a.agentController.Control(ctx, "providers.list", map[string]any{})
 	routingStatus, routingErr := a.agentController.Control(ctx, "routing.status", map[string]any{})
+	readiness, readinessErr := a.agentController.Control(ctx, "provider.readiness", map[string]any{"providerId": "codex", "mode": "safe"})
 	providerFacts := providerFactsByID(providers["providers"])
 	routes := routeFactsByApp(routingStatus)
 	view.Codex = diagnosticProviderRuntime(providerFacts["codex"], routes["codex"], false)
+	if readinessErr == nil {
+		ready, _ := readiness["readyForSessionCreate"].(bool)
+		view.Codex.ReadyForCreate = &ready
+		view.Codex.ReadinessCode = publicAIText(readiness["reasonCode"], 64)
+		view.Codex.ReadinessMs = diagnosticInt64(readiness["elapsedMs"])
+	}
 	view.ClaudeCode = diagnosticProviderRuntime(providerFacts["claude_code"], routes["claude"], true)
 	cc := buildCCSwitchView(routes)
 	view.CCSwitch = diagnosticCCSwitchView{
@@ -192,10 +223,23 @@ func (a *App) buildDiagnosticAgent(ctx context.Context) (diagnosticAgentView, []
 	if view.CCSwitch.ErrorClass != "" {
 		problems = append(problems, diagnosticErrorView{Area: "cc_switch", ErrorClass: view.CCSwitch.ErrorClass, PublicMessage: view.CCSwitch.ErrorMessage})
 	}
-	if providersErr != nil || routingErr != nil {
+	if providersErr != nil || routingErr != nil || readinessErr != nil {
 		problems = append(problems, diagnosticErrorView{Area: "agent_discovery", ErrorClass: "unknown", PublicMessage: publicAIErrorMessage("unknown")})
 	}
 	return view, problems
+}
+
+func diagnosticInt64(value any) int64 {
+	switch number := value.(type) {
+	case int64:
+		return number
+	case int:
+		return int64(number)
+	case float64:
+		return int64(number)
+	default:
+		return 0
+	}
 }
 
 func diagnosticRouteSummary(routes map[string]map[string]any) string {

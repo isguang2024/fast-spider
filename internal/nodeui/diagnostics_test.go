@@ -98,7 +98,7 @@ func TestDiagnosticsLoopbackAllowlistWorkspaceAndReadOnlyDiscovery(t *testing.T)
 	if !view.Hub.Configured || view.Hub.Host != "hub.example.test" {
 		t.Fatalf("unexpected Hub diagnostics: %+v", view.Hub)
 	}
-	if !view.Agent.Codex.Available || view.Agent.Codex.Version != "codex-cli 1.2.3" || view.Agent.Codex.Route != "cc_switch" {
+	if !view.Agent.Codex.Available || view.Agent.Codex.Version != "codex-cli 1.2.3" || view.Agent.Codex.Route != "cc_switch" || view.Agent.Codex.ReadyForCreate == nil || !*view.Agent.Codex.ReadyForCreate || view.Agent.Codex.ReadinessCode != "READY" || view.Agent.Codex.ReadinessMs != 12 {
 		t.Fatalf("unexpected Codex diagnostics: %+v", view.Agent.Codex)
 	}
 	if view.Agent.ClaudeCode.AuthConfigured == nil || !*view.Agent.ClaudeCode.AuthConfigured {
@@ -126,8 +126,8 @@ func TestDiagnosticsLoopbackAllowlistWorkspaceAndReadOnlyDiscovery(t *testing.T)
 	fake.mu.Lock()
 	actions := append([]string(nil), fake.actions...)
 	fake.mu.Unlock()
-	if len(actions) != 2 || actions[0] != "providers.list" || actions[1] != "routing.status" {
-		t.Fatalf("diagnostics discovery actions=%v, want read-only providers/routing", actions)
+	if len(actions) != 3 || actions[0] != "providers.list" || actions[1] != "routing.status" || actions[2] != "provider.readiness" {
+		t.Fatalf("diagnostics discovery actions=%v, want read-only providers/routing/readiness", actions)
 	}
 	for _, forbiddenAction := range []string{"session.create", "session.send"} {
 		if fake.called(forbiddenAction) {

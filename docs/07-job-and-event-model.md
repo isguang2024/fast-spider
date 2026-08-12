@@ -1,10 +1,10 @@
-# Job 与 Event 模型（0.4.0）
+# Job 与 Event 模型（0.4.9）
 
 Job 是 Node 上一次异步执行的运行事实。Job 绑定 Machine 和自身 jobId，不再绑定目录授权对象。
 
 ## 创建
 
-`shell_run`、`build_control` 以及部分 Git 网络动作可以创建 Job。创建时固定 argv/cwd/action/timeout/idempotencyKey 等规范化参数。
+`shell_run`、`build_control` 以及部分 Git 网络动作可以创建 Job。创建时固定 argv/cwd/runtime/action/timeout/idempotencyKey 等规范化参数。`runtime.kind` 默认为 `host`；Windows 上可选 `wsl` 与发行版，cwd 继续使用 Windows 绝对路径并由 Node 映射。
 
 ```text
 created → running → completed / failed / canceled / expired
@@ -33,3 +33,7 @@ Shell/Build 的 cwd 必须是绝对本机目录，命令以运行 Fast Spider No
 ## 幂等
 
 同一个 idempotencyKey + 同一规范化启动参数只创建一个 Job；相同 key 配不同参数返回冲突。
+
+## Timing
+
+Job 快照携带创建调用的 `requestId/traceId/runtime` 与 `nodeReceivedAt/processStartedAt/finishedAt/queueMs/runMs`。后续 watch/cancel 保留这组创建来源 ID，并通过 `callRequestId/callTraceId` 标识当前查询调用。`queueMs` 是从 Node 收到请求到子进程启动的实测启动阶段耗时（包含 runtime 准备、keepalive 与进程创建），不是额外实现的 FIFO 队列等待。通用响应还补充 `nodeExecutionMs/hubPreDispatchMs/nodeRoundTripMs/hubTotalMs`，不保存高频长期 trace。

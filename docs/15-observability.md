@@ -1,4 +1,4 @@
-# 可观测性（0.4.0）
+# 可观测性（0.4.9）
 
 Fast Spider 的日志和指标以低噪音、低基数、可排障为目标。
 
@@ -7,6 +7,12 @@ Fast Spider 的日志和指标以低噪音、低基数、可排障为目标。
 结构化日志允许记录：requestId、machineId、capability、action、jobId、artifactId、AI harness providerId、routingMode、脱敏 route provider ID、状态、耗时和错误码。不要记录密码、Connection Token、Device Key 私钥、OAuth/API 明文 Token、Cookie、Prompt/文件正文、CC Switch raw settings/meta 或完整 endpoint。
 
 0.3.x 起不再记录目录授权 ID。绝对路径只在确有排障价值时进入受控日志字段；0.4.0 的 CC Switch/Claude RouteSnapshot 也只保留脱敏、有界事实，默认不把用户路径、Prompt 或上游秘密写进长期普通日志。
+
+## 请求级轻量 Timing
+
+每次 capability 由 Hub 生成 `requestId + traceId` 并透传 Node/Job。响应仅带紧凑的实测 timing：通用层为 `nodeExecutionMs/hubPreDispatchMs/nodeRoundTripMs/hubTotalMs`；Job 为 `queueMs/runMs` 与时间戳；搜索为 primary/fallback/total；Browser 为 startup/operation/queue/total；Agent readiness 为各层 elapsed。无法准确测量的字段不伪造。
+
+这些 timing 默认不落长期日志、不创建 span/collector/外部时序库。管理端“诊断”页只在人工刷新时显示 Agent/Browser readiness 和 WSL 可用性，不发 Prompt、不创建 Session、不高频轮询。
 
 ## 指标
 

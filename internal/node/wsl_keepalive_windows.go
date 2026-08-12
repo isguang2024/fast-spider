@@ -17,17 +17,55 @@ import (
 // Node startup, but once a shell/build job actually enters a WSL distribution
 // we keep one tiny process in that distribution. Subsequent jobs reuse the
 // already-running WSL VM instead of letting it stop between commands.
-var processWSLKeepAlive = &wslKeepAliveManager{processes: map[string]*exec.Cmd{}}
+var processWSLKeepAlive = newWSLKeepAliveManager()
+
+type wslKeepAliveProcess interface {
+	Running() bool
+	Kill() error
+	Wait() error
+}
+
+type execWSLKeepAliveProcess struct{ cmd *exec.Cmd }
+
+func (p *execWSLKeepAliveProcess) Running() bool {
+	return p != nil && p.cmd != nil && p.cmd.Process != nil && p.cmd.ProcessState == nil
+}
+func (p *execWSLKeepAliveProcess) Kill() error { return p.cmd.Process.Kill() }
+func (p *execWSLKeepAliveProcess) Wait() error { return p.cmd.Wait() }
 
 type wslKeepAliveManager struct {
 	mu        sync.Mutex
-	processes map[string]*exec.Cmd
+	processes map[string]wslKeepAliveProcess
+	start     func(wslKeepAliveSpec) (wslKeepAliveProcess, error)
 }
+
+const maxWSLKeepAliveDistributions = 8
 
 type wslKeepAliveSpec struct {
 	executable   string
 	distribution string
 	key          string
+}
+
+func newWSLKeepAliveManager() *wslKeepAliveManager {
+	manager := &wslKeepAliveManager{processes: map[string]wslKeepAliveProcess{}}
+	manager.start = startWSLKeepAliveProcess
+	return manager
+}
+
+func startWSLKeepAliveProcess(spec wslKeepAliveSpec) (wslKeepAliveProcess, error) {
+	args := make([]string, 0, 8)
+	if spec.distribution != "" {
+		args = append(args, "--distribution", spec.distribution)
+	}
+	args = append(args, "--exec", "/bin/sh", "-c", "while :; do sleep 3600; done")
+	cmd := exec.Command(spec.executable, args...)
+	cmd.Env = safeShellEnvironment()
+	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_NO_WINDOW}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start WSL keepalive for %s: %w", spec.key, err)
+	}
+	return &execWSLKeepAliveProcess{cmd: cmd}, nil
 }
 
 func maybeEnsureWSLKeepAlive(argv []string) error {
@@ -49,10 +87,13 @@ func parseWSLKeepAliveSpec(argv []string) (wslKeepAliveSpec, bool) {
 	}
 
 	var distribution string
+parseArgs:
 	for index := 1; index < len(argv); index++ {
 		arg := strings.TrimSpace(argv[index])
 		lower := strings.ToLower(arg)
 		switch lower {
+		case "--":
+			break parseArgs
 		case "--shutdown", "--terminate", "-t", "--unregister", "--install", "--update",
 			"--list", "-l", "--status", "--version", "--set-default-version", "--set-version",
 			"--set-default", "-s", "--mount", "--unmount", "--import", "--export":
@@ -79,30 +120,43 @@ func parseWSLKeepAliveSpec(argv []string) (wslKeepAliveSpec, bool) {
 func (m *wslKeepAliveManager) ensure(spec wslKeepAliveSpec) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if current := m.processes[spec.key]; current != nil && current.Process != nil && current.ProcessState == nil {
+	if current := m.processes[spec.key]; current != nil && current.Running() {
 		return nil
 	}
-
-	args := make([]string, 0, 8)
-	if spec.distribution != "" {
-		args = append(args, "--distribution", spec.distribution)
+	delete(m.processes, spec.key)
+	if len(m.processes) >= maxWSLKeepAliveDistributions {
+		return ErrJobLimit
 	}
-	args = append(args, "--exec", "/bin/sh", "-c", "while :; do sleep 3600; done")
-	cmd := exec.Command(spec.executable, args...)
-	cmd.Env = safeShellEnvironment()
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_NO_WINDOW}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start WSL keepalive for %s: %w", spec.key, err)
+	process, err := m.start(spec)
+	if err != nil {
+		return err
 	}
-	m.processes[spec.key] = cmd
-	go m.reap(spec.key, cmd)
+	m.processes[spec.key] = process
+	go m.reap(spec.key, process)
 	return nil
 }
 
-func (m *wslKeepAliveManager) reap(key string, cmd *exec.Cmd) {
-	_ = cmd.Wait()
+func (m *wslKeepAliveManager) stopAll() {
 	m.mu.Lock()
-	if m.processes[key] == cmd {
+	commands := make([]wslKeepAliveProcess, 0, len(m.processes))
+	for _, command := range m.processes {
+		commands = append(commands, command)
+	}
+	m.processes = map[string]wslKeepAliveProcess{}
+	m.mu.Unlock()
+	for _, command := range commands {
+		if command != nil && command.Running() {
+			_ = command.Kill()
+		}
+	}
+}
+
+func stopWSLKeepAlives() { processWSLKeepAlive.stopAll() }
+
+func (m *wslKeepAliveManager) reap(key string, process wslKeepAliveProcess) {
+	_ = process.Wait()
+	m.mu.Lock()
+	if m.processes[key] == process {
 		delete(m.processes, key)
 	}
 	m.mu.Unlock()

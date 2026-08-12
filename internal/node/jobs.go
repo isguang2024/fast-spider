@@ -51,6 +51,9 @@ type JobEvent struct {
 
 type JobSnapshot struct {
 	JobID           string     `json:"jobId"`
+	RequestID       string     `json:"requestId,omitempty"`
+	TraceID         string     `json:"traceId,omitempty"`
+	Runtime         string     `json:"runtime"`
 	State           string     `json:"state"`
 	ExitCode        *int       `json:"exitCode,omitempty"`
 	Error           string     `json:"error,omitempty"`
@@ -59,6 +62,15 @@ type JobSnapshot struct {
 	TruncatedBefore int64      `json:"truncatedBefore,omitempty"`
 	StartedAt       string     `json:"startedAt"`
 	FinishedAt      string     `json:"finishedAt,omitempty"`
+	Timing          JobTiming  `json:"timing"`
+}
+
+type JobTiming struct {
+	NodeReceivedAt   string `json:"nodeReceivedAt"`
+	ProcessStartedAt string `json:"processStartedAt"`
+	FinishedAt       string `json:"finishedAt,omitempty"`
+	QueueMs          int64  `json:"queueMs"`
+	RunMs            int64  `json:"runMs,omitempty"`
 }
 
 type idempotencyRecord struct {
@@ -66,14 +78,23 @@ type idempotencyRecord struct {
 	SpecHash string
 }
 
+type jobStartReservation struct {
+	specHash string
+	done     chan struct{}
+}
+
 type Job struct {
 	mu              sync.Mutex
 	id              string
+	requestID       string
+	traceID         string
+	runtime         string
 	idempotencyKey  string
 	state           string
 	exitCode        *int
 	errText         string
 	startedAt       time.Time
+	receivedAt      time.Time
 	finishedAt      time.Time
 	events          []JobEvent
 	eventBytes      int
@@ -96,15 +117,21 @@ type JobManager struct {
 	jobs        map[string]*Job
 	order       []string
 	idempotency map[string]idempotencyRecord
+	starting    map[string]*jobStartReservation
 	semaphore   chan struct{}
 	logDir      string
+	prepare     func(context.Context, string, []string, executionRuntime) (string, []string, string, error)
+	keepAlive   func([]string) error
 }
 
 func NewJobManager(dataDirs ...string) *JobManager {
 	manager := &JobManager{
 		jobs:        make(map[string]*Job),
 		idempotency: make(map[string]idempotencyRecord),
+		starting:    make(map[string]*jobStartReservation),
 		semaphore:   make(chan struct{}, maxConcurrentJobs),
+		prepare:     prepareExecution,
+		keepAlive:   maybeEnsureWSLKeepAlive,
 	}
 	if len(dataDirs) > 0 && strings.TrimSpace(dataDirs[0]) != "" {
 		manager.logDir = filepath.Join(dataDirs[0], "jobs")
@@ -115,92 +142,139 @@ func NewJobManager(dataDirs ...string) *JobManager {
 }
 
 func (m *JobManager) StartShell(cwd string, argv []string, timeout time.Duration, idempotencyKey string) (JobSnapshot, error) {
+	return m.StartExecution(context.Background(), cwd, argv, executionRuntime{Kind: "host"}, timeout, idempotencyKey, "", "")
+}
+
+func (m *JobManager) StartExecution(ctx context.Context, cwd string, argv []string, runtimeSpec executionRuntime, timeout time.Duration, idempotencyKey, requestID, traceID string) (JobSnapshot, error) {
+	receivedAt := time.Now().UTC()
 	if err := validateShellSpec(argv, timeout, idempotencyKey); err != nil {
+		return JobSnapshot{}, err
+	}
+	var err error
+	runtimeSpec, err = normalizeExecutionRuntime(runtimeSpec)
+	if err != nil {
 		return JobSnapshot{}, err
 	}
 	if timeout == 0 {
 		timeout = defaultJobTimeout
 	}
-	if err := maybeEnsureWSLKeepAlive(argv); err != nil {
+	specHash := shellSpecHash(cwd, argv, runtimeSpec, timeout)
+
+	var reservation *jobStartReservation
+	for {
+		m.mu.Lock()
+		if previous, ok := m.idempotency[idempotencyKey]; ok {
+			job := m.jobs[previous.JobID]
+			m.mu.Unlock()
+			if previous.SpecHash != specHash {
+				return JobSnapshot{}, ErrIdempotencyConflict
+			}
+			if job == nil {
+				return JobSnapshot{}, ErrJobNotFound
+			}
+			snapshot, _ := job.snapshotAfter(0)
+			snapshot.Events = []JobEvent{}
+			return snapshot, nil
+		}
+		if pending := m.starting[idempotencyKey]; pending != nil {
+			if pending.specHash != specHash {
+				m.mu.Unlock()
+				return JobSnapshot{}, ErrIdempotencyConflict
+			}
+			done := pending.done
+			m.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return JobSnapshot{}, ctx.Err()
+			case <-done:
+				continue
+			}
+		}
+		m.cleanupLocked()
+		if len(m.jobs)+len(m.starting) >= maxRetainedJobs {
+			m.mu.Unlock()
+			return JobSnapshot{}, ErrJobLimit
+		}
+		select {
+		case m.semaphore <- struct{}{}:
+		default:
+			m.mu.Unlock()
+			return JobSnapshot{}, ErrJobLimit
+		}
+		reservation = &jobStartReservation{specHash: specHash, done: make(chan struct{})}
+		m.starting[idempotencyKey] = reservation
+		m.mu.Unlock()
+		break
+	}
+
+	committed := false
+	var logFile *os.File
+	var logPath string
+	defer func() {
+		if committed {
+			return
+		}
+		if logFile != nil {
+			_ = logFile.Close()
+			_ = os.Remove(logPath)
+		}
+		m.mu.Lock()
+		if m.starting[idempotencyKey] == reservation {
+			delete(m.starting, idempotencyKey)
+			close(reservation.done)
+		}
+		m.mu.Unlock()
+		<-m.semaphore
+	}()
+
+	execCwd, execArgv, runtimeKind, err := m.prepare(ctx, cwd, argv, runtimeSpec)
+	if err != nil {
 		return JobSnapshot{}, err
 	}
-	specHash := shellSpecHash(cwd, argv, timeout)
-
-	m.mu.Lock()
-	if previous, ok := m.idempotency[idempotencyKey]; ok {
-		job := m.jobs[previous.JobID]
-		m.mu.Unlock()
-		if previous.SpecHash != specHash {
-			return JobSnapshot{}, ErrIdempotencyConflict
-		}
-		if job == nil {
-			return JobSnapshot{}, ErrJobNotFound
-		}
-		snapshot, _ := job.snapshotAfter(0)
-		snapshot.Events = []JobEvent{}
-		return snapshot, nil
-	}
-	m.cleanupLocked()
-	if len(m.jobs) >= maxRetainedJobs {
-		m.mu.Unlock()
-		return JobSnapshot{}, ErrJobLimit
-	}
-	select {
-	case m.semaphore <- struct{}{}:
-	default:
-		m.mu.Unlock()
-		return JobSnapshot{}, ErrJobLimit
+	if err := m.keepAlive(execArgv); err != nil {
+		return JobSnapshot{}, err
 	}
 
 	jobID, err := security.RandomOpaque("job_")
 	if err != nil {
-		<-m.semaphore
-		m.mu.Unlock()
 		return JobSnapshot{}, err
 	}
-	var logFile *os.File
-	var logPath string
 	if m.logDir != "" {
 		logPath = filepath.Join(m.logDir, jobID+".log")
 		logFile, _ = os.OpenFile(logPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	}
 
-	cmd := exec.Command(argv[0], argv[1:]...)
-	cmd.Dir = cwd
+	cmd := exec.Command(execArgv[0], execArgv[1:]...)
+	cmd.Dir = execCwd
 	cmd.Env = safeShellEnvironment()
 	configureProcessTree(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		<-m.semaphore
-		m.mu.Unlock()
 		return JobSnapshot{}, err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		<-m.semaphore
-		m.mu.Unlock()
 		return JobSnapshot{}, err
 	}
 	if err := cmd.Start(); err != nil {
-		if logFile != nil {
-			_ = logFile.Close()
-			_ = os.Remove(logPath)
-		}
-		<-m.semaphore
-		m.mu.Unlock()
 		return JobSnapshot{}, err
 	}
 	now := time.Now().UTC()
 	job := &Job{
-		id: jobID, idempotencyKey: idempotencyKey, state: "running", startedAt: now,
+		id: jobID, requestID: requestID, traceID: traceID, runtime: runtimeKind,
+		idempotencyKey: idempotencyKey, state: "running", receivedAt: receivedAt, startedAt: now,
 		notify: make(chan struct{}), cmd: cmd, stop: make(chan string, 1), done: make(chan struct{}), logPath: logPath, logFile: logFile,
 	}
 	job.appendEvent("started", "process started")
 
+	m.mu.Lock()
 	m.jobs[jobID] = job
 	m.order = append(m.order, jobID)
 	m.idempotency[idempotencyKey] = idempotencyRecord{JobID: jobID, SpecHash: specHash}
+	delete(m.starting, idempotencyKey)
+	close(reservation.done)
 	m.mu.Unlock()
+	committed = true
 
 	go m.runJob(job, stdout, stderr, timeout)
 	snapshot, _ := job.snapshotAfter(0)
@@ -545,12 +619,19 @@ func (j *Job) snapshotAfter(cursor int64) (JobSnapshot, <-chan struct{}) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	out := JobSnapshot{
-		JobID: j.id, State: j.state, ExitCode: j.exitCode, Error: j.errText,
+		JobID: j.id, RequestID: j.requestID, TraceID: j.traceID, Runtime: j.runtime,
+		State: j.state, ExitCode: j.exitCode, Error: j.errText,
 		NextCursor: j.nextSequence, TruncatedBefore: j.truncatedBefore,
 		StartedAt: j.startedAt.Format(time.RFC3339Nano), Events: []JobEvent{},
+		Timing: JobTiming{
+			NodeReceivedAt: j.receivedAt.Format(time.RFC3339Nano), ProcessStartedAt: j.startedAt.Format(time.RFC3339Nano),
+			QueueMs: j.startedAt.Sub(j.receivedAt).Milliseconds(),
+		},
 	}
 	if !j.finishedAt.IsZero() {
 		out.FinishedAt = j.finishedAt.Format(time.RFC3339Nano)
+		out.Timing.FinishedAt = out.FinishedAt
+		out.Timing.RunMs = j.finishedAt.Sub(j.startedAt).Milliseconds()
 	}
 	for _, event := range j.events {
 		if event.Sequence > cursor {
@@ -583,8 +664,8 @@ func validateShellSpec(argv []string, timeout time.Duration, idempotencyKey stri
 	return nil
 }
 
-func shellSpecHash(cwd string, argv []string, timeout time.Duration) string {
-	raw, _ := json.Marshal(map[string]any{"cwd": cwd, "argv": argv, "timeout": timeout.String()})
+func shellSpecHash(cwd string, argv []string, runtime executionRuntime, timeout time.Duration) string {
+	raw, _ := json.Marshal(map[string]any{"cwd": cwd, "argv": argv, "runtime": runtime, "timeout": timeout.String()})
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:])
 }

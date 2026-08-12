@@ -4,11 +4,35 @@ package node
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
+
+type fakeWSLKeepAliveProcess struct {
+	mu      sync.Mutex
+	running bool
+	done    chan struct{}
+}
+
+func newFakeWSLKeepAliveProcess() *fakeWSLKeepAliveProcess {
+	return &fakeWSLKeepAliveProcess{running: true, done: make(chan struct{})}
+}
+func (p *fakeWSLKeepAliveProcess) Running() bool { p.mu.Lock(); defer p.mu.Unlock(); return p.running }
+func (p *fakeWSLKeepAliveProcess) Kill() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.running {
+		p.running = false
+		close(p.done)
+	}
+	return nil
+}
+func (p *fakeWSLKeepAliveProcess) Wait() error { <-p.done; return nil }
 
 func TestDecodeWindowsCodePage936(t *testing.T) {
 	text, err := decodeWindowsCodePage([]byte{0xb2, 0xe2, 0xca, 0xd4}, 936)
@@ -30,7 +54,7 @@ func TestWindowsShellRunAcceptsBareDriveRootCwd(t *testing.T) {
 	if len(volume) != 2 || volume[1] != ':' {
 		t.Fatalf("unexpected Windows temp volume %q", volume)
 	}
-	job, err := client.shellRun(context.Background(), map[string]any{
+	job, err := client.shellRun(context.Background(), "", "", map[string]any{
 		"cwd":            volume,
 		"argv":           []string{"cmd.exe", "/d", "/s", "/c", "echo", "FAST_SPIDER_DRIVE_ROOT_OK"},
 		"timeoutSeconds": 10,
@@ -92,6 +116,44 @@ func TestParseWSLKeepAliveSpecSkipsManagementCommands(t *testing.T) {
 	} {
 		if spec, ok := parseWSLKeepAliveSpec(argv); ok {
 			t.Fatalf("management/non-WSL command unexpectedly enabled keepalive: argv=%v spec=%+v", argv, spec)
+		}
+	}
+}
+
+func TestWSLKeepAliveManagerReusesCapsAndStopsOnlyOwnedProcesses(t *testing.T) {
+	manager := newWSLKeepAliveManager()
+	started := make([]*fakeWSLKeepAliveProcess, 0, maxWSLKeepAliveDistributions)
+	manager.start = func(spec wslKeepAliveSpec) (wslKeepAliveProcess, error) {
+		if spec.executable != "wsl.exe" || spec.key == "" {
+			return nil, errors.New("unexpected keepalive spec")
+		}
+		process := newFakeWSLKeepAliveProcess()
+		started = append(started, process)
+		return process, nil
+	}
+	first := wslKeepAliveSpec{executable: "wsl.exe", distribution: "Ubuntu-0", key: "ubuntu-0"}
+	if err := manager.ensure(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ensure(first); err != nil || len(started) != 1 {
+		t.Fatalf("reuse err=%v starts=%d", err, len(started))
+	}
+	for index := 1; index < maxWSLKeepAliveDistributions; index++ {
+		spec := wslKeepAliveSpec{executable: "wsl.exe", distribution: fmt.Sprintf("Ubuntu-%d", index), key: fmt.Sprintf("ubuntu-%d", index)}
+		if err := manager.ensure(spec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := manager.ensure(wslKeepAliveSpec{executable: "wsl.exe", distribution: "Overflow", key: "overflow"}); !errors.Is(err, ErrJobLimit) {
+		t.Fatalf("ninth distribution error=%v", err)
+	}
+	manager.stopAll()
+	if len(started) != maxWSLKeepAliveDistributions {
+		t.Fatalf("started=%d", len(started))
+	}
+	for index, process := range started {
+		if process.Running() {
+			t.Fatalf("owned keepalive %d still running after stopAll", index)
 		}
 	}
 }

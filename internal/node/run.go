@@ -38,6 +38,7 @@ func (c *Client) Run(ctx context.Context) error {
 		if err := c.jobs.CancelAll(shutdownCtx); err != nil {
 			c.cfg.Logger.Error("node job shutdown incomplete", "error", err)
 		}
+		stopWSLKeepAlives()
 		if c.browser != nil {
 			if err := c.browser.Close(shutdownCtx); err != nil {
 				c.cfg.Logger.Error("browser shutdown incomplete", "error", err)
@@ -229,6 +230,7 @@ func (c *Client) heartbeatLoop(ctx context.Context, conn *websocket.Conn, interv
 					response := protocolv1.CapabilityResponse{
 						MessageType: protocolv1.MessageCapabilityResponse,
 						RequestId:   request.RequestId,
+						TraceId:     request.TraceId,
 						Error:       &protocolv1.ProtocolError{Code: "RESOURCE_LIMIT", Message: "too many concurrent capability requests", Retryable: true},
 						Timestamp:   protocolv1.Timestamp(time.Now()),
 					}

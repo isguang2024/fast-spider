@@ -28,6 +28,10 @@ func TestStaticProviderRegistry(t *testing.T) {
 			t.Fatalf("missing static provider %q", id)
 		}
 	}
+	claude, _ := registry.get("claude_code")
+	if !stringInSet("session.delete", claude.SupportedActions...) {
+		t.Fatalf("Claude Code discovery omits implemented session.delete: %v", claude.SupportedActions)
+	}
 	if _, ok := registry.get("dynamic-provider"); ok {
 		t.Fatal("registry unexpectedly accepted a dynamic provider")
 	}

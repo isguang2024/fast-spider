@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -28,6 +29,18 @@ const (
 type codexRPCError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+}
+
+type codexRPCResponseError struct {
+	*ExecutionError
+	code int
+}
+
+func (e *codexRPCResponseError) Unwrap() error { return e.ExecutionError }
+
+func isDefinitiveCodexRPCRejection(err error) bool {
+	var responseErr *codexRPCResponseError
+	return errors.As(err, &responseErr) && responseErr.code != -1
 }
 
 type codexRPCMessage struct {
@@ -254,6 +267,12 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 	return nil
 }
 
+func (a *CodexAdapter) IsStarted() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return !a.closed && a.cmd != nil && a.cmd.Process != nil && a.cmd.ProcessState == nil && a.stdin != nil && a.configErr == nil
+}
+
 func (a *CodexAdapter) Close(ctx context.Context) error {
 	a.mu.Lock()
 	a.closed = true
@@ -328,7 +347,7 @@ func (a *CodexAdapter) request(ctx context.Context, method string, params map[st
 	case response := <-pending.ch:
 		if response.Error != nil {
 			a.logger.Debug("Codex app-server request failed", "method", method, "rpcCode", response.Error.Code, "errorClass", classifyExecutionText(response.Error.Message))
-			return nil, newExecutionError("codex", method, response.Error.Message)
+			return nil, &codexRPCResponseError{ExecutionError: newExecutionError("codex", method, response.Error.Message), code: response.Error.Code}
 		}
 		a.mu.Lock()
 		configErr := a.configErr

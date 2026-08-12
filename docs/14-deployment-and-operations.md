@@ -1,4 +1,4 @@
-# 部署与运维（0.4.8）
+# 部署与运维（0.4.9）
 
 ## Hub
 
@@ -95,4 +95,4 @@ spiderctl staging-prune --dir /tmp --layout server --through 0.4.6 --apply
 - Node release manifest 的版本/哈希与正式 EXE 一致。
 - ChatGPT OAuth + MCP tools/list 可获取当前工具。
 
-0.3.x 完成权限模型收敛；0.4.2 正式交付 Task Workspace、多 AI Harness/CC Switch 只读 Routing、Managed ripgrep 与文件能力 2.0；0.4.3/0.4.4 收敛 Node 更新文件生命周期；0.4.5 收敛标准 release backup retention；0.4.6 收敛本机/服务器 release staging 生命周期；0.4.7 升级 Browser Automation 1.1 与 WSL 生命周期；0.4.8 强制 Browser Sidecar 策略协议一致，并统一 Codex Desktop runtime 与配置格式。
+0.3.x 完成权限模型收敛；0.4.2 正式交付 Task Workspace、多 AI Harness/CC Switch 只读 Routing、Managed ripgrep 与文件能力 2.0；0.4.3-0.4.6 收敛更新、backup 与 staging 生命周期；0.4.7/0.4.8 收敛 Browser 与 Codex runtime；0.4.9 交付 file_edit 响应瘦身、搜索稳定码/统计、host/WSL runtime、Agent/Browser readiness、持久 Session create 幂等与轻量 timing。

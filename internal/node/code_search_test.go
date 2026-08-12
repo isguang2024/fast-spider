@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -68,7 +69,121 @@ func runFakeRipgrep(scenario string) {
 		emit("context", fixture.path, fixture.after, 3, 0)
 		emit("end", fixture.path, "", 0, 0)
 	}
-	fmt.Println(`{"type":"summary","data":{}}`)
+	fmt.Println(`{"type":"summary","data":{"stats":{"searches":77,"searches_with_match":2,"bytes_searched":4096,"matches":2,"matched_lines":2}}}`)
+}
+
+func TestCodeSearchResultBudgetPreservesStatsAndFitsHubTransport(t *testing.T) {
+	line := strings.Repeat("界", maxSearchLineLength/3)
+	result := codeSearchResult{Matches: make([]codeSearchMatch, 200), MatchCount: 900, MatchedFiles: 200, ScannedFiles: 500, Engine: "native"}
+	for index := range result.Matches {
+		contextLines := make([]codeSearchContextLine, 10)
+		for lineIndex := range contextLines {
+			contextLines[lineIndex] = codeSearchContextLine{Line: lineIndex + 1, Text: line}
+		}
+		result.Matches[index] = codeSearchMatch{Path: fmt.Sprintf("src/long-%03d.go", index), Line: 11, Column: 1, Text: line, Before: contextLines, After: contextLines}
+	}
+	bounded := boundCodeSearchResult(result)
+	raw, err := json.Marshal(bounded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > maxSearchResultJSONBytes || !bounded.Truncated || len(bounded.Matches) >= len(result.Matches) {
+		t.Fatalf("bytes=%d truncated=%v matches=%d", len(raw), bounded.Truncated, len(bounded.Matches))
+	}
+	if bounded.MatchCount != result.MatchCount || bounded.MatchedFiles != result.MatchedFiles || bounded.ScannedFiles != result.ScannedFiles {
+		t.Fatalf("budgeting changed aggregate stats: %#v", bounded)
+	}
+}
+
+func TestNativeSearchCountsBeyondReturnedLimit(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "matches.txt"), []byte("needle\nneedle\nneedle\nneedle\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input := codeSearchParams{Query: "needle", Path: root, Mode: "content", Limit: 2}
+	_, searchRoot, includes, excludes, matcher, err := normalizeCodeSearch(map[string]any{"query": input.Query, "path": input.Path, "mode": input.Mode, "limit": input.Limit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := searchNative(context.Background(), searchRoot, input, includes, excludes, matcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MatchCount != 4 || len(result.Matches) != 2 || !result.Truncated || result.MatchedFiles != 1 {
+		t.Fatalf("native result=%#v", result)
+	}
+}
+
+func TestRipgrepAndNativeMatchCountMeansMatchingLines(t *testing.T) {
+	root := t.TempDir()
+	matchEvent := fmt.Sprintf(`{"type":"match","data":{"path":{"text":%q},"lines":{"text":"needle needle\n"},"line_number":1,"submatches":[{"start":0},{"start":7}]}}`, filepath.Join(root, "same-line.txt"))
+	summary := `{"type":"summary","data":{"stats":{"searches":1,"searches_with_match":1,"bytes_searched":14,"matches":2,"matched_lines":1}}}`
+	managed, err := parseRipgrepJSON([]byte(matchEvent+"\n"+summary+"\n"), root, codeSearchParams{Mode: "content", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "same-line.txt"), []byte("needle needle\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, searchRoot, includes, excludes, matcher, err := normalizeCodeSearch(map[string]any{"query": "needle", "path": root, "mode": "content", "limit": 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	native, err := searchNative(context.Background(), searchRoot, codeSearchParams{Query: "needle", Path: root, Mode: "content", Limit: 10}, includes, excludes, matcher)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if managed.MatchCount != 1 || native.MatchCount != 1 {
+		t.Fatalf("matching-line count managed=%d native=%d", managed.MatchCount, native.MatchCount)
+	}
+}
+
+func TestNativeExplicitIncludeFiltersBeforeCandidateLimit(t *testing.T) {
+	root := t.TempDir()
+	noiseDir := filepath.Join(root, "aaa-noise")
+	targetDir := filepath.Join(root, "zzz-target")
+	if err := os.MkdirAll(noiseDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(targetDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < maxSearchFiles; index++ {
+		path := filepath.Join(noiseDir, fmt.Sprintf("%04d.txt", index))
+		if err := os.WriteFile(path, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(targetDir, "wanted.txt"), []byte("needle"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	includes, err := compileSearchGlobs([]string{"zzz-target/**"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	candidates, _, truncated, _, _, _, err := nativeSearchCandidates(context.Background(), root, includes, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if truncated || len(candidates) != 1 || candidates[0].relative != "zzz-target/wanted.txt" {
+		t.Fatalf("candidates=%v truncated=%v", candidates, truncated)
+	}
+}
+
+func TestManagedRipgrepIgnoresOnlyVCSRulesByDefault(t *testing.T) {
+	args := buildRipgrepArgs(codeSearchParams{Query: "needle"}, t.TempDir())
+	if !stringSliceContains(args, "--no-ignore-dot") {
+		t.Fatalf("ripgrep args do not disable .ignore/.rgignore rules: %v", args)
+	}
+}
+
+func stringSliceContains(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func TestManagedRipgrepUsesExactSafeExecutableArgumentsAndEnvironment(t *testing.T) {
@@ -94,7 +209,7 @@ func TestManagedRipgrepUsesExactSafeExecutableArgumentsAndEnvironment(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Engine != "ripgrep" || result.FallbackReason != "" || len(result.Matches) != 1 || !result.Truncated {
+	if result.Engine != "ripgrep" || result.FallbackReason != "" || len(result.Matches) != 1 || !result.Truncated || result.ScannedFiles != 77 || result.MatchedFiles != 2 || result.BytesScanned != 4096 || result.MatchCount != 2 {
 		t.Fatalf("managed search result=%+v", result)
 	}
 	match := result.Matches[0]
@@ -130,6 +245,9 @@ func TestManagedRipgrepUsesExactSafeExecutableArgumentsAndEnvironment(t *testing
 	if !containsSearchArgPair(capture.Args, "--glob", "**/*.go") || !containsSearchArgPair(capture.Args, "--glob", "!**/generated/**") {
 		t.Fatalf("managed rg argv omitted safe globs: %v", capture.Args)
 	}
+	if !containsSearchArg(capture.Args, "--no-ignore") {
+		t.Fatalf("explicit include did not override VCS ignore: %v", capture.Args)
+	}
 }
 
 func TestManagedRipgrepFilesModeAndInvalidOutputFallback(t *testing.T) {
@@ -157,7 +275,7 @@ func TestManagedRipgrepFilesModeAndInvalidOutputFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fallback.Engine != "native" || fallback.FallbackReason != "output_invalid" || len(fallback.Matches) != 1 || len(fallback.Matches[0].Before) != 1 || len(fallback.Matches[0].After) != 1 {
+	if fallback.Engine != "native" || fallback.FallbackReason != "RG_OUTPUT_INVALID" || len(fallback.Matches) != 1 || len(fallback.Matches[0].Before) != 1 || len(fallback.Matches[0].After) != 1 {
 		t.Fatalf("invalid rg fallback=%+v", fallback)
 	}
 }
@@ -192,7 +310,7 @@ func TestNativeSearchContentFilesGlobsContextAndBounds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if content.Engine != "native" || content.FallbackReason != "component_missing" || len(content.Matches) != 2 || content.Matches[0].Path != "main.go" || len(content.Matches[0].Before) != 1 || len(content.Matches[0].After) != 1 {
+	if content.Engine != "native" || content.FallbackReason != "RG_NOT_FOUND" || len(content.Matches) != 2 || content.Matches[0].Path != "main.go" || len(content.Matches[0].Before) != 1 || len(content.Matches[0].After) != 1 {
 		t.Fatalf("native content result=%+v", content)
 	}
 	params["mode"], params["limit"] = "files", 1
@@ -247,7 +365,7 @@ func TestManagedRipgrepStartFailureFallsBackWithoutRawError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Engine != "native" || result.FallbackReason != "start_failed" || len(result.Matches) != 1 || strings.Contains(result.FallbackReason, "secret") {
+	if result.Engine != "native" || result.FallbackReason != "RG_START_FAILED" || len(result.Matches) != 1 || strings.Contains(result.FallbackReason, "secret") {
 		t.Fatalf("start failure fallback=%+v", result)
 	}
 }
@@ -313,6 +431,59 @@ func sameSearchPath(left, right string) bool {
 		return strings.EqualFold(filepath.Clean(left), filepath.Clean(right))
 	}
 	return filepath.Clean(left) == filepath.Clean(right)
+}
+
+func TestCodeSearchRejectsAmbiguousGlobBeforeExecution(t *testing.T) {
+	root := t.TempDir()
+	client, err := New(Config{DataDir: t.TempDir(), Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.codeSearch(context.Background(), map[string]any{"path": root, "query": "needle", "include": []string{"["}}); err == nil || !strings.Contains(err.Error(), "glob") {
+		t.Fatalf("ambiguous glob error=%v", err)
+	}
+}
+
+func TestNativeSearchRespectsGitIgnoreAndGeneratedDirectories(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("Git is required for VCS ignore parity")
+	}
+	root := t.TempDir()
+	if output, err := exec.Command("git", "-C", root, "init", "--quiet").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, output)
+	}
+	fixtures := map[string]string{
+		".gitignore": "ignored.txt\nnested/ignored.go\n",
+		"visible.go": "needle visible\n", "ignored.txt": "needle ignored\n",
+		"nested/ignored.go": "needle nested ignored\n", "dist/generated.go": "needle generated\n",
+	}
+	for name, content := range fixtures {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	client, err := New(Config{DataDir: t.TempDir(), Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.codeSearch(context.Background(), map[string]any{"path": root, "query": "needle", "limit": 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Engine != "native" || result.Incomplete || len(result.Matches) != 1 || result.Matches[0].Path != "visible.go" {
+		t.Fatalf("ignore parity result=%+v", result)
+	}
+	explicit, err := client.codeSearch(context.Background(), map[string]any{"path": root, "query": "needle", "include": []string{"dist/**"}, "limit": 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if explicit.Engine != "native" || len(explicit.Matches) != 1 || explicit.Matches[0].Path != "dist/generated.go" || explicit.BytesScanned == 0 || explicit.MatchCount != 1 {
+		t.Fatalf("explicit generated-dir include result=%+v", explicit)
+	}
 }
 
 func containsSearchArg(args []string, value string) bool {

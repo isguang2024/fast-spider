@@ -27,6 +27,8 @@ const (
 	maxSearchContextLines    = 10
 	maxRipgrepOutputBytes    = 8 << 20
 	maxRipgrepJSONLineBytes  = 1 << 20
+	maxSearchResultJSONBytes = 640 << 10
+	managedSearchTimeout     = 5 * time.Second
 )
 
 var errRipgrepOutputLimit = errors.New("ripgrep output limit exceeded")
@@ -43,23 +45,73 @@ func (c *Client) codeSearchV2(ctx context.Context, params map[string]any) (codeS
 		return codeSearchResult{}, err
 	}
 
-	result, fallbackReason, rgErr := c.searchWithManagedRipgrep(ctx, searchRoot, input)
+	primaryStarted := time.Now()
+	rgCtx, cancelRG := context.WithTimeout(ctx, managedSearchTimeout)
+	result, fallbackReason, rgErr := c.searchWithManagedRipgrep(rgCtx, searchRoot, input)
+	cancelRG()
+	primaryElapsed := time.Since(primaryStarted).Milliseconds()
 	if rgErr == nil {
 		result.Engine = "ripgrep"
+		result.PrimaryElapsedMs = primaryElapsed
 		result.ElapsedMs = time.Since(started).Milliseconds()
-		return result, nil
+		return boundCodeSearchResult(result), nil
 	}
 	if err := ctx.Err(); err != nil {
 		return codeSearchResult{}, err
 	}
+	c.cfg.Logger.Warn("managed ripgrep fallback", "reasonCode", fallbackReason, "elapsedMs", primaryElapsed)
+	fallbackStarted := time.Now()
 	result, err = searchNative(ctx, searchRoot, input, includes, excludes, matcher)
 	if err != nil {
 		return codeSearchResult{}, err
 	}
 	result.Engine = "native"
 	result.FallbackReason = fallbackReason
+	result.PrimaryElapsedMs = primaryElapsed
+	result.FallbackElapsedMs = time.Since(fallbackStarted).Milliseconds()
 	result.ElapsedMs = time.Since(started).Milliseconds()
-	return result, nil
+	return boundCodeSearchResult(result), nil
+}
+
+func boundCodeSearchResult(result codeSearchResult) codeSearchResult {
+	raw, _ := json.Marshal(result)
+	if len(raw) <= maxSearchResultJSONBytes {
+		return result
+	}
+	result.Truncated = true
+	if len(result.Matches) > 0 {
+		original := result.Matches
+		low, high := 0, len(original)
+		for low < high {
+			mid := (low + high + 1) / 2
+			candidate := result
+			candidate.Matches = original[:mid]
+			encoded, _ := json.Marshal(candidate)
+			if len(encoded) <= maxSearchResultJSONBytes {
+				low = mid
+			} else {
+				high = mid - 1
+			}
+		}
+		result.Matches = append([]codeSearchMatch(nil), original[:low]...)
+	}
+	if len(result.Files) > 0 {
+		original := result.Files
+		low, high := 0, len(original)
+		for low < high {
+			mid := (low + high + 1) / 2
+			candidate := result
+			candidate.Files = original[:mid]
+			encoded, _ := json.Marshal(candidate)
+			if len(encoded) <= maxSearchResultJSONBytes {
+				low = mid
+			} else {
+				high = mid - 1
+			}
+		}
+		result.Files = append([]string(nil), original[:low]...)
+	}
+	return result
 }
 
 func normalizeCodeSearch(params map[string]any) (codeSearchParams, string, []compiledSearchGlob, []compiledSearchGlob, lineMatcher, error) {
@@ -130,7 +182,7 @@ func compileSearchGlobs(patterns []string) ([]compiledSearchGlob, error) {
 	}
 	result := make([]compiledSearchGlob, 0, len(patterns))
 	for _, raw := range patterns {
-		if strings.ContainsAny(raw, "\x00\r\n") {
+		if strings.ContainsAny(raw, "\x00\r\n[]") {
 			return nil, fmt.Errorf("glob is empty, unsafe, or too long")
 		}
 		pattern := strings.TrimSpace(strings.ReplaceAll(raw, "\\", "/"))
@@ -205,79 +257,223 @@ func matchesSearchGlobs(relativePath string, includes, excludes []compiledSearch
 
 func searchNative(ctx context.Context, searchRoot string, input codeSearchParams, includes, excludes []compiledSearchGlob, matcher lineMatcher) (codeSearchResult, error) {
 	result := codeSearchResult{Matches: []codeSearchMatch{}, Files: []string{}}
+	matchedFiles := map[string]bool{}
+	candidates, ignoredByVCS, candidateTruncated, candidateSkipped, candidateSkipReasons, candidateIncomplete, err := nativeSearchCandidates(ctx, searchRoot, includes, excludes)
+	if err != nil {
+		return codeSearchResult{}, err
+	}
+	result.Truncated = candidateTruncated
+	result.SkippedFiles = candidateSkipped
+	result.SkipReasons = candidateSkipReasons
+	result.Incomplete = candidateIncomplete
+	if !ignoredByVCS {
+		if _, statErr := os.Stat(filepath.Join(searchRoot, ".gitignore")); statErr == nil {
+			markSearchSkip(&result, "vcs_ignore_unavailable", true)
+		}
+	}
+	for _, candidate := range candidates {
+		if err := ctx.Err(); err != nil {
+			return codeSearchResult{}, err
+		}
+		if !matchesSearchGlobs(candidate.relative, includes, excludes) {
+			continue
+		}
+		if candidate.size > maxSearchFileBytes {
+			markSearchSkip(&result, "too_large", false)
+			continue
+		}
+		result.ScannedFiles++
+		matches, totalMatches, binary, bytesScanned, err := searchNativeFile(candidate.path, candidate.relative, matcher, input.BeforeContext, input.AfterContext, input.Limit)
+		if err != nil {
+			markSearchSkip(&result, "read_error", true)
+			continue
+		}
+		result.BytesScanned += bytesScanned
+		if binary {
+			markSearchSkip(&result, "not_text", false)
+			continue
+		}
+		if totalMatches == 0 {
+			continue
+		}
+		result.MatchCount += totalMatches
+		matchedFiles[candidate.relative] = true
+		if input.Mode == "files" {
+			if len(result.Files) < input.Limit {
+				result.Files = append(result.Files, candidate.relative)
+			} else {
+				result.Truncated = true
+			}
+			continue
+		}
+		remaining := input.Limit - len(result.Matches)
+		if remaining <= 0 {
+			result.Truncated = true
+			continue
+		}
+		if len(matches) > remaining {
+			matches = matches[:remaining]
+			result.Truncated = true
+		}
+		result.Matches = append(result.Matches, matches...)
+		if totalMatches > len(matches) {
+			result.Truncated = true
+		}
+	}
+	result.MatchedFiles = len(matchedFiles)
+	return result, nil
+}
+
+type nativeSearchCandidate struct {
+	path     string
+	relative string
+	size     int64
+}
+
+func nativeSearchCandidates(ctx context.Context, searchRoot string, includes, excludes []compiledSearchGlob) ([]nativeSearchCandidate, bool, bool, int, map[string]int, bool, error) {
+	explicitIncludes := len(includes) > 0
+	if !explicitIncludes {
+		if candidates, ok := gitSearchCandidates(ctx, searchRoot); ok {
+			filtered := candidates[:0]
+			for _, candidate := range candidates {
+				if matchesSearchGlobs(candidate.relative, includes, excludes) {
+					filtered = append(filtered, candidate)
+				}
+			}
+			candidates = filtered
+			truncated := len(candidates) > maxSearchFiles
+			if truncated {
+				candidates = candidates[:maxSearchFiles]
+			}
+			return candidates, true, truncated, 0, nil, false, nil
+		}
+	}
+	candidates := make([]nativeSearchCandidate, 0)
+	truncated := false
+	skipped := 0
+	skipReasons := map[string]int{}
+	incomplete := false
+	markCandidateSkip := func(reason string) {
+		skipped++
+		skipReasons[reason]++
+		incomplete = true
+	}
 	err := filepath.WalkDir(searchRoot, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			markCandidateSkip("walk_error")
 			return nil
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if entry.IsDir() {
-			if path != searchRoot && (entry.Type()&os.ModeSymlink != 0 || shouldSkipDir(entry.Name())) {
+			if path != searchRoot && (entry.Type()&os.ModeSymlink != 0 || strings.HasPrefix(entry.Name(), ".") || (!explicitIncludes && shouldSkipDir(entry.Name()))) {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
+		if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() || strings.HasPrefix(entry.Name(), ".") {
 			return nil
 		}
 		rel, err := filepath.Rel(searchRoot, path)
-		if err != nil || !matchesSearchGlobs(rel, includes, excludes) {
+		if err != nil {
+			markCandidateSkip("path_error")
 			return nil
 		}
-		if result.ScannedFiles >= maxSearchFiles {
-			result.Truncated = true
-			return filepath.SkipAll
+		if shouldSkipSearchRelative(rel, !explicitIncludes) {
+			return nil
+		}
+		if !matchesSearchGlobs(filepath.ToSlash(rel), includes, excludes) {
+			return nil
 		}
 		info, err := entry.Info()
-		if err != nil || info.Size() > maxSearchFileBytes {
+		if err != nil {
+			markCandidateSkip("stat_error")
 			return nil
 		}
-		result.ScannedFiles++
-		matches, binary, err := searchNativeFile(path, filepath.ToSlash(rel), matcher, input.BeforeContext, input.AfterContext, input.Limit)
-		if err != nil || binary || len(matches) == 0 {
-			return nil
-		}
-		if input.Mode == "files" {
-			result.Files = append(result.Files, filepath.ToSlash(rel))
-			if len(result.Files) >= input.Limit {
-				result.Truncated = true
-				return filepath.SkipAll
-			}
-			return nil
-		}
-		remaining := input.Limit - len(result.Matches)
-		if len(matches) > remaining {
-			matches = matches[:remaining]
-			result.Truncated = true
-		}
-		result.Matches = append(result.Matches, matches...)
-		if len(result.Matches) >= input.Limit {
-			result.Truncated = true
+		if len(candidates) >= maxSearchFiles {
+			truncated = true
 			return filepath.SkipAll
 		}
+		candidates = append(candidates, nativeSearchCandidate{path: path, relative: filepath.ToSlash(rel), size: info.Size()})
 		return nil
 	})
 	if err != nil && !errors.Is(err, filepath.SkipAll) {
-		return codeSearchResult{}, err
+		return nil, false, false, skipped, skipReasons, true, err
 	}
-	return result, nil
+	if len(skipReasons) == 0 {
+		skipReasons = nil
+	}
+	return candidates, false, truncated, skipped, skipReasons, incomplete, nil
 }
 
-func searchNativeFile(path, relativePath string, matcher lineMatcher, beforeCount, afterCount, maxMatches int) ([]codeSearchMatch, bool, error) {
+func gitSearchCandidates(ctx context.Context, searchRoot string) ([]nativeSearchCandidate, bool) {
+	stdout := &boundedCommandBuffer{limit: 16 << 20}
+	command := exec.CommandContext(ctx, "git", "-c", "core.quotepath=false", "-C", searchRoot, "ls-files", "-co", "--exclude-standard", "-z", "--", ".")
+	command.Env = safeShellEnvironment()
+	command.Stdout = stdout
+	command.Stderr = &boundedCommandBuffer{limit: 16 << 10}
+	if err := command.Run(); err != nil || stdout.err != nil {
+		return nil, false
+	}
+	parts := bytes.Split(stdout.Bytes(), []byte{0})
+	candidates := make([]nativeSearchCandidate, 0, len(parts))
+	for _, raw := range parts {
+		if len(raw) == 0 || !utf8.Valid(raw) {
+			continue
+		}
+		rel := filepath.Clean(filepath.FromSlash(string(raw)))
+		if rel == "." || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || shouldSkipSearchRelative(rel, true) {
+			continue
+		}
+		path := filepath.Join(searchRoot, rel)
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		candidates = append(candidates, nativeSearchCandidate{path: path, relative: filepath.ToSlash(rel), size: info.Size()})
+	}
+	return candidates, true
+}
+
+func shouldSkipSearchRelative(relative string, skipGenerated bool) bool {
+	parts := strings.FieldsFunc(filepath.ToSlash(relative), func(r rune) bool { return r == '/' })
+	for _, part := range parts {
+		if strings.HasPrefix(part, ".") || (skipGenerated && shouldSkipDir(part)) {
+			return true
+		}
+	}
+	return false
+}
+
+func markSearchSkip(result *codeSearchResult, reason string, incomplete bool) {
+	result.SkippedFiles++
+	if result.SkipReasons == nil {
+		result.SkipReasons = map[string]int{}
+	}
+	result.SkipReasons[reason]++
+	result.Incomplete = result.Incomplete || incomplete
+}
+
+func searchNativeFile(path, relativePath string, matcher lineMatcher, beforeCount, afterCount, maxMatches int) ([]codeSearchMatch, int, bool, int64, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, false, err
+		return nil, 0, false, 0, err
 	}
 	if len(raw) > maxSearchFileBytes || bytes.IndexByte(raw, 0) >= 0 || !utf8.Valid(raw) {
-		return nil, true, nil
+		return nil, 0, true, int64(len(raw)), nil
 	}
 	lines := strings.Split(string(raw), "\n")
 	matches := make([]codeSearchMatch, 0)
+	totalMatches := 0
 	for index, value := range lines {
 		line := strings.TrimSuffix(value, "\r")
 		column, ok := matcher(line)
 		if !ok {
+			continue
+		}
+		totalMatches++
+		if len(matches) >= maxMatches {
 			continue
 		}
 		match := codeSearchMatch{Path: relativePath, Line: index + 1, Column: column, Text: truncateSearchText(line)}
@@ -288,11 +484,8 @@ func searchNativeFile(path, relativePath string, matcher lineMatcher, beforeCoun
 			match.After = append(match.After, codeSearchContextLine{Line: contextIndex + 1, Text: truncateSearchText(strings.TrimSuffix(lines[contextIndex], "\r"))})
 		}
 		matches = append(matches, match)
-		if len(matches) >= maxMatches {
-			break
-		}
 	}
-	return matches, false, nil
+	return matches, totalMatches, false, int64(len(raw)), nil
 }
 
 func truncateSearchText(value string) string {
@@ -308,7 +501,7 @@ func truncateSearchText(value string) string {
 
 func (c *Client) searchWithManagedRipgrep(ctx context.Context, searchRoot string, input codeSearchParams) (codeSearchResult, string, error) {
 	if runtime.GOOS != "windows" && runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
-		return codeSearchResult{}, "platform_unsupported", errors.New("ripgrep platform unsupported")
+		return codeSearchResult{}, "RG_NOT_FOUND", errors.New("ripgrep platform unsupported")
 	}
 	executableName := "rg"
 	if runtime.GOOS == "windows" {
@@ -316,11 +509,7 @@ func (c *Client) searchWithManagedRipgrep(ctx context.Context, searchRoot string
 	}
 	_, executablePath, err := componentmgr.FindInstalledExecutable(c.cfg.DataDir, searchRipgrepComponentID, executableName)
 	if err != nil {
-		reason := "component_invalid"
-		if errors.Is(err, componentmgr.ErrComponentNotInstalled) {
-			reason = "component_missing"
-		}
-		return codeSearchResult{}, reason, err
+		return codeSearchResult{}, "RG_NOT_FOUND", err
 	}
 	args := buildRipgrepArgs(input, searchRoot)
 	command := exec.CommandContext(ctx, executablePath, args...)
@@ -331,20 +520,23 @@ func (c *Client) searchWithManagedRipgrep(ctx context.Context, searchRoot string
 	command.Stdout, command.Stderr = stdout, stderr
 	err = command.Run()
 	if errors.Is(stdout.err, errRipgrepOutputLimit) {
-		return codeSearchResult{}, "output_limit", errRipgrepOutputLimit
+		return codeSearchResult{}, "RG_OUTPUT_LIMIT", errRipgrepOutputLimit
 	}
 	if err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return codeSearchResult{}, "RG_TIMEOUT", ctx.Err()
+		}
 		var exitErr *exec.ExitError
 		if !errors.As(err, &exitErr) {
-			return codeSearchResult{}, "start_failed", err
+			return codeSearchResult{}, "RG_START_FAILED", err
 		}
 		if exitErr.ExitCode() != 1 {
-			return codeSearchResult{}, "command_failed", errors.New("managed ripgrep command failed")
+			return codeSearchResult{}, "RG_EXIT_ERROR", errors.New("managed ripgrep command failed")
 		}
 	}
 	result, err := parseRipgrepJSON(stdout.Bytes(), searchRoot, input)
 	if err != nil {
-		return codeSearchResult{}, "output_invalid", err
+		return codeSearchResult{}, "RG_OUTPUT_INVALID", err
 	}
 	return result, "", nil
 }
@@ -368,6 +560,18 @@ func buildRipgrepArgs(input codeSearchParams, searchRoot string) []string {
 	}
 	for _, pattern := range input.Exclude {
 		args = append(args, "--glob", "!"+strings.ReplaceAll(strings.TrimSpace(pattern), "\\", "/"))
+	}
+	if len(input.Include) > 0 {
+		// An explicit include is authoritative, including for VCS-ignored generated
+		// paths. Its bounded glob still constrains what ripgrep can visit.
+		args = append(args, "--no-ignore")
+	} else {
+		// Ignore only VCS rules. Dot-ignore files (.ignore/.rgignore) are not
+		// applied so the managed and native engines have the same contract.
+		args = append(args, "--no-ignore-dot")
+		for _, directory := range []string{"node_modules", "vendor", ".idea", ".vscode", ".next", ".nuxt", ".cache", "coverage", "dist", "build", "out", "target", "bin", "obj"} {
+			args = append(args, "--glob", "!"+directory+"/**", "--glob", "!**/"+directory+"/**")
+		}
 	}
 	args = append(args, "--regexp", input.Query, "--", searchRoot)
 	return args
@@ -417,6 +621,13 @@ type ripgrepJSONEvent struct {
 		Submatches []struct {
 			Start int `json:"start"`
 		} `json:"submatches"`
+		Stats struct {
+			Searches          int   `json:"searches"`
+			SearchesWithMatch int   `json:"searches_with_match"`
+			BytesSearched     int64 `json:"bytes_searched"`
+			Matches           int   `json:"matches"`
+			MatchedLines      int   `json:"matched_lines"`
+		} `json:"stats"`
 	} `json:"data"`
 }
 
@@ -440,6 +651,13 @@ func parseRipgrepJSON(raw []byte, searchRoot string, input codeSearchParams) (co
 			return codeSearchResult{}, errors.New("unknown ripgrep JSON event")
 		}
 		if event.Type == "summary" {
+			result.ScannedFiles = event.Data.Stats.Searches
+			result.MatchedFiles = event.Data.Stats.SearchesWithMatch
+			result.BytesScanned = event.Data.Stats.BytesSearched
+			// matchCount is the number of matching lines, consistently across
+			// managed ripgrep and the native fallback. Multiple occurrences on one
+			// line still produce one returned match record.
+			result.MatchCount = event.Data.Stats.MatchedLines
 			continue
 		}
 		path, err := safeRipgrepRelativePath(searchRoot, event.Data.Path.Text)
@@ -492,7 +710,26 @@ func parseRipgrepJSON(raw []byte, searchRoot string, input codeSearchParams) (co
 	if err := scanner.Err(); err != nil {
 		return codeSearchResult{}, errors.New("ripgrep JSON line exceeds limit")
 	}
-	result.ScannedFiles = len(scanned)
+	if result.ScannedFiles == 0 {
+		result.ScannedFiles = len(scanned)
+	}
+	if result.MatchedFiles == 0 {
+		result.MatchedFiles = len(seenFiles)
+		if input.Mode != "files" {
+			matched := map[string]bool{}
+			for _, item := range result.Matches {
+				matched[item.Path] = true
+			}
+			result.MatchedFiles = len(matched)
+		}
+	}
+	if result.MatchCount == 0 {
+		if input.Mode == "files" {
+			result.MatchCount = len(result.Files)
+		} else {
+			result.MatchCount = len(result.Matches)
+		}
+	}
 	return result, nil
 }
 

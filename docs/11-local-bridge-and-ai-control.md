@@ -60,6 +60,7 @@ EffectiveCapabilities
 ```text
 routing.status
 providers.list
+provider.readiness
 models.list
 provider.capabilities
 projects.list
@@ -102,11 +103,17 @@ session.review
 
 Model Mapping 目前识别 Claude 的 `ANTHROPIC_MODEL` / Sonnet / Opus / Haiku 角色、Claude Desktop `claudeDesktopModelRoutes`、Codex Provider 配置中的 `model/review_model/model_provider/wire_api/service_tier`。模型列表最多返回有界摘要，不返回原始 Provider 配置。
 
+### `provider.readiness`
+
+默认 `mode=safe`：逐层返回 route、provider executable、Codex harness、session backend 与 create readiness，只复用/启动 app-server 并调用只读 thread/list，不创建 Thread、不发送 Prompt。`mode=passive` 不启动尚未运行的 harness。结果包含顶层布尔字段、每层 state/reasonCode/elapsedMs 与总 elapsedMs，避免把“routing available”误报成“session.create 一定可用”。
+
 ## 4. Codex Session 与 Turn
 
 ### `session.create`
 
-必需：绝对 `workingDirectory`。可选：`model`、`thinking`，以及首个 Turn 的输入。
+公网 MCP 必需：绝对 `workingDirectory` 与 12-128 字符 `idempotencyKey`。可选：`model`、`thinking`，以及首个 Turn 的输入。Node 对 Codex 与 Claude Code 均持久保存 key/spec hash/小型结果；同 key 同 spec 在进程重启后仍重放同一 Session，同 key 不同 spec 返回冲突，中间态不确定时不重复创建。索引采用严格全量校验，任何损坏或语义不完整记录均 fail-closed；记录不按时间自动过期。已知 Session 经 `session.delete` 明确删除后回收；无已知 Session 的 `in_doubt` 记录须先检查 `session.list`，确认没有创建后调用 `session.delete`，省略 `sessionId` 并传原 `idempotencyKey` 与 `decision=confirm_not_created` 显式释放。Claude 原生 history 仍由 Claude 自身保存。
+
+`session.delete` 使用持久 delete intent：先把与 Session 关联的 create 记录标为 deleting，再删除 Provider Session，最后回收记录。若 Provider 已删除但最终落盘失败，重试同一删除会把 Provider not-found 视为已完成并续做回收，不会留下无法清理的容量占用。
 
 如果没有任何 Turn input，只创建 Codex Thread 并返回 `phase=ready`。如果存在 text/Skill/Image/Mention 任一输入，则创建 Thread 后立即启动 Turn，返回 `sessionId + turnId + phase=running`。
 

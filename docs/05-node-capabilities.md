@@ -16,17 +16,17 @@ Hub 只负责身份、路由、deadline、审计、Job/Artifact 元数据和连�
 |---|---|---|
 | `machine.status` | `report` | Node 状态报告 |
 | `file.read` 2.0 | `read` | byte/line/head/tail/around/stat 的有界 UTF-8 文本读取 |
-| `file.write` 2.0 | `edit`, `create`, `replace`, `editMany`, `preview` | CAS、批量规划、原子替换与只读预览；`edit` 兼容映射 `replace` |
-| `code.search` 2.0 | `search` | content/files、glob/context、Managed ripgrep + native fallback |
-| `shell.exec` | `run` | 固定 argv 的后台 Job |
-| `job.control` | `watch`, `cancel` | Job 事件读取与进程树取消 |
+| `file.write` 2.1 | `edit`, `create`, `replace`, `editMany`, `preview` | mutation 元数据-only；CAS、批量规划、原子替换与 bounded preview |
+| `code.search` 2.1 | `search` | content/files、VCS ignore、稳定 rg fallback code 与扫描/timing 事实 |
+| `shell.exec` 1.1 | `run` | 固定 argv 的 host/WSL 后台 Job |
+| `job.control` 1.1 | `watch`, `cancel` | Job 事件、trace/timing 与进程树取消 |
 | `git.repository` | `status`, `diff`, `stagedDiff`, `log`, `show`, `branches`, `currentBranch`, `worktrees`, `add`, `commit`, `fetch`, `pull`, `push`, `createWorktree`, `deleteWorktree` | 系统 Git 固定动作 |
-| `build.exec` | `run` | 固定 argv 的构建/测试 Job |
+| `build.exec` 1.1 | `run` | 固定 argv 的 host/WSL 构建/测试 Job |
 | `artifact.store` | `uploadFile`, `uploadJobLog`, `publishFile` | Hub Artifact/临时 Presentation 数据面 |
 | `working.context` 1.1 | `get`, `set`, `clear`, `plan.init`, `plan.get`, `plan.list`, `plan.sync`, `task.update`, `markdown.list`, `markdown.read`, `markdown.append`, `progress.watch` | Plan/Task + Markdown Task Workspace；旧入口映射默认 plan |
-| `browser.automation` 1.1 | `launch`, `close`, `page.open`, `page.navigate`, `page.close`, `pages.list`, `click`, `type`, `press`, `wait`, `batch`, `snapshot`, `screenshot`, `events` | 隔离 Chromium；snapshot refs + bounded batch |
+| `browser.automation` 1.2 | `readiness`, `launch`, `close`, `page.open`, `page.navigate`, `page.close`, `pages.list`, `click`, `type`, `press`, `wait`, `batch`, `snapshot`, `screenshot`, `events` | 隔离 Chromium；缓存 readiness + 分段 timing + snapshot refs |
 | `screenshot.capture` | `listDisplays`, `desktop`, `display`, `listWindows`, `window` | 一次性桌面/显示器/窗口截图 |
-| `agent.control` | AI Harness、CC Switch Route/Model/EffectiveCapabilities discovery 与受控 Session/Turn 生命周期 | 当前 Harness 为本机 Codex + Claude Code |
+| `agent.control` 1.1 | 分层 readiness、AI Harness/Route discovery 与受控 Session/Turn 生命周期 | 当前 Harness 为本机 Codex + Claude Code |
 
 当前**没有** `mkdir`、`move`、`copy`、`delete`、`purge`、`readChunks`、任意 shell 字符串执行或远程 `node.update` capability。`file.write/create` 只能创建显式目标文件且要求父目录已存在，不是通用文件管理接口。
 
@@ -54,7 +54,7 @@ Hub 只负责身份、路由、deadline、审计、Job/Artifact 元数据和连�
 - `fileSha256` 始终针对原文件 bytes；`chunkSha256` 针对实际返回 chunk，启用行号时包含渲染结果。
 - 大文件通过 offset/limit 多次读取，不存在另一个 `readChunks` action。
 
-### `file.write` 2.0
+### `file.write` 2.1
 
 `file_edit` 仍是唯一远程文件写工具，不增加 MCP 工具。现有文件的 `edit/replace/editMany` 必须携带基于原始 bytes 的 `expectedFileSha256`；`create` 必须显式 `expectedAbsent=true`，不允许覆盖；`preview` 通过 `previewOf=create|replace|editMany` 复用同一 planner，但绝不写盘。
 
@@ -66,23 +66,23 @@ Hub 只负责身份、路由、deadline、审计、Job/Artifact 元数据和连�
 4. 在同目录写临时文件、fsync，并再次校验目标 SHA。
 5. 原子替换正式文件；Windows 使用 MoveFileEx replace-existing + write-through，其他平台使用原子 rename 并尽可能同步父目录。BOM、主换行风格和平台可支持的权限位保持。
 
-返回 `beforeSha256/afterSha256/changed/diff/diffTruncated` 等 bounded 元数据，不返回完整大文件。`preview` 属于可安全重试的只读动作且不进入 mutation audit；`edit/create/replace/editMany` 属于 mutation，不自动重放并进入审计。
+mutation 返回 `success/changed/path/operation/editsApplied/oldSha256/newSha256/bytesChanged/lineDelta/timing/warnings`，不返回正文、oldText/newText 或 diff；因此响应大小不随目标文件线性增长。`preview` 才返回最多 16 KiB 的变更 hunk 与 `diffTruncated`，且绝不写盘。冲突使用 `REVISION_CONFLICT` 和 `details.path/expectedSha256/actualSha256`，不回传文件正文。
 
 因此断线不会把正式目标留成“半文件”。如果请求已经执行但 WSS 响应丢失，结果属于 uncertain：调用方应重新读取文件/状态确认，而不是无脑重放写操作。
 
 ## 4. 代码搜索
 
-`code.search/search` 输入为绝对 `path`、`query`、`mode=content|files`、`regex`、`ignoreCase`、bounded include/exclude glob、context/beforeContext/afterContext 与 `limit`。结果公开 `engine=ripgrep|native`、安全枚举 `fallbackReason`、`elapsedMs` 和 `truncated`。
+`code.search/search` 输入为绝对 `path`、`query`、`mode=content|files`、`regex`、`ignoreCase`、bounded include/exclude glob、context/beforeContext/afterContext 与 `limit`。结果公开 `engine`、`scannedFiles/matchedFiles/bytesScanned/matchCount/skippedFiles/skipReasons/incomplete`、`primaryElapsedMs/fallbackElapsedMs/elapsedMs` 和 `truncated`；`matchCount` 在两个引擎中统一表示匹配行数，同一行多个 occurrence 只计一行。Node 对实际 JSON 结果实施 640 KiB 预算，超出时保留聚合统计并截断明细，避免冲破控制面 1 MiB 上限。
 
-Node 只从 `<data-dir>/components/search-ripgrep/<version>/rg(.exe)` 解析已验证 Managed Component，绝不信任 PATH，也不在每次搜索时联网安装。rg 固定使用 `--json --no-config --color=never --no-heading --line-number --column`，清空 `RIPGREP_CONFIG_PATH`，不启用 `--pre/--search-zip/--follow/--unrestricted`，JSON/输出均 bounded。组件缺失、无效、平台不支持、启动/执行/解析失败时安全回退 Go native，不向上返回 raw stderr。
+Node 只从 `<data-dir>/components/search-ripgrep/<version>/rg(.exe)` 解析已验证 Managed Component，绝不信任 PATH，也不在每次搜索时联网安装。rg 固定安全参数并清空 `RIPGREP_CONFIG_PATH`；fallback reason 固定为 `RG_NOT_FOUND/RG_START_FAILED/RG_EXIT_ERROR/RG_TIMEOUT/RG_OUTPUT_LIMIT/RG_OUTPUT_INVALID`。默认遵守 VCS ignore 并排除通用生成目录；显式 include 可精确覆盖 ignore/生成目录策略，exclude 随后生效。
 
 native fallback 支持同一 content/files、glob、context 与 limit 语义；当前上限包括单文件 2 MiB、最多扫描 5000 个文件、默认 100 条、最大 200 条结果。搜索为只读动作，连接中断后可安全重新发起。
 
 ## 5. Shell、Build 与 Job
 
-`shell.exec/run` 和 `build.exec/run` 都使用显式 argv 与绝对 `cwd`。Fast Spider 不把任意 shell command string 作为协议面；需要 `cmd.exe`、PowerShell、bash 等时，它们本身必须作为 argv 中的显式 executable 出现。
+`shell.exec/run` 和 `build.exec/run` 都使用显式 argv、Windows 绝对 `cwd` 与可选 `runtime={kind:"host"|"wsl",distribution?}`。host 直接执行 argv；WSL 由 Node 调用目标发行版 `wslpath` 映射 cwd，再以 `wsl.exe --cd <mapped> --exec <linux argv...>` 执行，不要求调用方拼接 `/mnt/<drive>`，也不接受嵌套 `wsl.exe` argv。
 
-启动成功后返回 `jobId`。Job 由 Node `JobManager` 独立管理：WSS 会话断开不会自动杀死已启动 Job；调用方通过 `job.control/watch` 读取有界 stdout/stderr/status，通过 `job.control/cancel` 终止进程树。
+启动成功后返回 `jobId/requestId/traceId/runtime/timing`。Job timing 只报告实测的 `nodeReceivedAt/processStartedAt/finishedAt/queueMs/runMs`；WSS 会话断开不会自动杀死已启动 Job，调用方通过 `watch/cancel` 读取或终止进程树。Windows WSL keepalive 按发行版去重且总数上限 8，Node 关闭只停止自己创建的进程。
 
 启动类动作必须使用幂等键时由具体 MCP/Capability schema要求；断线后是否重试要按 Job/状态查询结果决定，不能仅根据客户端是否收到响应判断。
 
@@ -108,7 +108,7 @@ Plan actions 为 `plan.init/plan.get/plan.list/plan.sync/task.update`，Markdown
 
 ## 9. Browser 与 Screenshot
 
-`browser.automation` 1.1 使用 Node 管理的隔离 Chromium，不附着用户正常浏览器 Profile，也不暴露原始 CDP/Playwright。`snapshot` 返回 `ariaSnapshot + agentSnapshot + refs`；`click/type/press/wait` 优先直接使用短期 `ref`，新 snapshot、页面导航或元素脱离 DOM 后旧 ref 以 `BROWSER_REF_STALE` 快速失败。`batch` 在 Node 内一次执行 1-32 个固定交互动作并可 `snapshotAfter`，减少 Hub/MCP 往返。浏览器可访问 Node 当前网络可达的公网、localhost 与私网 HTTP(S) 目标，不做逐请求 DNS/pinned-IP 审查；仍拒绝危险 scheme、任意 JavaScript 注入和超出固定 action 的控制。
+`browser.automation` 1.2 使用 Node 管理的隔离 Chromium，不附着用户正常浏览器 Profile，也不暴露原始 CDP/Playwright。`readiness` 在 launch 前返回 runtime/sidecar/Chromium 可用性、稳定 reasonCode、缓存命中和耗时；正常动作返回 startup/operation/queue/total timing。`snapshot` 返回 `ariaSnapshot + agentSnapshot + refs`；`click/type/press/wait` 优先直接使用短期 `ref`，新 snapshot、页面导航或元素脱离 DOM 后旧 ref 以 `BROWSER_REF_STALE` 快速失败。`batch` 在 Node 内一次执行 1-32 个固定交互动作并可 `snapshotAfter`，减少 Hub/MCP 往返。浏览器可访问 Node 当前网络可达的公网、localhost 与私网 HTTP(S) 目标，不做逐请求 DNS/pinned-IP 审查；仍拒绝危险 scheme、任意 JavaScript 注入和超出固定 action 的控制。
 
 `screenshot.capture` 只做一次性桌面/显示器/窗口捕获。窗口通过短期 opaque `windowId` 指定，不把 OS 原生句柄暴露给远程客户端。
 
@@ -119,6 +119,7 @@ Plan actions 为 `plan.init/plan.get/plan.list/plan.sync/task.update`，Markdown
 ```text
 routing.status
 providers.list
+provider.readiness
 models.list
 provider.capabilities
 projects.list
@@ -155,6 +156,8 @@ session.review
 
 Agent Manager 已按 manager/provider/session/routing 边界拆分；静态 Provider Registry 只注册 `codex` 与 `claude_code`，不提供动态反射插件系统。`providers.list` 为每个 Harness 返回自己的 `supportedActions`。`routing.status` 是全局只读 action：读取 CC Switch SQLite SSOT，区分 `direct|cc_switch`、current Provider、model mapping、Takeover/health 与 EffectiveCapabilities；raw provider settings/meta/credential 永不离开 Node。
 
+`provider.readiness` 以 passive/safe 两种模式分别报告 `routeAvailable/providerAvailable/harnessAvailable/sessionBackendAvailable/readyForSessionCreate`，并为每层返回稳定 reasonCode 与耗时；safe 只启动/复用 app-server 并调用只读 thread/list，不创建 Session、不发送 Prompt。`session.create` 的公网 MCP 入口必须携带 12-128 字符幂等键；Node 将 spec hash 与小型结果持久化到 data-dir，重启后仍能重放同结果，key/spec 冲突或中间态不确定时拒绝重复创建。Provider 已明确拒绝且确认没有副作用的 create 会立即释放 reservation；真正不确定且没有已知 Session 的记录，须先用 `session.list` 对账，再以 `session.delete + idempotencyKey + decision=confirm_not_created` 显式释放。
+
 CC Switch 使用 `PRAGMA table_info` 对唯一支持 schema 计算 fingerprint 并 fail-closed；不支持时返回 `available=false/reason=unsupported_schema`，不猜旧 schema。进程内 bounded TTL 为 route 约 1.5 秒、CLI version/auth 45 秒、models 20 秒；Codex/Claude/CC Switch 独立 discovery 并行且只读，不触发模型生成。
 
 ### Codex
@@ -167,7 +170,7 @@ Codex Adapter 直接运行本机 `codex app-server --stdio`。Provider 凭据与
 
 线程管理边界：
 
-- `session.unarchive/delete/fork/compact` 映射 Codex 原生 thread API。
+- `session.unarchive/delete/fork/compact` 映射 Codex 原生 thread API；`session.delete` 先持久化 delete intent，再删除 Provider Session，最后回收 create 幂等记录，因此删除成功但本地落盘失败时可安全续做。
 - `session.rollback(numTurns)` 只从 Codex thread 历史末尾移除指定数量的 turns，**不会回滚工作树文件变更**。
 - Goal 使用 Codex 原生 `thread/goal/*`，状态仅允许 `active|paused|blocked|usageLimited|budgetLimited|complete`。
 - `session.settings.update` 只暴露稳定、受限字段：workingDirectory/cwd、model、effort、named permissions profile、personality、serviceTier、reasoning summary；不开放 arbitrary config map。

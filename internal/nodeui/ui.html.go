@@ -353,6 +353,7 @@ const localUIHTML = `<!doctype html>
 	}
 	function diagnosticRuntimeRows(runtime, includeAuth) {
 	  runtime=runtime || {}; const rows=[['Runtime',runtime.runtime || 'unknown'],['Version',runtime.version || '—'],['Route',runtime.route || 'unknown']];
+	  if(runtime.readyForSessionCreate !== undefined) rows.push(['可创建新会话',boolText(runtime.readyForSessionCreate)],['Readiness',String(runtime.readinessReasonCode || 'unknown')+' · '+String(runtime.readinessMs || 0)+'ms']);
 	  if(includeAuth) rows.push(['Auth configured',boolText(runtime.authConfigured)]);
 	  rows.push(['错误',runtime.errorClass ? runtime.errorClass+' · '+(runtime.errorMessage || '') : '无公开错误']); return rows;
 	}
@@ -363,7 +364,7 @@ const localUIHTML = `<!doctype html>
 	  renderData('diagnostics-codex',diagnosticRuntimeRows(agent.codex,false)); renderData('diagnostics-claude',diagnosticRuntimeRows(agent.claudeCode,true));
 	  renderData('diagnostics-ccswitch',[['DB detected',boolText(cc.dbDetected)],['Schema supported',boolText(cc.schemaSupported)],['Schema fingerprint',cc.schemaFingerprint || '—'],['Current route',cc.currentRoute || 'unknown'],['Selection consistent',boolText(cc.selectionConsistent)],['错误',cc.errorClass ? cc.errorClass+' · '+(cc.errorMessage || '') : '无公开错误']]);
 	  renderData('diagnostics-workspace',[['绑定',boolText(workspace.bound)],['项目摘要',workspace.projectStatus || 'not_bound'],['Plan',workspace.planId || '—'],['可读',boolText(workspace.readable)],['计划存在',boolText(workspace.exists)],['Revision',workspace.revision || '—'],['Markdown 文件',String(workspace.markdownFiles || 0)]]);
-	  renderData('diagnostics-local',[['Local Bridge configured',boolText(local.localBridgeConfigured)],['Browser configured',boolText(local.browserConfigured)],['Browser present',boolText(local.browserPresent)],['Component root present',boolText(local.componentRootPresent)],['Tray supported',boolText(local.traySupported)],['Tray active',boolText(local.trayActive)]]);
+	  renderData('diagnostics-local',[['Local Bridge configured',boolText(local.localBridgeConfigured)],['Browser configured',boolText(local.browserConfigured)],['Browser present',boolText(local.browserPresent)],['Browser ready',boolText(local.browserReady)],['Browser readiness',String(local.browserReasonCode || 'unknown')+' · '+String(local.browserReadinessMs || 0)+'ms'],['WSL runtime',boolText(local.wslAvailable)],['Component root present',boolText(local.componentRootPresent)],['Tray supported',boolText(local.traySupported)],['Tray active',boolText(local.trayActive)]]);
 	  renderData('diagnostics-errors',(data.errors || []).map(item=>[item.area || 'diagnostic',(item.errorClass || 'unknown')+' · '+(item.publicMessage || '诊断失败')]));
 	  const summary=data.summary || {}; $('diagnostics-summary').textContent=['Node: '+(summary.node || '—'),'Hub: '+(summary.hub || '—'),'Agent: '+(summary.agent || '—'),'Workspace: '+(summary.workspace || '—'),'Local: '+(summary.local || '—')].join('\n');
 	}

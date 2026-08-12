@@ -8,10 +8,11 @@ import (
 )
 
 type shellRunParams struct {
-	Argv           []string `json:"argv"`
-	Cwd            string   `json:"cwd,omitempty"`
-	TimeoutSeconds int64    `json:"timeoutSeconds,omitempty"`
-	IdempotencyKey string   `json:"idempotencyKey"`
+	Argv           []string         `json:"argv"`
+	Cwd            string           `json:"cwd,omitempty"`
+	Runtime        executionRuntime `json:"runtime,omitempty"`
+	TimeoutSeconds int64            `json:"timeoutSeconds,omitempty"`
+	IdempotencyKey string           `json:"idempotencyKey"`
 }
 
 type jobWatchParams struct {
@@ -24,7 +25,7 @@ type jobCancelParams struct {
 	JobID string `json:"jobId"`
 }
 
-func (c *Client) shellRun(ctx context.Context, params map[string]any) (JobSnapshot, error) {
+func (c *Client) shellRun(ctx context.Context, requestID, traceID string, params map[string]any) (JobSnapshot, error) {
 	if err := ctx.Err(); err != nil {
 		return JobSnapshot{}, err
 	}
@@ -53,7 +54,7 @@ func (c *Client) shellRun(ctx context.Context, params map[string]any) (JobSnapsh
 	if err := ctx.Err(); err != nil {
 		return JobSnapshot{}, err
 	}
-	return c.jobs.StartShell(resolvedCwd, input.Argv, timeout, input.IdempotencyKey)
+	return c.jobs.StartExecution(ctx, resolvedCwd, input.Argv, input.Runtime, timeout, input.IdempotencyKey, requestID, traceID)
 }
 
 func (c *Client) jobWatch(ctx context.Context, params map[string]any) (JobSnapshot, error) {

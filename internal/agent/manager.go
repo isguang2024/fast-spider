@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -22,6 +23,8 @@ type agentControlParams struct {
 	SessionID             string              `json:"sessionId,omitempty"`
 	TurnID                string              `json:"turnId,omitempty"`
 	RequestID             string              `json:"requestId,omitempty"`
+	IdempotencyKey        string              `json:"idempotencyKey,omitempty"`
+	Mode                  string              `json:"mode,omitempty"`
 	Prompt                string              `json:"prompt,omitempty"`
 	WorkingDirectory      string              `json:"workingDirectory,omitempty"`
 	Model                 string              `json:"model,omitempty"`
@@ -81,6 +84,7 @@ type AgentManager struct {
 	logger         *slog.Logger
 	codexStatePath string
 	registry       providerRegistry
+	createStore    *sessionCreateStore
 }
 
 func New(dataDir string, logger *slog.Logger) *AgentManager {
@@ -95,6 +99,7 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 		logger:         logger,
 		codexStatePath: defaultCodexDesktopStatePath(),
 		registry:       staticProviderRegistry(),
+		createStore:    newSessionCreateStore(dataDir),
 	}
 }
 
@@ -129,6 +134,9 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 	}
 	if action == "providers.list" {
 		return m.providers(ctx), nil
+	}
+	if action == "provider.readiness" {
+		return m.providerReadiness(ctx, input)
 	}
 
 	providerID := strings.TrimSpace(input.ProviderID)
@@ -293,13 +301,10 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		}
 		return map[string]any{"sessionId": input.SessionID, "archived": false}, nil
 	case "session.delete":
-		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
-			return nil, err
+		if strings.TrimSpace(input.SessionID) == "" {
+			return m.releaseUnresolvedCreate(input, "codex:"+strings.TrimSpace(input.IdempotencyKey))
 		}
-		if err := m.codex.DeleteThread(ctx, input.SessionID); err != nil {
-			return nil, err
-		}
-		return map[string]any{"sessionId": input.SessionID, "deleted": true}, nil
+		return m.deleteCodexSession(ctx, input.SessionID)
 	case "session.fork":
 		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
 			return nil, err
@@ -462,7 +467,7 @@ func (m *AgentManager) controlClaude(ctx context.Context, action string, input a
 		if err := validateClaudeTurnInput(input); err != nil {
 			return nil, err
 		}
-		return m.claude.Create(ctx, root, input.Prompt, input.Model, firstNonEmptyString(input.Thinking, input.Effort), input.Name, input.OutputSchema)
+		return m.claudeSessionCreate(ctx, root, input)
 	case "session.send":
 		if strings.TrimSpace(input.SessionID) == "" {
 			return nil, fmt.Errorf("sessionId is required")
@@ -509,9 +514,142 @@ func (m *AgentManager) controlClaude(ctx context.Context, action string, input a
 		return m.claude.SetArchived(input.SessionID, true)
 	case "session.unarchive":
 		return m.claude.SetArchived(input.SessionID, false)
+	case "session.delete":
+		if strings.TrimSpace(input.SessionID) == "" {
+			return m.releaseUnresolvedCreate(input, "claude_code:"+strings.TrimSpace(input.IdempotencyKey))
+		}
+		return m.deleteClaudeSession(input.SessionID)
 	default:
 		return nil, fmt.Errorf("agent action %q is not supported by provider claude_code", action)
 	}
+}
+
+func (m *AgentManager) releaseUnresolvedCreate(input agentControlParams, storeKey string) (map[string]any, error) {
+	idempotencyKey := strings.TrimSpace(input.IdempotencyKey)
+	if len(idempotencyKey) < 12 || len(idempotencyKey) > 128 || strings.ContainsAny(idempotencyKey, "\x00\r\n") {
+		return nil, fmt.Errorf("idempotencyKey must be 12 to 128 safe characters when sessionId is omitted")
+	}
+	if strings.TrimSpace(input.Decision) != "confirm_not_created" {
+		return nil, fmt.Errorf("decision=confirm_not_created is required after reconciling session.list")
+	}
+	released, err := m.createStore.releaseUnresolved(storeKey)
+	if err != nil {
+		return nil, err
+	}
+	providerID := strings.TrimSpace(input.ProviderID)
+	if providerID == "" {
+		providerID = "codex"
+	}
+	return map[string]any{
+		"providerId": providerID, "idempotencyKey": idempotencyKey,
+		"idempotencyReservationReleased": released, "alreadyReleased": !released,
+		"resolution": "not_created",
+	}, nil
+}
+
+func (m *AgentManager) deleteCodexSession(ctx context.Context, rawSessionID string) (map[string]any, error) {
+	sessionID, err := validateDeleteSessionID(rawSessionID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := m.createStore.prepareSessionDelete(sessionID); err != nil {
+		return nil, err
+	}
+	alreadyDeleted := false
+	if err := m.codex.DeleteThread(ctx, sessionID); err != nil {
+		if !isAgentSessionNotFound(err) {
+			return nil, err
+		}
+		alreadyDeleted = true
+	}
+	if err := m.createStore.finalizeSessionDelete(sessionID); err != nil {
+		return nil, err
+	}
+	if err := removeCodexDesktopThreadAssignment(m.codexStatePath, sessionID); err != nil {
+		m.logger.Warn("remove deleted Codex Desktop thread assignment", "sessionId", sessionID, "error", err)
+	}
+	return map[string]any{"sessionId": sessionID, "deleted": true, "alreadyDeleted": alreadyDeleted}, nil
+}
+
+func (m *AgentManager) deleteClaudeSession(rawSessionID string) (map[string]any, error) {
+	sessionID, err := validateDeleteSessionID(rawSessionID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := m.createStore.prepareSessionDelete(sessionID); err != nil {
+		return nil, err
+	}
+	result, err := m.claude.Delete(sessionID)
+	alreadyDeleted := false
+	if err != nil {
+		if !isAgentSessionNotFound(err) {
+			return nil, err
+		}
+		alreadyDeleted = true
+		result = map[string]any{"sessionId": sessionID, "deleted": true, "nativeHistoryPreserved": true}
+	}
+	if err := m.createStore.finalizeSessionDelete(sessionID); err != nil {
+		return nil, err
+	}
+	result["alreadyDeleted"] = alreadyDeleted
+	return result, nil
+}
+
+func validateDeleteSessionID(raw string) (string, error) {
+	sessionID := strings.TrimSpace(raw)
+	if sessionID == "" || len(sessionID) > 256 || strings.ContainsAny(sessionID, "\x00\r\n") {
+		return "", fmt.Errorf("sessionId is required and must be at most 256 safe characters")
+	}
+	return sessionID, nil
+}
+
+func isAgentSessionNotFound(err error) bool {
+	if errors.Is(err, node.ErrAgentSessionNotFound) {
+		return true
+	}
+	debug := strings.ToLower(executionDebugText(err))
+	return containsAny(debug, "session not found", "thread not found", "no such thread", "does not exist")
+}
+
+func (m *AgentManager) claudeSessionCreate(ctx context.Context, root string, input agentControlParams) (map[string]any, error) {
+	idempotencyKey := strings.TrimSpace(input.IdempotencyKey)
+	if idempotencyKey != "" && (len(idempotencyKey) < 12 || len(idempotencyKey) > 128 || strings.ContainsAny(idempotencyKey, "\x00\r\n")) {
+		return nil, fmt.Errorf("idempotencyKey must be 12 to 128 safe characters")
+	}
+	specHash := sessionCreateSpecHash(map[string]any{
+		"providerId": "claude_code", "workingDirectory": root, "prompt": input.Prompt,
+		"model": input.Model, "thinking": firstNonEmptyString(input.Thinking, input.Effort),
+		"name": input.Name, "outputSchema": input.OutputSchema,
+	})
+	storeKey := "claude_code:" + idempotencyKey
+	if idempotencyKey != "" {
+		replayed, ok, err := m.createStore.begin(storeKey, specHash)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			replayed["idempotencyProtected"] = true
+			replayed["idempotencyStatus"] = "replayed"
+			return replayed, nil
+		}
+	}
+	result, err := m.claude.Create(ctx, root, input.Prompt, input.Model, firstNonEmptyString(input.Thinking, input.Effort), input.Name, input.OutputSchema)
+	if err != nil {
+		if idempotencyKey != "" {
+			if cleanupErr := m.createStore.abort(storeKey); cleanupErr != nil {
+				return nil, cleanupErr
+			}
+		}
+		return nil, err
+	}
+	result["idempotencyProtected"] = idempotencyKey != ""
+	if idempotencyKey != "" {
+		result["idempotencyStatus"] = "created"
+		if err := m.createStore.update(storeKey, "succeeded", result); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
 }
 
 func validateClaudeTurnInput(input agentControlParams) error {
@@ -807,32 +945,84 @@ func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlPara
 	if err != nil {
 		return nil, err
 	}
+	if !hasTurnInput(input) && input.OutputSchema != nil {
+		return nil, fmt.Errorf("outputSchema requires at least one turn input")
+	}
+	if hasTurnInput(input) {
+		if err := validateTurnInputs(input); err != nil {
+			return nil, err
+		}
+	}
+	idempotencyKey := strings.TrimSpace(input.IdempotencyKey)
+	if idempotencyKey != "" && (len(idempotencyKey) < 12 || len(idempotencyKey) > 128 || strings.ContainsAny(idempotencyKey, "\x00\r\n")) {
+		return nil, fmt.Errorf("idempotencyKey must be 12 to 128 safe characters")
+	}
 	selectedModel, err := m.resolveModel(ctx, input.Model)
 	if err != nil {
 		return nil, err
 	}
+	specHash := sessionCreateSpecHash(map[string]any{
+		"providerId": "codex", "workingDirectory": workingDirectory, "model": selectedModel, "thinking": input.Thinking,
+		"prompt": input.Prompt, "skills": input.Skills, "images": input.Images, "localImages": input.LocalImages,
+		"mentions": input.Mentions, "imageDetail": input.ImageDetail, "outputSchema": input.OutputSchema,
+		"summary": input.Summary, "personality": input.Personality, "serviceTier": input.ServiceTier,
+	})
+	storeKey := "codex:" + idempotencyKey
+	if idempotencyKey != "" {
+		replayed, ok, err := m.createStore.begin(storeKey, specHash)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			replayed["idempotencyProtected"] = true
+			replayed["idempotencyStatus"] = "replayed"
+			return replayed, nil
+		}
+	}
 	project := resolveAgentProjectContext(ctx, workingDirectory)
 	threadResult, err := m.codex.StartThread(ctx, workingDirectory, project.ProjectDirectory, selectedModel, input.Thinking)
 	if err != nil {
+		if idempotencyKey != "" {
+			if isDefinitiveCodexRPCRejection(err) {
+				if cleanupErr := m.createStore.abort(storeKey); cleanupErr != nil {
+					return nil, cleanupErr
+				}
+			} else {
+				_ = m.createStore.update(storeKey, "in_doubt", nil)
+			}
+		}
 		return nil, err
 	}
 	sessionID := mapNestedString(threadResult, "thread", "id")
 	if sessionID == "" {
+		if idempotencyKey != "" {
+			_ = m.createStore.update(storeKey, "in_doubt", nil)
+		}
 		return nil, fmt.Errorf("Codex did not return a session ID")
+	}
+	if idempotencyKey != "" {
+		if err := m.createStore.update(storeKey, "thread_created", map[string]any{"sessionId": sessionID}); err != nil {
+			_ = m.codex.ArchiveThread(context.Background(), sessionID)
+			return nil, err
+		}
 	}
 	projectID, projectSynced, syncErr := syncCodexDesktopProject(m.codexStatePath, sessionID, project, time.Now())
 	if syncErr != nil {
 		m.logger.Warn("sync Codex Desktop project metadata", "sessionId", sessionID, "error", syncErr)
 	}
 	out := map[string]any{
-		"workingDirectory": workingDirectory,
-		"projectDirectory": project.ProjectDirectory,
-		"sessionId":        sessionID,
-		"executionMode":    "bridge_owned",
-		"model":            selectedModel,
-		"owner":            "node_agent_bridge",
-		"phase":            "ready",
-		"realtimeChannel":  "session.watch",
+		"workingDirectory":     workingDirectory,
+		"projectDirectory":     project.ProjectDirectory,
+		"sessionId":            sessionID,
+		"executionMode":        "bridge_owned",
+		"model":                selectedModel,
+		"owner":                "node_agent_bridge",
+		"phase":                "ready",
+		"realtimeChannel":      "session.watch",
+		"idempotencyProtected": idempotencyKey != "",
+	}
+	if idempotencyKey != "" {
+		out["idempotencyStatus"] = "created"
 	}
 	if project.IsGitRepository {
 		if projectID == "" {
@@ -842,15 +1032,12 @@ func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlPara
 		out["desktopProjectSynced"] = projectSynced
 	}
 	if !hasTurnInput(input) {
-		if input.OutputSchema != nil {
-			_ = m.codex.ArchiveThread(context.Background(), sessionID)
-			return nil, fmt.Errorf("outputSchema requires at least one turn input")
+		if idempotencyKey != "" {
+			if err := m.createStore.update(storeKey, "succeeded", out); err != nil {
+				return nil, err
+			}
 		}
 		return out, nil
-	}
-	if err := validateTurnInputs(input); err != nil {
-		_ = m.codex.ArchiveThread(context.Background(), sessionID)
-		return nil, err
 	}
 	turnResult, err := m.codex.StartTurnWithOptions(ctx, sessionID, buildAgentTurnInputsWithDetail(input.Prompt, input.Skills, input.Images, input.LocalImages, input.Mentions, input.ImageDetail), codexTurnOptions{
 		WorkingDirectory: workingDirectory,
@@ -862,6 +1049,9 @@ func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlPara
 		OutputSchema:     input.OutputSchema,
 	})
 	if err != nil {
+		if idempotencyKey != "" {
+			_ = m.createStore.update(storeKey, "in_doubt", map[string]any{"sessionId": sessionID})
+		}
 		_ = m.codex.ArchiveThread(context.Background(), sessionID)
 		if cleanupErr := removeCodexDesktopThreadAssignment(m.codexStatePath, sessionID); cleanupErr != nil {
 			m.logger.Warn("remove failed Codex Desktop thread assignment", "sessionId", sessionID, "error", cleanupErr)
@@ -871,6 +1061,11 @@ func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlPara
 	turnID := mapNestedString(turnResult, "turn", "id")
 	out["turnId"] = turnID
 	out["phase"] = "running"
+	if idempotencyKey != "" {
+		if err := m.createStore.update(storeKey, "succeeded", out); err != nil {
+			return nil, err
+		}
+	}
 	return out, nil
 }
 

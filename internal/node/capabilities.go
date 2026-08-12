@@ -83,17 +83,26 @@ type codeSearchMatch struct {
 }
 
 type codeSearchResult struct {
-	Matches        []codeSearchMatch `json:"matches"`
-	Files          []string          `json:"files,omitempty"`
-	ScannedFiles   int               `json:"scannedFiles"`
-	Engine         string            `json:"engine"`
-	FallbackReason string            `json:"fallbackReason,omitempty"`
-	ElapsedMs      int64             `json:"elapsedMs"`
-	Truncated      bool              `json:"truncated"`
+	Matches           []codeSearchMatch `json:"matches"`
+	Files             []string          `json:"files,omitempty"`
+	ScannedFiles      int               `json:"scannedFiles"`
+	MatchedFiles      int               `json:"matchedFiles"`
+	BytesScanned      int64             `json:"bytesScanned"`
+	MatchCount        int               `json:"matchCount"`
+	SkippedFiles      int               `json:"skippedFiles,omitempty"`
+	SkipReasons       map[string]int    `json:"skipReasons,omitempty"`
+	Incomplete        bool              `json:"incomplete,omitempty"`
+	Engine            string            `json:"engine"`
+	FallbackReason    string            `json:"fallbackReason,omitempty"`
+	PrimaryElapsedMs  int64             `json:"primaryElapsedMs"`
+	FallbackElapsedMs int64             `json:"fallbackElapsedMs"`
+	ElapsedMs         int64             `json:"elapsedMs"`
+	Truncated         bool              `json:"truncated"`
 }
 
 func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.CapabilityRequest) protocolv1.CapabilityResponse {
-	response := protocolv1.CapabilityResponse{MessageType: protocolv1.MessageCapabilityResponse, RequestId: req.RequestId, Timestamp: protocolv1.Timestamp(nowUTC())}
+	started := time.Now()
+	response := protocolv1.CapabilityResponse{MessageType: protocolv1.MessageCapabilityResponse, RequestId: req.RequestId, TraceId: req.TraceId, Timestamp: protocolv1.Timestamp(nowUTC())}
 	if req.RequestId == "" || req.Capability == "" || req.Action == "" {
 		response.Error = protocolError("INVALID_REQUEST", "invalid capability request", false)
 		return response
@@ -123,7 +132,7 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 	case "code.search/search":
 		result, err = c.codeSearch(ctx, req.Params)
 	case "shell.exec/run":
-		result, err = c.shellRun(ctx, req.Params)
+		result, err = c.shellRun(ctx, req.RequestId, req.TraceId, req.Params)
 	case "job.control/watch":
 		result, err = c.jobWatch(ctx, req.Params)
 	case "job.control/cancel":
@@ -135,7 +144,7 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 	case "build.exec/run":
 		params := cloneParams(req.Params)
 		params["action"] = req.Action
-		result, err = c.buildControl(ctx, params)
+		result, err = c.buildControl(ctx, req.RequestId, req.TraceId, params)
 	case "artifact.store/uploadFile":
 		result, err = c.artifactUploadFile(ctx, req.Params)
 	case "artifact.store/uploadJobLog":
@@ -146,11 +155,11 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 		"working.context/plan.init", "working.context/plan.get", "working.context/plan.list", "working.context/plan.sync",
 		"working.context/task.update", "working.context/markdown.list", "working.context/markdown.read", "working.context/markdown.append", "working.context/progress.watch":
 		result, err = c.workingContextControl(ctx, req.Action, req.Params)
-	case "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/page.close", "browser.automation/pages.list", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/wait", "browser.automation/batch", "browser.automation/snapshot", "browser.automation/screenshot", "browser.automation/events":
+	case "browser.automation/readiness", "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/page.close", "browser.automation/pages.list", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/wait", "browser.automation/batch", "browser.automation/snapshot", "browser.automation/screenshot", "browser.automation/events":
 		result, err = c.browserControl(ctx, req.Action, req.Params)
 	case "screenshot.capture/listDisplays", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/listWindows", "screenshot.capture/window":
 		result, err = c.screenshotCapture(ctx, req.Action, req.Params)
-	case "agent.control/routing.status", "agent.control/providers.list", "agent.control/models.list", "agent.control/provider.capabilities", "agent.control/projects.list", "agent.control/skills.list", "agent.control/hooks.list", "agent.control/permissions.list", "agent.control/plugins.list", "agent.control/plugins.installed", "agent.control/plugins.get", "agent.control/plugin.skill.read", "agent.control/mcp.status.list", "agent.control/session.list", "agent.control/session.get", "agent.control/session.create", "agent.control/session.send", "agent.control/session.steer", "agent.control/session.respond", "agent.control/session.watch", "agent.control/session.cancel", "agent.control/session.result", "agent.control/session.rename", "agent.control/session.archive", "agent.control/session.unarchive", "agent.control/session.delete", "agent.control/session.fork", "agent.control/session.compact", "agent.control/session.rollback", "agent.control/session.goal.get", "agent.control/session.goal.set", "agent.control/session.goal.clear", "agent.control/session.settings.update", "agent.control/session.review":
+	case "agent.control/routing.status", "agent.control/providers.list", "agent.control/provider.readiness", "agent.control/models.list", "agent.control/provider.capabilities", "agent.control/projects.list", "agent.control/skills.list", "agent.control/hooks.list", "agent.control/permissions.list", "agent.control/plugins.list", "agent.control/plugins.installed", "agent.control/plugins.get", "agent.control/plugin.skill.read", "agent.control/mcp.status.list", "agent.control/session.list", "agent.control/session.get", "agent.control/session.create", "agent.control/session.send", "agent.control/session.steer", "agent.control/session.respond", "agent.control/session.watch", "agent.control/session.cancel", "agent.control/session.result", "agent.control/session.rename", "agent.control/session.archive", "agent.control/session.unarchive", "agent.control/session.delete", "agent.control/session.fork", "agent.control/session.compact", "agent.control/session.rollback", "agent.control/session.goal.get", "agent.control/session.goal.set", "agent.control/session.goal.clear", "agent.control/session.settings.update", "agent.control/session.review":
 		if c.agent == nil {
 			err = ErrAgentProviderUnavailable
 		} else {
@@ -171,7 +180,14 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 	}
 	if err := json.Unmarshal(raw, &response.Result); err != nil {
 		response.Error = protocolError("INTERNAL", "failed to normalize capability result", true)
+		return response
 	}
+	timing, _ := response.Result["timing"].(map[string]any)
+	if timing == nil {
+		timing = map[string]any{}
+	}
+	timing["nodeExecutionMs"] = time.Since(started).Milliseconds()
+	response.Result["timing"] = timing
 	return response
 }
 
@@ -219,7 +235,7 @@ func compileSearchMatcher(query string, useRegex, ignoreCase bool) (lineMatcher,
 
 func shouldSkipDir(name string) bool {
 	switch name {
-	case ".git", ".svn", ".hg", "node_modules", "vendor", ".idea", ".vscode":
+	case ".git", ".svn", ".hg", "node_modules", "vendor", ".idea", ".vscode", ".next", ".nuxt", ".cache", "coverage", "dist", "build", "out", "target", "bin", "obj":
 		return true
 	default:
 		return false
@@ -289,7 +305,12 @@ func capabilityError(err error) *protocolv1.ProtocolError {
 	case errors.Is(err, ErrPermissionDenied):
 		return protocolError("PERMISSION_DENIED", "the operating system denied this operation", false)
 	case errors.Is(err, ErrRevisionConflict):
-		return protocolError("REVISION_CONFLICT", "file changed since it was read", false)
+		result := protocolError("REVISION_CONFLICT", "file changed since it was read", false)
+		var conflict *FileRevisionError
+		if errors.As(err, &conflict) {
+			result.Details = map[string]any{"path": conflict.Path, "expectedSha256": conflict.Expected, "actualSha256": conflict.Actual}
+		}
+		return result
 	case errors.Is(err, ErrEditNotUnique):
 		return protocolError("EDIT_NOT_UNIQUE", "oldText must match exactly once", false)
 	case errors.Is(err, ErrEditOverlap):
@@ -304,6 +325,10 @@ func capabilityError(err error) *protocolv1.ProtocolError {
 		return protocolError("JOB_LOG_UNAVAILABLE", "job log is unavailable", false)
 	case errors.Is(err, ErrJobLimit):
 		return protocolError("RESOURCE_LIMIT", "job resource limit reached", true)
+	case errors.Is(err, ErrRuntimeUnavailable):
+		return protocolError("RUNTIME_UNAVAILABLE", "requested execution runtime is unavailable", false)
+	case errors.Is(err, ErrWSLCwdUnmappable):
+		return protocolError("WSL_CWD_UNMAPPABLE", "Windows cwd cannot be mapped inside the selected WSL distribution", false)
 	case errors.Is(err, ErrIdempotencyConflict):
 		return protocolError("IDEMPOTENCY_CONFLICT", "idempotency key was reused with different parameters", false)
 	case errors.Is(err, ErrGitNotFound):

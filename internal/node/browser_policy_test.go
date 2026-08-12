@@ -3,7 +3,10 @@ package node
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
+
+	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
 
 func TestValidateBrowserNavigationURLPolicy(t *testing.T) {
@@ -49,6 +52,23 @@ func TestValidateBrowserNavigationURLPolicy(t *testing.T) {
 				t.Fatalf("URL %q error=%v", raw, err)
 			}
 		})
+	}
+}
+
+func TestBrowserReadinessSanitizerAcceptsOnlyEmptyParams(t *testing.T) {
+	params, err := sanitizeBrowserParams("readiness", map[string]any{})
+	if err != nil || len(params) != 0 {
+		t.Fatalf("readiness params=%v err=%v", params, err)
+	}
+	if _, err := sanitizeBrowserParams("readiness", map[string]any{"browserSessionId": "brs_unexpected"}); err == nil {
+		t.Fatal("readiness accepted a browser session parameter")
+	}
+	client := NewLocalCapabilityClient(Config{DataDir: t.TempDir(), BrowserSidecarDir: filepath.Join(t.TempDir(), "missing")})
+	response := client.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{
+		RequestId: "req_browser_readiness", Capability: "browser.automation", Action: "readiness", Params: map[string]any{},
+	})
+	if response.Error != nil || response.Result["ready"] != false {
+		t.Fatalf("local readiness response=%#v", response)
 	}
 }
 
