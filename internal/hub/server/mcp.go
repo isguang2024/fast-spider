@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/isguang2024/fast-spider/internal/hub/core"
+	"github.com/isguang2024/fast-spider/internal/hub/store"
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -128,7 +131,7 @@ type buildControlInput struct {
 }
 
 type artifactGetInput struct {
-	Action      string `json:"action" jsonschema:"get, uploadFile, uploadJobLog, or publishFile"`
+	Action      string `json:"action" jsonschema:"get, uploadFile, uploadJobLog, or publishFile. Prefer uploadFile/uploadJobLog + get for native MCP content; use publishFile only when an explicit temporary share URL is needed"`
 	ArtifactID  string `json:"artifactId,omitempty" jsonschema:"artifact ID for get"`
 	MachineID   string `json:"machineId,omitempty" jsonschema:"machine ID for upload/publish actions"`
 	Path        string `json:"path,omitempty" jsonschema:"absolute Node file path for uploadFile or publishFile"`
@@ -673,7 +676,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
-		return s.presentationToolResult(ctx, ownerID, result), genericCapabilityOutput{Result: result}, nil
+		return s.presentationToolResult(ctx, ownerID, result, false), genericCapabilityOutput{Result: result}, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -686,7 +689,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
-		return s.presentationToolResult(ctx, ownerID, result), genericCapabilityOutput{Result: result}, nil
+		return s.presentationToolResult(ctx, ownerID, result, false), genericCapabilityOutput{Result: result}, nil
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -759,7 +762,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "artifact_get",
-		Description: "Get Artifact metadata/content, ask a Node to upload a file or Job log into Hub Artifact storage, or publish an absolute-path file through the Hub temporary presentation relay without creating a Hub Artifact record.",
+		Description: "Get or upload Hub Artifacts with bounded native MCP content when possible: PNG/JPEG become ImageContent, small text becomes EmbeddedResource text, and other files up to the native limit become EmbeddedResource blob. Prefer uploadFile/uploadJobLog and get for GPT/agent display. Use publishFile only when an explicit temporary share URL is needed.",
 		Annotations: toolAnnotations(false, false, false, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input artifactGetInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		switch input.Action {
@@ -769,6 +772,11 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 			if err != nil {
 				return nil, genericCapabilityOutput{}, err
 			}
+			if artifactID, _ := result["artifactId"].(string); strings.TrimSpace(artifactID) != "" {
+				if artifact, getErr := s.service.GetArtifact(ctx, ownerID, artifactID); getErr == nil {
+					return s.artifactNativeToolResult(ctx, artifact), genericCapabilityOutput{Result: result}, nil
+				}
+			}
 			return nil, genericCapabilityOutput{Result: result}, nil
 		case "publishFile":
 			params := map[string]any{"path": input.Path, "logicalName": input.LogicalName, "contentType": input.ContentType}
@@ -776,7 +784,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 			if err != nil {
 				return nil, genericCapabilityOutput{}, err
 			}
-			return s.presentationToolResult(ctx, ownerID, result), genericCapabilityOutput{Result: result}, nil
+			return s.presentationToolResult(ctx, ownerID, result, true), genericCapabilityOutput{Result: result}, nil
 		case "get":
 			artifact, err := s.service.GetArtifact(ctx, ownerID, input.ArtifactID)
 			if err != nil {
@@ -797,7 +805,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 				result["content"] = content
 				result["encoding"] = "utf-8"
 			}
-			return nil, genericCapabilityOutput{Result: result}, nil
+			return s.artifactNativeToolResult(ctx, artifact), genericCapabilityOutput{Result: result}, nil
 		default:
 			return nil, genericCapabilityOutput{}, fmt.Errorf("unsupported artifact action %q", input.Action)
 		}
@@ -861,9 +869,41 @@ func adaptRollingFileEditResult(result map[string]any, requestedAction string) {
 	delete(result, "editCount")
 }
 
-const maxMCPPresentationImageBytes int64 = 8 << 20
+const (
+	maxMCPPresentationImageBytes int64 = 8 << 20
+	maxMCPEmbeddedArtifactBytes  int64 = 8 << 20
+)
 
-func (s *Server) presentationToolResult(ctx context.Context, ownerID string, result map[string]any) *mcp.CallToolResult {
+func (s *Server) artifactNativeToolResult(ctx context.Context, artifact store.ArtifactRecord) *mcp.CallToolResult {
+	if artifact.SizeBytes < 0 || artifact.SizeBytes > maxMCPEmbeddedArtifactBytes {
+		return nil
+	}
+	_, file, err := s.service.OpenArtifact(ctx, artifact.OwnerID, artifact.ID)
+	if err != nil {
+		return nil
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.LimitReader(file, maxMCPEmbeddedArtifactBytes+1))
+	if err != nil || len(raw) == 0 || int64(len(raw)) > maxMCPEmbeddedArtifactBytes {
+		return nil
+	}
+	mimeType := strings.TrimSpace(artifact.ContentType)
+	if imageMIME, ok := presentationImageMIME(mimeType); ok && len(raw) > 0 && verifyPresentationImageBytes(imageMIME, raw) == nil {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.ImageContent{Data: raw, MIMEType: imageMIME}}}
+	}
+	resource := &mcp.ResourceContents{URI: "artifact://" + artifact.ID, MIMEType: mimeType}
+	if int64(len(raw)) <= maxInlineArtifactRead && isInlineArtifactType(mimeType) && utf8.Valid(raw) {
+		resource.Text = string(raw)
+	} else {
+		resource.Blob = raw
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.EmbeddedResource{Resource: resource}}}
+}
+
+func (s *Server) presentationToolResult(ctx context.Context, ownerID string, result map[string]any, includeResourceLink bool) *mcp.CallToolResult {
+	if !includeResourceLink {
+		delete(result, "publicUrl")
+	}
 	presentationID, _ := result["presentationId"].(string)
 	presentationID = strings.TrimSpace(presentationID)
 	if presentationID == "" {
@@ -879,7 +919,7 @@ func (s *Server) presentationToolResult(ctx context.Context, ownerID string, res
 	result["sizeBytes"] = record.SizeBytes
 	result["sha256"] = record.SHA256
 	result["expiresAt"] = record.ExpiresAt
-	if publicURL != "" {
+	if includeResourceLink && publicURL != "" {
 		result["publicUrl"] = publicURL
 	}
 
@@ -891,7 +931,7 @@ func (s *Server) presentationToolResult(ctx context.Context, ownerID string, res
 			}
 		}
 	}
-	if publicURL != "" {
+	if includeResourceLink && publicURL != "" {
 		size := record.SizeBytes
 		content = append(content, &mcp.ResourceLink{
 			URI: publicURL, Name: record.FileName, Title: record.FileName,

@@ -1,4 +1,4 @@
-# Wire Protocol（0.4.10）
+# Wire Protocol（0.4.11）
 
 Node 与 Hub 使用版本化 WSS 控制协议。设备握手完成后，Capability Request/Response、心跳和连接关闭都复用该 Machine 当前 generation 的同一条 WSS。HTTP 只用于 Machine 登记、设备 Token，以及 Artifact/Presentation 等大文件数据面。
 

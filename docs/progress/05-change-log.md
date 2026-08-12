@@ -74,3 +74,8 @@
 
 - `019ade0` 已推送并通过最终 full release gate；Hub、spiderctl、PCa Node 已升级至 0.4.10，公开健康检查、Node online/ready、自更新与回滚链路均通过。
 - FastSpider_FS 完成文件、搜索、host/WSL、Agent 生命周期和 Browser DOM 真实自举；窄静态 include 搜索 P50 相对 0.4.9 部署态下降 98.8%，最终验收为 `PASS / PRODUCTION READY`。
+
+### 2026-08-13 — 0.4.11 Artifact/MCP 原生回显
+
+- `artifact_get` 的 uploadFile/uploadJobLog/get 优先返回有界原生 MCP 图片、文本或二进制资源；空 Artifact 保留结构化元数据且不生成 malformed `EmbeddedResource`。
+- browser/screenshot 不再暴露 `publicUrl` 或 `ResourceLink`；只有调用方显式执行 `publishFile` 时才创建短期分享链接。

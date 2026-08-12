@@ -18,7 +18,7 @@ func TestPresentationToolResultCreatesImageAndHubResourceLink(t *testing.T) {
 	record := putPresentationForTest(t, relay, "owner-1", "machine-1", "shot.png", "image/png", imageData, time.Now().UTC())
 	hub := &Server{config: Config{PublicBaseURL: "https://hub.example/fast-spider"}, presentations: relay}
 	structured := map[string]any{"presentationId": record.ID}
-	result := hub.presentationToolResult(context.Background(), "owner-1", structured)
+	result := hub.presentationToolResult(context.Background(), "owner-1", structured, true)
 	if result == nil || len(result.Content) != 2 {
 		t.Fatalf("presentation result=%+v", result)
 	}
@@ -39,12 +39,30 @@ func TestPresentationToolResultCreatesImageAndHubResourceLink(t *testing.T) {
 	}
 }
 
+func TestPresentationToolResultImageOmitsLinkWhenNotRequested(t *testing.T) {
+	imageData := append([]byte("\x89PNG\r\n\x1a\n"), []byte("image-data")...)
+	relay := newPresentationStore(t.TempDir())
+	record := putPresentationForTest(t, relay, "owner-1", "machine-1", "shot.png", "image/png", imageData, time.Now().UTC())
+	hub := &Server{config: Config{PublicBaseURL: "https://hub.example/fast-spider"}, presentations: relay}
+	structured := map[string]any{"presentationId": record.ID, "publicUrl": "stale"}
+	result := hub.presentationToolResult(context.Background(), "owner-1", structured, false)
+	if result == nil || len(result.Content) != 1 {
+		t.Fatalf("presentation result=%+v", result)
+	}
+	if _, ok := result.Content[0].(*mcp.ImageContent); !ok {
+		t.Fatalf("content type=%T want *mcp.ImageContent", result.Content[0])
+	}
+	if _, ok := structured["publicUrl"]; ok {
+		t.Fatalf("non-share presentation leaked publicUrl=%v", structured["publicUrl"])
+	}
+}
+
 func TestPresentationToolResultOwnerIsolation(t *testing.T) {
 	data := append([]byte("\x89PNG\r\n\x1a\n"), byte(1))
 	relay := newPresentationStore(t.TempDir())
 	record := putPresentationForTest(t, relay, "owner-1", "machine-1", "shot.png", "image/png", data, time.Now().UTC())
 	hub := &Server{config: Config{PublicBaseURL: "https://hub.example"}, presentations: relay}
-	if result := hub.presentationToolResult(context.Background(), "owner-2", map[string]any{"presentationId": record.ID}); result != nil {
+	if result := hub.presentationToolResult(context.Background(), "owner-2", map[string]any{"presentationId": record.ID}, true); result != nil {
 		t.Fatalf("cross-owner presentation result=%+v", result)
 	}
 }
@@ -54,7 +72,7 @@ func TestPresentationToolResultNonImageReturnsLinkOnly(t *testing.T) {
 	relay := newPresentationStore(t.TempDir())
 	record := putPresentationForTest(t, relay, "owner-1", "machine-1", "archive.zip", "application/zip", data, time.Now().UTC())
 	hub := &Server{config: Config{PublicBaseURL: "https://hub.example"}, presentations: relay}
-	result := hub.presentationToolResult(context.Background(), "owner-1", map[string]any{"presentationId": record.ID})
+	result := hub.presentationToolResult(context.Background(), "owner-1", map[string]any{"presentationId": record.ID}, true)
 	if result == nil || len(result.Content) != 1 {
 		t.Fatalf("presentation result=%+v", result)
 	}
@@ -78,8 +96,23 @@ func TestPresentationStoreExpiresAndDeletesTemporaryFile(t *testing.T) {
 
 func TestPresentationToolResultIgnoresOrdinaryCapabilityResults(t *testing.T) {
 	hub := &Server{config: Config{PublicBaseURL: "https://hub.example"}, presentations: newPresentationStore(t.TempDir())}
-	if result := hub.presentationToolResult(context.Background(), "owner-1", map[string]any{"status": "ok"}); result != nil {
+	structured := map[string]any{"status": "ok", "publicUrl": "https://stale.example/resource"}
+	if result := hub.presentationToolResult(context.Background(), "owner-1", structured, false); result != nil {
 		t.Fatalf("unexpected presentation result=%+v", result)
+	}
+	if _, ok := structured["publicUrl"]; ok {
+		t.Fatalf("ordinary capability result leaked publicUrl=%v", structured["publicUrl"])
+	}
+}
+
+func TestPresentationToolResultInvalidPresentationOmitsLinkWhenNotRequested(t *testing.T) {
+	hub := &Server{config: Config{PublicBaseURL: "https://hub.example"}, presentations: newPresentationStore(t.TempDir())}
+	structured := map[string]any{"presentationId": "missing", "publicUrl": "https://stale.example/resource"}
+	if result := hub.presentationToolResult(context.Background(), "owner-1", structured, false); result != nil {
+		t.Fatalf("unexpected presentation result=%+v", result)
+	}
+	if _, ok := structured["publicUrl"]; ok {
+		t.Fatalf("invalid presentation leaked publicUrl=%v", structured["publicUrl"])
 	}
 }
 

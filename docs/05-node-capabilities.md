@@ -96,9 +96,9 @@ native fallback 支持同一 content/files、glob、context 与 limit 语义；�
 
 ## 7. Artifact 与 Presentation
 
-`artifact.store/uploadFile` 与 `uploadJobLog` 把显式文件/Job 日志上传到 Hub Artifact 存储；`publishFile` 通过 Hub Temporary Presentation Relay 暂时发布文件，适合截图和 AI 原生资源展示。
+`artifact.store/uploadFile` 与 `uploadJobLog` 把显式文件/Job 日志上传到 Hub Artifact 存储。MCP 的 `artifact_get` 在上传完成或 `get` 时会优先返回有界原生内容：PNG/JPEG 使用 `ImageContent`，小型文本使用 `EmbeddedResource.text`，其余不超过 8 MiB 的文件使用 `EmbeddedResource.blob`；这样 GPT/Agent 无需再从外部 URL 二次下载，适合无人值守。超过原生回显上限的 Artifact 仍保留元数据与受鉴权下载路径。
 
-截图不依赖第三方 OSS：Node 生成图片后上传到 Hub 临时 relay；Hub 使用系统临时目录保存短期内容，不写业务数据库，并可通过 MCP 返回原生 `ImageContent` 与短期 `ResourceLink`。过期资源由维护循环清理。
+`publishFile` 仅用于调用方明确需要临时公开/可分享链接时，通过 Hub Temporary Presentation Relay 生成短期 Presentation；不作为 GPT 文件回显默认路径。截图仍不依赖第三方 OSS：Node 生成图片后上传到 Hub 临时 relay；Hub 使用系统临时目录保存短期内容，不写业务数据库，并可通过 MCP 返回原生 `ImageContent`。需要显式临时分享时才附带短期 `ResourceLink`；过期资源由维护循环清理。
 
 ## 8. Working Context
 

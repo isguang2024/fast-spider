@@ -59,6 +59,10 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	if err := os.WriteFile(filePath, []byte("alpha\nneedle value\nomega\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	emptyPath := filepath.Join(root, "empty.txt")
+	if err := os.WriteFile(emptyPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	runE2EGit(t, root, "init")
 	runE2EGit(t, root, "config", "user.name", "Fast Spider E2E")
 	runE2EGit(t, root, "config", "user.email", "fast-spider-e2e@example.invalid")
@@ -351,6 +355,12 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(raw, &artifact); err != nil || artifact.Result.ArtifactID == "" {
 		t.Fatalf("artifact upload=%v raw=%s", err, raw)
 	}
+	if len(artifactUpload.Content) != 1 {
+		t.Fatalf("artifact upload native content=%#v", artifactUpload.Content)
+	}
+	if embedded, ok := artifactUpload.Content[0].(*mcp.EmbeddedResource); !ok || embedded.Resource == nil || embedded.Resource.Text == "" || !strings.Contains(embedded.Resource.Text, "needle changed") {
+		t.Fatalf("artifact upload native resource=%#v", artifactUpload.Content[0])
+	}
 	artifactGet, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "artifact_get", Arguments: map[string]any{"action": "get", "artifactId": artifact.Result.ArtifactID}})
 	if err != nil {
 		t.Fatal(err)
@@ -358,6 +368,22 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	raw, _ = json.Marshal(artifactGet.StructuredContent)
 	if !strings.Contains(string(raw), "needle changed") {
 		t.Fatalf("artifact_get=%s", raw)
+	}
+	if len(artifactGet.Content) != 1 {
+		t.Fatalf("artifact get native content=%#v", artifactGet.Content)
+	}
+	if embedded, ok := artifactGet.Content[0].(*mcp.EmbeddedResource); !ok || embedded.Resource == nil || !strings.Contains(embedded.Resource.Text, "needle changed") {
+		t.Fatalf("artifact get native resource=%#v", artifactGet.Content[0])
+	}
+
+	emptyUpload, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "artifact_get", Arguments: map[string]any{"action": "uploadFile", "machineId": state.MachineID, "path": emptyPath, "logicalName": "empty.txt", "contentType": "text/plain; charset=utf-8"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, content := range emptyUpload.Content {
+		if _, ok := content.(*mcp.EmbeddedResource); ok {
+			t.Fatalf("empty artifact must not emit malformed native resource=%#v", emptyUpload.Content)
+		}
 	}
 
 	shellResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "shell_run", Arguments: map[string]any{"machineId": state.MachineID, "argv": e2eSleepArgv(), "cwd": root, "timeoutSeconds": 30, "idempotencyKey": "idem_e2e_cancel_0001"}})
