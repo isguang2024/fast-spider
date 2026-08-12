@@ -62,3 +62,36 @@ func TestWindowsCmdStructuredArgvCreatesDirectory(t *testing.T) {
 		t.Fatalf("created directory stat=%+v err=%v", info, err)
 	}
 }
+
+func TestParseWSLKeepAliveSpecUsesRequestedDistribution(t *testing.T) {
+	spec, ok := parseWSLKeepAliveSpec([]string{
+		`C:\Windows\System32\wsl.exe`, "--distribution", "Ubuntu-24.04", "--", "bash", "-lc", "docker ps",
+	})
+	if !ok {
+		t.Fatal("WSL execution should enable keepalive")
+	}
+	if spec.distribution != "Ubuntu-24.04" || spec.key != "ubuntu-24.04" {
+		t.Fatalf("unexpected WSL keepalive spec: %+v", spec)
+	}
+}
+
+func TestParseWSLKeepAliveSpecUsesDefaultDistribution(t *testing.T) {
+	spec, ok := parseWSLKeepAliveSpec([]string{"wsl.exe", "--exec", "/bin/sh", "-lc", "docker ps"})
+	if !ok || spec.key != "<default>" || spec.distribution != "" {
+		t.Fatalf("unexpected default WSL keepalive spec: %+v ok=%v", spec, ok)
+	}
+}
+
+func TestParseWSLKeepAliveSpecSkipsManagementCommands(t *testing.T) {
+	for _, argv := range [][]string{
+		{"wsl.exe", "--status"},
+		{"wsl.exe", "--shutdown"},
+		{"wsl.exe", "--terminate", "Ubuntu-24.04"},
+		{"wsl.exe", "--list", "--running"},
+		{"cmd.exe", "/c", "echo", "wsl"},
+	} {
+		if spec, ok := parseWSLKeepAliveSpec(argv); ok {
+			t.Fatalf("management/non-WSL command unexpectedly enabled keepalive: argv=%v spec=%+v", argv, spec)
+		}
+	}
+}

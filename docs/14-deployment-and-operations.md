@@ -29,6 +29,12 @@ Fast Spider 不捆绑用户的 AI 账号或 Provider：
 - 托盘退出：真正结束 Node。
 - 自动启动：HKCU Run 执行同一 EXE 的 `ui --background`，隐藏进入托盘；若已有实例，后台启动静默退出，不唤起已有 UI。
 
+### WSL 生命周期
+
+Windows Node 不在启动时无条件拉起 WSL。第一次通过 `shell_run` / `build_control` 执行真实 `wsl.exe` 工作命令时，Node 按发行版懒启动一个轻量 keepalive；同一发行版只保留一个 keepalive，后续命令直接复用现有 WSL VM。普通 Job 完成、超时或被取消只终止该 Job 的进程树，不主动关闭 WSL VM，也不停止已经在 WSL 内运行的 Docker/systemd 服务。
+
+`wsl.exe --status`、`--list`、`--shutdown`、`--terminate`、`--unregister`、`--install`、`--update` 等管理命令不触发 keepalive。若用户显式 shutdown/terminate，keepalive 随发行版退出并从 Node 状态中回收；下一次真实 WSL 工作命令再按需启动。该策略只影响 Windows 上实际调用 `wsl.exe` 的 Job，非 WSL 命令和 Linux Node 不受影响。
+
 ## 更新
 
 Hub 发布签名 Node manifest。Node 验证签名、SHA-256 和大小。Web 后台首页提供“下载最新版 Windows 客户端”入口，直接复用同一份 `windows-amd64` Release 下载路径，因此后台手动下载与 Node 自动更新共享同一个发布事实源。手动升级可立即替换；自动更新可检查/预下载。Windows 替换助手等待旧 PID 真正退出后替换原 EXE，再按原模式重启。新版本启动时必须先处理 `updates/ready.json`：只有 Ready/apply 成功返回“无需应用”且 marker 已不存在，才删除 `updates/<currentVersion>` 已消费 staging；Ready/apply 报错时保留现场，future pending staging 与 marker 也绝不清理。早于当前版本的 staging 继续由 stale cleanup 删除，未知/manual 目录保留；正式目录的 `.previous` 回滚副本位于 data-dir 之外，不参与这些清理。

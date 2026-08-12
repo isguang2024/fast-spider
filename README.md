@@ -4,12 +4,13 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 ## Current 当前事实
 
-- 当前源码版本为 `0.4.7`；0.4.6 已正式发布部署并完成最终验收。0.4.7 聚焦 Browser Automation 1.1：结构化 snapshot refs、ref 直接交互、bounded batch 与 stale-ref 快速失败。
+- 当前源码版本为 `0.4.7`；0.4.6 已正式发布部署并完成最终验收。0.4.7 聚焦 Browser Automation 1.1，并收敛 Windows 本地 WSL 执行生命周期：结构化 snapshot refs、ref 直接交互、bounded batch、stale-ref 快速失败，以及 WSL 按需常驻复用。
 - Machine 是唯一远程资源边界。Fast Spider 不再维护旧目录对象、目录列表工具、目录授权、目录白名单或路径注册表。
 - Node 以启动它的当前 OS 用户运行，直接使用该用户对整台电脑的操作系统权限；Fast Spider 不把文件系统再切成一层目录权限。
 - 同一 OS 用户只允许运行一个 Fast Spider Node 主实例；重复双击、开机自启动与手动启动、不同 EXE 位置或不同 `--data-dir` 都不能建立第二条 Node 连接。重复启动只打开现有本地界面后退出。
 - `file_read`、`file_edit`、`code_search` 使用绝对 `path`；`shell_run` 和 `build_control` 使用绝对 `cwd`；`git_control` 使用绝对 `repositoryPath`；`ai_control.session.create` 使用绝对 `workingDirectory`。Git 子目录和 linked worktree 会自动归到主工作树对应的 Codex Desktop 项目，实际执行目录保持不变；非 Git 临时目录不会自动注册成项目。
 - 浏览器在 Node 可访问的公网、localhost 和私网中运行，不需要 Fast Spider Origin/DNS/IP 白名单，也不对页面子资源执行逐请求 DNS 审查；Agent 优先使用 snapshot 返回的短期 ref，并可用 batch 一次完成多步交互。显式 `page.open/page.navigate` 仍拒绝非 HTTP(S) 危险 scheme。
+- Windows Node 对真实 `wsl.exe` 工作命令采用懒启动常驻：第一次进入某个发行版时只启动一个轻量 keepalive，后续 Shell/Build 直接复用已经运行的 WSL VM；普通 Job 完成不会主动关闭 WSL。`--status`、`--list`、`--shutdown`、`--terminate` 等 WSL 管理命令不会创建 keepalive，显式关闭/终止后下一次真实 WSL 工作命令会重新按需启动。
 - MCP 当前固定提供 16 个工具，包含 `working_context`，不包含旧目录列表能力。
 - `working_context` 已扩展为同一套 Plan/Task + Markdown Task Workspace：保留 `get/set/clear` 默认 plan 兼容入口，并提供 `plan.init/plan.get/plan.list/plan.sync/task.update/markdown.list/markdown.read/markdown.append/progress.watch`；状态按 Machine 路由、`projectPath + planId` 隔离。
 - `code_search` 支持 content/files、include/exclude glob 与 bounded context；优先使用 data-dir 中已验证的 Managed `search-ripgrep`，缺失或失败时回退 Go native，不信任 PATH、不读取用户 ripgrep 配置，也不在搜索时自动下载。

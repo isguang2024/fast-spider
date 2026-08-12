@@ -121,6 +121,9 @@ func (m *JobManager) StartShell(cwd string, argv []string, timeout time.Duration
 	if timeout == 0 {
 		timeout = defaultJobTimeout
 	}
+	if err := maybeEnsureWSLKeepAlive(argv); err != nil {
+		return JobSnapshot{}, err
+	}
 	specHash := shellSpecHash(cwd, argv, timeout)
 
 	m.mu.Lock()

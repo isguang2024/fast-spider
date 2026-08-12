@@ -43,3 +43,9 @@
 
 人工补充变更写在本区；自动同步不得覆盖。
 
+### 2026-08-12 — Windows WSL 常驻复用
+
+- 修复 Windows Node 通过短生命周期 `wsl.exe` Job 使用本地 WSL 时，Job 结束后发行版随空闲自动停止、导致 Docker/Gateway/Redis 下一次命令重新启动的问题。
+- Node 仅在首次真实 WSL 工作命令时按发行版启动一个轻量 keepalive；后续 Shell/Build 复用同一 WSL VM。管理命令不创建 keepalive，显式 shutdown/terminate 后下一次工作命令可重新按需启动。
+- 专项 Windows Node tests、全仓 `go test ./... -count=1`、`go vet ./...`、Windows Node build 与 `git diff --check` 均通过；待生产 Node 受控更新后执行 45 秒空窗 + Docker uptime 不重置真实验收。
+
