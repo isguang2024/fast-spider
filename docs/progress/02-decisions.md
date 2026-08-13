@@ -4,7 +4,7 @@
 ## Active Decisions
 
 1. **双轨任务系统**：Working Context 保存结构化摘要；项目内 Markdown Task Workspace 保存完整设计、决策和验收证据。Git、文件、测试和运行状态始终是最终事实源。
-2. **不增加第 17 个 MCP 工具**：扩展现有 `working_context / working.context` actions，计划包括 `plan.init`、`plan.get`、`plan.list`、`plan.sync`、`task.update`、`markdown.list`、`markdown.read`、`markdown.append`、`progress.watch`。
+2. **MCP 工具演进**：0.4.2 的 Task Workspace 继续扩展 `working_context / working.context` actions 而不拆工具；0.4.12 因“调用侧角色协作”具有独立语义正式增加只读 `thinking_team`，当前固定 17 个工具，仍不按 Machine、Provider、模型或 Session 动态生成工具。
 3. **计划隔离键**：`machineId + projectPath + planId`；Markdown 必须位于 projectPath 内且为普通 `.md` 文件，防 symlink/junction 逃逸。
 4. **Markdown 同步**：受管区块以 `<!-- fast-spider:managed:<name>:start/end -->` 标记；自动同步只替换受管区块，不覆盖人工内容。写入使用 revision/CAS、临时文件、fsync 和原子替换。
 5. **任务上限**：Markdown 文件最多 64；单文件 512 KiB；目录 4 MiB；单计划最多 500 个任务；每任务最多 32 条验收证据。
@@ -33,6 +33,8 @@
 28. **Browser readiness 与组件协议**：readiness 缓存并共享并发启动状态；sidecar 必须声明组件协议 1.62.1，旧策略组件不得误报可用。HTTP(S) 允许公网、localhost 和私网，显式导航拒绝内嵌凭据与危险 scheme。
 29. **轻量可观测性**：沿 MCP/Hub/Node/Job 传递紧凑 `requestId/traceId/timing`，只报告可测事实；不引入 OpenTelemetry 集群、长期高频日志或额外调度系统。
 30. **不可变发布**：已发布 Node artifact 不做同版本覆盖；0.4.9 自举发现静态 include 根遍历后提升为 0.4.10，重新完成 build/deploy/self-update，并保留 0.4.9 rollback。
+31. **Thinking Team 执行边界**：`thinking_team.executionTarget=calling_chat_model`、`providerInvocation=false`；角色/部门/流程只指导当前调用侧 ChatGPT/LLM 的多视角分析，绝不因该工具启动 Codex、Claude Code 或其它本机 AI Session。
+32. **Thinking Team 资料室复用**：复杂协作直接使用 `working_context` 标准六文件与 `initializeMarkdown=true`；共享简报和 Read Evidence 写入 `00-current-state.md`，其它阶段事实映射到既有 roadmap/decisions/acceptance/open-issues/change-log。所有写入必须先 read 取得 fileRevision，再用 expectedFileRevision CAS append，不建立第二套 Workspace 存储或初始化器。
 <!-- fast-spider:managed:decisions:end -->
 
 ## Manual Decisions

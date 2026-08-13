@@ -1,4 +1,4 @@
-# Job 与 Event 模型（0.4.12）
+# Job 与 Event 模型（0.4.13）
 
 Job 是 Node 上一次异步执行的运行事实。Job 绑定 Machine 和自身 jobId，不再绑定目录授权对象。
 

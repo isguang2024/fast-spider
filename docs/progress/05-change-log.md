@@ -86,3 +86,10 @@
 - 新增 `department.get`、`role.get`、`workspace.get` 等按需读取入口，角色职责和部门数量有专项回归保护。
 - 复杂多角色任务复用 `working_context`，每个任务使用独立 `planId` 与 `.local/fast-spider/collaboration/<task-id>` Markdown 资料室；主控统一维护简报、已读证据、发现、决策、交接和验证，避免重复读取和旧证据复用。
 - 新增 `docs/22-thinking-team.md`，明确 Thinking Team 与 `ai_control` 的边界、调用方式和 ChatGPT MCP Schema 刷新要求。
+
+### 2026-08-14 — 0.4.13 Thinking Team Workspace 收敛
+
+- 0.4.12 生产自举发现 `thinking_team.workspace.files` 使用了第二套 Markdown 文件名，而 `working_context markdown.append` 只对已存在文件执行 CAS 写入；因此原协议无法直接用现有 Working Context 初始化器完整落地。
+- 0.4.13 将协作资料室收敛到 Working Context 标准六文件，要求 `plan.init initializeMarkdown=true`，并明确简报/Read Evidence、计划交接、决策、验证、发现风险、变更历史的文件映射。
+- 写入协议固定为 `markdown.read → fileRevision → markdown.append(expectedFileRevision)`；真实 `thinking-team-v1` 资料室已完成 CAS append 自举验收。
+- 继续保持 9 部门、17 角色、调用侧主控和 `providerInvocation=false`，不新增第二套 AI Provider 或任务数据库。

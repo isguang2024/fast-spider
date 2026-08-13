@@ -76,14 +76,17 @@
   "workspace": {
     "name":"协作资料室",
     "storage":"working_context",
-    "description":"复杂多角色任务使用 Fast Spider 现有 working_context 作为资料室底座；每个任务使用独立 planId 与 markdownRoot，主控统一维护，角色视角只复用简报中的事实。",
+    "description":"复杂多角色任务直接复用 Fast Spider working_context 的标准六文件 Markdown Workspace；每个任务使用独立 planId 与 markdownRoot，主控统一维护，角色视角只复用已登记事实。",
     "recommendedMarkdownRoot":".local/fast-spider/collaboration/<task-id>",
-    "files":["00-brief.md","01-read-evidence.md","02-findings.md","03-decisions.md","04-handoffs.md","05-verification.md"],
+    "initializeMarkdown":true,
+    "files":["00-current-state.md","01-roadmap-0.4.md","02-decisions.md","03-acceptance-log.md","04-open-issues.md","05-change-log.md"],
+    "sections":{"brief":"00-current-state.md#Thinking Team Brief","readEvidence":"00-current-state.md#Read Evidence","planAndHandoffs":"01-roadmap-0.4.md","decisions":"02-decisions.md","verification":"03-acceptance-log.md","findings":"04-open-issues.md","changeAndHandoffHistory":"05-change-log.md"},
     "rules":[
-      "任务首次进入多角色协作时使用 working_context plan.init 创建独立 planId，并将 markdownRoot 指向该任务的独立协作目录。",
-      "主控每次通过 file_read/code_search 获得会影响判断的新证据后，将路径、SHA-256、关键行和最小摘要写入 01-read-evidence.md；不复制源码全文。",
-      "多个角色视角共享同一份 00-brief.md，已登记且文件 SHA-256 未变化的事实不重复读取。",
-      "发现、决策、交接、验证分别写入对应 Markdown；主控是唯一维护者，避免多角色同时覆盖资料室。",
+      "任务首次进入多角色协作时使用 working_context plan.init 创建独立 planId，将 markdownRoot 指向任务目录，并设置 initializeMarkdown=true 创建标准六文件。",
+      "主控写资料室前先 markdown.read 目标文件取得 fileRevision，再用 markdown.append + expectedFileRevision 做 CAS；不得绕过 Working Context 的并发保护。",
+      "00-current-state.md 维护共享简报与 Read Evidence 区块；每次 file_read/code_search 获得会影响判断的新证据后，只记录路径、SHA-256、关键行和最小摘要，不复制源码全文。",
+      "多个角色视角先复用 00-current-state.md 中已登记且 SHA-256 未变化的事实；只有缺失、变化或职责确实需要时才重新读取。",
+      "阶段计划与交接、决策、验证、发现/风险、变更历史分别写入标准六文件对应区块；主控是唯一维护者。",
       "阶段切换前主控核对关键文件当前 SHA-256；变化则重新读取并更新证据摘要，不复用旧结论。",
       "不得记录令牌、密码、私钥、支付凭证、完整个人信息、源码全文或原始长日志。",
       "简单任务或单一视角任务不创建资料室。"

@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 ## Current 当前事实
 
-- 当前源码版本为 `0.4.12`。本补丁版新增只读 `thinking_team` MCP 工具：由调用侧 ChatGPT/LLM 使用 Fast Spider 内置的 9 个部门、17 个角色、角色指令、协作流程和 `working_context` 资料室协议进行多视角思考；Fast Spider 不因此启动 Codex、Claude Code 或其它本机 AI Provider。0.4.11 的 Artifact/MCP 原生回显与临时分享边界保持不变。
+- 当前源码版本为 `0.4.13`。本补丁版收敛 `thinking_team` 协作资料室协议：直接复用 `working_context` 的标准六文件初始化，并明确 `markdown.read → expectedFileRevision → markdown.append` CAS 写入流程，避免 0.4.12 返回一套 Working Context 无法直接初始化的第二文件命名。9 个部门、17 个角色、调用侧主控与 `providerInvocation=false` 保持不变。
 - Machine 是唯一远程资源边界。Fast Spider 不再维护旧目录对象、目录列表工具、目录授权、目录白名单或路径注册表。
 - Node 以启动它的当前 OS 用户运行，直接使用该用户对整台电脑的操作系统权限；Fast Spider 不把文件系统再切成一层目录权限。
 - 同一 OS 用户只允许运行一个 Fast Spider Node 主实例；重复双击、开机自启动与手动启动、不同 EXE 位置或不同 `--data-dir` 都不能建立第二条 Node 连接。重复启动只打开现有本地界面后退出。
@@ -88,8 +88,8 @@ cd ../..
 go run ./cmd/spiderctl backup --data-dir ./data --out ../fast-spider-backup.zip
 go run ./cmd/spiderctl backup-verify --file ../fast-spider-backup.zip
 go run ./cmd/spiderctl backup-prune --dir <absolute-backup-dir> --keep 3
-go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through 0.4.12
-go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through 0.4.12 --apply
+go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through 0.4.13
+go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through 0.4.13 --apply
 go run ./cmd/spiderctl restore --file ../fast-spider-backup.zip --data-dir ./data-restored
 ```
 
