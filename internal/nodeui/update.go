@@ -14,14 +14,17 @@ import (
 )
 
 type updateStatusResponse struct {
-	CurrentVersion string `json:"currentVersion"`
-	LatestVersion  string `json:"latestVersion,omitempty"`
-	Available      bool   `json:"available"`
-	Ready          bool   `json:"ready"`
-	Checking       bool   `json:"checking"`
-	LastCheckedAt  string `json:"lastCheckedAt,omitempty"`
-	Error          string `json:"error,omitempty"`
-	SizeBytes      int64  `json:"sizeBytes,omitempty"`
+	CurrentVersion string   `json:"currentVersion"`
+	LatestVersion  string   `json:"latestVersion,omitempty"`
+	Available      bool     `json:"available"`
+	Ready          bool     `json:"ready"`
+	Checking       bool     `json:"checking"`
+	LastCheckedAt  string   `json:"lastCheckedAt,omitempty"`
+	Error          string   `json:"error,omitempty"`
+	SizeBytes      int64    `json:"sizeBytes,omitempty"`
+	Pushed         bool     `json:"pushed,omitempty"`
+	WaitingForIdle bool     `json:"waitingForIdle,omitempty"`
+	BusyReasons    []string `json:"busyReasons,omitempty"`
 }
 
 func (a *App) updateSnapshot() updateStatusResponse {

@@ -39,6 +39,7 @@ type Config struct {
 	Agent             AgentController
 	Logger            *slog.Logger
 	ConnectionStatus  func(ConnectionStatus)
+	ReleaseNotice     func(*Client, string, string)
 }
 
 type Client struct {
@@ -49,6 +50,8 @@ type Client struct {
 	windowTokenKey [32]byte
 	statePath      string
 	writeMu        sync.Mutex
+	activityMu     sync.Mutex
+	releaseDrain   bool
 	jobs           *JobManager
 	browser        *BrowserManager
 	agent          AgentController

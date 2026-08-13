@@ -1,4 +1,4 @@
-# 部署与运维（0.4.13）
+# 部署与运维（0.4.14）
 
 ## Hub
 
@@ -39,6 +39,8 @@ Windows Node 不在启动时无条件拉起 WSL。第一次通过 `shell_run` / 
 ## 更新
 
 Hub 发布签名 Node manifest。Node 验证签名、SHA-256 和大小。Web 后台首页提供“下载最新版 Windows 客户端”入口，直接复用同一份 `windows-amd64` Release 下载路径，因此后台手动下载与 Node 自动更新共享同一个发布事实源。手动升级可立即替换；自动更新可检查/预下载。Windows 替换助手等待旧 PID 真正退出后替换原 EXE，再按原模式重启。新版本启动时必须先处理 `updates/ready.json`：只有 Ready/apply 成功返回“无需应用”且 marker 已不存在，才删除 `updates/<currentVersion>` 已消费 staging；Ready/apply 报错时保留现场，future pending staging 与 marker 也绝不清理。早于当前版本的 staging 继续由 stale cleanup 删除，未知/manual 目录保留；正式目录的 `.previous` 回滚副本位于 data-dir 之外，不参与这些清理。
+
+0.4.14 新增轻量发布推送。新的 Node EXE 与 `version.txt` 完成发布对账后执行 `spiderctl node-update-push --release-dir /var/lib/fast-spider-releases --platform windows-amd64`。该命令只校验当前 release 的版本/SHA 并原子写入小型 `push.json`；Hub 通过现有 WSS heartbeat ACK 通知旧版在线 Node，不新增消息队列或常驻推送进程。Node 仍通过签名 manifest 下载并校验更新。Shell/Build Job、Browser Session、AI 活跃 Turn 或正在处理的 Capability Request 任一存在时只保留 Ready 更新并等待；全部任务结束且连续空闲 15 秒后才进入 release drain。Drain 只拒绝新的 Capability 请求并返回可重试 `NODE_UPDATING`，不会取消已经运行的任务；随后复用现有 Ready/StartApply/.previous/restart 链自更新。
 
 0.4.4 在 Ready/consumed/stale update maintenance 全部完成后、runtime/listener 启动前执行一次 Windows legacy install artifacts cleanup。它仅在当前 executable basename 为 `fast-spider-node.exe` 时检查同级目录，只删除严格命名的 `.fast-spider-node.new-<32-hex-guid>.tmp`、普通 `.node-update-backup-path`，以及安全非 reparse `backups` 目录直接子级中符合 `fast-spider-node-<UTC timestamp>.exe` 或 `fast-spider-node-pre-<version>-<UTC timestamp>.exe` 的普通文件。未知文件、嵌套目录、symlink/reparse/junction 全部保留，`backups` 仅在确认为空时删除；当前 EXE 与 `fast-spider-node.exe.previous` 绝不触碰。清理失败只记录 warning，不阻塞 Node 启动。
 
@@ -95,4 +97,4 @@ spiderctl staging-prune --dir /tmp --layout server --through 0.4.6 --apply
 - Node release manifest 的版本/哈希与正式 EXE 一致。
 - ChatGPT OAuth + MCP tools/list 可获取当前工具。
 
-0.3.x 完成权限模型收敛；0.4.2 正式交付 Task Workspace、多 AI Harness/CC Switch 只读 Routing、Managed ripgrep 与文件能力 2.0；0.4.3-0.4.6 收敛更新、backup 与 staging 生命周期；0.4.7/0.4.8 收敛 Browser 与 Codex runtime；0.4.9 交付 file_edit 响应瘦身、搜索稳定码/统计、host/WSL runtime、Agent/Browser readiness、持久 Session create 幂等与轻量 timing；0.4.10 收敛大型仓库静态 include 前缀下推；0.4.11 收敛 Artifact/MCP 原生回显与临时分享边界；0.4.12 引入调用侧 Thinking Team；0.4.13 将其协作资料室收敛到 Working Context 标准六文件与 CAS 写入协议。
+0.3.x 完成权限模型收敛；0.4.2 正式交付 Task Workspace、多 AI Harness/CC Switch 只读 Routing、Managed ripgrep 与文件能力 2.0；0.4.3-0.4.6 收敛更新、backup 与 staging 生命周期；0.4.7/0.4.8 收敛 Browser 与 Codex runtime；0.4.9 交付 file_edit 响应瘦身、搜索稳定码/统计、host/WSL runtime、Agent/Browser readiness、持久 Session create 幂等与轻量 timing；0.4.10 收敛大型仓库静态 include 前缀下推；0.4.11 收敛 Artifact/MCP 原生回显与临时分享边界；0.4.12 引入调用侧 Thinking Team；0.4.13 将其协作资料室收敛到 Working Context 标准六文件与 CAS 写入协议；0.4.14 新增任务空闲保护的 Node 发布推送与真实 ready/busy heartbeat。

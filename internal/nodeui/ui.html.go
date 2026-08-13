@@ -287,6 +287,7 @@ const localUIHTML = `<!doctype html>
     let state = '尚未检查';
     if (update.checking) state = '正在检查';
     else if (update.error) state = '检查失败';
+    else if (update.waitingForIdle) state = '已下载，等待当前任务结束';
     else if (update.ready) state = '已下载，等待安装';
     else if (update.available) state = '发现新版本';
     else if (update.latestVersion) state = '已是最新版本';

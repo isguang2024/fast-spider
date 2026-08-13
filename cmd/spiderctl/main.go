@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/isguang2024/fast-spider/internal/opsbackup"
+	"github.com/isguang2024/fast-spider/internal/releaseinfo"
 	"github.com/isguang2024/fast-spider/internal/version"
 )
 
@@ -35,6 +36,8 @@ func main() {
 		backupPrune(os.Args[2:])
 	case "staging-prune":
 		stagingPrune(os.Args[2:])
+	case "node-update-push":
+		nodeUpdatePush(os.Args[2:])
 	case "restore":
 		restore(os.Args[2:])
 	case "version":
@@ -154,6 +157,23 @@ func runStagingPrune(ctx context.Context, directory, layout, through string, app
 	})
 }
 
+func nodeUpdatePush(args []string) {
+	fs := flag.NewFlagSet("node-update-push", flag.ExitOnError)
+	releaseDir := fs.String("release-dir", "", "absolute Hub release directory")
+	platform := fs.String("platform", "windows-amd64", "Node release platform")
+	_ = fs.Parse(args)
+	marker, err := runNodeUpdatePush(*releaseDir, *platform, time.Now().UTC())
+	fatalIf(err)
+	printJSON(marker)
+}
+
+func runNodeUpdatePush(releaseDir, platform string, now time.Time) (releaseinfo.NodeUpdatePush, error) {
+	if strings.TrimSpace(releaseDir) == "" || !filepath.IsAbs(releaseDir) {
+		return releaseinfo.NodeUpdatePush{}, fmt.Errorf("release directory must be an absolute path")
+	}
+	return releaseinfo.CreateNodeUpdatePush(releaseDir, platform, now)
+}
+
 func restore(args []string) {
 	fs := flag.NewFlagSet("restore", flag.ExitOnError)
 	file := fs.String("file", "", "backup archive path")
@@ -210,5 +230,5 @@ func fatalf(format string, args ...any) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: spiderctl <setup-url|backup|backup-verify|backup-prune|staging-prune|restore|version> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: spiderctl <setup-url|backup|backup-verify|backup-prune|staging-prune|node-update-push|restore|version> [flags]")
 }

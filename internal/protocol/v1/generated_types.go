@@ -49,10 +49,12 @@ type ConnectionClose struct {
 }
 
 type Heartbeat struct {
-	MessageType string `json:"messageType"`
-	Sequence    int64  `json:"sequence"`
-	Status      string `json:"status"`
-	Timestamp   string `json:"timestamp"`
+	MessageType   string `json:"messageType"`
+	Sequence      int64  `json:"sequence"`
+	Status        string `json:"status"`
+	Timestamp     string `json:"timestamp"`
+	UpdatePushId  string `json:"updatePushId,omitempty"`
+	UpdateVersion string `json:"updateVersion,omitempty"`
 }
 
 type Machine struct {

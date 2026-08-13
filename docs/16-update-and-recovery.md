@@ -159,6 +159,8 @@ GET 已签名 latest manifest
 
 自动更新开启后，运行中只检查并预下载，不强制中断正在运行的 Node/Job；下一次客户端干净启动时自动执行同一替换链路。Windows 替换流程必须等待旧 PID 的进程句柄进入退出状态，不能把“运行中的 EXE 已可重命名”误当成进程已经结束，否则新版可能在旧 loopback UI 仍占用端口时过早启动。
 
+0.4.14 允许发布者执行 `spiderctl node-update-push --release-dir <absolute-release-dir> --platform windows-amd64`。Node 可立即预下载并验签，但 Shell/Build Job、Browser Session、AI 活跃 Turn 或正在处理的 Capability Request 都会阻止重启；只有全部结束并连续空闲 15 秒后才进入 drain。Drain 不取消已有任务，只拒绝新任务并返回可重试 `NODE_UPDATING`，随后复用同一替换链。若本机关闭 Auto Update，则推送不自动下载或重启。
+
 替换后的新版本启动顺序固定为：先读取/应用 Ready update，再执行 staging cleanup。只有 Ready/apply 返回 `applied=false, err=nil`，并且 `updates/ready.json` 已不存在时，才删除可解析的 `updates/<currentVersion>` 已消费目录；Ready/apply 返回错误时保留 current staging 供诊断或重试。future pending 版本、仍带 marker 的 staging 与 unknown/manual 目录不会被该清理触碰；早于当前版本的目录仍由独立 stale cleanup 处理。正式目标 EXE 的 `.previous` 位于 Node data-dir 之外，始终保留为 rollback 副本。
 
 0.4.4 额外迁移旧手工 Windows 安装脚本产生的同级遗留物。该步骤位于全部 staging maintenance 之后，且只在当前 executable basename 精确为 `fast-spider-node.exe` 时执行；Win32 `FILE_ATTRIBUTE_REPARSE_POINT` 检查对 symlink/junction fail-closed。删除范围限严格命名的 legacy temp、marker 与安全 `backups` 的直接普通文件，不递归、不处理未知项，也不触碰当前 EXE 或 `.previous`。这是一次幂等文件生命周期清理，不改变“运行中只预下载、下次干净启动应用”的更新策略。

@@ -94,7 +94,9 @@
         "messageType": {"type": "string", "enum": ["heartbeat", "heartbeat.ack"]},
         "sequence": {"type": "integer", "minimum": 0},
         "status": {"type": "string", "enum": ["ready", "busy"]},
-        "timestamp": {"type": "string", "format": "date-time"}
+        "timestamp": {"type": "string", "format": "date-time"},
+        "updatePushId": {"type": "string", "minLength": 1, "maxLength": 128},
+        "updateVersion": {"type": "string", "minLength": 1, "maxLength": 64}
       }
     },
     "ConnectionClose": {

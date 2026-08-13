@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 ## Current 当前事实
 
-- 当前源码版本为 `0.4.13`。本补丁版收敛 `thinking_team` 协作资料室协议：直接复用 `working_context` 的标准六文件初始化，并明确 `markdown.read → expectedFileRevision → markdown.append` CAS 写入流程，避免 0.4.12 返回一套 Working Context 无法直接初始化的第二文件命名。9 个部门、17 个角色、调用侧主控与 `providerInvocation=false` 保持不变。
+- 当前源码版本为 `0.4.14`。本补丁版新增轻量 Node 发布推送：发布者上传新版 Node 与 `version.txt` 后执行 `spiderctl node-update-push`，Hub 通过现有 WSS 心跳通知在线 Node。Node 只预下载并验证已签名版本；Shell/Build Job、Browser Session、AI 活跃 Turn 或远程 Capability 请求存在时绝不重启，全部结束并连续空闲 15 秒后才进入 drain、拒绝新任务并复用现有安全自更新链完成替换重启。
 - Machine 是唯一远程资源边界。Fast Spider 不再维护旧目录对象、目录列表工具、目录授权、目录白名单或路径注册表。
 - Node 以启动它的当前 OS 用户运行，直接使用该用户对整台电脑的操作系统权限；Fast Spider 不把文件系统再切成一层目录权限。
 - 同一 OS 用户只允许运行一个 Fast Spider Node 主实例；重复双击、开机自启动与手动启动、不同 EXE 位置或不同 `--data-dir` 都不能建立第二条 Node 连接。重复启动只打开现有本地界面后退出。
@@ -15,7 +15,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 - `working_context` 已扩展为同一套 Plan/Task + Markdown Task Workspace：保留 `get/set/clear` 默认 plan 兼容入口，并提供 `plan.init/plan.get/plan.list/plan.sync/task.update/markdown.list/markdown.read/markdown.append/progress.watch`；状态按 Machine 路由、`projectPath + planId` 隔离。
 - `code_search` 2.1 支持 content/files、include/exclude glob 与 bounded context；优先使用 data-dir 中已验证的 Managed `search-ripgrep`，缺失或真实失败时才回退 Go native，返回扫描/匹配/跳过/不完整与分段耗时事实。默认遵守 VCS ignore 并跳过通用生成目录，显式 include 优先。
 - `file_read` 2.0 保留 byte range，并支持 line/head/tail/around/statOnly/line numbers；校验、原文件 SHA 和选择在一次流式扫描内完成。`file_edit` 2.1 在同一工具内提供 legacy edit、create、replace、editMany、preview，现有文件写入使用 SHA CAS 与原子替换；mutation 不回显正文/diff，preview 仅返回 bounded hunk。
-- Node 自更新启动时先处理 `ready.json`；仅在没有待应用更新且 Ready 检查成功后清理 `updates/<currentVersion>` 已消费 staging。Ready/apply 失败和 future pending staging 均保留，正式 EXE 的 `.previous` 回滚副本不受 data-dir 清理影响。
+- Node 自更新启动时先处理 `ready.json`；仅在没有待应用更新且 Ready 检查成功后清理 `updates/<currentVersion>` 已消费 staging。Ready/apply 失败和 future pending staging 均保留，正式 EXE 的 `.previous` 回滚副本不受 data-dir 清理影响。0.4.14 的发布推送复用同一 `Ready → StartApply → .previous → restart` 链，不引入第二套 updater；Node 心跳会按真实活动状态上报 `ready|busy`。
 - Windows Node 在上述更新维护完成后，会对当前 `fast-spider-node.exe` 同级目录执行一次 fail-closed legacy cleanup：只清理旧手工安装器严格命名的临时 EXE、marker 和直接位于安全 `backups` 目录内的旧备份；未知项、子目录、reparse/junction、当前 EXE 与 `.previous` 永不删除。非 Windows 不执行该迁移。
 - Hub release backup rotation 由显式运维命令执行：新标准 backup 通过 Verify 且正式升级成功后，运行 `spiderctl backup-prune --dir <absolute-backup-dir> --keep 3`。它只识别直接子级 `pre-<semver>-<commit>.zip`，先验证全部候选再按 manifest `CreatedAt` 清理；历史异名、Hub binary backup、目录与 symlink/reparse 永不自动删除。
 - Release staging 清理由 `spiderctl staging-prune --dir <absolute-root> --layout local|server --through <semver> [--apply]` 显式执行；默认仅输出计划。它只识别严格的 `release-<semver>[-<commit>]` 或 `fast-spider-<semver>[-<commit>]` 直接子目录，只清理版本不高于 `--through` 的已完成 staging，并对 root/candidate/tree reparse、扫描上限与删除前身份变化 fail-closed；future/unknown/legacy deploy 目录保留。
@@ -88,8 +88,8 @@ cd ../..
 go run ./cmd/spiderctl backup --data-dir ./data --out ../fast-spider-backup.zip
 go run ./cmd/spiderctl backup-verify --file ../fast-spider-backup.zip
 go run ./cmd/spiderctl backup-prune --dir <absolute-backup-dir> --keep 3
-go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through 0.4.13
-go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through 0.4.13 --apply
+go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through 0.4.14
+go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through 0.4.14 --apply
 go run ./cmd/spiderctl restore --file ../fast-spider-backup.zip --data-dir ./data-restored
 ```
 

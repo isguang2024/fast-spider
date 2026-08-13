@@ -42,23 +42,25 @@ type Options struct {
 type App struct {
 	opts Options
 
-	mu              sync.Mutex
-	ctx             context.Context
-	cancel          context.CancelFunc
-	config          LocalConfig
-	uiToken         string
-	runtimeCancel   context.CancelFunc
-	runtimeDone     chan struct{}
-	runtimeOwned    bool
-	runtimeStatus   string
-	runtimeError    string
-	updateStatus    updateStatusResponse
-	updateArtifact  string
-	updateRunning   bool
-	trayActive      bool
-	openFolder      func(string) error
-	agentController node.AgentController
-	componentEnsure componentEnsureFunc
+	mu                 sync.Mutex
+	ctx                context.Context
+	cancel             context.CancelFunc
+	config             LocalConfig
+	uiToken            string
+	runtimeCancel      context.CancelFunc
+	runtimeDone        chan struct{}
+	runtimeOwned       bool
+	runtimeStatus      string
+	runtimeError       string
+	updateStatus       updateStatusResponse
+	updateArtifact     string
+	updateRunning      bool
+	releasePushID      string
+	releasePushRunning bool
+	trayActive         bool
+	openFolder         func(string) error
+	agentController    node.AgentController
+	componentEnsure    componentEnsureFunc
 }
 
 type statusResponse struct {
@@ -541,6 +543,7 @@ func (a *App) startRuntime() {
 			Agent:             a.agentController,
 			Logger:            a.opts.Logger,
 			ConnectionStatus:  a.setConnectionStatus,
+			ReleaseNotice:     a.handleReleaseNotice,
 		})
 		if err != nil {
 			a.setConnectionStatus(node.ConnectionStatus{State: "error", Error: err.Error()})

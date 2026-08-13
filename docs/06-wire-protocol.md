@@ -1,4 +1,4 @@
-# Wire Protocol（0.4.13）
+# Wire Protocol（0.4.14）
 
 Node 与 Hub 使用版本化 WSS 控制协议。设备握手完成后，Capability Request/Response、心跳和连接关闭都复用该 Machine 当前 generation 的同一条 WSS。HTTP 只用于 Machine 登记、设备 Token，以及 Artifact/Presentation 等大文件数据面。
 
@@ -24,7 +24,7 @@ Hub 为每次调用生成 `requestId + traceId` 并透传 Node、Job 与响应�
 
 ## 基本消息
 
-协议包含设备握手、心跳、Capability Request/Response、连接关闭与结构化错误。WSS 控制帧受大小和 deadline 限制；超过控制面限制的 Artifact、Presentation、日志或其他大文件内容使用受鉴权的 HTTP 数据面传输，不新增另一套 Capability 控制协议。
+协议包含设备握手、心跳、Capability Request/Response、连接关闭与结构化错误。Node heartbeat `status` 真实反映 `ready|busy`；Hub heartbeat ACK 可选携带 `updatePushId + updateVersion` 作为轻量 release notice。Release notice 不携带下载地址、凭据或可执行内容，Node 仍从固定 Hub Release API 获取签名 manifest 和更新包。WSS 控制帧受大小和 deadline 限制；超过控制面限制的 Artifact、Presentation、日志或其他大文件内容使用受鉴权的 HTTP 数据面传输，不新增另一套 Capability 控制协议。
 
 ## 幂等与超时
 
@@ -39,4 +39,4 @@ Hub 为每次调用生成 `requestId + traceId` 并透传 Node、Job 与响应�
 
 ## 错误
 
-相对路径用于要求本机路径的能力时返回 `ABSOLUTE_PATH_REQUIRED`。文件 CAS 冲突的 `ProtocolError.details` 只包含 path/expected/actual SHA；WSL runtime 使用 `RUNTIME_UNAVAILABLE` 与 `WSL_CWD_UNMAPPABLE`；搜索 fallback 使用稳定 `RG_*` reason code。连接在响应前丢失返回 `CONNECTION_LOST`（HTTP 适配层为 503）；调用 deadline 到期返回 `DEADLINE_EXCEEDED`（HTTP 适配层为 504）。
+相对路径用于要求本机路径的能力时返回 `ABSOLUTE_PATH_REQUIRED`。文件 CAS 冲突的 `ProtocolError.details` 只包含 path/expected/actual SHA；WSL runtime 使用 `RUNTIME_UNAVAILABLE` 与 `WSL_CWD_UNMAPPABLE`；搜索 fallback 使用稳定 `RG_*` reason code。Node 已进入 release drain 时，新 Capability 返回可重试 `NODE_UPDATING`，已经运行的任务不被取消。连接在响应前丢失返回 `CONNECTION_LOST`（HTTP 适配层为 503）；调用 deadline 到期返回 `DEADLINE_EXCEEDED`（HTTP 适配层为 504）。

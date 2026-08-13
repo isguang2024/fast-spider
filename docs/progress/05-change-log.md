@@ -93,3 +93,10 @@
 - 0.4.13 将协作资料室收敛到 Working Context 标准六文件，要求 `plan.init initializeMarkdown=true`，并明确简报/Read Evidence、计划交接、决策、验证、发现风险、变更历史的文件映射。
 - 写入协议固定为 `markdown.read → fileRevision → markdown.append(expectedFileRevision)`；真实 `thinking-team-v1` 资料室已完成 CAS append 自举验收。
 - 继续保持 9 部门、17 角色、调用侧主控和 `providerInvocation=false`，不新增第二套 AI Provider 或任务数据库。
+
+### 2026-08-14 — 0.4.14 Idle-safe Node Update Push
+
+- 新增 `spiderctl node-update-push`；发布者在 Node artifact + `version.txt` 已部署并校验后显式生成原子 `push.json`，Hub 通过既有 WSS heartbeat ACK 通知旧版在线 Node，不增加新 daemon、消息队列或 MCP Tool。
+- Node 收到 release notice 后继续走签名 manifest + SHA 校验并可预下载 Ready 包；Shell/Build Job、Browser Session、AI 活跃 Turn 或 in-flight Capability 任一存在时绝不重启，并通过 heartbeat 上报真实 `busy`。
+- 全部活动结束并连续空闲 15 秒后进入 release drain；drain 不取消已有任务，只拒绝新 Capability 并返回可重试 `NODE_UPDATING`，随后复用既有 `Ready → StartApply → .previous → restart` 自更新链。
+- `push.json` 是几百字节非敏感发布元数据；release SHA 只在发起 push 时计算一次，Hub heartbeat 只读取 marker，避免周期性读取大型 Node 二进制。

@@ -16,6 +16,7 @@ import (
 	"github.com/isguang2024/fast-spider/internal/hub/registry"
 	"github.com/isguang2024/fast-spider/internal/hub/store"
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
+	"github.com/isguang2024/fast-spider/internal/releaseinfo"
 	"github.com/isguang2024/fast-spider/internal/security"
 )
 
@@ -181,12 +182,20 @@ func (s *Server) nodeReadLoop(ctx context.Context, conn *registry.Connection, he
 				_ = s.service.Store().TouchMachine(ctx, conn.MachineID, strings.TrimSpace(hello.DisplayName), hello.Os, hello.Arch, hello.NodeVersion, capabilityDigest(hello.Capabilities), now)
 				lastPersist = now
 			}
-			if err := conn.WriteJSON(ctx, protocolv1.Heartbeat{
+			ack := protocolv1.Heartbeat{
 				MessageType: protocolv1.MessageHeartbeatAck,
 				Sequence:    heartbeat.Sequence,
 				Status:      heartbeat.Status,
 				Timestamp:   protocolv1.Timestamp(now),
-			}); err != nil {
+			}
+			platform := strings.TrimSpace(hello.Os) + "-" + strings.TrimSpace(hello.Arch)
+			if marker, markerErr := releaseinfo.ReadNodeUpdatePush(s.service.ReleaseDir(), platform); markerErr == nil {
+				if comparison, compareErr := releaseinfo.Compare(hello.NodeVersion, marker.Version); compareErr == nil && comparison < 0 {
+					ack.UpdatePushId = marker.PushID
+					ack.UpdateVersion = marker.Version
+				}
+			}
+			if err := conn.WriteJSON(ctx, ack); err != nil {
 				return
 			}
 		case protocolv1.MessageCapabilityResponse:

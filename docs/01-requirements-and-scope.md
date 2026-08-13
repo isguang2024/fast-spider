@@ -126,7 +126,7 @@
 ### MVP 包含
 
 - Owner 单用户模式、单实例 Hub、SQLite WAL、WSS 长连接和 Windows/Linux Node。
-- Machine 登记、能力发现、绝对路径文件/搜索/编辑、Shell Job、绝对仓库路径 Git、Build、Event、Artifact、浏览器、截图、Local Bridge、Working Context、Codex + Claude Code Harness、只读 CC Switch Routing facts 和 16 个 MCP 工具。
+- Machine 登记、能力发现、绝对路径文件/搜索/编辑、Shell Job、绝对仓库路径 Git、Build、Event、Artifact、浏览器、截图、Local Bridge、Working Context、Thinking Team、Codex + Claude Code Harness、只读 CC Switch Routing facts 和 17 个 MCP 工具。
 
 ### MVP 不包含
 

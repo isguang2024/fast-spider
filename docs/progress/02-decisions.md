@@ -35,6 +35,8 @@
 30. **不可变发布**：已发布 Node artifact 不做同版本覆盖；0.4.9 自举发现静态 include 根遍历后提升为 0.4.10，重新完成 build/deploy/self-update，并保留 0.4.9 rollback。
 31. **Thinking Team 执行边界**：`thinking_team.executionTarget=calling_chat_model`、`providerInvocation=false`；角色/部门/流程只指导当前调用侧 ChatGPT/LLM 的多视角分析，绝不因该工具启动 Codex、Claude Code 或其它本机 AI Session。
 32. **Thinking Team 资料室复用**：复杂协作直接使用 `working_context` 标准六文件与 `initializeMarkdown=true`；共享简报和 Read Evidence 写入 `00-current-state.md`，其它阶段事实映射到既有 roadmap/decisions/acceptance/open-issues/change-log。所有写入必须先 read 取得 fileRevision，再用 expectedFileRevision CAS append，不建立第二套 Workspace 存储或初始化器。
+33. **Node 发布推送**：发布完成后由 `spiderctl node-update-push` 在 release-dir 当前 Node artifact/version.txt 上生成原子 `push.json`；Hub 只借现有 heartbeat ACK 发送 release notice，不新增消息队列、推送 daemon 或第 18 个 MCP 工具。Node 仍通过签名 manifest + SHA 获取真实更新。
+34. **更新不得中断任务**：推送允许在任务期间预下载，但 Shell/Build Job、Browser Session、AI 活跃 Turn、in-flight Capability 任一存在时不得重启。全部结束并连续空闲 15 秒后才能进入 release drain；drain 不取消旧任务，只拒绝新任务并返回可重试 `NODE_UPDATING`，随后复用既有 Ready/StartApply/.previous/restart 链。
 <!-- fast-spider:managed:decisions:end -->
 
 ## Manual Decisions

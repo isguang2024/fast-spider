@@ -162,7 +162,7 @@ func (c *Client) runSession(ctx context.Context, state State) error {
 	readyCtx, cancelReady := context.WithTimeout(ctx, 10*time.Second)
 	err = c.writeJSON(readyCtx, conn, protocolv1.NodeReady{
 		MessageType: protocolv1.MessageNodeReady,
-		Status:      "ready",
+		Status:      c.RuntimeStatus(),
 		Timestamp:   protocolv1.Timestamp(time.Now()),
 	})
 	cancelReady()
@@ -204,6 +204,9 @@ func (c *Client) heartbeatLoop(ctx context.Context, conn *websocket.Conn, interv
 				select {
 				case ack <- time.Now():
 				default:
+				}
+				if c.cfg.ReleaseNotice != nil && heartbeat.UpdatePushId != "" && heartbeat.UpdateVersion != "" {
+					c.cfg.ReleaseNotice(c, heartbeat.UpdatePushId, heartbeat.UpdateVersion)
 				}
 			case protocolv1.MessageCapabilityRequest:
 				var request protocolv1.CapabilityRequest
@@ -280,7 +283,7 @@ func (c *Client) heartbeatLoop(ctx context.Context, conn *websocket.Conn, interv
 			err := c.writeJSON(writeCtx, conn, protocolv1.Heartbeat{
 				MessageType: protocolv1.MessageHeartbeat,
 				Sequence:    sequence,
-				Status:      "ready",
+				Status:      c.RuntimeStatus(),
 				Timestamp:   protocolv1.Timestamp(time.Now()),
 			})
 			cancel()

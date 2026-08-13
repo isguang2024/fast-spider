@@ -84,7 +84,7 @@ screenshot_take, thinking_team, ai_control, working_context, artifact_get
 
 1. 完善 Windows/Linux OS 用户权限、路径格式、进程树和图形会话差异测试。
 2. 加固 Machine 吊销、Device Key 轮换、OAuth 撤销和断线对账。
-3. 保持 16 个 MCP 工具 Schema、错误码、Job/Event、Artifact 与 Working Context 语义一致。
+3. 保持 17 个 MCP 工具 Schema、错误码、Job/Event、Artifact、Thinking Team 与 Working Context 语义一致。
 4. 完善 Browser 私网访问、下载清理、截图兼容和 Sidecar 版本矩阵。
 5. 持续验证 Codex app-server 协议、Claude Code CLI/stream-json/session-resume，以及 CC Switch schema/model mapping/route correlation；新增 Harness 必须复用统一 Routing/EffectiveCapabilities 层，不复制 Provider 解析逻辑。Automations 仅在 Codex 公开协议出现后再评估映射。
 

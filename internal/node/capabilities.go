@@ -107,6 +107,10 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 		response.Error = protocolError("INVALID_REQUEST", "invalid capability request", false)
 		return response
 	}
+	if c.ReleaseDraining() {
+		response.Error = protocolError("NODE_UPDATING", "Node is preparing to apply a verified update; retry after reconnect", true)
+		return response
+	}
 	if req.Deadline != "" {
 		deadline, err := parseTimestamp(req.Deadline)
 		if err != nil {
