@@ -693,6 +693,18 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	})
 
 	mcp.AddTool(server, &mcp.Tool{
+		Name:        "thinking_team",
+		Description: "Return Fast Spider's role, department, collaboration workflow, and workspace protocol for the calling ChatGPT/LLM to use as structured multi-perspective thinking guidance. This tool never starts Codex, Claude Code, or any local AI provider session.",
+		Annotations: toolAnnotations(true, false, false, false),
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, input thinkingTeamInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+		result, err := thinkingTeamResult(input)
+		if err != nil {
+			return nil, genericCapabilityOutput{}, err
+		}
+		return nil, genericCapabilityOutput{Result: result}, nil
+	})
+
+	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ai_control",
 		Description: "Discover AI harnesses, CC Switch routing/upstream model facts, and control supported local provider sessions through the Node. Current harnesses are Codex and Claude Code; credentials and raw CC Switch provider settings remain local.",
 		Annotations: toolAnnotations(false, true, false, true),

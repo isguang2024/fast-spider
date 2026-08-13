@@ -79,3 +79,10 @@
 
 - `artifact_get` 的 uploadFile/uploadJobLog/get 优先返回有界原生 MCP 图片、文本或二进制资源；空 Artifact 保留结构化元数据且不生成 malformed `EmbeddedResource`。
 - browser/screenshot 不再暴露 `publicUrl` 或 `ResourceLink`；只有调用方显式执行 `publishFile` 时才创建短期分享链接。
+
+### 2026-08-14 — 0.4.12 Thinking Team
+
+- 新增只读 `thinking_team` MCP Tool，由当前调用 Fast Spider 的 ChatGPT/LLM 使用 9 个部门、17 个角色、独立角色指令和 direct/parallel/review/full 流程进行多视角思考；`providerInvocation=false`，不会创建 Codex、Claude Code 或其它本机 AI Session。
+- 新增 `department.get`、`role.get`、`workspace.get` 等按需读取入口，角色职责和部门数量有专项回归保护。
+- 复杂多角色任务复用 `working_context`，每个任务使用独立 `planId` 与 `.local/fast-spider/collaboration/<task-id>` Markdown 资料室；主控统一维护简报、已读证据、发现、决策、交接和验证，避免重复读取和旧证据复用。
+- 新增 `docs/22-thinking-team.md`，明确 Thinking Team 与 `ai_control` 的边界、调用方式和 ChatGPT MCP Schema 刷新要求。

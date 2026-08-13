@@ -14,17 +14,17 @@
 | `git_control` | absolute `repositoryPath` |
 | `ai_control session.create` | absolute `workingDirectory` |
 
-公网 MCP 当前固定 16 个工具：
+公网 MCP 当前固定 17 个工具：
 
 ```text
 machine_list, machine_get, capability_list,
 file_read, code_search, file_edit,
 shell_run, job_watch, job_cancel,
 git_control, build_control, browser_control,
-screenshot_take, ai_control, working_context, artifact_get
+screenshot_take, thinking_team, ai_control, working_context, artifact_get
 ```
 
-不包含已移除的目录列表工具，也不按 Machine、Provider、模型或 Session 动态生成工具。
+不包含已移除的目录列表工具，也不按 Machine、Provider、模型或 Session 动态生成工具。`thinking_team` 是调用侧静态角色协作配置，不启动本机 AI Provider。
 
 ## 2. 已完成阶段
 

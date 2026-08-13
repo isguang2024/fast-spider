@@ -4,14 +4,14 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 ## Current 当前事实
 
-- 当前源码版本为 `0.4.11`。本补丁版让 `artifact_get` 的 uploadFile/uploadJobLog/get 优先返回有界原生 MCP 内容：图片使用 `ImageContent`，文本或二进制使用 `EmbeddedResource`；browser/screenshot 不再暴露临时公开链接，只有显式 `publishFile` 才生成短期分享资源。
+- 当前源码版本为 `0.4.12`。本补丁版新增只读 `thinking_team` MCP 工具：由调用侧 ChatGPT/LLM 使用 Fast Spider 内置的 9 个部门、17 个角色、角色指令、协作流程和 `working_context` 资料室协议进行多视角思考；Fast Spider 不因此启动 Codex、Claude Code 或其它本机 AI Provider。0.4.11 的 Artifact/MCP 原生回显与临时分享边界保持不变。
 - Machine 是唯一远程资源边界。Fast Spider 不再维护旧目录对象、目录列表工具、目录授权、目录白名单或路径注册表。
 - Node 以启动它的当前 OS 用户运行，直接使用该用户对整台电脑的操作系统权限；Fast Spider 不把文件系统再切成一层目录权限。
 - 同一 OS 用户只允许运行一个 Fast Spider Node 主实例；重复双击、开机自启动与手动启动、不同 EXE 位置或不同 `--data-dir` 都不能建立第二条 Node 连接。重复启动只打开现有本地界面后退出。
 - `file_read`、`file_edit`、`code_search` 使用绝对 `path`；`shell_run` 和 `build_control` 使用绝对 `cwd`；`git_control` 使用绝对 `repositoryPath`；`ai_control.session.create` 使用绝对 `workingDirectory`。Git 子目录和 linked worktree 会自动归到主工作树对应的 Codex Desktop 项目，实际执行目录保持不变；非 Git 临时目录不会自动注册成项目。
 - 浏览器在 Node 可访问的公网、localhost 和私网中运行，不需要 Fast Spider Origin/DNS/IP 白名单，也不对页面子资源执行逐请求 DNS 审查；Agent 优先使用 snapshot 返回的短期 ref，并可用 batch 一次完成多步交互。显式 `page.open/page.navigate` 仍拒绝非 HTTP(S) 危险 scheme。
 - Windows Node 的 `shell_run/build_control` 接受 `runtime={kind:"host"|"wsl",distribution?}`；WSL cwd 仍由调用方提供 Windows 绝对路径，Node 使用目标发行版的 `wslpath` 安全映射。每个发行版至多一个轻量 keepalive、全局最多 8 个，Node 退出只结束自己创建的 keepalive，不执行 `wsl --shutdown`。
-- MCP 当前固定提供 16 个工具，包含 `working_context`，不包含旧目录列表能力。
+- MCP 当前固定提供 17 个工具，包含 `thinking_team` 与 `working_context`，不包含旧目录列表能力。`thinking_team.providerInvocation=false`，只返回调用侧角色协作配置。
 - `working_context` 已扩展为同一套 Plan/Task + Markdown Task Workspace：保留 `get/set/clear` 默认 plan 兼容入口，并提供 `plan.init/plan.get/plan.list/plan.sync/task.update/markdown.list/markdown.read/markdown.append/progress.watch`；状态按 Machine 路由、`projectPath + planId` 隔离。
 - `code_search` 2.1 支持 content/files、include/exclude glob 与 bounded context；优先使用 data-dir 中已验证的 Managed `search-ripgrep`，缺失或真实失败时才回退 Go native，返回扫描/匹配/跳过/不完整与分段耗时事实。默认遵守 VCS ignore 并跳过通用生成目录，显式 include 优先。
 - `file_read` 2.0 保留 byte range，并支持 line/head/tail/around/statOnly/line numbers；校验、原文件 SHA 和选择在一次流式扫描内完成。`file_edit` 2.1 在同一工具内提供 legacy edit、create、replace、editMany、preview，现有文件写入使用 SHA CAS 与原子替换；mutation 不回显正文/diff，preview 仅返回 bounded hunk。
@@ -88,8 +88,8 @@ cd ../..
 go run ./cmd/spiderctl backup --data-dir ./data --out ../fast-spider-backup.zip
 go run ./cmd/spiderctl backup-verify --file ../fast-spider-backup.zip
 go run ./cmd/spiderctl backup-prune --dir <absolute-backup-dir> --keep 3
-go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through 0.4.11
-go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through 0.4.11 --apply
+go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through 0.4.12
+go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through 0.4.12 --apply
 go run ./cmd/spiderctl restore --file ../fast-spider-backup.zip --data-dir ./data-restored
 ```
 
@@ -97,7 +97,7 @@ Node 不需要添加目录、配置目录权限或维护浏览器私网白名单
 
 ## MCP 工具
 
-Current 固定提供 16 个工具：
+Current 固定提供 17 个工具：
 
 ```text
 machine_list
@@ -114,11 +114,12 @@ build_control
 artifact_get
 browser_control
 screenshot_take
+thinking_team
 ai_control
 working_context
 ```
 
-`file_read`、`file_edit`、`code_search` 的目标字段是绝对 `path`；`shell_run`/`build_control` 使用绝对 `cwd`；`git_control` 使用绝对 `repositoryPath`；`ai_control.session.create` 使用绝对 `workingDirectory`。`working_context` 使用 `projectPath + planId`。`providerId` 选择 AI Harness；`routing.status` 独立返回 CC Switch Route。Codex 会把 Git worktree 归并到主工作树展示项目；Claude Code Session 固定其创建时工作目录并使用原生 Session UUID。`browser_control` 允许 Node 能访问的公网、localhost 和私网地址，不额外维护 Origin 白名单。远程权限只绑定 `machineId`，Node 是最终执行边界。
+`file_read`、`file_edit`、`code_search` 的目标字段是绝对 `path`；`shell_run`/`build_control` 使用绝对 `cwd`；`git_control` 使用绝对 `repositoryPath`；`ai_control.session.create` 使用绝对 `workingDirectory`。`working_context` 使用 `projectPath + planId`。`thinking_team` 不需要 `machineId`，只返回调用侧角色、部门、流程和资料室协议，不创建本机 AI Session。`providerId` 选择 AI Harness；`routing.status` 独立返回 CC Switch Route。Codex 会把 Git worktree 归并到主工作树展示项目；Claude Code Session 固定其创建时工作目录并使用原生 Session UUID。`browser_control` 允许 Node 能访问的公网、localhost 和私网地址，不额外维护 Origin 白名单。远程权限只绑定 `machineId`，Node 是最终执行边界。
 
 ## 文档导航
 
@@ -143,6 +144,7 @@ working_context
 - [开源组件评估](docs/18-open-source-evaluation.md)
 - [路线图](docs/19-roadmap.md)
 - [开放问题](docs/20-open-questions.md)
+- [Thinking Team 角色协作](docs/22-thinking-team.md)
 - [架构决策记录](docs/adr/)
 
 ## 设计约束
