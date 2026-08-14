@@ -115,3 +115,4 @@
 - Web 后台新增登录保护的“MCP 调用诊断”面板，仅首次加载与人工刷新读取；专项测试覆盖冷客户端、大小预算、ring 上限、owner 隔离、隐私 allowlist、错误分类与未登录 401。
 - 生产 smoke 修正重启后既有 MCP 会话只出现 Tool Call 时的诊断优先级：以已观测到的最高阶段为准，不因缺失重启前 initialize/tools-list 事件误报“未连接”。
 - stateless MCP 后续请求缺少 clientInfo 时，在同 owner 的 5 分钟握手窗口内沿用最近明确识别的客户端类型；窗口外继续显示 other，不记录原始 User-Agent 或会话标识。
+- Receiving Middleware 使用 SDK `Request.GetParams()` 识别服务端 InitializeParams，修正误用客户端侧 InitializeRequest 别名导致的归一化失效；冷 MCP E2E 强制断言 mcpcli 归因。

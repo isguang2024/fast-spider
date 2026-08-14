@@ -166,8 +166,8 @@ func (d *mcpDiagnosticsStore) snapshot(ownerID string) mcpDiagnosticSnapshot {
 }
 
 func normalizedMCPClientType(req mcp.Request) string {
-	if initialize, ok := req.(*mcp.InitializeRequest); ok && initialize.Params != nil && initialize.Params.ClientInfo != nil {
-		return normalizeMCPClientName(initialize.Params.ClientInfo.Name)
+	if params, ok := req.GetParams().(*mcp.InitializeParams); ok && params != nil && params.ClientInfo != nil {
+		return normalizeMCPClientName(params.ClientInfo.Name)
 	}
 	if session, ok := req.GetSession().(*mcp.ServerSession); ok {
 		if params := session.InitializeParams(); params != nil && params.ClientInfo != nil {

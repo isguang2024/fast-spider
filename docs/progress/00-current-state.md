@@ -8,9 +8,9 @@
 - planId: `layered-mcp-guide-0.4.16`
 - targetVersion: `0.4.16`
 - branch: `main`
-- sourceReleaseCommit: `223c048ad79b549efa3981e4b53f040bbcecdeb7 second release; stateless client-attribution fix commit pending`
+- sourceReleaseCommit: `afa904004df97d66d1915b5e20f28c0a0d10c30d third release; SDK request-type fix commit pending`
 - phase: `0.4.16 production smoke remediation / final full gate PASS / final fix commit and redeployment pending`
-- finalReleaseGate: `j-aarg07 / PASS: Fast Spider full release gate / exitCode=0`
+- finalReleaseGate: `j-ofkr5w / PASS: Fast Spider full release gate / exitCode=0`
 - productionHub: `0.4.15 / SHA256 1824cc9f7ebb9b4ebe9fc9e5fbbcc75a049747509355849d7ccaa9ce3acc68b1 / livez+readyz PASS`
 - productionSpiderctl: `0.4.15 / SHA256 48207c5e520d708a5851f00c9a8573d73acd4de3150444709faa45c11214ff0d`
 - productionNode: `PCa / 0.4.14 / windows-amd64 / registered active; online+ready acceptance pending`

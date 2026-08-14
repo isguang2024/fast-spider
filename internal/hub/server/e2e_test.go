@@ -229,7 +229,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	}
 	diagnosticsRaw, _ := io.ReadAll(diagnosticsResponse.Body)
 	_ = diagnosticsResponse.Body.Close()
-	if diagnosticsResponse.StatusCode != http.StatusOK || !bytes.Contains(diagnosticsRaw, []byte(`"lastInitializeAt"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"lastToolsListAt"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"lastToolCallAt"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"result":"failure"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"errorCode":"NOT_FOUND"`)) {
+	if diagnosticsResponse.StatusCode != http.StatusOK || !bytes.Contains(diagnosticsRaw, []byte(`"lastInitializeAt"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"lastToolsListAt"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"lastToolCallAt"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"clientType":"mcpcli"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"result":"failure"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"errorCode":"NOT_FOUND"`)) {
 		t.Fatalf("authorized MCP diagnostics status=%d body=%s", diagnosticsResponse.StatusCode, diagnosticsRaw)
 	}
 	for _, forbidden := range []string{mcpAccessToken, "arguments", "prompt", "authorization", filePath, "User-Agent"} {

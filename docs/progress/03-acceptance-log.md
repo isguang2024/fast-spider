@@ -262,3 +262,5 @@
 - 修订后第二轮完整门禁 Job `j-g2x2ht` exitCode=0，终态再次为 `PASS: Fast Spider full release gate`；最终发布证据以本轮为准。
 - 真实 OAuth+PKCE 冷客户端进一步确认 stateless MCP 的 initialize 能识别客户端，而后续独立 HTTP 请求可能只有通用 User-Agent。诊断增加 5 分钟短握手归因窗口：同 owner 的后续 tools/list/tools/call 继承最近明确识别的 chatgpt/codex/mcpcli，窗口外仍归一为 other；不保存 sessionId、原始 User-Agent 或其它新字段。
 - 客户端归因修订后完整门禁 Job `j-aarg07` exitCode=0，终态 `PASS: Fast Spider full release gate`；全仓测试现为 445 项，Hub 专项 45 项，真实 WSL/Browser/CC Switch/Claude/Codex/Local Bridge 产品链均通过。最终发布证据以本轮为准。
+- 冷 E2E 强断言进一步定位 SDK 类型边界：Receiving Middleware 收到的是 `ServerRequest[*InitializeParams]`，不是客户端侧 `InitializeRequest` 别名。实现改为只通过公开 `Request.GetParams()` 读取结构化 InitializeParams/ClientInfo，不解析 raw body；真实 cold E2E 将 mcpcli 归因设为发布阻断断言。
+- SDK 请求类型修订后最终完整门禁 Job `j-ofkr5w` exitCode=0，终态 `PASS: Fast Spider full release gate`；45 项 Hub 测试、445 项全仓测试以及全部跨平台构建与真实产品 E2E 通过。最终发布证据以本轮为准。
