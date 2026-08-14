@@ -37,6 +37,8 @@
 32. **Thinking Team 资料室复用**：复杂协作直接使用 `working_context` 标准六文件与 `initializeMarkdown=true`；共享简报和 Read Evidence 写入 `00-current-state.md`，其它阶段事实映射到既有 roadmap/decisions/acceptance/open-issues/change-log。所有写入必须先 read 取得 fileRevision，再用 expectedFileRevision CAS append，不建立第二套 Workspace 存储或初始化器。
 33. **Node 发布推送**：发布完成后由 `spiderctl node-update-push` 在 release-dir 当前 Node artifact/version.txt 上生成原子 `push.json`；Hub 只借现有 heartbeat ACK 发送 release notice，不新增消息队列、推送 daemon 或第 18 个 MCP 工具。Node 仍通过签名 manifest + SHA 获取真实更新。
 34. **更新不得中断任务**：推送允许在任务期间预下载，但 Shell/Build Job、Browser Session、AI 活跃 Turn、in-flight Capability 任一存在时不得重启。全部结束并连续空闲 15 秒后才能进入 release drain；drain 不取消旧任务，只拒绝新任务并返回可重试 `NODE_UPDATING`，随后复用既有 Ready/StartApply/.previous/restart 链。
+35. **0.4.16 分层能力指南**：initialize instructions 只承载九类能力地图和安全黄金规则；17 个工具的用途、必需输入、安全顺序、返回、下一步、真实错误与短示例由 `capability_list` 的 overview/catalog/tool/workflow/error 视图按需展开。指南和工具 description 使用同一代码内事实源，不新增独立 Manifest，也不改变既有 `machineId` 查询兼容行为。
+36. **MCP 调用诊断边界**：只在 Hub 进程内按 owner 保存最近 64 条 initialize/tools/list/tools/call 归一化事件与当前快照；不持久化、不记录参数、正文、Token、路径或完整错误。Web API 复用现有 session 登录，仅在页面首次加载和人工刷新时读取，不轮询。
 <!-- fast-spider:managed:decisions:end -->
 
 ## Manual Decisions

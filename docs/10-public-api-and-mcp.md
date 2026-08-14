@@ -34,11 +34,21 @@ Codex 保留 Provider/Model、Skills/Hooks/Permission Profiles/Plugins/MCP disco
 
 ## ChatGPT 调用与工具发现
 
-Hub 的 MCP `initialize` 会返回明确的 Server Instructions，并把 Server Title 固定为 `FastSpider_FS`。当 ChatGPT 已选择该 App 或用户显式 `@FastSpider_FS` 时，调用侧应先尝试工具而不是仅依据界面文本判断“插件未加载”：连接测试使用只读 `capability_list` + `machine_list`；需要本机操作但尚无 `machineId` 时先调用 `machine_list`。
+Hub 的 MCP `initialize` 会返回不超过 2 KiB 的常驻能力地图，并把 Server Title 固定为 `FastSpider_FS`。能力地图只说明九类能力、第一步和固定安全链路，不复制完整 Schema、参数示例或错误表。当 ChatGPT 已选择该 App 或用户显式 `@FastSpider_FS` 时，调用侧应先尝试工具而不是仅依据界面文本判断“插件未加载”：连接测试使用只读 `capability_list(view=overview)` + `machine_list`；需要本机操作但尚无 `machineId` 时先调用 `machine_list`。
+
+`capability_list` 是唯一按需指南入口，没有新增第 18 个 guide/help 工具：
+
+- 省略 `machineId` 和 `view`：兼容返回 Hub Capability Catalog，并附带精简 overview。
+- 提供 `machineId`、省略 `view`：保持旧行为，只返回该 Machine 的能力目录。
+- `view=catalog`：显式返回 Hub 或指定 Machine 的能力目录。
+- `view=overview`：返回能力分类、黄金规则和推荐下一步。
+- `view=tool|workflow|error`：必须提供 `name`，一次只返回一个工具、流程或真实稳定错误码的有界指南；未知 view/name 明确拒绝。
+
+工具指南固定包含 `whenToUse/requiredInputs/safeSequence/returns/recommendedNext/commonErrors/boundedExamples`。overview 不超过 8 KiB，单项指南不超过 12 KiB；示例有界且不含凭据、Prompt、Cookie、环境变量或本机事实。注册工具名、指南目录与本文工具列表由自动测试三方对账。
 
 Codex/Claude Code 的会话能力不是独立顶层工具；统一位于 `ai_control`。查询 Codex 会话列表使用 `action=session.list`，后续读取使用 `session.get/session.watch/session.result`。因此 ChatGPT App 工具页只显示 `Ai control` 属于正常设计。
 
-ChatGPT 对已发布 MCP App 的工具/输入定义可能使用经批准的快照；当 FS 修改工具名、Schema 或工具描述后，需要在 ChatGPT App/Action 管理中执行 Refresh/重新批准才能取得新的定义。纯服务可用性仍以真实 MCP initialize/tools/list 和只读调用结果为准。
+ChatGPT 对已发布 MCP App 的工具/输入定义可能使用经批准的快照；当 FS 修改工具名、Schema 或工具描述后，需要在 ChatGPT App/Action 管理中执行 Refresh/重新批准才能取得新的定义。纯服务可用性仍以真实 MCP initialize/tools/list 和只读调用结果为准。仓库没有独立 ChatGPT App manifest 或第二套 Plugin metadata，第一层事实源继续是 MCP initialize、工具描述和 `capability_list`。
 
 ## 资源模型
 

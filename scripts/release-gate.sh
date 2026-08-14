@@ -19,7 +19,8 @@ full: core + explicit 0.4.2 Task Workspace/Search/file_read/file_edit/update/
       the 0.4.4 legacy install artifacts cleanup gate, repeated Node tests,
       the 0.4.5 release backup prune gate, the 0.4.6 release staging prune gate,
       the 0.4.13 calling-side Thinking Team workspace gate, the 0.4.14 idle-safe Node update push gate,
-      the 0.4.15 MCP invocation routing gate, short fuzzing/race where supported,
+      the 0.4.15 MCP invocation routing gate, the 0.4.16 layered guide/diagnostics gate,
+      short fuzzing/race where supported,
       packaged-component Browser/CC Switch/Claude Code/Codex E2E, multi-provider Local Bridge
       discovery, and the complete Local Bridge→Codex smoke.
 
@@ -107,6 +108,7 @@ if [[ "$mode" == "full" ]]; then
   step "0.4.13 Thinking Team workspace contract gate" go test ./internal/hub/server -run 'TestThinkingTeam' -count=1
   step "0.4.14 idle-safe Node update push gate" go test ./internal/releaseinfo ./internal/node ./internal/agent -run 'Test(NodeUpdatePush|TaskBusyReasons|ReleaseDrain|AgentManagerBusyForUpdate)' -count=1
   step "0.4.15 MCP invocation routing gate" go test ./internal/hub/server -run 'TestMachineBoundaryEndToEnd' -count=1
+  step "0.4.16 layered MCP guide and diagnostics gate" go test ./internal/hub/server -run 'Test(MCPGuide|MCPServerInstructions|MCPDiagnostics|MachineBoundaryEndToEnd|WebSetupLoginAndDashboard)' -count=1
   step "0.4.2 reconnect temp E2E" go test ./internal/node -run 'Test(NodeReconnectAfterRevokedMachineCreatesFreshMachineIdentity|ReconnectBackoffsResetAfterStableSession)' -count=1
   step "Repeated Node regression" go test ./internal/node -count=3
 

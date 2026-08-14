@@ -1,4 +1,4 @@
-# 部署与运维（0.4.15）
+# 部署与运维（0.4.16）
 
 ## Hub
 
@@ -96,5 +96,7 @@ spiderctl staging-prune --dir /tmp --layout server --through 0.4.6 --apply
 - 本机与公网 livez/readyz 均 200。
 - Node release manifest 的版本/哈希与正式 EXE 一致。
 - ChatGPT OAuth + MCP tools/list 可获取当前工具。
+- 已登录 Web 后台“MCP 调用诊断”能区分未 initialize、未 tools/list、未 tools/call 与调用失败；页面只在加载时读取一次或由用户手动刷新。
+- ChatGPT App 在工具 Schema/描述变化后已执行 Refresh；若无法自动操作真实冷会话，只把 Refresh + 新会话 `connection-check` 保留为唯一人工动作。
 
-0.3.x 完成权限模型收敛；0.4.2 正式交付 Task Workspace、多 AI Harness/CC Switch 只读 Routing、Managed ripgrep 与文件能力 2.0；0.4.3-0.4.6 收敛更新、backup 与 staging 生命周期；0.4.7/0.4.8 收敛 Browser 与 Codex runtime；0.4.9 交付 file_edit 响应瘦身、搜索稳定码/统计、host/WSL runtime、Agent/Browser readiness、持久 Session create 幂等与轻量 timing；0.4.10 收敛大型仓库静态 include 前缀下推；0.4.11 收敛 Artifact/MCP 原生回显与临时分享边界；0.4.12 引入调用侧 Thinking Team；0.4.13 将其协作资料室收敛到 Working Context 标准六文件与 CAS 写入协议；0.4.14 新增任务空闲保护的 Node 发布推送与真实 ready/busy heartbeat；0.4.15 为 ChatGPT/App 调用补充 MCP Server Instructions、名称对齐和关键工具路由描述，不改变 Node 协议或工具数量。
+0.3.x 完成权限模型收敛；0.4.2 正式交付 Task Workspace、多 AI Harness/CC Switch 只读 Routing、Managed ripgrep 与文件能力 2.0；0.4.3-0.4.6 收敛更新、backup 与 staging 生命周期；0.4.7/0.4.8 收敛 Browser 与 Codex runtime；0.4.9 交付 file_edit 响应瘦身、搜索稳定码/统计、host/WSL runtime、Agent/Browser readiness、持久 Session create 幂等与轻量 timing；0.4.10 收敛大型仓库静态 include 前缀下推；0.4.11 收敛 Artifact/MCP 原生回显与临时分享边界；0.4.12 引入调用侧 Thinking Team；0.4.13 将其协作资料室收敛到 Working Context 标准六文件与 CAS 写入协议；0.4.14 新增任务空闲保护的 Node 发布推送与真实 ready/busy heartbeat；0.4.15 补充 MCP 调用路由提示；0.4.16 将其收敛为 initialize 常驻能力地图、`capability_list` 按需指南和每 Owner 有界 MCP 诊断。本次只发布 Hub 与 `spiderctl`，Node release、`version.txt` 和 `push.json` 均不变。

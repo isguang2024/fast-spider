@@ -16,6 +16,7 @@
       <a href="#machines">设备</a>
       <a href="#oauth">授权</a>
       <a href="#tokens">连接令牌</a>
+      <a href="#mcp-diagnostics">MCP 诊断</a>
       <a href="#account">账户</a>
     </nav>
     <div class="account">
@@ -57,6 +58,24 @@
       <article class="summary-card"><span>OAuth 授权</span><strong>{{.ActiveAuthorizations}}</strong><small>当前有效连接</small></article>
       <article class="summary-card"><span>连接令牌</span><strong>{{.ActiveTokens}}</strong><small>可重复登记 Node</small></article>
       <article class="summary-card"><span>OAuth 客户端</span><strong>{{len .Clients}}</strong><small>已完成 MCP 授权</small></article>
+    </section>
+
+    <section class="panel" id="mcp-diagnostics" data-diagnostics-url="{{.BasePath}}/app/api/mcp-diagnostics">
+      <div class="panel-heading">
+        <div><p class="eyebrow">MCP Diagnostics</p><h2>MCP 调用诊断</h2><p class="section-copy">每个账户仅保留最近 64 条低噪音内存事件。这里不记录 Authorization、Token、Cookie、arguments、Prompt、本机路径、正文、IP、原始 User-Agent 或错误堆栈；页面加载读取一次，也可手动刷新。</p></div>
+        <button id="mcp-diagnostics-refresh" class="secondary" type="button">刷新诊断</button>
+      </div>
+      <div class="diagnostics-grid" aria-live="polite">
+        <div><span>Server</span><strong id="mcp-server-version">—</strong></div>
+        <div><span>Guide</span><strong id="mcp-guide-version">—</strong></div>
+        <div><span>最近 Initialize</span><strong id="mcp-last-initialize">暂无事件</strong></div>
+        <div><span>最近 Tools List</span><strong id="mcp-last-tools-list">暂无事件</strong></div>
+        <div><span>最近 Tool Call</span><strong id="mcp-last-tool-call">暂无事件</strong></div>
+        <div><span>最近工具</span><strong id="mcp-last-tool">—</strong></div>
+        <div><span>客户端类型</span><strong id="mcp-client-type">—</strong></div>
+        <div><span>结果</span><strong id="mcp-result">—</strong></div>
+      </div>
+      <div class="diagnostic-explanation"><strong id="mcp-diagnosis-title">尚无 Initialize</strong><span id="mcp-diagnosis-copy">客户端尚未真正连接到 MCP。</span></div>
     </section>
 
     <section class="panel" id="machines">

@@ -63,6 +63,11 @@ func TestWebSetupLoginAndDashboard(t *testing.T) {
 	if !strings.Contains(string(body), `href="/api/v1/node/releases/windows-amd64/download"`) || !strings.Contains(string(body), "下载最新版 Windows 客户端") {
 		t.Fatalf("dashboard latest Windows Node download entry missing: %s", body)
 	}
+	for _, marker := range []string{`id="mcp-diagnostics"`, `id="mcp-diagnostics-refresh"`, `/app/api/mcp-diagnostics`, "MCP 调用诊断", "最近 Initialize", "最近 Tools List", "最近 Tool Call"} {
+		if !strings.Contains(string(body), marker) {
+			t.Fatalf("dashboard MCP diagnostics missing %q: %s", marker, body)
+		}
+	}
 	if strings.Contains(string(body), "Owner Token") {
 		t.Fatal("dashboard exposed legacy Owner Token UI")
 	}

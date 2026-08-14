@@ -25,6 +25,8 @@ type machineGetInput struct {
 
 type capabilityListInput struct {
 	MachineID string `json:"machineId,omitempty" jsonschema:"optional machine ID; omit for the Hub capability catalog"`
+	View      string `json:"view,omitempty" jsonschema:"overview, catalog, tool, workflow, or error; omitted preserves the legacy catalog behavior"`
+	Name      string `json:"name,omitempty" jsonschema:"required for tool, workflow, or error; identifies exactly one bounded guide"`
 }
 
 type fileReadInput struct {
@@ -313,6 +315,7 @@ type machineGetOutput struct {
 
 type capabilityListOutput struct {
 	Capabilities []protocolv1.CapabilityDescriptor `json:"capabilities"`
+	Guide        *mcpGuide                         `json:"guide,omitempty"`
 }
 
 type fileReadOutput struct {
@@ -467,19 +470,20 @@ func (s *Server) newMCPHandler() http.Handler {
 	})
 }
 
-const mcpServerInstructions = `FastSpider_FS is the user's remote development control plane for their own machines. When this app/server is selected or the user explicitly mentions @FastSpider_FS, use an appropriate Fast Spider tool instead of claiming the connector is unavailable without trying it. For a connectivity or MCP-status check, call capability_list and machine_list. For machine-bound work, call machine_list first when a machineId is not already known. Codex and Claude Code discovery/control are sub-actions of ai_control; use action=session.list to list sessions, then session.get/session.watch/session.result as needed. Verify availability with read-only tools rather than inferring it from UI text alone.`
+const mcpServerInstructions = `FastSpider_FS is the user's remote development control plane. When selected or mentioned as @FastSpider_FS, try a real read-only tool before judging availability from UI text.
+
+Capability map: connection/devices = capability_list, machine_list, machine_get; files/code = code_search, file_read, file_edit; commands/builds/jobs = shell_run, build_control, job_watch, job_cancel; Git = git_control; browser/desktop = browser_control, screenshot_take; local AI = ai_control; project context = working_context; multi-perspective guidance = thinking_team; file/log display = artifact_get.
+
+Rules: if machineId is unknown, call machine_list first. A connection check is capability_list(view=overview) plus machine_list. When exact usage is unclear, load only the needed capability_list view=tool|workflow|error with name; never fetch every detailed guide. Codex session history uses ai_control(action=session.list), then session.get/session.watch/session.result. Shell/build starts return jobId, not completion; follow with job_watch to completed, failed, or canceled. For file edits use search/read, capture fileSha256, preview, CAS write, then read verification. For browser work use readiness, launch, page.open, snapshot refs, actions, then close; screenshots are visual evidence, not the primary click method.`
 
 func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: "fast-spider", Title: "FastSpider_FS", Version: s.service.Version()},
 		&mcp.ServerOptions{Instructions: mcpServerInstructions},
 	)
+	server.AddReceivingMiddleware(s.mcpDiagnostics.middleware(ownerID))
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "machine_list",
-		Description: "Primary read-only FastSpider_FS machine discovery and connectivity probe. Use this first when the app is invoked for local work and no machineId is known. Lists owned machines, online/runtime state and negotiated capabilities; connection-token secrets are never returned.",
-		Annotations: toolAnnotations(true, false, true, false),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ machineListInput) (*mcp.CallToolResult, machineListOutput, error) {
+	mcp.AddTool(server, mcpToolDefinition("machine_list", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, _ machineListInput) (*mcp.CallToolResult, machineListOutput, error) {
 		machines, err := s.service.ListMachines(ctx, ownerID)
 		if err != nil {
 			return nil, machineListOutput{}, err
@@ -491,11 +495,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		return nil, out, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "machine_get",
-		Description: "Get one Fast Spider machine by opaque machineId, including its registration/runtime credential model. This never returns connection-token secrets or accepts a local filesystem path.",
-		Annotations: toolAnnotations(true, false, true, false),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input machineGetInput) (*mcp.CallToolResult, machineGetOutput, error) {
+	mcp.AddTool(server, mcpToolDefinition("machine_get", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input machineGetInput) (*mcp.CallToolResult, machineGetOutput, error) {
 		machine, err := s.service.GetMachine(ctx, ownerID, input.MachineID)
 		if err != nil {
 			return nil, machineGetOutput{}, err
@@ -503,26 +503,35 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		return nil, machineGetOutput{Machine: toMCPMachine(machine)}, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "capability_list",
-		Description: "Read-only FastSpider_FS MCP health and capability probe. Use this for connector/MCP connectivity checks; without machineId it returns the Hub catalog, with machineId it returns that machine's reported capabilities.",
-		Annotations: toolAnnotations(true, false, true, false),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input capabilityListInput) (*mcp.CallToolResult, capabilityListOutput, error) {
-		if input.MachineID == "" {
-			return nil, capabilityListOutput{Capabilities: s.service.CapabilityCatalog()}, nil
+	mcp.AddTool(server, mcpToolDefinition("capability_list", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input capabilityListInput) (*mcp.CallToolResult, capabilityListOutput, error) {
+		view := strings.TrimSpace(input.View)
+		capabilities := make([]protocolv1.CapabilityDescriptor, 0)
+		if view == "" || view == "catalog" {
+			if input.MachineID == "" {
+				capabilities = s.service.CapabilityCatalog()
+			} else {
+				machine, err := s.service.GetMachine(ctx, ownerID, input.MachineID)
+				if err != nil {
+					return nil, capabilityListOutput{}, err
+				}
+				capabilities = machine.Capabilities
+			}
 		}
-		machine, err := s.service.GetMachine(ctx, ownerID, input.MachineID)
+		if view == "" && input.MachineID != "" {
+			return nil, capabilityListOutput{Capabilities: capabilities}, nil
+		}
+		guideView := view
+		if guideView == "" {
+			guideView = "overview"
+		}
+		guide, err := newMCPGuide(s.service.Version(), guideView, input.Name)
 		if err != nil {
 			return nil, capabilityListOutput{}, err
 		}
-		return nil, capabilityListOutput{Capabilities: machine.Capabilities}, nil
+		return nil, capabilityListOutput{Capabilities: capabilities, Guide: guide}, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "file_read",
-		Description: "Read a bounded byte or line selection, or stat and hash a regular UTF-8 text file at an absolute path on the selected Node. Selectors are mutually exclusive.",
-		Annotations: toolAnnotations(true, false, true, false),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input fileReadInput) (*mcp.CallToolResult, fileReadOutput, error) {
+	mcp.AddTool(server, mcpToolDefinition("file_read", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input fileReadInput) (*mcp.CallToolResult, fileReadOutput, error) {
 		params := map[string]any{"path": input.Path}
 		addOptionalFileReadParam(params, "offset", input.Offset)
 		addOptionalFileReadParam(params, "limit", input.Limit)
@@ -545,11 +554,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		return nil, out, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "code_search",
-		Description: "Search content or matching-content file paths below an absolute Node directory using a managed ripgrep component with a safe native fallback.",
-		Annotations: toolAnnotations(true, false, true, false),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input codeSearchInput) (*mcp.CallToolResult, codeSearchOutput, error) {
+	mcp.AddTool(server, mcpToolDefinition("code_search", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input codeSearchInput) (*mcp.CallToolResult, codeSearchOutput, error) {
 		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "code.search", "search", map[string]any{
 			"query": input.Query, "path": input.Path, "mode": input.Mode, "regex": input.Regex, "ignoreCase": input.IgnoreCase,
 			"include": input.Include, "exclude": input.Exclude, "context": input.Context, "beforeContext": input.BeforeContext,
@@ -566,11 +571,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		return nil, out, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "file_edit",
-		Description: "Create, exactly replace, batch-edit, or preview a bounded UTF-8 file change on a Node. Existing-file writes use optimistic concurrency; preview never writes.",
-		Annotations: toolAnnotations(false, true, false, false),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input fileEditInput) (*mcp.CallToolResult, fileEditOutput, error) {
+	mcp.AddTool(server, mcpToolDefinition("file_edit", toolAnnotations(false, true, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input fileEditInput) (*mcp.CallToolResult, fileEditOutput, error) {
 		action := input.Action
 		if action == "" {
 			action = "edit"
@@ -596,11 +597,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		return nil, out, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "shell_run",
-		Description: "Start a bounded non-interactive process on the selected Node using an explicit argv array and absolute cwd. The process runs as the same OS user as Fast Spider Node.",
-		Annotations: toolAnnotations(false, true, false, true),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input shellRunInput) (*mcp.CallToolResult, jobOutput, error) {
+	mcp.AddTool(server, mcpToolDefinition("shell_run", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input shellRunInput) (*mcp.CallToolResult, jobOutput, error) {
 		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "shell.exec", "run", map[string]any{"argv": input.Argv, "cwd": input.Cwd, "runtime": input.Runtime, "timeoutSeconds": input.TimeoutSeconds, "idempotencyKey": input.IdempotencyKey})
 		if err != nil {
 			return nil, jobOutput{}, err
@@ -612,11 +609,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		return nil, out, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "job_watch",
-		Description: "Read bounded stdout/stderr/status events for one Node job after a cursor, optionally long-polling for up to 15 seconds.",
-		Annotations: toolAnnotations(true, false, true, false),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input jobWatchInput) (*mcp.CallToolResult, jobOutput, error) {
+	mcp.AddTool(server, mcpToolDefinition("job_watch", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input jobWatchInput) (*mcp.CallToolResult, jobOutput, error) {
 		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "job.control", "watch", map[string]any{"jobId": input.JobID, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds})
 		if err != nil {
 			return nil, jobOutput{}, err
@@ -628,11 +621,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		return nil, out, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "job_cancel",
-		Description: "Cancel one active Node job and terminate its process tree. Repeated cancellation of a terminal job is safe.",
-		Annotations: toolAnnotations(false, true, true, false),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input jobCancelInput) (*mcp.CallToolResult, jobOutput, error) {
+	mcp.AddTool(server, mcpToolDefinition("job_cancel", toolAnnotations(false, true, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input jobCancelInput) (*mcp.CallToolResult, jobOutput, error) {
 		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "job.control", "cancel", map[string]any{"jobId": input.JobID})
 		if err != nil {
 			return nil, jobOutput{}, err
@@ -644,11 +633,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		return nil, out, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "git_control",
-		Description: "Run one allowlisted system-Git action in an absolute repository path on the selected Node. It runs with the same OS-user permissions as Fast Spider Node.",
-		Annotations: toolAnnotations(false, true, false, true),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input gitControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+	mcp.AddTool(server, mcpToolDefinition("git_control", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input gitControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "git.repository", input.Action, map[string]any{
 			"repositoryPath": input.RepositoryPath, "revision": input.Revision, "paths": input.Paths, "message": input.Message, "remote": input.Remote,
 			"branch": input.Branch, "worktreePath": input.WorktreePath, "idempotencyKey": input.IdempotencyKey,
@@ -659,11 +644,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		return nil, genericCapabilityOutput{Result: result}, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "build_control",
-		Description: "Run one bounded build/test command on the selected Node using an explicit argv array and absolute cwd.",
-		Annotations: toolAnnotations(false, true, false, true),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input buildControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+	mcp.AddTool(server, mcpToolDefinition("build_control", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input buildControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "build.exec", input.Action, map[string]any{"argv": input.Argv, "cwd": input.Cwd, "runtime": input.Runtime, "timeoutSeconds": input.TimeoutSeconds, "idempotencyKey": input.IdempotencyKey})
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
@@ -671,11 +652,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		return nil, genericCapabilityOutput{Result: result}, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "browser_control",
-		Description: "Control one Node-managed isolated Chromium session with accessibility snapshots, short-lived element refs, fallback semantic locators, and bounded batch actions. Prefer snapshot refs over screenshots/selectors for interaction. Public, localhost and private-network targets are allowed without DNS allowlisting; raw CDP/Playwright execution is never exposed.",
-		Annotations: toolAnnotations(false, true, false, true),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input browserControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+	mcp.AddTool(server, mcpToolDefinition("browser_control", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input browserControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		params := browserControlParams(input)
 		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "browser.automation", input.Action, params)
 		if err != nil {
@@ -684,11 +661,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		return s.presentationToolResult(ctx, ownerID, result, false), genericCapabilityOutput{Result: result}, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "screenshot_take",
-		Description: "Capture a one-time desktop, display, or window image on the selected Node. Captured images use the Hub temporary presentation relay, return native MCP image content, and never expose local paths.",
-		Annotations: toolAnnotations(false, false, false, false),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input screenshotTakeInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+	mcp.AddTool(server, mcpToolDefinition("screenshot_take", toolAnnotations(false, false, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input screenshotTakeInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		params := map[string]any{"displayIndex": input.DisplayIndex, "windowId": input.WindowID, "format": input.Format, "quality": input.Quality}
 		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "screenshot.capture", input.Action, params)
 		if err != nil {
@@ -697,11 +670,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		return s.presentationToolResult(ctx, ownerID, result, false), genericCapabilityOutput{Result: result}, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "thinking_team",
-		Description: "Return Fast Spider's role, department, collaboration workflow, and workspace protocol for the calling ChatGPT/LLM to use as structured multi-perspective thinking guidance. This tool never starts Codex, Claude Code, or any local AI provider session.",
-		Annotations: toolAnnotations(true, false, false, false),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input thinkingTeamInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+	mcp.AddTool(server, mcpToolDefinition("thinking_team", toolAnnotations(true, false, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input thinkingTeamInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		result, err := thinkingTeamResult(input)
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
@@ -709,11 +678,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		return nil, genericCapabilityOutput{Result: result}, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "ai_control",
-		Description: "Discover AI harnesses and control local Codex/Claude Code sessions through the Node. Codex session history is available here via action=session.list, followed by session.get/session.watch/session.result. Also exposes CC Switch routing/model facts; credentials and raw provider settings remain local.",
-		Annotations: toolAnnotations(false, true, false, true),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input aiControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+	mcp.AddTool(server, mcpToolDefinition("ai_control", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input aiControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		params := map[string]any{
 			"providerId": input.ProviderID, "appType": input.AppType, "sessionId": input.SessionID, "turnId": input.TurnID, "requestId": input.RequestID,
 			"idempotencyKey": input.IdempotencyKey, "mode": input.Mode,
@@ -753,11 +718,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		return nil, genericCapabilityOutput{Result: result}, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "working_context",
-		Description: "Manage project-scoped Working Context plans, tasks, acceptance evidence, and a bounded in-project Markdown task workspace on the selected Node. Legacy get/set/clear use the default plan; reads include live Git facts. Secrets, full prompts, chat transcripts, and raw upstream errors are not accepted.",
-		Annotations: toolAnnotations(false, false, false, false),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input workingContextInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+	mcp.AddTool(server, mcpToolDefinition("working_context", toolAnnotations(false, false, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input workingContextInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		params := map[string]any{
 			"projectPath": input.ProjectPath, "goal": input.Goal,
 			"planId": input.PlanID, "expectedRevision": input.ExpectedRevision, "title": input.Title,
@@ -777,11 +738,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		return nil, genericCapabilityOutput{Result: result}, nil
 	})
 
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "artifact_get",
-		Description: "Get or upload Hub Artifacts with bounded native MCP content when possible: PNG/JPEG become ImageContent, small text becomes EmbeddedResource text, and other files up to the native limit become EmbeddedResource blob. Prefer uploadFile/uploadJobLog and get for GPT/agent display. Use publishFile only when an explicit temporary share URL is needed.",
-		Annotations: toolAnnotations(false, false, false, false),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input artifactGetInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+	mcp.AddTool(server, mcpToolDefinition("artifact_get", toolAnnotations(false, false, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input artifactGetInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		switch input.Action {
 		case "uploadFile", "uploadJobLog":
 			params := map[string]any{"path": input.Path, "jobId": input.JobID, "logicalName": input.LogicalName, "contentType": input.ContentType}

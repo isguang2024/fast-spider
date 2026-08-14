@@ -1,4 +1,4 @@
-# 测试策略（0.4.15）
+# 测试策略（0.4.16）
 
 发布门禁必须验证新的 Machine 边界，而不是旧目录授权模型。
 
@@ -8,7 +8,9 @@ Codex 发布门禁必须在实际选择的 runtime 上覆盖 create/get/list/wat
 
 Node 发布推送门禁必须验证“忙碌不重启”：先启动一个真实长任务，再发起 `node-update-push`；Node 可完成 Ready 预下载并上报 `busy`，但版本/PID 不得在任务结束前切换，Job 必须自然完成。之后连续空闲达到 grace 后才允许自更新；新任务在 release drain 窗口返回可重试 `NODE_UPDATING`。最终 Node 版本/SHA、generation 和 `.previous` 回滚副本必须对账通过。
 
-MCP 调用发现门禁必须验证 initialize 返回 `FastSpider_FS` Server Title 和明确 Instructions，至少包含 `@FastSpider_FS`、`capability_list`、`machine_list`、`session.list`；tools/list 继续保持 17 个工具，并确保 `ai_control` 描述能把 Codex 会话列表路由到 `action=session.list`。
+MCP 分层能力门禁必须使用冷 Client 验证 initialize 返回 `FastSpider_FS` Server Title 和不超过 2 KiB 的能力地图，覆盖九类能力、`@FastSpider_FS`、`machine_list`、按需指南与 `session.list`；tools/list 继续固定 17 个工具。无参数及 Machine 旧调用必须兼容；overview 不超过 8 KiB，单个 tool/workflow/error 不超过 12 KiB；未知 view、缺 name 和未知 name 必须拒绝。注册工具、指南目录和公共文档工具名必须自动对账。
+
+MCP 调用诊断门禁必须通过真实 SDK 请求确认 initialize、tools/list、tools/call、工具名、成功/失败和稳定错误分类；ring 最多 64 条、不同 Owner 隔离。序列化结果不得包含 arguments、Prompt、Token、路径或原始 User-Agent。后台 API 未登录返回 401，登录后只能读取当前 Owner 的快照；页面只加载一次并提供手动刷新。
 
 ## 必测主链
 
@@ -57,6 +59,8 @@ MCP 调用发现门禁必须验证 initialize 返回 `FastSpider_FS` Server Titl
 - Managed ripgrep/native 搜索专项
 - file_read 2.0 专项
 - file_edit 2.1 + response-size/CAS/preview 专项
+- 0.4.16 冷 MCP Client 分层指南、17 工具/文档对账与有界结果专项
+- 0.4.16 MCP SDK 调用诊断、Owner 隔离、敏感字段与登录后台专项
 - Node updater staging/cleanup、0.4.3 consumed-current cleanup 与 reconnect/backoff 临时 E2E
 - 0.4.4 Windows legacy install artifacts cleanup 专项
 - 0.4.5 release backup prune 专项

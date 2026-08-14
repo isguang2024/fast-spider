@@ -249,3 +249,12 @@
 - README、架构/能力/协议/运维/可观测性/测试文档均已核对为 0.4.10；进度受管区块、路线图、决策与开放问题已同步到最终生产事实。
 - 此前保留的两个 Node UI 窗口尺寸改动经确认与 0.4.10 无关后已撤销；同步开始前 `main` 与 `origin/main` 一致且工作树 clean。
 - 当前策略为稳定使用：没有主动迭代项；仅在真实运行问题、明确性能证据或新需求出现时创建下一计划。
+
+### 2026-08-14 — 0.4.16 分层能力指南与 MCP 调用诊断（发布前）
+
+- 实现完成：17 个既有 MCP 工具共享单一指南事实源；initialize instructions 保持小型，`capability_list` 支持 overview/catalog/tool/workflow/error 按需读取并保持旧机器能力查询兼容。
+- 实现完成：SDK receiving middleware 在 Hub 内存中按 owner 保存最多 64 条脱敏 MCP 事件；Web session API 与后台诊断面板只在首次加载或人工刷新时读取。
+- 专项回归 `go test ./internal/hub/server -count=1` PASS，共 44 项测试；覆盖冷客户端分层读取、指南大小预算、17 工具完整性、稳定错误分类、ring 上限、owner 隔离、序列化 allowlist、Web 登录 401 与敏感标记不泄漏。
+- 发布前生产基线：Hub 0.4.15（SHA256 `1824cc9f7ebb9b4ebe9fc9e5fbbcc75a049747509355849d7ccaa9ce3acc68b1`）与 spiderctl 0.4.15（SHA256 `48207c5e520d708a5851f00c9a8573d73acd4de3150444709faa45c11214ff0d`）；livez/readyz 均为 200。PCa 注册版本 0.4.14；本版本明确不构建、不修改、不部署 Node、version.txt 或 push.json。
+- 当前尚未宣告最终 PASS：完整 release gate、release commit/push、标准验证备份、Hub/spiderctl 原子部署及真实 MCP cold-session smoke 仍待执行。
+- 最终完整门禁 Job `j-h6x1dh` exitCode=0，终态 `PASS: Fast Spider full release gate`；覆盖 secret/private marker、gofmt、mod verify/tidy、vet、全仓测试、current/Windows amd64/Linux amd64 build、恢复/Local Bridge、全部历史专项门禁、重复 Node、真实 WSL、打包 Browser、CC Switch、Claude、Codex 与 Local Bridge→Codex 产品 E2E。当前 windows/386、CGO=0，因此 fuzz/race 按既有 Gate 规则 SKIP，fuzz seeds 已由全仓测试执行。

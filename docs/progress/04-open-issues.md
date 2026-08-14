@@ -5,7 +5,7 @@
 
 | ID | 类型 | 状态 | 说明 |
 |---|---|---|---|
-| — | — | none | 当前没有已知的内部或外部阻塞；0.4.10 full gate、Claude/Codex 产品 E2E 与生产自举均已通过。 |
+| FS-0416-006 | release | in_progress | 0.4.16 实现及 Hub 定向测试已通过；完整 Gate、提交推送、生产备份/部署与真实 MCP smoke 待执行。 |
 
 ## Internal Blockers
 

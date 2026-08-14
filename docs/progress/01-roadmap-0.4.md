@@ -129,6 +129,17 @@
 | FS-0410-002 0.4.10 full gate、发布、自更新与生产验收 | done |
 | FS-0410-003 文件/搜索/WSL/Agent/Browser 自举基准与清理 | done |
 
+### 0.4.11–0.4.16 MCP 原生体验与可观测性
+
+| Task | 状态 |
+|---|---|
+| FS-0416-001 17 个工具的单一分层能力指南与短描述 | done |
+| FS-0416-002 capability_list overview/catalog/tool/workflow/error 兼容查询 | done |
+| FS-0416-003 每 owner 64 条内存 MCP 调用诊断与隐私 allowlist | done |
+| FS-0416-004 Web 诊断面板、登录门禁、启动单次加载与手动刷新 | done |
+| FS-0416-005 冷客户端、错误分类、容量与敏感信息专项测试 | done |
+| FS-0416-006 full gate、发布、Hub/spiderctl 部署与生产 MCP smoke | in_progress |
+
 ### Final Acceptance Matrix
 
 - `go test ./...`

@@ -26,12 +26,13 @@ type Config struct {
 }
 
 type Server struct {
-	service       *core.Service
-	config        Config
-	oauth         *oauthState
-	loginLimiter  *loginFailureLimiter
-	presentations *presentationStore
-	http          *http.Server
+	service        *core.Service
+	config         Config
+	oauth          *oauthState
+	loginLimiter   *loginFailureLimiter
+	presentations  *presentationStore
+	mcpDiagnostics *mcpDiagnosticsStore
+	http           *http.Server
 }
 
 type apiError struct {
@@ -42,12 +43,14 @@ func New(service *core.Service, cfg Config) *Server {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	startedAt := time.Now().UTC()
 	s := &Server{
-		service:       service,
-		config:        cfg,
-		oauth:         newOAuthState(),
-		loginLimiter:  newLoginFailureLimiter(),
-		presentations: newPresentationStore(presentationTempRoot(service.DataDir())),
+		service:        service,
+		config:         cfg,
+		oauth:          newOAuthState(),
+		loginLimiter:   newLoginFailureLimiter(),
+		presentations:  newPresentationStore(presentationTempRoot(service.DataDir())),
+		mcpDiagnostics: newMCPDiagnosticsStore(service.Version(), startedAt),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleWebRoot)
@@ -57,6 +60,7 @@ func New(service *core.Service, cfg Config) *Server {
 	mux.HandleFunc("POST /login", s.handleLogin)
 	mux.HandleFunc("POST /logout", s.webSessionOnly(s.handleLogout))
 	mux.HandleFunc("GET /app", s.webSessionOnly(s.handleApp))
+	mux.HandleFunc("GET /app/api/mcp-diagnostics", s.webSessionJSONOnly(s.handleAppMCPDiagnostics))
 	mux.HandleFunc("POST /app/machines/{machineId}/note", s.webSessionOnly(s.handleAppMachineNote))
 	mux.HandleFunc("POST /app/machines/{machineId}/revoke", s.webSessionOnly(s.handleAppMachineRevoke))
 	mux.HandleFunc("POST /app/machines/{machineId}/delete", s.webSessionOnly(s.handleAppMachineDelete))

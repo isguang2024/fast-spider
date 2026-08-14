@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 ## Current 当前事实
 
-- 当前源码版本为 `0.4.15`。本补丁版修复 ChatGPT 调用 FastSpider_FS 的发现/路由提示缺口：MCP initialize 现在返回明确 Server Instructions，Server Title 与 App 名对齐为 `FastSpider_FS`，并强化 `capability_list`、`machine_list`、`ai_control` 描述，使连接测试、Machine 发现及 Codex `session.list` 更容易被调用侧稳定选择。工具数量和 Node 协议不变。
+- 当前源码版本为 `0.4.16`。MCP initialize 只常驻精简能力地图和安全规则；现有 `capability_list` 兼容扩展为 `overview|catalog|tool|workflow|error` 按需指南入口，17 个顶层工具的精简描述与详细指南共用一个内部目录。Hub 同时按 Owner 保留最近 64 条非敏感内存诊断事件，并在已登录 Web 后台提供一次加载/手动刷新的“MCP 调用诊断”。本次只升级 Hub/MCP 与 `spiderctl`，Node/WSS 协议和工具数量不变。
 - Machine 是唯一远程资源边界。Fast Spider 不再维护旧目录对象、目录列表工具、目录授权、目录白名单或路径注册表。
 - Node 以启动它的当前 OS 用户运行，直接使用该用户对整台电脑的操作系统权限；Fast Spider 不把文件系统再切成一层目录权限。
 - 同一 OS 用户只允许运行一个 Fast Spider Node 主实例；重复双击、开机自启动与手动启动、不同 EXE 位置或不同 `--data-dir` 都不能建立第二条 Node 连接。重复启动只打开现有本地界面后退出。
@@ -120,6 +120,8 @@ working_context
 ```
 
 `file_read`、`file_edit`、`code_search` 的目标字段是绝对 `path`；`shell_run`/`build_control` 使用绝对 `cwd`；`git_control` 使用绝对 `repositoryPath`；`ai_control.session.create` 使用绝对 `workingDirectory`。`working_context` 使用 `projectPath + planId`。`thinking_team` 不需要 `machineId`，只返回调用侧角色、部门、流程和资料室协议，不创建本机 AI Session。`providerId` 选择 AI Harness；`routing.status` 独立返回 CC Switch Route。Codex 会把 Git worktree 归并到主工作树展示项目；Claude Code Session 固定其创建时工作目录并使用原生 Session UUID。`browser_control` 允许 Node 能访问的公网、localhost 和私网地址，不额外维护 Origin 白名单。远程权限只绑定 `machineId`，Node 是最终执行边界。
+
+首次连接或不清楚工具选择时使用 `capability_list(view=overview)`；只在真正执行某项能力时读取一个 `tool`、`workflow` 或 `error` 指南，不要一次加载全部详情。无参数调用仍返回 Hub Capability Catalog 并附带 overview；`machineId` + 省略 `view` 仍只返回该 Machine 的能力目录。ChatGPT App 若已经缓存旧工具 Schema/描述，Hub 升级后仍需在 App 管理中 Refresh。
 
 ## 文档导航
 

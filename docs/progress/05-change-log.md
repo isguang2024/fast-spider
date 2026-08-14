@@ -106,3 +106,10 @@
 - MCP initialize 新增 Server Instructions，明确 `@FastSpider_FS` 被选择/提及时优先真实调用只读工具验证，不再仅凭界面文本推断连接器不可用。
 - Server Title 对齐为 `FastSpider_FS`；`capability_list` 与 `machine_list` 明确作为连接/机器发现入口，`ai_control` 明确标注 Codex `action=session.list` 及后续 session.get/watch/result 路由。
 - `TestMachineBoundaryEndToEnd` 新增 initialize title/instructions 断言，full release gate 新增 0.4.15 MCP invocation routing gate；工具总数与 Node/WSS 协议保持不变。
+
+### 2026-08-14 — 0.4.16 分层能力指南与 MCP 调用可观测性
+
+- initialize instructions 收敛为 2 KiB 内的九类能力地图与安全规则；17 个工具的 description 与详细指南统一由代码内事实源生成。
+- `capability_list` 新增 overview/catalog/tool/workflow/error 分层查询，覆盖文件编辑、长任务、Git、Browser、Codex Session 等安全流程和真实错误指导，并保持旧 `machineId` 查询兼容。
+- Hub 新增每 owner 64 条、仅内存的 MCP 调用诊断快照；只记录方法、工具、归一化客户端、结果、稳定错误码、版本和时间戳，不记录输入正文、Token、路径或 raw error。
+- Web 后台新增登录保护的“MCP 调用诊断”面板，仅首次加载与人工刷新读取；专项测试覆盖冷客户端、大小预算、ring 上限、owner 隔离、隐私 allowlist、错误分类与未登录 401。

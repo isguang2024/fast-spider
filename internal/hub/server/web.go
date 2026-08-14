@@ -13,6 +13,7 @@ import (
 
 	"github.com/isguang2024/fast-spider/internal/hub/core"
 	"github.com/isguang2024/fast-spider/internal/hub/store"
+	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
 
 const webSessionCookieName = "fast_spider_session"
@@ -386,6 +387,10 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request, session store
 	s.renderWebPage(w, "app", data)
 }
 
+func (s *Server) handleAppMCPDiagnostics(w http.ResponseWriter, _ *http.Request, session store.WebSessionRecord) {
+	writeJSON(w, http.StatusOK, s.mcpDiagnostics.snapshot(session.OwnerID))
+}
+
 func (s *Server) handleAppMachineNote(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
 	if !s.verifyCSRF(w, r, session.CSRFToken) {
 		return
@@ -562,6 +567,17 @@ func (s *Server) webSessionOnly(next func(http.ResponseWriter, *http.Request, st
 			returnTo := s.publicURL(r, r.URL.RequestURI())
 			loginURL := s.publicURL(r, "/login") + "?return_to=" + url.QueryEscape(returnTo)
 			http.Redirect(w, r, loginURL, http.StatusSeeOther)
+			return
+		}
+		next(w, r, session)
+	}
+}
+
+func (s *Server) webSessionJSONOnly(next func(http.ResponseWriter, *http.Request, store.WebSessionRecord)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		session, err := s.currentWebSession(r)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, apiError{Error: protocolv1.ProtocolError{Code: "UNAUTHORIZED", Message: "authentication required", Retryable: false}})
 			return
 		}
 		next(w, r, session)

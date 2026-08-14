@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -132,6 +133,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	var fileReadSchema []byte
 	var fileEditSchema []byte
 	var workingContextSchema []byte
+	var capabilityListSchema []byte
 	for _, tool := range tools.Tools {
 		names = append(names, tool.Name)
 		if tool.Name == "code_search" {
@@ -145,6 +147,9 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		}
 		if tool.Name == "working_context" {
 			workingContextSchema, _ = json.Marshal(tool.InputSchema)
+		}
+		if tool.Name == "capability_list" {
+			capabilityListSchema, _ = json.Marshal(tool.InputSchema)
 		}
 	}
 	sort.Strings(names)
@@ -170,6 +175,68 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	if !bytes.Contains(workingContextSchema, []byte("required for set and plan.init")) {
 		t.Fatalf("working_context goal schema does not describe plan.init requirement: %s", workingContextSchema)
 	}
+	for _, field := range []string{"view", "name"} {
+		if !bytes.Contains(capabilityListSchema, []byte(`"`+field+`"`)) {
+			t.Fatalf("capability_list schema missing %q: %s", field, capabilityListSchema)
+		}
+	}
+
+	defaultGuide := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "capability_list", map[string]any{})
+	defaultGuideRaw, _ := json.Marshal(defaultGuide.StructuredContent)
+	if defaultGuide.IsError || !strings.Contains(string(defaultGuideRaw), `"capabilities"`) || !strings.Contains(string(defaultGuideRaw), `"view":"overview"`) {
+		t.Fatalf("default capability_list=%s", defaultGuideRaw)
+	}
+	for _, guideCall := range []struct {
+		arguments map[string]any
+		want      string
+	}{
+		{map[string]any{"view": "overview"}, `"view":"overview"`},
+		{map[string]any{"view": "tool", "name": "browser_control"}, `"name":"browser_control"`},
+		{map[string]any{"view": "workflow", "name": "codex-session"}, `"name":"codex-session"`},
+		{map[string]any{"view": "error", "name": "INVALID_REQUEST"}, `"name":"INVALID_REQUEST"`},
+	} {
+		result := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "capability_list", guideCall.arguments)
+		raw, _ := json.Marshal(result.StructuredContent)
+		if result.IsError || !strings.Contains(string(raw), guideCall.want) || len(raw) > 12<<10 {
+			t.Fatalf("guide args=%v result=%+v raw=%s", guideCall.arguments, result, raw)
+		}
+	}
+	for _, arguments := range []map[string]any{
+		{"view": "unknown"}, {"view": "tool"}, {"view": "workflow"}, {"view": "error"}, {"view": "tool", "name": "unknown"},
+	} {
+		if result := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "capability_list", arguments); !result.IsError {
+			t.Fatalf("invalid capability_list args=%v result=%+v", arguments, result)
+		}
+	}
+
+	webSession, err := service.CreateWebSession(ctx, account.OwnerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthorizedDiagnostics, err := http.Get(httpServer.URL + "/app/api/mcp-diagnostics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = unauthorizedDiagnostics.Body.Close()
+	if unauthorizedDiagnostics.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthorized MCP diagnostics status=%d", unauthorizedDiagnostics.StatusCode)
+	}
+	diagnosticsReq, _ := http.NewRequest(http.MethodGet, httpServer.URL+"/app/api/mcp-diagnostics", nil)
+	diagnosticsReq.AddCookie(&http.Cookie{Name: "fast_spider_session", Value: webSession.Token})
+	diagnosticsResponse, err := http.DefaultClient.Do(diagnosticsReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnosticsRaw, _ := io.ReadAll(diagnosticsResponse.Body)
+	_ = diagnosticsResponse.Body.Close()
+	if diagnosticsResponse.StatusCode != http.StatusOK || !bytes.Contains(diagnosticsRaw, []byte(`"lastInitializeAt"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"lastToolsListAt"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"lastToolCallAt"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"result":"failure"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"errorCode":"NOT_FOUND"`)) {
+		t.Fatalf("authorized MCP diagnostics status=%d body=%s", diagnosticsResponse.StatusCode, diagnosticsRaw)
+	}
+	for _, forbidden := range []string{mcpAccessToken, "arguments", "prompt", "authorization", filePath, "User-Agent"} {
+		if strings.Contains(strings.ToLower(string(diagnosticsRaw)), strings.ToLower(forbidden)) {
+			t.Fatalf("MCP diagnostics leaked %q: %s", forbidden, diagnosticsRaw)
+		}
+	}
 
 	machineResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "machine_list", Arguments: map[string]any{}})
 	if err != nil {
@@ -178,6 +245,11 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	raw, _ := json.Marshal(machineResult.StructuredContent)
 	if !strings.Contains(string(raw), state.MachineID) {
 		t.Fatalf("machine_list=%s", raw)
+	}
+	machineCatalog := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "capability_list", map[string]any{"machineId": state.MachineID})
+	machineCatalogRaw, _ := json.Marshal(machineCatalog.StructuredContent)
+	if machineCatalog.IsError || !strings.Contains(string(machineCatalogRaw), `"capabilities"`) || strings.Contains(string(machineCatalogRaw), `"guide"`) {
+		t.Fatalf("legacy machine capability_list=%s", machineCatalogRaw)
 	}
 
 	fileResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "file_read", Arguments: map[string]any{"machineId": state.MachineID, "path": filePath, "limit": 128}})
@@ -458,6 +530,26 @@ func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 	t.Fatal("condition did not become true before timeout")
 }
 func stringJSON(v any) string { raw, _ := json.Marshal(v); return string(raw) }
+func coldMCPCall(t *testing.T, ctx context.Context, endpoint, accessToken, toolName string, arguments map[string]any) *mcp.CallToolResult {
+	t.Helper()
+	client := mcp.NewClient(&mcp.Implementation{Name: "mcpcli-cold-e2e", Version: "test"}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
+		Endpoint: endpoint,
+		HTTPClient: &http.Client{Transport: bearerTransport{
+			token: accessToken, base: http.DefaultTransport,
+		}},
+		MaxRetries: -1, DisableStandaloneSSE: true,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: toolName, Arguments: arguments})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
 func runE2EGit(t *testing.T, cwd string, args ...string) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
