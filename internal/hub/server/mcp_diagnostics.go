@@ -140,16 +140,16 @@ func (d *mcpDiagnosticsStore) snapshot(ownerID string) mcpDiagnosticSnapshot {
 	out.ErrorCode = owner.errorCode
 	out.RecentEvents = append(out.RecentEvents, owner.events...)
 	switch {
-	case owner.lastInitializeAt == "":
-		out.Diagnosis = "no_initialize"
-	case owner.lastToolsListAt == "":
-		out.Diagnosis = "initialized_no_tools_list"
-	case owner.lastToolCallAt == "":
-		out.Diagnosis = "tools_listed_no_tool_call"
-	case owner.result == "failure":
+	case owner.lastToolCallAt != "" && owner.result == "failure":
 		out.Diagnosis = "tool_call_failed"
-	default:
+	case owner.lastToolCallAt != "":
 		out.Diagnosis = "tool_call_succeeded"
+	case owner.lastToolsListAt != "":
+		out.Diagnosis = "tools_listed_no_tool_call"
+	case owner.lastInitializeAt != "":
+		out.Diagnosis = "initialized_no_tools_list"
+	default:
+		out.Diagnosis = "no_initialize"
 	}
 	return out
 }

@@ -17,7 +17,7 @@ func TestMCPDiagnosticsAreBoundedIsolatedAndAllowlisted(t *testing.T) {
 	store.record("owner-b", "initialize", "", "chatgpt", "success", "", started.Add(time.Hour))
 
 	a := store.snapshot("owner-a")
-	if len(a.RecentEvents) != maxMCPDiagnosticEvents || a.LastToolName != "file_read" || a.ClientType != "codex" || a.Result != "success" || a.Diagnosis != "no_initialize" {
+	if len(a.RecentEvents) != maxMCPDiagnosticEvents || a.LastToolName != "file_read" || a.ClientType != "codex" || a.Result != "success" || a.Diagnosis != "tool_call_succeeded" {
 		t.Fatalf("owner-a snapshot=%+v", a)
 	}
 	b := store.snapshot("owner-b")
