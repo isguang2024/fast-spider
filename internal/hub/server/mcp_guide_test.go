@@ -13,6 +13,15 @@ func TestMCPGuideCatalogMatchesRegisteredToolsAndDocumentation(t *testing.T) {
 	if len(guideNames) != 17 {
 		t.Fatalf("guide tool count=%d names=%v", len(guideNames), guideNames)
 	}
+	var discoveryMarkers []string
+	for name, entry := range mcpToolGuides {
+		if strings.Contains(strings.ToLower(entry.Description), "fsprobe") {
+			discoveryMarkers = append(discoveryMarkers, name)
+		}
+	}
+	if len(discoveryMarkers) != 1 || discoveryMarkers[0] != "machine_list" {
+		t.Fatalf("fsprobe must identify only machine_list: %v", discoveryMarkers)
+	}
 	registeredNames := make([]string, 0, len(guideNames))
 	for _, name := range guideNames {
 		registeredNames = append(registeredNames, mcpToolDefinition(name, toolAnnotations(true, false, true, false)).Name)
@@ -53,9 +62,17 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		assertMCPGuideSize(t, guide, 12<<10)
 	}
 	for _, name := range []string{"connection-check", "file-edit", "shell-job", "build-job", "git-change", "browser", "codex-session", "long-task", "artifact-display"} {
-		guide, err := newMCPGuide("0.4.16", "workflow", name)
+		guide, err := newMCPGuide("0.4.17", "workflow", name)
 		if err != nil || guide.Summary == "" || len(guide.SafeSequence) == 0 {
 			t.Fatalf("workflow %s guide=%+v err=%v", name, guide, err)
+		}
+		if name == "connection-check" {
+			sequence := strings.Join(guide.SafeSequence, "\n")
+			for _, needle := range []string{"api_tool.list_resources", `query="fsprobe"`, "Never materialize the full 17-tool schema", "login/reauthorization", "machine_list"} {
+				if !strings.Contains(sequence, needle) {
+					t.Fatalf("connection recovery workflow missing %q: %+v", needle, guide)
+				}
+			}
 		}
 		assertMCPGuideSize(t, guide, 12<<10)
 	}
@@ -81,6 +98,7 @@ func TestMCPServerInstructionsStayBoundedAndCoverCapabilityMap(t *testing.T) {
 		"@FastSpider_FS", "capability_list", "machine_list", "machine_get", "file_read", "file_edit", "code_search",
 		"shell_run", "build_control", "job_watch", "job_cancel", "git_control", "browser_control", "screenshot_take",
 		"ai_control", "working_context", "thinking_team", "artifact_get", "session.list", "view=tool|workflow|error",
+		`query="fsprobe"`, "Never load all 17 schemas",
 	} {
 		if !strings.Contains(mcpServerInstructions, needle) {
 			t.Fatalf("instructions missing %q", needle)

@@ -472,9 +472,11 @@ func (s *Server) newMCPHandler() http.Handler {
 
 const mcpServerInstructions = `FastSpider_FS is the user's remote development control plane. When selected or mentioned as @FastSpider_FS, try a real read-only tool before judging availability from UI text.
 
-Capability map: connection/devices = capability_list, machine_list, machine_get; files/code = code_search, file_read, file_edit; commands/builds/jobs = shell_run, build_control, job_watch, job_cancel; Git = git_control; browser/desktop = browser_control, screenshot_take; local AI = ai_control; project context = working_context; multi-perspective guidance = thinking_team; file/log display = artifact_get.
+ChatGPT recovery: tools may be lazily loaded or evicted in long chats. If the FastSpider_FS namespace is absent, do not report disconnect or request login. Use filtered connector discovery for only the connection tools first, e.g. api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Never load all 17 schemas for a health check; load later tools only when needed. Report unmounted only if discovery itself fails.
 
-Rules: if machineId is unknown, call machine_list first. A connection check is capability_list(view=overview) plus machine_list. When exact usage is unclear, load only the needed capability_list view=tool|workflow|error with name; never fetch every detailed guide. Codex session history uses ai_control(action=session.list), then session.get/session.watch/session.result. Shell/build starts return jobId, not completion; follow with job_watch to completed, failed, or canceled. For file edits use search/read, capture fileSha256, preview, CAS write, then read verification. For browser work use readiness, launch, page.open, snapshot refs, actions, then close; screenshots are visual evidence, not the primary click method.`
+Capability map: connection = capability_list, machine_list, machine_get; files = code_search, file_read, file_edit; jobs = shell_run, build_control, job_watch, job_cancel; Git = git_control; browser = browser_control, screenshot_take; AI = ai_control; context = working_context; roles = thinking_team; artifacts = artifact_get.
+
+Rules: unknown machineId -> machine_list. Connection check = capability_list(view=overview) + machine_list. Load detailed guidance only with view=tool|workflow|error for the current need. Codex history starts at ai_control(action=session.list), then get/watch/result. Every shell/build jobId must reach a terminal state via job_watch. File edits use search/read -> SHA -> preview -> CAS write -> read. Browser flow is readiness -> launch -> open -> snapshot refs -> actions -> close.`
 
 func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	server := mcp.NewServer(

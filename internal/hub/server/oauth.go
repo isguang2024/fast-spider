@@ -552,6 +552,7 @@ func (s *Server) mcpTokenVerifier(ctx context.Context, token string, req *http.R
 		return nil, fmt.Errorf("%w: OAuth resource mismatch", auth.ErrInvalidToken)
 	}
 	_ = s.service.Store().TouchOAuthAuthorization(ctx, record.AuthorizationID, now)
+	s.mcpDiagnostics.recordAuthenticatedRequest(record.OwnerID, normalizeMCPClientName(req.UserAgent()), now)
 	return &auth.TokenInfo{Scopes: record.Scopes, Expiration: record.ExpiresAt, UserID: record.OwnerID, Extra: map[string]any{"clientId": record.ClientID, "resource": record.Resource, "authorizationId": record.AuthorizationID}}, nil
 }
 

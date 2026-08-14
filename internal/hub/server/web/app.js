@@ -40,7 +40,7 @@
   };
   const formatTime = (value) => value ? new Date(value).toLocaleString() : "暂无事件";
   const diagnosisCopy = {
-    no_initialize: ["尚无 Initialize", "客户端尚未真正连接到 MCP。"],
+    no_initialize: ["尚无 Initialize", "客户端尚未真正连接到 MCP。若 ChatGPT 正在报告不可用而“最近 MCP 请求”时间不变化，表示该会话没有把请求发送到 Hub，应先重新发现 FastSpider_FS。"],
     initialized_no_tools_list: ["已 Initialize，尚无 Tools List", "MCP 已初始化，但客户端尚未进入工具发现。"],
     tools_listed_no_tool_call: ["已发现工具，尚无 Tool Call", "工具列表已读取，但模型尚未选择工具。"],
     tool_call_failed: ["Tool Call 失败", "调用已到达 Hub，请按错误分类检查参数、Node 或运行时。"],
@@ -49,6 +49,7 @@
   const renderDiagnostics = (data) => {
     setText("mcp-server-version", data.serverVersion);
     setText("mcp-guide-version", data.guideVersion);
+    setText("mcp-last-request", formatTime(data.lastMcpRequestAt));
     setText("mcp-last-initialize", formatTime(data.lastInitializeAt));
     setText("mcp-last-tools-list", formatTime(data.lastToolsListAt));
     setText("mcp-last-tool-call", formatTime(data.lastToolCallAt));

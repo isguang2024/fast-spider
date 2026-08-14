@@ -68,6 +68,7 @@
       <div class="diagnostics-grid" aria-live="polite">
         <div><span>Server</span><strong id="mcp-server-version">—</strong></div>
         <div><span>Guide</span><strong id="mcp-guide-version">—</strong></div>
+        <div><span>最近 MCP 请求</span><strong id="mcp-last-request">暂无事件</strong></div>
         <div><span>最近 Initialize</span><strong id="mcp-last-initialize">暂无事件</strong></div>
         <div><span>最近 Tools List</span><strong id="mcp-last-tools-list">暂无事件</strong></div>
         <div><span>最近 Tool Call</span><strong id="mcp-last-tool-call">暂无事件</strong></div>
@@ -75,7 +76,7 @@
         <div><span>客户端类型</span><strong id="mcp-client-type">—</strong></div>
         <div><span>结果</span><strong id="mcp-result">—</strong></div>
       </div>
-      <div class="diagnostic-explanation"><strong id="mcp-diagnosis-title">尚无 Initialize</strong><span id="mcp-diagnosis-copy">客户端尚未真正连接到 MCP。</span></div>
+      <div class="diagnostic-explanation"><strong id="mcp-diagnosis-title">尚无 Initialize</strong><span id="mcp-diagnosis-copy">客户端尚未真正连接到 MCP。若 ChatGPT 正在报告不可用而“最近 MCP 请求”时间不变化，表示该会话没有把请求发送到 Hub，应先在会话内重新发现 FastSpider_FS，而不是重登或重启 Node。</span></div>
     </section>
 
     <section class="panel" id="machines">

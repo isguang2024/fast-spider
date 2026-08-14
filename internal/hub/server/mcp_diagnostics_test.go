@@ -40,6 +40,21 @@ func TestMCPDiagnosticsAreBoundedIsolatedAndAllowlisted(t *testing.T) {
 	}
 }
 
+func TestMCPDiagnosticsTrackAuthenticatedRequestWithoutCreatingFakeToolEvents(t *testing.T) {
+	started := time.Date(2026, 8, 14, 1, 2, 3, 0, time.UTC)
+	store := newMCPDiagnosticsStore("0.4.17", started)
+	requestAt := started.Add(30 * time.Second)
+	store.recordAuthenticatedRequest("owner-a", "chatgpt", requestAt)
+
+	snapshot := store.snapshot("owner-a")
+	if snapshot.LastMCPRequestAt != requestAt.Format(time.RFC3339) || snapshot.ClientType != "chatgpt" || snapshot.Diagnosis != "no_initialize" {
+		t.Fatalf("authenticated request snapshot=%+v", snapshot)
+	}
+	if len(snapshot.RecentEvents) != 0 || snapshot.LastInitializeAt != "" || snapshot.LastToolsListAt != "" || snapshot.LastToolCallAt != "" {
+		t.Fatalf("authenticated HTTP request was misreported as an MCP method event: %+v", snapshot)
+	}
+}
+
 func TestMCPDiagnosticsNormalizeClientsAndStableErrors(t *testing.T) {
 	for input, want := range map[string]string{
 		"ChatGPT/1.0": "chatgpt", "OpenAI Connector": "chatgpt", "Codex Desktop": "codex", "mcpcli": "mcpcli", "unknown-client/9": "other", "": "other",

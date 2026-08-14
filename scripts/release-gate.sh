@@ -109,6 +109,7 @@ if [[ "$mode" == "full" ]]; then
   step "0.4.14 idle-safe Node update push gate" go test ./internal/releaseinfo ./internal/node ./internal/agent -run 'Test(NodeUpdatePush|TaskBusyReasons|ReleaseDrain|AgentManagerBusyForUpdate)' -count=1
   step "0.4.15 MCP invocation routing gate" go test ./internal/hub/server -run 'TestMachineBoundaryEndToEnd' -count=1
   step "0.4.16 layered MCP guide and diagnostics gate" go test ./internal/hub/server -run 'Test(MCPGuide|MCPServerInstructions|MCPDiagnostics|MachineBoundaryEndToEnd|WebSetupLoginAndDashboard)' -count=1
+  step "0.4.17 ChatGPT conversation MCP recovery gate" go test ./internal/hub/server -run 'Test(MCPGuide|MCPServerInstructions|MCPDiagnosticsTrackAuthenticatedRequest|OAuthAuthorizationPKCETokenRotationAndMCP|MachineBoundaryEndToEnd|WebSetupLoginAndDashboard)' -count=1
   step "0.4.2 reconnect temp E2E" go test ./internal/node -run 'Test(NodeReconnectAfterRevokedMachineCreatesFreshMachineIdentity|ReconnectBackoffsResetAfterStableSession)' -count=1
   step "Repeated Node regression" go test ./internal/node -count=3
 

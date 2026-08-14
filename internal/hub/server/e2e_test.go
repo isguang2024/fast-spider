@@ -134,8 +134,24 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	var fileEditSchema []byte
 	var workingContextSchema []byte
 	var capabilityListSchema []byte
+	toolCatalogBytes := 0
+	connectionToolBytes := 0
+	largestToolBytes := 0
+	largestToolName := ""
 	for _, tool := range tools.Tools {
 		names = append(names, tool.Name)
+		encodedTool, err := json.Marshal(tool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		toolCatalogBytes += len(encodedTool)
+		if tool.Name == "capability_list" || tool.Name == "machine_list" || tool.Name == "machine_get" {
+			connectionToolBytes += len(encodedTool)
+		}
+		if len(encodedTool) > largestToolBytes {
+			largestToolBytes = len(encodedTool)
+			largestToolName = tool.Name
+		}
 		if tool.Name == "code_search" {
 			codeSearchSchema, _ = json.Marshal(tool.InputSchema)
 		}
@@ -151,6 +167,16 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		if tool.Name == "capability_list" {
 			capabilityListSchema, _ = json.Marshal(tool.InputSchema)
 		}
+	}
+	t.Logf("MCP tool catalog bytes=%d connection=%d largest=%s/%d", toolCatalogBytes, connectionToolBytes, largestToolName, largestToolBytes)
+	if toolCatalogBytes > 48<<10 {
+		t.Fatalf("MCP tool catalog grew beyond 48 KiB context budget: %d", toolCatalogBytes)
+	}
+	if connectionToolBytes > 8<<10 {
+		t.Fatalf("MCP connection discovery tools grew beyond 8 KiB budget: %d", connectionToolBytes)
+	}
+	if largestToolBytes > 8<<10 {
+		t.Fatalf("MCP tool %s grew beyond 8 KiB individual budget: %d", largestToolName, largestToolBytes)
 	}
 	sort.Strings(names)
 	want := []string{"ai_control", "artifact_get", "browser_control", "build_control", "capability_list", "code_search", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "screenshot_take", "shell_run", "thinking_team", "working_context"}
@@ -229,7 +255,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	}
 	diagnosticsRaw, _ := io.ReadAll(diagnosticsResponse.Body)
 	_ = diagnosticsResponse.Body.Close()
-	if diagnosticsResponse.StatusCode != http.StatusOK || !bytes.Contains(diagnosticsRaw, []byte(`"lastInitializeAt"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"lastToolsListAt"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"lastToolCallAt"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"clientType":"mcpcli"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"result":"failure"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"errorCode":"NOT_FOUND"`)) {
+	if diagnosticsResponse.StatusCode != http.StatusOK || !bytes.Contains(diagnosticsRaw, []byte(`"lastMcpRequestAt"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"lastInitializeAt"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"lastToolsListAt"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"lastToolCallAt"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"clientType":"mcpcli"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"result":"failure"`)) || !bytes.Contains(diagnosticsRaw, []byte(`"errorCode":"NOT_FOUND"`)) {
 		t.Fatalf("authorized MCP diagnostics status=%d body=%s", diagnosticsResponse.StatusCode, diagnosticsRaw)
 	}
 	for _, forbidden := range []string{mcpAccessToken, "arguments", "prompt", "authorization", filePath, "User-Agent"} {

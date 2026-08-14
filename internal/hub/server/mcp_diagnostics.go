@@ -29,6 +29,7 @@ type mcpDiagnosticSnapshot struct {
 	ServerVersion    string               `json:"serverVersion"`
 	GuideVersion     string               `json:"guideVersion"`
 	ServerStartedAt  string               `json:"serverStartedAt"`
+	LastMCPRequestAt string               `json:"lastMcpRequestAt,omitempty"`
 	LastInitializeAt string               `json:"lastInitializeAt,omitempty"`
 	LastToolsListAt  string               `json:"lastToolsListAt,omitempty"`
 	LastToolCallAt   string               `json:"lastToolCallAt,omitempty"`
@@ -41,6 +42,7 @@ type mcpDiagnosticSnapshot struct {
 }
 
 type ownerMCPDiagnostics struct {
+	lastMCPRequestAt string
 	lastInitializeAt string
 	lastToolsListAt  string
 	lastToolCallAt   string
@@ -64,6 +66,29 @@ func newMCPDiagnosticsStore(serverVersion string, startedAt time.Time) *mcpDiagn
 	return &mcpDiagnosticsStore{
 		serverVersion: serverVersion, serverStartedAt: startedAt.UTC().Format(time.RFC3339),
 		owners: make(map[string]*ownerMCPDiagnostics),
+	}
+}
+
+func (d *mcpDiagnosticsStore) recordAuthenticatedRequest(ownerID, clientType string, at time.Time) {
+	if strings.TrimSpace(ownerID) == "" {
+		return
+	}
+	if clientType == "" {
+		clientType = "other"
+	}
+	stamp := at.UTC().Format(time.RFC3339)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	owner := d.owners[ownerID]
+	if owner == nil {
+		owner = &ownerMCPDiagnostics{}
+		d.owners[ownerID] = owner
+	}
+	owner.lastMCPRequestAt = stamp
+	if clientType != "other" {
+		owner.recognizedClient = clientType
+		owner.recognizedAt = at
+		owner.clientType = clientType
 	}
 }
 
@@ -142,6 +167,7 @@ func (d *mcpDiagnosticsStore) snapshot(ownerID string) mcpDiagnosticSnapshot {
 		out.Diagnosis = "no_initialize"
 		return out
 	}
+	out.LastMCPRequestAt = owner.lastMCPRequestAt
 	out.LastInitializeAt = owner.lastInitializeAt
 	out.LastToolsListAt = owner.lastToolsListAt
 	out.LastToolCallAt = owner.lastToolCallAt

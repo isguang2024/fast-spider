@@ -1,4 +1,4 @@
-# 可观测性（0.4.16）
+# 可观测性（0.4.17）
 
 Fast Spider 的日志和指标以低噪音、低基数、可排障为目标。
 
@@ -16,13 +16,14 @@ Fast Spider 的日志和指标以低噪音、低基数、可排障为目标。
 
 ## MCP 调用诊断
 
-Hub 使用 MCP SDK 正式 Receiving Middleware 观察 `initialize`、`tools/list` 与 `tools/call`。每个 Owner 只维护一个进程内快照和最近 64 条有界 ring，不写数据库或磁盘日志；Hub 重启后自然清空。记录字段仅包括事件时间、方法、`tools/call` 的工具名、`success|failure`、稳定错误分类、`chatgpt|codex|mcpcli|other` 客户端类型、Server/Guide 版本和 Server 启动时间。
+Hub 使用 MCP SDK 正式 Receiving Middleware 观察 `initialize`、`tools/list` 与 `tools/call`；0.4.17 同时在 Bearer Token 验证成功后仅更新该 Owner 的“最近已认证 MCP HTTP 请求时间”。每个 Owner 只维护一个进程内快照和最近 64 条有界 ring，不写数据库或磁盘日志；Hub 重启后自然清空。HTTP 到达时间不伪造成 MCP method event，ring 仍只保存 initialize/tools/list/tools/call。记录字段仅包括事件时间、方法、`tools/call` 工具名、`success|failure`、稳定错误分类、归一化客户端类型、Server/Guide 版本和 Server 启动时间。
 
 严格不读取或保存 Authorization Header、Token、Cookie、完整请求体、工具 arguments、Prompt、本机路径、文件正文、IP、原始 User-Agent 或原始错误堆栈。客户端类型只从 MCP `clientInfo.name` 或请求头做有限归一化，原值不进入快照。已登录 Web 后台通过只读 `/app/api/mcp-diagnostics` 加载当前 Owner 快照；未登录返回 401。页面进入时读取一次，并只提供手动刷新，不做轮询。
 
 诊断含义：
 
-- 无 initialize：客户端没有真正连接到 MCP。
+- 最近 MCP 请求时间不变化：如果用户此刻明确在 ChatGPT 中重试 FastSpider_FS，但该时间仍不变化，说明该会话没有把请求发送到 Hub；优先用唯一标记 `fsprobe` 过滤发现 `machine_list`，而不是重启 Node 或重新授权。
+- 有最近 MCP 请求、无 initialize：请求已经通过 OAuth 到达 Hub，但尚未形成有效 MCP initialize；检查客户端协议/请求形状。
 - 有 initialize、无 tools/list：初始化后未进入工具发现。
 - 有 tools/list、无 tools/call：模型尚未选择工具。
 - tools/call 失败：调用已到 Hub，按稳定错误分类检查 Hub、Node、参数或运行时。

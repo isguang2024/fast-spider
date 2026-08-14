@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 ## Current 当前事实
 
-- 当前源码版本为 `0.4.16`。MCP initialize 只常驻精简能力地图和安全规则；现有 `capability_list` 兼容扩展为 `overview|catalog|tool|workflow|error` 按需指南入口，17 个顶层工具的精简描述与详细指南共用一个内部目录。Hub 同时按 Owner 保留最近 64 条非敏感内存诊断事件，并在已登录 Web 后台提供一次加载/手动刷新的“MCP 调用诊断”。本次只升级 Hub/MCP 与 `spiderctl`，Node/WSS 协议和工具数量不变。
+- 当前源码版本为 `0.4.17`。MCP 顶层仍固定 17 个工具，但 ChatGPT 长会话恢复不再要求一次物化全部 Schema：命名空间缺失时使用唯一发现标记 `fsprobe` 只加载 `machine_list`，真实连通后再按当前动作加载 `capability_list`、`machine_get` 或业务工具。initialize 常驻指令继续受 2 KiB 门禁约束，完整工具目录受 48 KiB、连接入口受 8 KiB、单工具受 8 KiB 的发布预算约束，复杂说明留在按需 Guide。Hub MCP 诊断新增“最近已认证 MCP 请求”时间，可区分“请求已到 Hub”与“旧会话根本未发请求”；OAuth/PKCE、Node/WSS 协议和工具数量不变。
 - Machine 是唯一远程资源边界。Fast Spider 不再维护旧目录对象、目录列表工具、目录授权、目录白名单或路径注册表。
 - Node 以启动它的当前 OS 用户运行，直接使用该用户对整台电脑的操作系统权限；Fast Spider 不把文件系统再切成一层目录权限。
 - 同一 OS 用户只允许运行一个 Fast Spider Node 主实例；重复双击、开机自启动与手动启动、不同 EXE 位置或不同 `--data-dir` 都不能建立第二条 Node 连接。重复启动只打开现有本地界面后退出。
