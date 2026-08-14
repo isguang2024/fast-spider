@@ -39,6 +39,7 @@
 34. **更新不得中断任务**：推送允许在任务期间预下载，但 Shell/Build Job、Browser Session、AI 活跃 Turn、in-flight Capability 任一存在时不得重启。全部结束并连续空闲 15 秒后才能进入 release drain；drain 不取消旧任务，只拒绝新任务并返回可重试 `NODE_UPDATING`，随后复用既有 Ready/StartApply/.previous/restart 链。
 35. **0.4.16 分层能力指南**：initialize instructions 只承载九类能力地图和安全黄金规则；17 个工具的用途、必需输入、安全顺序、返回、下一步、真实错误与短示例由 `capability_list` 的 overview/catalog/tool/workflow/error 视图按需展开。指南和工具 description 使用同一代码内事实源，不新增独立 Manifest，也不改变既有 `machineId` 查询兼容行为。
 36. **MCP 调用诊断边界**：只在 Hub 进程内按 owner 保存最近 64 条 initialize/tools/list/tools/call 归一化事件与当前快照；不持久化、不记录参数、正文、Token、路径或完整错误。Web API 复用现有 session 登录，仅在页面首次加载和人工刷新时读取，不轮询。
+37. **0.4.17 长会话恢复边界**：ChatGPT 会话缺少 FastSpider_FS 命名空间时不等同于 Hub/Node/OAuth 断线；先以唯一 `fsprobe` 过滤发现并只物化 `machine_list`，真实连通后再按当前动作加载其它工具。健康检查禁止一次加载全部 17 个 Schema；发布预算固定为 initialize <=2 KiB、完整工具目录 <=48 KiB、连接入口 <=8 KiB、单工具 <=8 KiB。
 <!-- fast-spider:managed:decisions:end -->
 
 ## Manual Decisions

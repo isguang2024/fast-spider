@@ -150,7 +150,7 @@
 | FS-0417-004 最近已认证 MCP 请求到达诊断与 Web 展示 | done |
 | FS-0417-005 Hub 专项、full release gate 与跨产品 E2E | done |
 | FS-0417-006 commit/push、生产备份与 Hub/spiderctl 部署 | done |
-| EXT-CHATGPT-0417-REFRESH 一次 Refresh 后同会话恢复验收 | pending |
+| EXT-CHATGPT-0417-REFRESH 一次 Refresh 后同会话恢复验收 | done |
 
 ### Final Acceptance Matrix
 

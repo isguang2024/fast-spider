@@ -129,4 +129,4 @@
 - 新增唯一发现标记 `fsprobe`，用于 ChatGPT 命名空间缺失时只加载 `machine_list`；确认真实连接后再按当前动作加载其它工具。17 个顶层能力保持不变，不以删功能解决复杂度。
 - 增加工具上下文发布预算：initialize <=2 KiB、完整工具目录 <=48 KiB、连接三工具 <=8 KiB、任一单工具 <=8 KiB；首次实现曾因 initialize 达 2076 bytes 被门禁拒绝，最终通过压缩常驻指令而不是放宽预算。
 - MCP 诊断增加 `lastMcpRequestAt`，在 OAuth Bearer 验证成功后更新请求到达时间，但不制造虚假 method event；后台可直接识别“ChatGPT 此会话未向 Hub 发请求”。
-- release commit `f2c2b14635575ed4459c5a5bf2db3295d11541c0` 已推送，full release gate 全绿；生产 Hub/spiderctl 已部署 0.4.17，PCa Node 保持 0.4.14。剩余唯一外部门禁为 ChatGPT App 一次 Refresh 后的同会话恢复验收。
+- release commit `f2c2b14635575ed4459c5a5bf2db3295d11541c0` 已推送，full release gate 全绿；生产 Hub/spiderctl 已部署 0.4.17，PCa Node 保持 0.4.14。发布后 ChatGPT App Refresh 复验已完成：`fsprobe` 精确只物化 `machine_list`，当前会话可继续按需恢复其它工具，无需新会话、重新登录或 OAuth 授权；0.4.17 最终状态为 `FINAL PASS / PRODUCTION READY`。
