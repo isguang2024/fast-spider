@@ -57,3 +57,18 @@ func TestMCPDiagnosticsNormalizeClientsAndStableErrors(t *testing.T) {
 		t.Fatalf("unexpected raw-error classification %q", got)
 	}
 }
+
+func TestMCPDiagnosticsCarryRecognizedClientAcrossStatelessHandshakeWindow(t *testing.T) {
+	started := time.Date(2026, 8, 14, 1, 2, 3, 0, time.UTC)
+	store := newMCPDiagnosticsStore("0.4.16", started)
+	store.record("owner-a", "initialize", "", "mcpcli", "success", "", started)
+	store.record("owner-a", "tools/list", "", "other", "success", "", started.Add(time.Second))
+	store.record("owner-a", "tools/call", "machine_list", "other", "success", "", started.Add(2*time.Second))
+	if snapshot := store.snapshot("owner-a"); snapshot.ClientType != "mcpcli" || snapshot.RecentEvents[2].ClientType != "mcpcli" {
+		t.Fatalf("short stateless handshake lost recognized client: %+v", snapshot)
+	}
+	store.record("owner-a", "tools/call", "machine_list", "other", "success", "", started.Add(mcpClientAttributionWindow+time.Second))
+	if snapshot := store.snapshot("owner-a"); snapshot.ClientType != "other" {
+		t.Fatalf("stale client attribution was retained: %+v", snapshot)
+	}
+}

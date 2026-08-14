@@ -260,3 +260,5 @@
 - 最终完整门禁 Job `j-h6x1dh` exitCode=0，终态 `PASS: Fast Spider full release gate`；覆盖 secret/private marker、gofmt、mod verify/tidy、vet、全仓测试、current/Windows amd64/Linux amd64 build、恢复/Local Bridge、全部历史专项门禁、重复 Node、真实 WSL、打包 Browser、CC Switch、Claude、Codex 与 Local Bridge→Codex 产品 E2E。当前 windows/386、CGO=0，因此 fuzz/race 按既有 Gate 规则 SKIP，fuzz seeds 已由全仓测试执行。
 - 首次生产 smoke 发现 Hub 重启后的既有 MCP 客户端可直接成功调用工具，但进程内没有重启前 initialize/tools-list 事件；诊断原先按“缺失早期事件优先”会误报未连接。修订为“最新已观测阶段优先”：真实 Tool Call 成功/失败是最高可信证据，其次 tools/list、initialize；专项测试同步覆盖该重启/中途接管边界。
 - 修订后第二轮完整门禁 Job `j-g2x2ht` exitCode=0，终态再次为 `PASS: Fast Spider full release gate`；最终发布证据以本轮为准。
+- 真实 OAuth+PKCE 冷客户端进一步确认 stateless MCP 的 initialize 能识别客户端，而后续独立 HTTP 请求可能只有通用 User-Agent。诊断增加 5 分钟短握手归因窗口：同 owner 的后续 tools/list/tools/call 继承最近明确识别的 chatgpt/codex/mcpcli，窗口外仍归一为 other；不保存 sessionId、原始 User-Agent 或其它新字段。
+- 客户端归因修订后完整门禁 Job `j-aarg07` exitCode=0，终态 `PASS: Fast Spider full release gate`；全仓测试现为 445 项，Hub 专项 45 项，真实 WSL/Browser/CC Switch/Claude/Codex/Local Bridge 产品链均通过。最终发布证据以本轮为准。

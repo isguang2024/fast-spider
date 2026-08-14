@@ -11,7 +11,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const maxMCPDiagnosticEvents = 64
+const (
+	maxMCPDiagnosticEvents     = 64
+	mcpClientAttributionWindow = 5 * time.Minute
+)
 
 type mcpDiagnosticEvent struct {
 	At         string `json:"at"`
@@ -45,6 +48,8 @@ type ownerMCPDiagnostics struct {
 	clientType       string
 	result           string
 	errorCode        string
+	recognizedClient string
+	recognizedAt     time.Time
 	events           []mcpDiagnosticEvent
 }
 
@@ -95,6 +100,12 @@ func (d *mcpDiagnosticsStore) record(ownerID, method, toolName, clientType, resu
 	if owner == nil {
 		owner = &ownerMCPDiagnostics{}
 		d.owners[ownerID] = owner
+	}
+	if clientType != "other" {
+		owner.recognizedClient = clientType
+		owner.recognizedAt = at
+	} else if owner.recognizedClient != "" && !at.Before(owner.recognizedAt) && at.Sub(owner.recognizedAt) <= mcpClientAttributionWindow {
+		clientType = owner.recognizedClient
 	}
 	switch method {
 	case "initialize":
