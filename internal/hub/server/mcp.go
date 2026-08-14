@@ -467,12 +467,17 @@ func (s *Server) newMCPHandler() http.Handler {
 	})
 }
 
+const mcpServerInstructions = `FastSpider_FS is the user's remote development control plane for their own machines. When this app/server is selected or the user explicitly mentions @FastSpider_FS, use an appropriate Fast Spider tool instead of claiming the connector is unavailable without trying it. For a connectivity or MCP-status check, call capability_list and machine_list. For machine-bound work, call machine_list first when a machineId is not already known. Codex and Claude Code discovery/control are sub-actions of ai_control; use action=session.list to list sessions, then session.get/session.watch/session.result as needed. Verify availability with read-only tools rather than inferring it from UI text alone.`
+
 func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
-	server := mcp.NewServer(&mcp.Implementation{Name: "fast-spider", Title: "Fast Spider", Version: s.service.Version()}, nil)
+	server := mcp.NewServer(
+		&mcp.Implementation{Name: "fast-spider", Title: "FastSpider_FS", Version: s.service.Version()},
+		&mcp.ServerOptions{Instructions: mcpServerInstructions},
+	)
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "machine_list",
-		Description: "List Fast Spider machines owned by the authenticated owner, including online state, connection-token registration mode, local configuration scope, runtime credential mode and negotiated capabilities. Connection-token secrets are never returned.",
+		Description: "Primary read-only FastSpider_FS machine discovery and connectivity probe. Use this first when the app is invoked for local work and no machineId is known. Lists owned machines, online/runtime state and negotiated capabilities; connection-token secrets are never returned.",
 		Annotations: toolAnnotations(true, false, true, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ machineListInput) (*mcp.CallToolResult, machineListOutput, error) {
 		machines, err := s.service.ListMachines(ctx, ownerID)
@@ -500,7 +505,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "capability_list",
-		Description: "List the fixed Fast Spider capability catalog, or capabilities currently reported by a specific machine.",
+		Description: "Read-only FastSpider_FS MCP health and capability probe. Use this for connector/MCP connectivity checks; without machineId it returns the Hub catalog, with machineId it returns that machine's reported capabilities.",
 		Annotations: toolAnnotations(true, false, true, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input capabilityListInput) (*mcp.CallToolResult, capabilityListOutput, error) {
 		if input.MachineID == "" {
@@ -706,7 +711,7 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ai_control",
-		Description: "Discover AI harnesses, CC Switch routing/upstream model facts, and control supported local provider sessions through the Node. Current harnesses are Codex and Claude Code; credentials and raw CC Switch provider settings remain local.",
+		Description: "Discover AI harnesses and control local Codex/Claude Code sessions through the Node. Codex session history is available here via action=session.list, followed by session.get/session.watch/session.result. Also exposes CC Switch routing/model facts; credentials and raw provider settings remain local.",
 		Annotations: toolAnnotations(false, true, false, true),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input aiControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		params := map[string]any{

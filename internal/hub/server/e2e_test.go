@@ -110,6 +110,18 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer mcpSession.Close()
+	initResult := mcpSession.InitializeResult()
+	if initResult == nil || initResult.ServerInfo == nil {
+		t.Fatal("missing MCP initialize result/server info")
+	}
+	if initResult.ServerInfo.Title != "FastSpider_FS" {
+		t.Fatalf("server title=%q", initResult.ServerInfo.Title)
+	}
+	for _, needle := range []string{"@FastSpider_FS", "capability_list", "machine_list", "session.list"} {
+		if !strings.Contains(initResult.Instructions, needle) {
+			t.Fatalf("MCP instructions missing %q: %q", needle, initResult.Instructions)
+		}
+	}
 
 	tools, err := mcpSession.ListTools(ctx, nil)
 	if err != nil {

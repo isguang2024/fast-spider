@@ -100,3 +100,9 @@
 - Node 收到 release notice 后继续走签名 manifest + SHA 校验并可预下载 Ready 包；Shell/Build Job、Browser Session、AI 活跃 Turn 或 in-flight Capability 任一存在时绝不重启，并通过 heartbeat 上报真实 `busy`。
 - 全部活动结束并连续空闲 15 秒后进入 release drain；drain 不取消已有任务，只拒绝新 Capability 并返回可重试 `NODE_UPDATING`，随后复用既有 `Ready → StartApply → .previous → restart` 自更新链。
 - `push.json` 是几百字节非敏感发布元数据；release SHA 只在发起 push 时计算一次，Hub heartbeat 只读取 marker，避免周期性读取大型 Node 二进制。
+
+### 2026-08-14 — 0.4.15 MCP Invocation Routing
+
+- MCP initialize 新增 Server Instructions，明确 `@FastSpider_FS` 被选择/提及时优先真实调用只读工具验证，不再仅凭界面文本推断连接器不可用。
+- Server Title 对齐为 `FastSpider_FS`；`capability_list` 与 `machine_list` 明确作为连接/机器发现入口，`ai_control` 明确标注 Codex `action=session.list` 及后续 session.get/watch/result 路由。
+- `TestMachineBoundaryEndToEnd` 新增 initialize title/instructions 断言，full release gate 新增 0.4.15 MCP invocation routing gate；工具总数与 Node/WSS 协议保持不变。

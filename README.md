@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 ## Current 当前事实
 
-- 当前源码版本为 `0.4.14`。本补丁版新增轻量 Node 发布推送：发布者上传新版 Node 与 `version.txt` 后执行 `spiderctl node-update-push`，Hub 通过现有 WSS 心跳通知在线 Node。Node 只预下载并验证已签名版本；Shell/Build Job、Browser Session、AI 活跃 Turn 或远程 Capability 请求存在时绝不重启，全部结束并连续空闲 15 秒后才进入 drain、拒绝新任务并复用现有安全自更新链完成替换重启。
+- 当前源码版本为 `0.4.15`。本补丁版修复 ChatGPT 调用 FastSpider_FS 的发现/路由提示缺口：MCP initialize 现在返回明确 Server Instructions，Server Title 与 App 名对齐为 `FastSpider_FS`，并强化 `capability_list`、`machine_list`、`ai_control` 描述，使连接测试、Machine 发现及 Codex `session.list` 更容易被调用侧稳定选择。工具数量和 Node 协议不变。
 - Machine 是唯一远程资源边界。Fast Spider 不再维护旧目录对象、目录列表工具、目录授权、目录白名单或路径注册表。
 - Node 以启动它的当前 OS 用户运行，直接使用该用户对整台电脑的操作系统权限；Fast Spider 不把文件系统再切成一层目录权限。
 - 同一 OS 用户只允许运行一个 Fast Spider Node 主实例；重复双击、开机自启动与手动启动、不同 EXE 位置或不同 `--data-dir` 都不能建立第二条 Node 连接。重复启动只打开现有本地界面后退出。

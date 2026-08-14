@@ -1,4 +1,4 @@
-# 测试策略（0.4.14）
+# 测试策略（0.4.15）
 
 发布门禁必须验证新的 Machine 边界，而不是旧目录授权模型。
 
@@ -7,6 +7,8 @@ Browser 发布门禁必须把 Sidecar、Playwright、Chromium 与 Node runtime �
 Codex 发布门禁必须在实际选择的 runtime 上覆盖 create/get/list/watch/result/send/fork，确认 completed session 可 fork、新旧 session ID 不同、fork 后可继续发送且原 session 不变；运行时配置不兼容必须返回脱敏的稳定错误分类，不能退化成调用参数 `INVALID_REQUEST`。
 
 Node 发布推送门禁必须验证“忙碌不重启”：先启动一个真实长任务，再发起 `node-update-push`；Node 可完成 Ready 预下载并上报 `busy`，但版本/PID 不得在任务结束前切换，Job 必须自然完成。之后连续空闲达到 grace 后才允许自更新；新任务在 release drain 窗口返回可重试 `NODE_UPDATING`。最终 Node 版本/SHA、generation 和 `.previous` 回滚副本必须对账通过。
+
+MCP 调用发现门禁必须验证 initialize 返回 `FastSpider_FS` Server Title 和明确 Instructions，至少包含 `@FastSpider_FS`、`capability_list`、`machine_list`、`session.list`；tools/list 继续保持 17 个工具，并确保 `ai_control` 描述能把 Codex 会话列表路由到 `action=session.list`。
 
 ## 必测主链
 

@@ -32,6 +32,14 @@ Current 不提供目录列表工具；`thinking_team` 是调用侧只读角色�
 
 Codex 保留 Provider/Model、Skills/Hooks/Permission Profiles/Plugins/MCP discovery、Thread/Goal/Settings/Review、原生多类型 Turn、`outputSchema`、steer/respond 和 app-server auto-resume。Claude Code 第一版提供 models/capabilities 与 session list/get/create/send/watch/cancel/result/rename/archive/unarchive，使用原生 UUID + `stream-json` + `--resume`，Prompt 经 stdin。FS 不映射 Codex 的 `fs/*`/`command/exec/*`/`mcpServer/tool/call`，也不提供 CC Switch Provider/Token/Takeover 写入或 Claude permission bypass 第二执行链。
 
+## ChatGPT 调用与工具发现
+
+Hub 的 MCP `initialize` 会返回明确的 Server Instructions，并把 Server Title 固定为 `FastSpider_FS`。当 ChatGPT 已选择该 App 或用户显式 `@FastSpider_FS` 时，调用侧应先尝试工具而不是仅依据界面文本判断“插件未加载”：连接测试使用只读 `capability_list` + `machine_list`；需要本机操作但尚无 `machineId` 时先调用 `machine_list`。
+
+Codex/Claude Code 的会话能力不是独立顶层工具；统一位于 `ai_control`。查询 Codex 会话列表使用 `action=session.list`，后续读取使用 `session.get/session.watch/session.result`。因此 ChatGPT App 工具页只显示 `Ai control` 属于正常设计。
+
+ChatGPT 对已发布 MCP App 的工具/输入定义可能使用经批准的快照；当 FS 修改工具名、Schema 或工具描述后，需要在 ChatGPT App/Action 管理中执行 Refresh/重新批准才能取得新的定义。纯服务可用性仍以真实 MCP initialize/tools/list 和只读调用结果为准。
+
 ## 资源模型
 
 所有需要操作本机的工具首先使用 `machineId`。文件系统和进程位置直接使用本机绝对路径：
