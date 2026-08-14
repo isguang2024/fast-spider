@@ -5,7 +5,7 @@
 
 | ID | 类型 | 状态 | 说明 |
 |---|---|---|---|
-| FS-0416-006 | release | in_progress | 0.4.16 实现及 Hub 定向测试已通过；完整 Gate、提交推送、生产备份/部署与真实 MCP smoke 待执行。 |
+| EXT-CHATGPT-REFRESH | external/manual | pending | 服务端与 OAuth 冷 MCP 已全通过；仅需在 ChatGPT App 管理中 Refresh FastSpider_FS，并在新会话执行 connection-check。 |
 
 ## Internal Blockers
 
@@ -13,6 +13,7 @@
 
 ## Resolved
 
+- `FS-0416-006`：0.4.16 full gate、提交推送、验证备份、Hub/spiderctl 部署与生产 MCP smoke 全部 PASS。
 - `EXT-CLAUDE-AUTH`：早期 revoked-token 401 已不再构成当前问题；后续真实 Claude E2E 在最终 full gate 中通过。
 - 主动优化待办：无。进入稳定使用阶段，仅由真实故障、可复现性能瓶颈或明确新需求触发下一计划。
 <!-- fast-spider:managed:open-issues:end -->

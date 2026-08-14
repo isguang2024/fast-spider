@@ -8,16 +8,16 @@
 - planId: `layered-mcp-guide-0.4.16`
 - targetVersion: `0.4.16`
 - branch: `main`
-- sourceReleaseCommit: `afa904004df97d66d1915b5e20f28c0a0d10c30d third release; SDK request-type fix commit pending`
-- phase: `0.4.16 production smoke remediation / final full gate PASS / final fix commit and redeployment pending`
+- sourceReleaseCommit: `c93373e2ce2d1b7138be8f0f613f4713955509fb`
+- phase: `0.4.16 FINAL PASS / PRODUCTION READY`
 - finalReleaseGate: `j-ofkr5w / PASS: Fast Spider full release gate / exitCode=0`
-- productionHub: `0.4.15 / SHA256 1824cc9f7ebb9b4ebe9fc9e5fbbcc75a049747509355849d7ccaa9ce3acc68b1 / livez+readyz PASS`
-- productionSpiderctl: `0.4.15 / SHA256 48207c5e520d708a5851f00c9a8573d73acd4de3150444709faa45c11214ff0d`
-- productionNode: `PCa / 0.4.14 / windows-amd64 / registered active; online+ready acceptance pending`
+- productionHub: `0.4.16 / SHA256 30437a500f398503000f37c70cec05782058d744e93c8c2706301b18d595423e / PID 1113954 / systemd active+running / local+public livez+readyz 200`
+- productionSpiderctl: `0.4.16 / SHA256 7dba50690e53d8cbf8881be9825bfdffc49cf8e3af7f194ce5f36b2efe7cb078`
+- productionNode: `PCa / 0.4.14 / windows-amd64 / online+ready；本版本未部署 Node`
 - nodeRollback: `unchanged; 0.4.16 does not build or deploy Node artifacts`
-- verifiedBackups: `pre-0.4.16 backup pending; existing production backups unchanged`
-- workingContext11: `perf-stability-0.4.9 completion=100%；最终交付版本为 0.4.10`
-- schemaStatus: `file.write/code.search/shell/build/job/agent/browser 新能力已由生产 Node 协商并完成真实自举`
+- verifiedBackups: `pre-0.4.16-c93373e.zip valid=true；真正升级前 pre-0.4.16-cecf3fe.zip valid=true；中间修订备份保留以免误删升级前证据`
+- workingContext11: `layered-mcp-guide-0.4.16 completion=100%`
+- schemaStatus: `Guide 1.0、17 工具分层能力与 owner 级 MCP 诊断已由 OAuth+PKCE 冷客户端和生产 Dashboard 验收`
 - completed041: `FS-041-001..015 PASS / no 0.4.1 release`
 - completed042: `FS-042-001..017 PASS / 0.4.2 formally released and deployed`
 - completed043: `0.4.3 formally released and deployed`
@@ -27,8 +27,9 @@
 - completed047048: `Browser Agent refs/batch、网络策略组件协议与 Codex runtime 修复 PASS`
 - completed049: `性能稳定性、响应瘦身、WSL runtime、Agent/Browser readiness 正式发布 PASS`
 - completed0410: `静态 include 搜索范围修订、重新发布与 FastSpider_FS 自举验收 PASS`
-- currentTask: `FS-0416-006 commit/push → verified backup → Hub/spiderctl production deployment → MCP smoke`
-- nextGate: `release commit and origin/main alignment`
+- completed0416: `分层能力指南、MCP 调用可观测性、full gate、Hub/spiderctl 发布与冷客户端生产验收 PASS`
+- currentTask: `none`
+- nextGate: `仅剩 ChatGPT App 管理页 Refresh FastSpider_FS，并在新会话执行 connection-check；不构成服务端发布阻塞`
 
 ### Guardrails
 

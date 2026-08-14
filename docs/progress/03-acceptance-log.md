@@ -254,7 +254,7 @@
 
 - 实现完成：17 个既有 MCP 工具共享单一指南事实源；initialize instructions 保持小型，`capability_list` 支持 overview/catalog/tool/workflow/error 按需读取并保持旧机器能力查询兼容。
 - 实现完成：SDK receiving middleware 在 Hub 内存中按 owner 保存最多 64 条脱敏 MCP 事件；Web session API 与后台诊断面板只在首次加载或人工刷新时读取。
-- 专项回归 `go test ./internal/hub/server -count=1` PASS，共 44 项测试；覆盖冷客户端分层读取、指南大小预算、17 工具完整性、稳定错误分类、ring 上限、owner 隔离、序列化 allowlist、Web 登录 401 与敏感标记不泄漏。
+- 专项回归 `go test ./internal/hub/server -count=1` PASS，共 45 项测试；覆盖冷客户端分层读取、指南大小预算、17 工具完整性、稳定错误分类、ring 上限、owner 隔离、序列化 allowlist、Web 登录 401 与敏感标记不泄漏。
 - 发布前生产基线：Hub 0.4.15（SHA256 `1824cc9f7ebb9b4ebe9fc9e5fbbcc75a049747509355849d7ccaa9ce3acc68b1`）与 spiderctl 0.4.15（SHA256 `48207c5e520d708a5851f00c9a8573d73acd4de3150444709faa45c11214ff0d`）；livez/readyz 均为 200。PCa 注册版本 0.4.14；本版本明确不构建、不修改、不部署 Node、version.txt 或 push.json。
 - 当前尚未宣告最终 PASS：完整 release gate、release commit/push、标准验证备份、Hub/spiderctl 原子部署及真实 MCP cold-session smoke 仍待执行。
 - 最终完整门禁 Job `j-h6x1dh` exitCode=0，终态 `PASS: Fast Spider full release gate`；覆盖 secret/private marker、gofmt、mod verify/tidy、vet、全仓测试、current/Windows amd64/Linux amd64 build、恢复/Local Bridge、全部历史专项门禁、重复 Node、真实 WSL、打包 Browser、CC Switch、Claude、Codex 与 Local Bridge→Codex 产品 E2E。当前 windows/386、CGO=0，因此 fuzz/race 按既有 Gate 规则 SKIP，fuzz seeds 已由全仓测试执行。
@@ -264,3 +264,13 @@
 - 客户端归因修订后完整门禁 Job `j-aarg07` exitCode=0，终态 `PASS: Fast Spider full release gate`；全仓测试现为 445 项，Hub 专项 45 项，真实 WSL/Browser/CC Switch/Claude/Codex/Local Bridge 产品链均通过。最终发布证据以本轮为准。
 - 冷 E2E 强断言进一步定位 SDK 类型边界：Receiving Middleware 收到的是 `ServerRequest[*InitializeParams]`，不是客户端侧 `InitializeRequest` 别名。实现改为只通过公开 `Request.GetParams()` 读取结构化 InitializeParams/ClientInfo，不解析 raw body；真实 cold E2E 将 mcpcli 归因设为发布阻断断言。
 - SDK 请求类型修订后最终完整门禁 Job `j-ofkr5w` exitCode=0，终态 `PASS: Fast Spider full release gate`；45 项 Hub 测试、445 项全仓测试以及全部跨平台构建与真实产品 E2E 通过。最终发布证据以本轮为准。
+
+### 2026-08-14 — 0.4.16 最终发布与生产验收
+
+- 最终源码 release commit `c93373e2ce2d1b7138be8f0f613f4713955509fb` 已推送；其 clean VCS 构建通过 Job `j-ofkr5w` 完整门禁，`vcs.modified=false`，覆盖 45 项 Hub 测试、445 项全仓测试、跨平台构建与全部真实产品 E2E。
+- 生产 Hub/spiderctl 已事务式更新到 0.4.16：Hub SHA256=`30437a500f398503000f37c70cec05782058d744e93c8c2706301b18d595423e`，spiderctl SHA256=`7dba50690e53d8cbf8881be9825bfdffc49cf8e3af7f194ce5f36b2efe7cb078`；Hub PID=1113954、systemd active/running，本机及公开 livez/readyz 均为 200。`.previous` 分别保留 SHA256=`f63ec91689772fe25298f7d34a6b78399a5e02d57e20e2b0ce7bf831ab23e1d4` 与 `bc3b5c8fc442faaa8a869b670ae1d022bdbf928abbcc497299b4d93793b683e6`。
+- 标准备份 `pre-0.4.16-c93373e.zip`（SHA256=`9de87273841376645e1133981b4b21c335ff5bf99b626df4007249faa8519b99`）Verify PASS、17 files、format v1；真正升级前备份 `pre-0.4.16-cecf3fe.zip`（manifest 0.4.15，SHA256=`65be79af93933db6053063f8e3c8a41d2c4db4937fa946cb982edf9fa7067d33`）同样 Verify PASS。中间修订备份有意保留，未执行可能删除真正升级前证据的轮换。
+- PCa Node 仍为 0.4.14 windows/amd64 且 online/ready；Node release、version.txt 与 push.json 均未修改或部署，push.json 仍不存在，符合本版本边界。
+- 真实 OAuth+PKCE 冷客户端验收通过：initialize 返回 FastSpider_FS 0.4.16（instructions 1308 bytes），tools/list=17，`capability_list(view=overview)` 返回 Guide 1.0，machine_list 返回 PCa online/ready，`ai_control(session.list)` 成功。Dashboard 最终显示 client=mcpcli、last tool=ai_control、result=success、diagnosis=`Tool Call 成功`。
+- 冷验收临时 OAuth client、authorization、access/refresh token 均已撤销并精确清理为 0 残留；远端 release staging 已清理。当前已连接会话仍缓存旧 MCP schema，因此只剩外部人工动作：在 ChatGPT App 管理中 Refresh FastSpider_FS，并于新会话执行 connection-check。
+- **Final Acceptance: PASS / PRODUCTION READY**。服务端发布、回滚链路、隐私清理与生产 MCP 冷调用全部通过；Refresh 不是服务端发布阻断项。

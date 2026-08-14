@@ -44,6 +44,12 @@
 - 完成 0.4.9 file_edit 响应瘦身、file_read 单次扫描、code_search 2.1、host/WSL runtime、Agent/Browser readiness 与轻量 timing，并完成首轮正式发布。
 - 生产自举发现静态 include 根遍历后按不可变发布规则提升到 0.4.10；前缀下推、独立审计、最终 full gate、Hub/Node/spiderctl 部署、自更新、备份轮换与 FastSpider_FS 自举全部 PASS。
 - 0.4.10 进入稳定使用阶段；无主动迭代项，仅在真实问题或明确需求出现时继续。
+
+## 2026-08-14
+
+- 完成 0.4.16 分层能力指南与 MCP 调用可观测性：17 个工具共享 Guide 1.0 单一事实源，owner 级 64 条脱敏诊断、Web 面板和冷客户端阻断测试落地。
+- 最终源码 commit `c93373e2ce2d1b7138be8f0f613f4713955509fb` 的 full release gate Job `j-ofkr5w` 全绿；生产 Hub/spiderctl 已升级至 0.4.16，验证备份、回滚产物、公开健康检查、OAuth+PKCE 冷 MCP 与 Dashboard 诊断均 PASS。
+- PCa Node 保持 0.4.14 online/ready，未修改 Node release、version.txt 或 push.json；最终状态为 `PASS / PRODUCTION READY`，仅剩 ChatGPT 管理页 Refresh 与新会话 connection-check。
 <!-- fast-spider:managed:change-log:end -->
 
 ## Manual Change Notes
