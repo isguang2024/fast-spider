@@ -140,6 +140,18 @@
 | FS-0416-005 冷客户端、错误分类、容量与敏感信息专项测试 | done |
 | FS-0416-006 full gate、发布、Hub/spiderctl 部署与生产 MCP smoke | done |
 
+### 0.4.17 ChatGPT 长会话 MCP 稳定性
+
+| Task | 状态 |
+|---|---|
+| FS-0417-001 生产日志复现与根因分层：会话未发请求 vs Hub/Node/OAuth | done |
+| FS-0417-002 OAuth refresh 契约核验并排除误修 offline_access | done |
+| FS-0417-003 `fsprobe` 单入口、按需 Tool Search 与 Schema 体积硬预算 | done |
+| FS-0417-004 最近已认证 MCP 请求到达诊断与 Web 展示 | done |
+| FS-0417-005 Hub 专项、full release gate 与跨产品 E2E | done |
+| FS-0417-006 commit/push、生产备份与 Hub/spiderctl 部署 | done |
+| EXT-CHATGPT-0417-REFRESH 一次 Refresh 后同会话恢复验收 | pending |
+
 ### Final Acceptance Matrix
 
 - `go test ./...`

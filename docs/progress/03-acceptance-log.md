@@ -274,3 +274,15 @@
 - 真实 OAuth+PKCE 冷客户端验收通过：initialize 返回 FastSpider_FS 0.4.16（instructions 1308 bytes），tools/list=17，`capability_list(view=overview)` 返回 Guide 1.0，machine_list 返回 PCa online/ready，`ai_control(session.list)` 成功。Dashboard 最终显示 client=mcpcli、last tool=ai_control、result=success、diagnosis=`Tool Call 成功`。
 - 冷验收临时 OAuth client、authorization、access/refresh token 均已撤销并精确清理为 0 残留；远端 release staging 已清理。当前已连接会话仍缓存旧 MCP schema，因此只剩外部人工动作：在 ChatGPT App 管理中 Refresh FastSpider_FS，并于新会话执行 connection-check。
 - **Final Acceptance: PASS / PRODUCTION READY**。服务端发布、回滚链路、隐私清理与生产 MCP 冷调用全部通过；Refresh 不是服务端发布阻断项。
+
+### 2026-08-14 — 0.4.17 ChatGPT 长会话 MCP 稳定性修复与生产发布
+
+- 真实故障证据来自生产 Nginx：OpenAI `/fast-spider/mcp` 正常连续调用后出现约 24 分钟无请求窗口，而同一授权的新会话随后立即恢复 200；用户未重新登录或授权。故障后 `/oauth/token` 自动 200 并继续 MCP 200，因此主根因定位为 ChatGPT 会话级工具物化/发现状态未发起请求，而不是 Hub、PCa Node 或 OAuth refresh 失效。
+- 修复不删除既有 17 个能力。ChatGPT 命名空间缺失时使用唯一 Tool Search 标记 `fsprobe` 只物化 `machine_list`，真实连通后再按当前动作加载其它工具；initialize instructions 保持 <=2 KiB，完整工具目录 <=48 KiB、连接三工具 <=8 KiB、任一单工具 <=8 KiB，防止后续 MCP 功能增长重新放大长会话工具上下文压力。
+- Hub 诊断新增 `lastMcpRequestAt`：Bearer Token 验证成功即更新 Owner 的最近 MCP HTTP 到达时间，但不会伪造 initialize/tools/list/tools/call 事件，也不记录 Token、arguments、Prompt、路径或原始 User-Agent。后台增加“最近 MCP 请求”，可直接区分“请求已到 Hub”和“ChatGPT 会话根本未发请求”。
+- 最终源码 release commit `f2c2b14635575ed4459c5a5bf2db3295d11541c0` 已推送 `origin/main`。正式 Windows Git Bash full release gate Job `job_OQB48opU06AxylxMZ6DdiPCEGIy_6n68` exitCode=0，终态 `PASS: Fast Spider full release gate`；覆盖全仓测试/静态检查、Windows/Linux build、真实 WSL、打包 Browser、CC Switch、Claude Code、Local Bridge 与 Codex Product E2E。最终暂存版 0.4.17 专项测试随后再次 PASS。
+- 生产升级前创建 `pre-0.4.17-f2c2b14.zip`，SHA256=`f0558585cc47baa19233f42eb2dab435aecd81cff95d095a6dc2927f2ecbcd78`，Verify valid=true、18 files、format v1，manifest source version=0.4.16。
+- 生产 Hub/spiderctl 已事务式更新至 0.4.17：Hub SHA256=`84df61c5860847cf755c463741e2bc1f4e61141bc6f5f5bea390da12bc0978da`，spiderctl SHA256=`a35b47d76b97f8ce8fbbafc118a917d0716f1e2e94d9408ce94f8123e49d1ce5`，Hub PID=`1157989`，systemd active，本机与公网 livez/readyz 全 PASS。`.previous` 精确保留 0.4.16 两个生产哈希；远端 staging 已清理。
+- PCa Node 保持 0.4.14 windows/amd64，generation=82、online/ready；0.4.17 未构建/部署 Node，也未修改 Node release、version.txt 或 push.json。
+- 当前会话直接 `capability_list` 已读取生产 ServerVersion=0.4.17，`machine_list` 返回 PCa online/ready，connection-check Guide 已返回 `fsprobe` 恢复规则。与此同时 ChatGPT 当前会话的 App 工具索引仍是发布前缓存：`api_tool.list_resources(query="fsprobe")` 暂无命中，而旧索引 `query="machine"` 仍能恢复 3 个连接工具。由此确认还需要一次 ChatGPT App Refresh 才能把新的唯一发现标记写入宿主索引。
+- **Server-side Acceptance: PASS / PRODUCTION DEPLOYED**。最终宿主侧门禁保持 pending：Refresh 后必须验证 `fsprobe` 只物化 `machine_list`，并在长会话命名空间缺失场景下无需新会话、无需重新登录/授权即可恢复并继续调用；该项未验证前不把 0.4.17 标记为完整 FINAL PASS。

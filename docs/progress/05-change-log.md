@@ -122,3 +122,11 @@
 - 生产 smoke 修正重启后既有 MCP 会话只出现 Tool Call 时的诊断优先级：以已观测到的最高阶段为准，不因缺失重启前 initialize/tools-list 事件误报“未连接”。
 - stateless MCP 后续请求缺少 clientInfo 时，在同 owner 的 5 分钟握手窗口内沿用最近明确识别的客户端类型；窗口外继续显示 other，不记录原始 User-Agent 或会话标识。
 - Receiving Middleware 使用 SDK `Request.GetParams()` 识别服务端 InitializeParams，修正误用客户端侧 InitializeRequest 别名导致的归一化失效；冷 MCP E2E 强制断言 mcpcli 归因。
+
+### 2026-08-14 — 0.4.17 ChatGPT 长会话 MCP 恢复
+
+- 生产日志确认一次真实故障窗口：旧 ChatGPT 会话停止向 `/mcp` 发请求，而同一授权的新会话可立即继续；OAuth refresh 同期自动成功，因此将主问题从 Hub/Node/授权故障收敛为会话级工具物化/发现失效。
+- 新增唯一发现标记 `fsprobe`，用于 ChatGPT 命名空间缺失时只加载 `machine_list`；确认真实连接后再按当前动作加载其它工具。17 个顶层能力保持不变，不以删功能解决复杂度。
+- 增加工具上下文发布预算：initialize <=2 KiB、完整工具目录 <=48 KiB、连接三工具 <=8 KiB、任一单工具 <=8 KiB；首次实现曾因 initialize 达 2076 bytes 被门禁拒绝，最终通过压缩常驻指令而不是放宽预算。
+- MCP 诊断增加 `lastMcpRequestAt`，在 OAuth Bearer 验证成功后更新请求到达时间，但不制造虚假 method event；后台可直接识别“ChatGPT 此会话未向 Hub 发请求”。
+- release commit `f2c2b14635575ed4459c5a5bf2db3295d11541c0` 已推送，full release gate 全绿；生产 Hub/spiderctl 已部署 0.4.17，PCa Node 保持 0.4.14。剩余唯一外部门禁为 ChatGPT App 一次 Refresh 后的同会话恢复验收。
