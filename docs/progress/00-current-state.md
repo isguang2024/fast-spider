@@ -10,7 +10,7 @@
 - branch: `main`
 - sourceReleaseCommit: `a8934c8be0ab2482071dc87fe1f7a81d799c321a`
 - phase: `0.4.18 FINAL PASS / PRODUCTION READY`
-- finalReleaseGate: `scripts/release-gate.sh --full / PASS: Fast Spider full release gate / exitCode=0 / go test 592 passed in 26 packages`
+- finalReleaseGate: `scripts/release-gate.sh --full / PASS: Fast Spider full release gate / exitCode=0 / go test 592 passed in 26 packages / WSL Linux amd64 go test -race ./... PASS`
 - productionHub: `0.4.18 / SHA256 2665b635ef898a3aebb6861ad9e0525ffe5f30110acfe4db5cff18c847334a13 / PID 1844594 / systemd active / local+public livez+readyz 200`
 - productionSpiderctl: `0.4.18 / SHA256 1e2911bc223fb79f830b64b9f12574c55e8d0065c53a1b4ff6021f8b47c1f1b3`
 - productionNode: `PCa / 0.4.18 / windows-amd64 / generation=89 / active+online+ready；manifest SHA256 75cb6b274095ff2dad12bf6a9df5fe8faa1f5ba2a02345532e8722f0da1ed41d`
@@ -57,6 +57,6 @@
 - 本地工作树完成 10 项缓存、长期运行资源、Artifact、组件、Browser、Agent 索引、Release manifest、备份清理和维护文档优化；删除策略继续排除用户数据、原生 Agent 历史、未知项、活动项与 `in_doubt`。
 - 效率与恢复重点：内存缓存有界且返回值隔离；不同 Artifact 上传可并发，删除失败进入持久重试队列；Release manifest 复用 hash/sign；临时资源采用严格命名、有界扫描和失败恢复。
 - 安全清理重点：`backup-prune` 默认 plan-only，同进程创建/清理串行，Windows/Linux 删除前比较已冻结的句柄身份；同尺寸、同 mtime 原子替换不会误删。
-- 验证：`go test ./... -count=1` 592 项通过（26 包），`go vet ./...`、`git diff --check`、current/history secretscan、`bash -n` 与 `scripts/release-gate.sh --full` 均 PASS；当前 windows/386 工具链无 CGO C 编译器，race detector 未执行，完整门禁已明确记录。
+- 验证：`go test ./... -count=1` 592 项通过（26 包），`go vet ./...`、`git diff --check`、current/history secretscan、`bash -n` 与 `scripts/release-gate.sh --full` 均 PASS；Windows/386 原生工具链无 CGO C 编译器，已在同一工作树的 WSL Linux/amd64 + CGO 环境补跑 `go test -race ./...`，全量 PASS。
 - 生产事实：release commit `a8934c8` 已推送并部署；Hub/spiderctl 0.4.18、PCa Node 0.4.18 generation=89，Hub 本机/公网 livez/readyz 均 200；升级前备份已 Verify，旧 Hub/spiderctl/Node 回滚副本均保留。
 - 清理边界：`backup-prune --keep 3` 已完成 plan-only，候选 6、保留 3、计划删除 3、实际删除 0；资料室清理继续只做 dry-run，没有创建内置定时任务。可由 Codex Automations 外部定时触发 dry-run，实际删除仍需显式授权。

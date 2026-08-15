@@ -54,6 +54,7 @@
 - release commit `a8934c8be0ab2482071dc87fe1f7a81d799c321a` 已推送；`go test ./... -count=1` 592 passed / 26 packages，`scripts/release-gate.sh --full`、secret scan、vet、bash syntax、diff check 全部 PASS。
 - 0.4.18 已完成生产部署：Hub/spiderctl 原子升级、备份 Verify、PCa Node idle-safe 更新至 generation=89，公网/本机健康检查均 200，版本化回滚副本保留。
 - `backup-prune --keep 3` 与资料室 30 天清理均按安全策略只执行 plan/dry-run，实际删除为 0；资料室定时清理可由 Codex Automations 触发 dry-run，team-workspace 本身不内置调度器。
+- 发布后在 WSL Linux/amd64 + CGO 环境补跑 `go test -race ./...` 全量通过，原 Windows/386 race 环境限制已转为已验证事实。
 <!-- fast-spider:managed:change-log:end -->
 
 ## Manual Change Notes
