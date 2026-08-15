@@ -12,6 +12,13 @@
 *.db
 *.db-shm
 *.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
+*.log
+*.log.*
 
 # Local configuration and secrets
 .env
@@ -20,7 +27,22 @@
 *.pem
 *.key
 *.p12
+*.pfx
+*.jks
+*.keystore
+*.pkcs8
 *.token
+.npmrc
+.pypirc
+.netrc
+**/.aws/credentials
+**/.docker/config.json
+**/.kube/config
+**/.config/gcloud/application_default_credentials.json
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
 
 # Editors and operating systems
 .vscode/

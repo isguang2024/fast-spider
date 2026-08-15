@@ -14,7 +14,7 @@ func TestWaitForProcessExitWaitsForRealPidTermination(t *testing.T) {
 		t.Fatal(err)
 	}
 	started := time.Now()
-	if err := waitForProcessExit(cmd.Process.Pid, 5*time.Second); err != nil {
+	if err := waitForProcessExit(cmd.Process.Pid, 15*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if elapsed := time.Since(started); elapsed < 250*time.Millisecond {

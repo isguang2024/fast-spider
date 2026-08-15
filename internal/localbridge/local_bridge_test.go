@@ -90,6 +90,53 @@ func TestLocalBridgeTransportRoundTripAndValidation(t *testing.T) {
 	}
 }
 
+func TestLocalBridgeCancellationClosesIdleConnectionsBeforeRunReturns(t *testing.T) {
+	dataDir, err := os.MkdirTemp("", "fs-lb-cancel-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dataDir)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	accepted := make(chan struct{}, 1)
+	server := &localBridgeServer{sem: make(chan struct{}, 1)}
+	go func() {
+		done <- runLocalBridgeServer(ctx, dataDir, func(parent context.Context, conn io.ReadWriteCloser) {
+			accepted <- struct{}{}
+			server.serveConnection(parent, conn)
+		})
+	}()
+
+	var conn io.ReadWriteCloser
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
+		conn, err = dialLocalBridge(context.Background(), dataDir)
+		if err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil {
+		cancel()
+		t.Fatalf("dial idle connection: %v", err)
+	}
+	defer conn.Close()
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("local bridge did not accept the idle connection")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() after cancellation error=%v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run() did not return after canceling an idle connection")
+	}
+}
+
 func writeAndReadLine(t *testing.T, conn io.ReadWriteCloser, raw string) protocolv1.CapabilityResponse {
 	t.Helper()
 	if _, err := conn.Write(append([]byte(raw), '\n')); err != nil {

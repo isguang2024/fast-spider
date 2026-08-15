@@ -1,4 +1,4 @@
-# 测试策略（0.4.17）
+# 测试策略（0.4.18）
 
 发布门禁必须验证新的 Machine 边界，而不是旧目录授权模型。
 
@@ -36,18 +36,26 @@ MCP 调用诊断门禁必须通过真实 SDK 请求确认 initialize、tools/lis
 20. 组件中心只接受 Browser/search-ripgrep allowlist；本地自检必须使用临时 data-dir 并确认 preview 不落盘、临时目录已清理。
 21. Node updater 必须覆盖 Ready/apply→consumed-current cleanup 启动顺序、Ready error 不清理、marker fail-safe、current 删除以及 future/old/unknown 分治。
 22. Windows legacy install cleanup 必须覆盖严格 temp/marker/backup 命名、Win32 reparse fail-closed、非递归、unknown/current/previous 保留、空目录删除、幂等和 NodeUI 启动时机；非 Windows 为 no-op。
-23. Release backup prune 必须覆盖严格标准文件名、绝对 non-reparse root、全部 Verify 后再删除、CreatedAt UTC 排序和 filename tie-break、损坏/匹配 symlink 零删除、历史异名/未知/子目录保留、keep/candidate bounds、幂等与部分删除结果。
+23. Release backup prune 必须覆盖严格标准文件名、绝对 non-reparse root、默认 plan-only、显式 apply、全部 Verify 后再删除、同进程 backup/create 目录串行、逐候选删除前身份复核、删除中路径替换停止后续删除、CreatedAt UTC 排序和 filename tie-break、损坏/匹配 symlink 零删除、历史异名/未知/子目录保留、keep/candidate bounds、幂等与部分删除结果。
 24. Release staging prune 必须覆盖 local/server 严格目录名、绝对 non-reparse root、plan/apply、old/current/future、unknown/普通文件保留、root/candidate/nested reparse 零删除、candidate/file/byte/depth bounds、删除前 TOCTOU 复核、幂等与部分删除事实。
 25. file_edit mutation 响应不得含 diff/正文，1 行、50 行、editMany、大文件响应大小不随目标文件增长；preview diff 必须 bounded，CAS 冲突 details 不含正文。
 26. code_search 必须覆盖 stable RG reason code、VCS ignore、通用生成目录、显式 include 优先、扫描统计与 primary/fallback timing。
 27. host/WSL runtime 必须覆盖任意盘符、空格/中文 cwd、真实执行/build/cancel、keepalive 数量/关闭边界与 Job trace/timing。
 28. Agent/Browser readiness 必须证明不产生 Prompt/Session，Codex/Claude create 幂等需覆盖并发、重启重放、spec 冲突、确定失败释放、in-doubt 按 key 显式对账释放、语义损坏 fail-closed、容量上限，以及 delete intent/Provider not-found 续做回收；Browser launch/open/click/type/snapshot/screenshot 必须带 timing，readiness 并发不得在握手完成前误报 ready。
+29. 缓存回归必须覆盖满容量同 key 更新不淘汰其它 key、`[]any` 内嵌 map/slice 的返回值隔离、availability holder 容量上限，以及 Codex 删除 thread 后 loaded 记录回收。
+30. Browser/组件生命周期必须覆盖启动时只清理超过宽限期的严格 `brs_` 普通目录、unknown/link/reparse/新目录保留，以及并发 Ensure 不共用下载或解压临时路径、不被 Cleanup 互删。
+31. Artifact 生命周期必须覆盖不同 upload 可并行、同 upload 串行、maintenance 与上传不交错、文件删除失败持久重试、有界批次、共享 Blob 引用保护，以及清理失败可观察。
+32. Release manifest 缓存必须覆盖串行与并发命中只执行一次 hash/sign、产物或版本变化立即失效、同尺寸同 mtime 原子替换仍失效、缺失/损坏 fail-closed，HTTP `no-store` 不变。
+33. Claude 控制索引必须覆盖损坏/超限/非法版本 fail-closed、落盘/容量/目录同步失败不返回虚假成功、同 Session 并发 Send 只有一个请求取得 active 预留、失败请求不回滚成功 turn、失败后内存与重载状态一致，并确认 Fast Spider 不删除 Claude 原生历史。
+34. Secret gate 必须覆盖 tracked、untracked nonignored、staged-only、reachable history、dangling object、原始二进制、有界 ZIP、实际导出树与输出脱敏；测试占位仅允许按值精确识别，不得按测试目录或 `*_test.go` 宽泛跳过。默认本地 private markers 只用于当前 worktree/index 与 `--tree`，历史仅在显式 `--markers` 时应用；marker 位于文件名或 ZIP entry 名时 locator/error 也必须脱敏。任何读取、Git 子进程、对象/文件/展开上限异常均失败关闭。
+35. 0.4.18 生命周期回归必须覆盖 OAuth revoked/deleted 授权的 30 分钟孤儿回收与 90 天历史边界、Presentation 根目录删除失败后的不可用/重试、Artifact 共享 Blob 与 `.part` 崩溃恢复、Release manifest 等待者取消和内容替换失效、staging quarantine 恢复、Codex generation、starting Job shutdown、Browser 持续孤儿清理及组件语义版本排序。
 
 ## Release Gate
 
 `bash scripts/release-gate.sh --full` 继续作为发布前硬门槛，覆盖：
 
-- git whitespace / secret scan
+- git whitespace / worktree + index secret scan
+- synthetic scanner redaction self-test / full object database history scan（full）
 - module checksum / tidy
 - static analysis
 - `go test ./...`
@@ -62,6 +70,7 @@ MCP 调用诊断门禁必须通过真实 SDK 请求确认 initialize、tools/lis
 - 0.4.16 冷 MCP Client 分层指南、17 工具/文档对账与有界结果专项
 - 0.4.16 MCP SDK 调用诊断、Owner 隔离、敏感字段与登录后台专项
 - 0.4.17 ChatGPT 长会话恢复专项：initialize 常驻指令 <= 2 KiB、唯一 `fsprobe` 只发现 `machine_list`、完整目录 <= 48 KiB、连接入口与单工具各 <= 8 KiB、禁止健康检查全量物化 17 个 Schema、认证 MCP 请求到达时间与 OAuth 续期路径
+- 0.4.18 生命周期/缓存/秘密门禁专项：OAuth 历史保留、Presentation/Artifact 清理可重试、Release manifest 取消与替换失效、staging 原子隔离、Node/Agent 代际关闭、Browser/组件清理持续性、路径/ZIP/历史秘密扫描与脱敏
 - Node updater staging/cleanup、0.4.3 consumed-current cleanup 与 reconnect/backoff 临时 E2E
 - 0.4.4 Windows legacy install artifacts cleanup 专项
 - 0.4.5 release backup prune 专项

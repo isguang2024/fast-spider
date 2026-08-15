@@ -12,14 +12,16 @@ case "${1:-}" in
     cat <<'EOF'
 Usage: bash scripts/release-gate.sh [--full]
 
-core: formatting, module integrity, vet, all unit/integration tests,
+core: formatting, worktree/index secret scan, module integrity, vet, all unit/integration tests,
       current + Windows/Linux builds, Hub restore E2E, Local Bridge E2E.
-full: core + explicit 0.4.2 Task Workspace/Search/file_read/file_edit/update/
+full: core + synthetic secret-scan self-test, full Git object history scan,
+      explicit 0.4.2 Task Workspace/Search/file_read/file_edit/update/
       reconnect gates, the 0.4.3 consumed-current staging cleanup gate,
       the 0.4.4 legacy install artifacts cleanup gate, repeated Node tests,
       the 0.4.5 release backup prune gate, the 0.4.6 release staging prune gate,
       the 0.4.13 calling-side Thinking Team workspace gate, the 0.4.14 idle-safe Node update push gate,
       the 0.4.15 MCP invocation routing gate, the 0.4.16 layered guide/diagnostics gate,
+      the 0.4.18 cache/lifecycle/OAuth/artifact/secret gate,
       short fuzzing/race where supported,
       packaged-component Browser/CC Switch/Claude Code/Codex E2E, multi-provider Local Bridge
       discovery, and the complete Local Bridge→Codex smoke.
@@ -44,10 +46,6 @@ printf 'Fast Spider release gate: %s\n' "$mode"
 printf 'Go: %s\n' "$(go version)"
 
 mapfile -d '' go_files < <(find cmd internal -type f -name '*.go' -print0)
-public_source_files=()
-while IFS= read -r -d '' file; do
-  [[ -f "$file" ]] && public_source_files+=("$file")
-done < <(git ls-files -co --exclude-standard -z -- . ':!.learnings/**')
 format_output="$(gofmt -l "${go_files[@]}")"
 if [[ -n "$format_output" ]]; then
   echo "gofmt is required for:" >&2
@@ -56,33 +54,7 @@ if [[ -n "$format_output" ]]; then
 fi
 
 step "Git whitespace check" git diff --check
-secret_matches="$(grep -nE 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}' -- "${public_source_files[@]}" || true)"
-if [[ -n "$secret_matches" ]]; then
-  echo "public-source files contain a likely private key or token pattern:" >&2
-  printf '%s\n' "$secret_matches" >&2
-  exit 1
-fi
-echo "==> Public-source secret pattern scan: PASS"
-private_marker_matches="$(grep -nE 'mach_[A-Za-z0-9_-]{24,}|[A-Za-z]:\\\\repos\\\\GitHub' -- "${public_source_files[@]}" || true)"
-if [[ -n "$private_marker_matches" ]]; then
-  echo "public-source files contain a machine identifier or local repository path:" >&2
-  printf '%s\n' "$private_marker_matches" >&2
-  exit 1
-fi
-private_marker_file="$ROOT/.local/public-private-markers.txt"
-if [[ -f "$private_marker_file" ]]; then
-  while IFS= read -r marker || [[ -n "$marker" ]]; do
-    marker="${marker%$'\r'}"
-    [[ -z "$marker" || "$marker" == \#* ]] && continue
-    marker_matches="$(grep -nFi -- "$marker" "${public_source_files[@]}" || true)"
-    if [[ -n "$marker_matches" ]]; then
-      echo "public-source files contain a locally configured private marker:" >&2
-      printf '%s\n' "$marker_matches" >&2
-      exit 1
-    fi
-  done < "$private_marker_file"
-fi
-echo "==> Public-source private marker scan: PASS"
+step "Worktree and index secret scan" go run ./cmd/secretscan
 step "Public export script syntax" bash -n scripts/public-export.sh
 step "Module checksum verification" go mod verify
 step "go.mod/go.sum tidiness" go mod tidy -diff
@@ -95,6 +67,8 @@ step "Restored Hub health E2E" go test -tags opse2e ./internal/opsbackup -run Te
 step "Local Bridge E2E" go test -tags localbridgee2e ./internal/localbridge -count=1
 
 if [[ "$mode" == "full" ]]; then
+  step "Secret scanner synthetic self-test" go run ./cmd/secretscan --self-test
+  step "Full Git object database secret scan" go run ./cmd/secretscan --history
   step "0.4.2 Task Workspace gate" go test ./internal/node ./internal/nodeui -run 'Test(WorkingPlan|WorkingMarkdown|WorkingProgress)' -count=1
   step "0.4.2 Managed ripgrep/native search gate" go test ./internal/node ./internal/nodeui -run 'Test(ManagedRipgrep|NativeSearch|RipgrepJSON|SearchFileSelfTest)' -count=1
   step "0.4.2 ripgrep component packager gate" go test ./cmd/ripgreppack -count=1
@@ -110,6 +84,7 @@ if [[ "$mode" == "full" ]]; then
   step "0.4.15 MCP invocation routing gate" go test ./internal/hub/server -run 'TestMachineBoundaryEndToEnd' -count=1
   step "0.4.16 layered MCP guide and diagnostics gate" go test ./internal/hub/server -run 'Test(MCPGuide|MCPServerInstructions|MCPDiagnostics|MachineBoundaryEndToEnd|WebSetupLoginAndDashboard)' -count=1
   step "0.4.17 ChatGPT conversation MCP recovery gate" go test ./internal/hub/server -run 'Test(MCPGuide|MCPServerInstructions|MCPDiagnosticsTrackAuthenticatedRequest|OAuthAuthorizationPKCETokenRotationAndMCP|MachineBoundaryEndToEnd|WebSetupLoginAndDashboard)' -count=1
+  step "0.4.18 cache lifecycle and secret gate" go test ./internal/hub/store ./internal/hub/server ./internal/hub/core ./internal/opsbackup ./internal/releaseinfo ./internal/node ./internal/agent ./internal/componentmgr ./internal/secretscan -run 'Test(OAuth|Presentation|Artifact|ReleaseManifest|StagingPrune|Codex|Job|Browser|FindInstalled|DenseSecret|Secret)' -count=1
   step "0.4.2 reconnect temp E2E" go test ./internal/node -run 'Test(NodeReconnectAfterRevokedMachineCreatesFreshMachineIdentity|ReconnectBackoffsResetAfterStableSession)' -count=1
   step "Repeated Node regression" go test ./internal/node -count=3
 

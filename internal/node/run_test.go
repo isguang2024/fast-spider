@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +14,19 @@ import (
 	"github.com/coder/websocket/wsjson"
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
+
+type runTestAgent struct {
+	closeCalls atomic.Int32
+}
+
+func (a *runTestAgent) Control(context.Context, string, map[string]any) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+
+func (a *runTestAgent) Close(context.Context) error {
+	a.closeCalls.Add(1)
+	return nil
+}
 
 func TestRunRejectsInsecureStoredHubByDefault(t *testing.T) {
 	dataDir := t.TempDir()
@@ -37,6 +51,47 @@ func TestRunRejectsInsecureStoredHubByDefault(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "hub URL must use https") {
 		t.Fatalf("Run() error=%q, want https enforcement", err)
+	}
+}
+
+func TestRunHonorsAgentCallerOwnership(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		callerOwned   bool
+		wantCloseCall int32
+	}{
+		{name: "client owned", wantCloseCall: 1},
+		{name: "caller owned", callerOwned: true, wantCloseCall: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			agent := &runTestAgent{}
+			client, err := New(Config{
+				DataDir:          dataDir,
+				Version:          "agent-ownership-test",
+				Agent:            agent,
+				AgentCallerOwned: test.callerOwned,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := SaveState(filepath.Join(dataDir, "state.json"), State{
+				HubURL:         "http://127.0.0.1:8787",
+				MachineID:      "mach_agent_ownership",
+				CredentialID:   "cred_agent_ownership",
+				HubPublicKey:   "unused",
+				HubFingerprint: "unused",
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := client.Run(context.Background()); err == nil {
+				t.Fatal("Run() unexpectedly accepted insecure stored Hub URL")
+			}
+			if got := agent.closeCalls.Load(); got != test.wantCloseCall {
+				t.Fatalf("agent Close() calls=%d, want %d", got, test.wantCloseCall)
+			}
+		})
 	}
 }
 

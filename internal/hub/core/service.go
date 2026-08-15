@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -42,6 +43,8 @@ type Service struct {
 	releaseDir     string
 	version        string
 	now            func() time.Time
+	artifactLocks  artifactLifecycleLocks
+	artifactRemove func(string) error
 }
 
 type MachineRegistrationRequest struct {
@@ -127,6 +130,7 @@ func New(st *store.Store, reg *registry.Registry, cfg Config) (*Service, error) 
 		releaseDir:     releaseDir,
 		version:        cfg.Version,
 		now:            time.Now,
+		artifactRemove: os.Remove,
 	}, nil
 }
 
@@ -518,28 +522,88 @@ func (s *Service) StartMaintenance(ctx context.Context) {
 			return
 		case now := <-ticker.C:
 			s.registry.CloseStale(ctx, now.Add(-95*time.Second))
-			_ = s.store.CleanupExpired(ctx, now.UTC())
-			s.cleanupArtifacts(ctx, now.UTC())
+			if err := s.store.CleanupExpired(ctx, now.UTC()); err != nil {
+				slog.Error("hub maintenance cleanup failed", "operation", "expired_metadata", "error", err)
+			}
+			if err := s.cleanupArtifacts(ctx, now.UTC()); err != nil {
+				slog.Error("hub maintenance cleanup failed", "operation", "artifact_files", "error", err)
+			}
 		}
 	}
 }
 
-func (s *Service) cleanupArtifacts(ctx context.Context, now time.Time) {
-	uploadIDs, storageKeys, err := s.store.CleanupArtifacts(ctx, now)
+func (s *Service) cleanupArtifacts(ctx context.Context, now time.Time) error {
+	const cleanupBatch = 128
+	s.artifactLocks.maintenance.Lock()
+	deletions, err := s.store.CleanupArtifacts(ctx, now, cleanupBatch)
+	s.artifactLocks.maintenance.Unlock()
 	if err != nil {
-		return
+		return err
 	}
-	for _, uploadID := range uploadIDs {
-		_ = os.Remove(filepath.Join(s.dataDir, "artifacts", "uploads", uploadID+".part"))
-	}
-	blobRoot := filepath.Join(s.dataDir, "artifacts", "blobs")
-	for _, storageKey := range storageKeys {
-		clean := filepath.Clean(filepath.FromSlash(storageKey))
-		if clean == "." || clean == ".." || filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-			continue
+	var completed []store.ArtifactFileDeletion
+	var failures []error
+	for _, deletion := range deletions {
+		done, deletionErr := s.cleanupArtifactDeletion(ctx, deletion, now)
+		if deletionErr != nil {
+			failures = append(failures, deletionErr)
 		}
-		_ = os.Remove(filepath.Join(blobRoot, clean))
+		if done {
+			completed = append(completed, deletion)
+		}
 	}
+	if err := s.store.CompleteArtifactFileDeletions(ctx, completed); err != nil {
+		failures = append(failures, err)
+	}
+	return errors.Join(failures...)
+}
+
+func (s *Service) cleanupArtifactDeletion(ctx context.Context, deletion store.ArtifactFileDeletion, now time.Time) (bool, error) {
+	var path, lockKey string
+	switch deletion.Kind {
+	case "upload":
+		if !validArtifactUploadID(deletion.PathKey) {
+			err := fmt.Errorf("invalid managed artifact upload path key %q", deletion.PathKey)
+			return false, errors.Join(err, s.store.FailArtifactFileDeletion(ctx, deletion, err, now))
+		}
+		path = s.artifactUploadPath(deletion.PathKey)
+		lockKey = "upload\x00" + deletion.PathKey
+	case "blob":
+		var err error
+		path, err = s.artifactBlobPath(deletion.PathKey)
+		if err != nil {
+			return false, errors.Join(err, s.store.FailArtifactFileDeletion(ctx, deletion, err, now))
+		}
+		lockKey = "blob\x00" + deletion.PathKey
+	default:
+		err := fmt.Errorf("invalid artifact file deletion kind %q", deletion.Kind)
+		return false, errors.Join(err, s.store.FailArtifactFileDeletion(ctx, deletion, err, now))
+	}
+
+	unlock := s.lockArtifactKey(lockKey)
+	defer unlock()
+	if deletion.Kind == "blob" {
+		referenced, err := s.store.ArtifactStorageKeyReferenced(ctx, deletion.PathKey)
+		if err != nil {
+			return false, errors.Join(err, s.store.FailArtifactFileDeletion(ctx, deletion, err, now))
+		}
+		if referenced {
+			// The key may have been reused since an earlier delete attempt.
+			// Drop the stale queue entry without touching the live blob.
+			return true, nil
+		}
+	}
+	if err := s.removeArtifactPath(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		wrapped := fmt.Errorf("remove managed artifact %s %q: %w", deletion.Kind, deletion.PathKey, err)
+		return false, errors.Join(wrapped, s.store.FailArtifactFileDeletion(ctx, deletion, err, now))
+	}
+	return true, nil
+}
+
+func (s *Service) removeArtifactPath(path string) error {
+	if s.artifactRemove != nil {
+		return s.artifactRemove(path)
+	}
+	return os.Remove(path)
 }
 
 func (s *Service) audit(ctx context.Context, entry store.AuditEntry) error {

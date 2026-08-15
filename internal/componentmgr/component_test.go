@@ -16,7 +16,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/isguang2024/fast-spider/internal/componentmgr"
 	"github.com/isguang2024/fast-spider/internal/releaseinfo"
@@ -145,6 +148,99 @@ func TestEnsureDownloadsSignedComponentIntoManagedDirectory(t *testing.T) {
 	}
 }
 
+func TestConcurrentEnsureAndCleanupDoNotDeleteInstallationWork(t *testing.T) {
+	var archive bytes.Buffer
+	writer := zip.NewWriter(&archive)
+	entry, err := writer.Create("sidecar/browser.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write([]byte("concurrent fixture\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(archive.Bytes())
+	platform := runtime.GOOS + "-" + runtime.GOARCH
+	manifest := releaseinfo.NewManifest("component", "browser", platform, "2.0.0", hex.EncodeToString(digest[:]), int64(archive.Len()), "/component-download")
+	if err := releaseinfo.Sign(privateKey, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	downloadStarted := make(chan struct{})
+	releaseDownload := make(chan struct{})
+	var startOnce sync.Once
+	var downloads atomic.Int32
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/node/components/browser/" + platform + "/latest":
+			_ = json.NewEncoder(w).Encode(manifest)
+		case "/component-download":
+			downloads.Add(1)
+			startOnce.Do(func() { close(downloadStarted) })
+			<-releaseDownload
+			_, _ = w.Write(archive.Bytes())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer hub.Close()
+	dataDir := t.TempDir()
+	key := security.EncodePublicKey(publicKey)
+	type ensureResult struct {
+		installed componentmgr.Installed
+		err       error
+	}
+	first := make(chan ensureResult, 1)
+	second := make(chan ensureResult, 1)
+	go func() {
+		installed, err := componentmgr.Ensure(context.Background(), dataDir, hub.URL, key, "browser")
+		first <- ensureResult{installed: installed, err: err}
+	}()
+	select {
+	case <-downloadStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("component download did not start")
+	}
+	go func() {
+		installed, err := componentmgr.Ensure(context.Background(), dataDir, hub.URL, key, "browser")
+		second <- ensureResult{installed: installed, err: err}
+	}()
+	cleanup := make(chan error, 1)
+	go func() {
+		cleanup <- componentmgr.CleanupInstalled(dataDir, componentmgr.Installed{ID: "browser", Platform: platform, Version: manifest.Version, Path: filepath.Join(dataDir, "components", "browser", manifest.Version)})
+	}()
+	select {
+	case result := <-second:
+		t.Fatalf("second ensure bypassed in-progress install: %+v", result)
+	case err := <-cleanup:
+		t.Fatalf("cleanup bypassed in-progress install: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseDownload)
+	for name, result := range map[string]ensureResult{"first": <-first, "second": <-second} {
+		if result.err != nil {
+			t.Fatalf("%s ensure: %v", name, result.err)
+		}
+		if _, err := os.Stat(filepath.Join(result.installed.Path, "sidecar", "browser.js")); err != nil {
+			t.Fatalf("%s installed file: %v", name, err)
+		}
+	}
+	if err := <-cleanup; err != nil {
+		t.Fatal(err)
+	}
+	if downloads.Load() != 1 {
+		t.Fatalf("concurrent ensures downloaded %d archives", downloads.Load())
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "components", "browser", manifest.Version, ".fast-spider-component.json")); err != nil {
+		t.Fatalf("cleanup removed concurrently installed component: %v", err)
+	}
+}
+
 func TestFindInstalledExecutableUsesVerifiedManagedVersionOnly(t *testing.T) {
 	dataDir := t.TempDir()
 	componentID := "search-ripgrep"
@@ -179,5 +275,32 @@ func TestFindInstalledExecutableUsesVerifiedManagedVersionOnly(t *testing.T) {
 	}
 	if _, _, err := componentmgr.FindInstalledExecutable(t.TempDir(), componentID, executableName); !errors.Is(err, componentmgr.ErrComponentNotInstalled) {
 		t.Fatalf("missing component error=%v", err)
+	}
+}
+
+func TestFindInstalledPrefersNewestSemanticVersion(t *testing.T) {
+	dataDir := t.TempDir()
+	componentID := "search-ripgrep"
+	platform := runtime.GOOS + "-" + runtime.GOARCH
+	for _, version := range []string{"0.4.9", "0.4.10"} {
+		versionDir := filepath.Join(dataDir, "components", componentID, version)
+		if err := os.MkdirAll(versionDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		manifest := releaseinfo.NewManifest("component", componentID, platform, version, strings.Repeat("a", 64), 1, "/unused")
+		raw, err := json.Marshal(manifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(versionDir, ".fast-spider-component.json"), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	installed, err := componentmgr.FindInstalled(dataDir, componentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installed.Version != "0.4.10" {
+		t.Fatalf("selected version=%q, want newest semantic version 0.4.10", installed.Version)
 	}
 }

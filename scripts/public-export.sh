@@ -107,33 +107,7 @@ for forbidden in .git .local .learnings; do
   fi
 done
 
-secret_matches="$(grep -RInE --exclude-dir=.git --binary-files=without-match 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}' "$output" || true)"
-if [[ -n "$secret_matches" ]]; then
-  echo "public export contains a likely private key or token pattern:" >&2
-  printf '%s\n' "$secret_matches" >&2
-  exit 1
-fi
-
-private_matches="$(grep -RInE --exclude-dir=.git --binary-files=without-match 'mach_[A-Za-z0-9_-]{24,}|[A-Za-z]:\\repos\\GitHub' "$output" || true)"
-if [[ -n "$private_matches" ]]; then
-  echo "public export contains a machine identifier or local repository path:" >&2
-  printf '%s\n' "$private_matches" >&2
-  exit 1
-fi
-
-private_marker_file="$ROOT/.local/public-private-markers.txt"
-if [[ -f "$private_marker_file" ]]; then
-  while IFS= read -r marker || [[ -n "$marker" ]]; do
-    marker="${marker%$'\r'}"
-    [[ -z "$marker" || "$marker" == \#* ]] && continue
-    marker_matches="$(grep -RInF --exclude-dir=.git --binary-files=without-match -- "$marker" "$output" || true)"
-    if [[ -n "$marker_matches" ]]; then
-      echo "public export contains a locally configured private marker:" >&2
-      printf '%s\n' "$marker_matches" >&2
-      exit 1
-    fi
-  done < "$private_marker_file"
-fi
+go run ./cmd/secretscan --tree "$output"
 
 license_state="present"
 if [[ ! -f "$output/LICENSE" && ! -f "$output/LICENSE.txt" ]]; then

@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -87,6 +88,13 @@ func TestArtifactUploadIntegrityAndCleanup(t *testing.T) {
 	}
 	if completedAgain.ID != artifact.ID || completedAgain.StorageKey != artifact.StorageKey || completedAgain.Status != "complete" {
 		t.Fatalf("idempotent complete returned different artifact: first=%+v again=%+v", artifact, completedAgain)
+	}
+	if err := service.AbortArtifactUpload(ctx, session, good.UploadID); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("completed upload accepted a late abort: %v", err)
+	}
+	completedAfterAbort, err := service.CompleteArtifactUpload(ctx, session, good.UploadID)
+	if err != nil || completedAfterAbort.Status != "complete" {
+		t.Fatalf("late abort changed completed upload: artifact=%+v err=%v", completedAfterAbort, err)
 	}
 	got, file, err := service.OpenArtifact(ctx, ownerID, artifact.ID)
 	if err != nil {
@@ -291,6 +299,406 @@ func TestArtifactResumeReuseQuotaAndLifecycle(t *testing.T) {
 		var callErr *CapabilityCallError
 		if !errors.As(err, &callErr) || callErr.Code != "ARTIFACT_QUOTA_EXCEEDED" {
 			t.Fatalf("active upload quota error=%v", err)
+		}
+	}
+}
+
+func TestArtifactQuotaCreationIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	st, err := store.Open(ctx, filepath.Join(dataDir, "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	service, err := New(st, registry.New(), Config{DataDir: dataDir, Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := artifactTestSession(t, ctx, service)
+
+	const attempts = 12
+	start := make(chan struct{})
+	errs := make(chan error, attempts)
+	var wg sync.WaitGroup
+	for i := 0; i < attempts; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, err := service.CreateArtifactUpload(ctx, session, ArtifactCreateRequest{
+				LogicalName: fmt.Sprintf("atomic-quota-%d.txt", i),
+				ContentType: "text/plain",
+				SizeBytes:   0,
+				SHA256:      artifactTestSHA(nil),
+			})
+			errs <- err
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+
+	var succeeded, quotaExceeded int
+	for err := range errs {
+		if err == nil {
+			succeeded++
+			continue
+		}
+		var callErr *CapabilityCallError
+		if errors.As(err, &callErr) && callErr.Code == "ARTIFACT_QUOTA_EXCEEDED" {
+			quotaExceeded++
+			continue
+		}
+		t.Fatalf("unexpected concurrent create error: %v", err)
+	}
+	if succeeded != MaxActiveArtifactUploads || quotaExceeded != attempts-MaxActiveArtifactUploads {
+		t.Fatalf("concurrent quota results succeeded=%d exceeded=%d", succeeded, quotaExceeded)
+	}
+}
+
+func TestArtifactLifecycleLocksArePerKeyAndMaintenanceExclusive(t *testing.T) {
+	service := &Service{}
+	unlockFirst := service.lockArtifactOperation("upload\x00first")
+
+	differentAcquired := make(chan func(), 1)
+	go func() { differentAcquired <- service.lockArtifactOperation("upload\x00second") }()
+	select {
+	case unlock := <-differentAcquired:
+		unlock()
+	case <-time.After(time.Second):
+		t.Fatal("different artifact keys were globally serialized")
+	}
+
+	sameAcquired := make(chan func(), 1)
+	go func() { sameAcquired <- service.lockArtifactOperation("upload\x00first") }()
+	select {
+	case unlock := <-sameAcquired:
+		unlock()
+		t.Fatal("same artifact key was not serialized")
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlockFirst()
+	select {
+	case unlock := <-sameAcquired:
+		unlock()
+	case <-time.After(time.Second):
+		t.Fatal("same artifact key did not resume after unlock")
+	}
+
+	service.artifactLocks.maintenance.Lock()
+	blockedByMaintenance := make(chan func(), 1)
+	go func() { blockedByMaintenance <- service.lockArtifactOperation("upload\x00third") }()
+	select {
+	case unlock := <-blockedByMaintenance:
+		unlock()
+		t.Fatal("artifact operation entered during maintenance")
+	case <-time.After(50 * time.Millisecond):
+	}
+	service.artifactLocks.maintenance.Unlock()
+	select {
+	case unlock := <-blockedByMaintenance:
+		unlock()
+	case <-time.After(time.Second):
+		t.Fatal("artifact operation did not resume after maintenance")
+	}
+}
+
+func TestArtifactCleanupSlowDeleteDoesNotBlockUnrelatedUpload(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	st, err := store.Open(ctx, filepath.Join(dataDir, "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	service, err := New(st, registry.New(), Config{DataDir: dataDir, Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := artifactTestSession(t, ctx, service)
+	base := time.Now().UTC().Truncate(time.Second)
+	service.now = func() time.Time { return base }
+
+	data := []byte("expired")
+	expired, err := service.CreateArtifactUpload(ctx, session, ArtifactCreateRequest{
+		LogicalName: "expired.txt", ContentType: "text/plain", SizeBytes: int64(len(data)), SHA256: artifactTestSHA(data),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.UploadArtifactChunk(ctx, session.MachineID, expired.UploadID, 0, data); err != nil {
+		t.Fatal(err)
+	}
+	service.now = func() time.Time { return base.Add(time.Minute) }
+	liveData := []byte("live")
+	live, err := service.CreateArtifactUpload(ctx, session, ArtifactCreateRequest{
+		LogicalName: "unrelated.txt", ContentType: "text/plain", SizeBytes: int64(len(liveData)), SHA256: artifactTestSHA(liveData),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	expiredPath := service.artifactUploadPath(expired.UploadID)
+	removeStarted := make(chan struct{})
+	allowRemove := make(chan struct{})
+	service.artifactRemove = func(path string) error {
+		if path == expiredPath {
+			close(removeStarted)
+			<-allowRemove
+		}
+		return os.Remove(path)
+	}
+	cleanupDone := make(chan error, 1)
+	go func() {
+		cleanupDone <- service.cleanupArtifacts(ctx, expired.ExpiresAt.Add(time.Second))
+	}()
+	select {
+	case <-removeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("cleanup did not reach the injected slow file deletion")
+	}
+
+	uploadDone := make(chan error, 1)
+	go func() {
+		_, err := service.UploadArtifactChunk(ctx, session.MachineID, live.UploadID, 0, liveData)
+		uploadDone <- err
+	}()
+	select {
+	case err := <-uploadDone:
+		if err != nil {
+			t.Fatalf("unrelated upload chunk failed while cleanup deletion was blocked: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("slow artifact deletion blocked an unrelated upload chunk")
+	}
+	close(allowRemove)
+	if err := <-cleanupDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArtifactCleanupRetriesManagedFileDeletionFailure(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	st, err := store.Open(ctx, filepath.Join(dataDir, "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	service, err := New(st, registry.New(), Config{DataDir: dataDir, Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, ownerID := artifactTestSession(t, ctx, service)
+	created, err := service.CreateArtifactUpload(ctx, session, ArtifactCreateRequest{
+		LogicalName: "retry.txt",
+		ContentType: "text/plain",
+		SizeBytes:   0,
+		SHA256:      artifactTestSHA(nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := service.CompleteArtifactUpload(ctx, session, created.UploadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobPath, err := service.artifactBlobPath(artifact.StorageKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(blobPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(blobPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	blocker := filepath.Join(blobPath, "blocker")
+	if err := os.WriteFile(blocker, []byte("keep directory non-empty"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanupAt := artifact.ExpiresAt.Add(time.Second)
+	if err := service.cleanupArtifacts(ctx, cleanupAt); err == nil {
+		t.Fatal("non-empty managed blob directory deletion unexpectedly succeeded")
+	}
+	if _, err := service.GetArtifact(ctx, ownerID, artifact.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expired metadata remained after queued file deletion: %v", err)
+	}
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(blobPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.cleanupArtifacts(ctx, cleanupAt.Add(31*time.Second)); err != nil {
+		t.Fatalf("persisted managed deletion retry failed: %v", err)
+	}
+}
+
+func TestArtifactCleanupRecoversBlobMovedBeforeMetadataCommit(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	st, err := store.Open(ctx, filepath.Join(dataDir, "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	service, err := New(st, registry.New(), Config{DataDir: dataDir, Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := artifactTestSession(t, ctx, service)
+	created, err := service.CreateArtifactUpload(ctx, session, ArtifactCreateRequest{
+		LogicalName: "crash-window.txt", ContentType: "text/plain", SizeBytes: 0, SHA256: artifactTestSHA(nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storageKey := artifactStorageKey(artifactTestSHA(nil))
+	blobPath, err := service.artifactBlobPath(storageKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(blobPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blobPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.cleanupArtifacts(ctx, created.ExpiresAt.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(blobPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("blob left by rename-before-metadata crash was not removed: %v", err)
+	}
+	if _, err := st.GetArtifactByMachine(ctx, session.MachineID, created.ArtifactID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("stale uploading metadata remained: %v", err)
+	}
+}
+
+func TestArtifactCleanupRemovesCompletedUploadPartLeftByCrash(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	st, err := store.Open(ctx, filepath.Join(dataDir, "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	service, err := New(st, registry.New(), Config{DataDir: dataDir, Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, ownerID := artifactTestSession(t, ctx, service)
+	created, err := service.CreateArtifactUpload(ctx, session, ArtifactCreateRequest{
+		LogicalName: "reused-crash.txt", ContentType: "text/plain", SizeBytes: 0, SHA256: artifactTestSHA(nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, err := service.CompleteArtifactUpload(ctx, session, created.UploadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	partPath := service.artifactUploadPath(created.UploadID)
+	if err := os.WriteFile(partPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.cleanupArtifacts(ctx, created.ExpiresAt.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(partPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("completed upload part left by crash was not removed: %v", err)
+	}
+	if _, err := service.GetArtifact(ctx, ownerID, artifact.ID); err != nil {
+		t.Fatalf("upload cleanup removed live artifact metadata: %v", err)
+	}
+}
+
+func TestArtifactCleanupRetryPreservesReusedBlob(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	st, err := store.Open(ctx, filepath.Join(dataDir, "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	service, err := New(st, registry.New(), Config{DataDir: dataDir, Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Now().UTC().Truncate(time.Second)
+	service.now = func() time.Time { return base }
+	session, ownerID := artifactTestSession(t, ctx, service)
+	first, err := service.CreateArtifactUpload(ctx, session, ArtifactCreateRequest{
+		LogicalName: "first.txt", ContentType: "text/plain", SizeBytes: 0, SHA256: artifactTestSHA(nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstArtifact, err := service.CompleteArtifactUpload(ctx, session, first.UploadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobPath, err := service.artifactBlobPath(firstArtifact.StorageKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(blobPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(blobPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	blocker := filepath.Join(blobPath, "blocker")
+	if err := os.WriteFile(blocker, []byte("force first removal to retry"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cleanupAt := firstArtifact.ExpiresAt.Add(time.Second)
+	if err := service.cleanupArtifacts(ctx, cleanupAt); err == nil {
+		t.Fatal("first blob deletion unexpectedly succeeded")
+	}
+	if err := os.Remove(blocker); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(blobPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blobPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	service.now = func() time.Time { return cleanupAt }
+	second, err := service.CreateArtifactUpload(ctx, session, ArtifactCreateRequest{
+		LogicalName: "second.txt", ContentType: "text/plain", SizeBytes: 0, SHA256: artifactTestSHA(nil),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondArtifact, err := service.CompleteArtifactUpload(ctx, session, second.UploadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.cleanupArtifacts(ctx, cleanupAt.Add(31*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(blobPath); err != nil {
+		t.Fatalf("reused blob was removed by a stale retry: %v", err)
+	}
+	if _, file, err := service.OpenArtifact(ctx, ownerID, secondArtifact.ID); err != nil {
+		t.Fatalf("artifact referencing reused blob became unreadable: %v", err)
+	} else {
+		_ = file.Close()
+	}
+	deletions, err := st.CleanupArtifacts(ctx, cleanupAt.Add(32*time.Second), 128)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, deletion := range deletions {
+		if deletion.Kind == "blob" && deletion.PathKey == secondArtifact.StorageKey {
+			t.Fatalf("stale blob deletion remained queued: %+v", deletion)
 		}
 	}
 }

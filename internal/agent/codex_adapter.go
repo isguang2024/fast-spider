@@ -52,7 +52,8 @@ type codexRPCMessage struct {
 }
 
 type codexPending struct {
-	ch chan codexRPCMessage
+	ch         chan codexRPCMessage
+	generation uint64
 }
 
 type codexServerRequest struct {
@@ -63,6 +64,7 @@ type codexServerRequest struct {
 	TurnID     string
 	Params     map[string]any
 	ReceivedAt time.Time
+	Responding bool
 }
 
 type CodexAdapter struct {
@@ -82,6 +84,7 @@ type CodexAdapter struct {
 	nextID      int64
 	closed      bool
 	processDone chan struct{}
+	generation  uint64
 	loaded      map[string]struct{}
 
 	eventMu     sync.Mutex
@@ -90,8 +93,9 @@ type CodexAdapter struct {
 	eventNotify chan struct{}
 	activeTurns map[string]string
 
-	serverMu       sync.Mutex
-	serverRequests map[string]codexServerRequest
+	serverMu        sync.Mutex
+	serverRequests  map[string]codexServerRequest
+	requestOverride func(context.Context, string, map[string]any) (map[string]any, error)
 }
 
 func NewCodexAdapter(logger *slog.Logger) *CodexAdapter {
@@ -193,16 +197,27 @@ func codexExecutableCandidates() []string {
 func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 	a.startMu.Lock()
 	defer a.startMu.Unlock()
-	a.mu.Lock()
-	if a.closed {
+	for {
+		a.mu.Lock()
+		if a.closed {
+			a.mu.Unlock()
+			return fmt.Errorf("%w: adapter is closed", node.ErrAgentProviderUnavailable)
+		}
+		if a.cmd != nil && a.cmd.Process != nil && a.cmd.ProcessState == nil {
+			a.mu.Unlock()
+			return nil
+		}
+		previousDone := a.processDone
 		a.mu.Unlock()
-		return fmt.Errorf("%w: adapter is closed", node.ErrAgentProviderUnavailable)
+		if previousDone == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-previousDone:
+		}
 	}
-	if a.cmd != nil && a.cmd.Process != nil && a.cmd.ProcessState == nil {
-		a.mu.Unlock()
-		return nil
-	}
-	a.mu.Unlock()
 
 	if _, err := a.Availability(ctx); err != nil {
 		return err
@@ -236,14 +251,17 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 	}
 
 	a.mu.Lock()
+	a.generation++
+	generation := a.generation
+	done := make(chan struct{})
 	a.cmd = cmd
 	a.stdin = stdin
-	a.processDone = make(chan struct{})
+	a.processDone = done
 	a.configErr = nil
 	a.mu.Unlock()
 	go a.readLoop(stdout)
 	go a.stderrLoop(stderr)
-	go a.waitLoop(cmd)
+	go a.waitLoop(cmd, generation, done)
 
 	initCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -310,6 +328,9 @@ func (a *CodexAdapter) stopProcess(ctx context.Context, cmd *exec.Cmd) error {
 }
 
 func (a *CodexAdapter) request(ctx context.Context, method string, params map[string]any) (map[string]any, error) {
+	if a.requestOverride != nil {
+		return a.requestOverride(ctx, method, params)
+	}
 	if method != "initialize" {
 		if err := a.ensureStarted(ctx); err != nil {
 			return nil, err
@@ -327,7 +348,7 @@ func (a *CodexAdapter) request(ctx context.Context, method string, params map[st
 	}
 	a.nextID++
 	id := a.nextID
-	pending := codexPending{ch: make(chan codexRPCMessage, 1)}
+	pending := codexPending{ch: make(chan codexRPCMessage, 1), generation: a.generation}
 	a.pending[id] = pending
 	stdin := a.stdin
 	a.mu.Unlock()
@@ -491,6 +512,11 @@ func (a *CodexAdapter) handleServerRequest(id json.RawMessage, method string, ra
 	}
 
 	a.serverMu.Lock()
+	if _, duplicate := a.serverRequests[requestID]; duplicate {
+		a.serverMu.Unlock()
+		a.replyServerRequestError(id, -32600, "duplicate pending Codex server request id")
+		return
+	}
 	if len(a.serverRequests) >= 64 {
 		a.serverMu.Unlock()
 		a.replyServerRequestError(id, -32000, "too many pending Codex server requests")
@@ -634,19 +660,26 @@ func (a *CodexAdapter) stderrLoop(reader io.Reader) {
 	}
 }
 
-func (a *CodexAdapter) waitLoop(cmd *exec.Cmd) {
-	err := cmd.Wait()
+func (a *CodexAdapter) waitLoop(cmd *exec.Cmd, generation uint64, done chan struct{}) {
+	a.finishProcess(cmd, generation, done, cmd.Wait())
+}
+
+func (a *CodexAdapter) finishProcess(cmd *exec.Cmd, generation uint64, done chan struct{}, err error) {
 	a.mu.Lock()
-	done := a.processDone
-	isCurrent := a.cmd == cmd
+	isCurrent := a.cmd == cmd && a.generation == generation
 	if isCurrent {
 		a.cmd = nil
 		a.stdin = nil
 		a.processDone = nil
 		a.configErr = nil
 	}
-	pending := a.pending
-	a.pending = make(map[int64]codexPending)
+	pending := make([]codexPending, 0)
+	for id, item := range a.pending {
+		if item.generation == generation {
+			pending = append(pending, item)
+			delete(a.pending, id)
+		}
+	}
 	if isCurrent {
 		a.loaded = make(map[string]struct{})
 	}
@@ -845,7 +878,7 @@ func (a *CodexAdapter) PendingRequests(sessionID string) []map[string]any {
 	a.serverMu.Lock()
 	items := make([]codexServerRequest, 0, len(a.serverRequests))
 	for _, item := range a.serverRequests {
-		if sessionID == "" || item.SessionID == sessionID {
+		if !item.Responding && (sessionID == "" || item.SessionID == sessionID) {
 			items = append(items, item)
 		}
 	}
@@ -1164,13 +1197,33 @@ func (a *CodexAdapter) RespondPendingRequest(ctx context.Context, sessionID, req
 	}
 	a.serverMu.Lock()
 	pending, ok := a.serverRequests[requestID]
-	a.serverMu.Unlock()
 	if !ok {
+		a.serverMu.Unlock()
 		return nil, fmt.Errorf("pending Codex request %q was not found", requestID)
 	}
 	if pending.SessionID != "" && pending.SessionID != sessionID {
+		a.serverMu.Unlock()
 		return nil, fmt.Errorf("pending Codex request belongs to a different session")
 	}
+	if pending.Responding {
+		a.serverMu.Unlock()
+		return nil, fmt.Errorf("pending Codex request %q is already being responded to", requestID)
+	}
+	pending.Responding = true
+	a.serverRequests[requestID] = pending
+	a.serverMu.Unlock()
+	responded := false
+	defer func() {
+		if responded {
+			return
+		}
+		a.serverMu.Lock()
+		if current, exists := a.serverRequests[requestID]; exists && current.Responding {
+			current.Responding = false
+			a.serverRequests[requestID] = current
+		}
+		a.serverMu.Unlock()
+	}()
 	result, state, err := codexServerRequestResponse(pending, input)
 	if err != nil {
 		return nil, err
@@ -1191,6 +1244,7 @@ func (a *CodexAdapter) RespondPendingRequest(ctx context.Context, sessionID, req
 	a.serverMu.Lock()
 	delete(a.serverRequests, requestID)
 	a.serverMu.Unlock()
+	responded = true
 	a.recordEvent(AgentEvent{
 		Type:        "request.responded",
 		SessionID:   sessionID,
@@ -1430,7 +1484,14 @@ func (a *CodexAdapter) UnarchiveThread(ctx context.Context, sessionID string) er
 	return err
 }
 func (a *CodexAdapter) DeleteThread(ctx context.Context, sessionID string) error {
+	a.loadMu.Lock()
+	defer a.loadMu.Unlock()
 	_, err := a.request(ctx, "thread/delete", map[string]any{"threadId": sessionID})
+	if err == nil || isAgentSessionNotFound(err) {
+		a.mu.Lock()
+		delete(a.loaded, sessionID)
+		a.mu.Unlock()
+	}
 	return err
 }
 func (a *CodexAdapter) ForkThread(ctx context.Context, sessionID, cwd string) (map[string]any, error) {

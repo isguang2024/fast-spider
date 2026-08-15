@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,7 +22,21 @@ import (
 	"github.com/isguang2024/fast-spider/internal/hub/registry"
 	"github.com/isguang2024/fast-spider/internal/hub/server"
 	"github.com/isguang2024/fast-spider/internal/hub/store"
+	"github.com/isguang2024/fast-spider/internal/node"
 )
+
+type appLifecycleTestAgent struct {
+	closeCalls atomic.Int32
+}
+
+func (a *appLifecycleTestAgent) Control(context.Context, string, map[string]any) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+
+func (a *appLifecycleTestAgent) Close(context.Context) error {
+	a.closeCalls.Add(1)
+	return nil
+}
 
 func TestLocalConfigIsPrivateAndRoundTrips(t *testing.T) {
 	dataDir := t.TempDir()
@@ -243,4 +259,236 @@ func TestLocalUIConnectDoesNotPersistReusableConnectionToken(t *testing.T) {
 	if strings.Contains(string(configRaw), connectionToken.Token) || strings.Contains(string(stateRaw), connectionToken.Token) || strings.Contains(string(configRaw), "ctk_") || strings.Contains(string(stateRaw), "ctk_") {
 		t.Fatal("connection token was persisted in Node config/state")
 	}
+}
+
+func TestRuntimeRestartKeepsAppOwnedAgentOpen(t *testing.T) {
+	dataDir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	app, err := New(Options{DataDir: dataDir, Version: "runtime-lifecycle-test", MachineName: "Test Node", Logger: logger})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.agentController.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	agent := &appLifecycleTestAgent{}
+	app.agentController = agent
+	app.ctx = context.Background()
+	app.runtimeOwned = true
+	if err := node.SaveState(filepath.Join(dataDir, "state.json"), node.State{
+		HubURL:         "http://127.0.0.1:8787",
+		MachineID:      "mach_runtime_restart",
+		CredentialID:   "cred_runtime_restart",
+		HubPublicKey:   "unused",
+		HubFingerprint: "unused",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		app.startRuntime()
+		waitForRuntimeClear(t, app)
+		if got := agent.closeCalls.Load(); got != 0 {
+			t.Fatalf("restart attempt %d closed App-owned agent %d times", attempt, got)
+		}
+	}
+	if err := app.agentController.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.closeCalls.Load(); got != 1 {
+		t.Fatalf("App-owned agent Close() calls=%d, want 1 at App shutdown", got)
+	}
+}
+
+func TestStopRuntimeTimeoutKeepsHandleAndBlocksOverlappingStart(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	runCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	app := &App{
+		opts:          Options{DataDir: t.TempDir(), Logger: logger},
+		ctx:           context.Background(),
+		runtimeOwned:  true,
+		runtimeCancel: cancel,
+		runtimeDone:   done,
+	}
+
+	if app.stopRuntimeWithin(10 * time.Millisecond) {
+		t.Fatal("stopRuntimeWithin() reported a hung runtime as stopped")
+	}
+	select {
+	case <-runCtx.Done():
+	default:
+		t.Fatal("stopRuntimeWithin() did not cancel the runtime context")
+	}
+	app.mu.Lock()
+	keptCancel := app.runtimeCancel != nil
+	keptDone := app.runtimeDone == done
+	app.mu.Unlock()
+	if !keptCancel || !keptDone {
+		t.Fatalf("timed-out runtime handle was cleared: cancel=%v done=%v", keptCancel, keptDone)
+	}
+
+	app.startRuntime()
+	app.mu.Lock()
+	stillSameRuntime := app.runtimeDone == done
+	app.mu.Unlock()
+	if !stillSameRuntime {
+		t.Fatal("startRuntime() replaced a runtime that had not stopped")
+	}
+}
+
+func TestRestartRuntimeStartsOnceAfterTimedOutRuntimeEventuallyStops(t *testing.T) {
+	dataDir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	requests := make(chan struct{}, 2)
+	releaseRequest := make(chan struct{})
+	var requestCount atomic.Int32
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		requests <- struct{}{}
+		<-releaseRequest
+		http.Error(w, "stop test request", http.StatusServiceUnavailable)
+	}))
+	defer hub.Close()
+
+	app, err := New(Options{DataDir: dataDir, Version: "delayed-restart-test", MachineName: "Test Node", Logger: logger})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.agentController.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	agent := &appLifecycleTestAgent{}
+	app.agentController = agent
+	appCtx, stopApp := context.WithCancel(context.Background())
+	defer stopApp()
+	app.ctx = appCtx
+	app.runtimeOwned = true
+	app.config.AllowInsecureLocalHub = true
+	if err := node.SaveState(filepath.Join(dataDir, "state.json"), node.State{
+		HubURL:         hub.URL,
+		MachineID:      "mach_delayed_restart",
+		CredentialID:   "cred_delayed_restart",
+		HubPublicKey:   "unused",
+		HubFingerprint: "unused",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	oldCtx, cancelOld := context.WithCancel(appCtx)
+	oldDone := make(chan struct{})
+	app.runtimeCancel = cancelOld
+	app.runtimeDone = oldDone
+	app.restartRuntimeWithin(10 * time.Millisecond)
+	app.restartRuntimeWithin(10 * time.Millisecond)
+	select {
+	case <-oldCtx.Done():
+	default:
+		t.Fatal("restart did not cancel the old runtime")
+	}
+	select {
+	case <-requests:
+		t.Fatal("new runtime started before the old runtime completed")
+	default:
+	}
+
+	app.clearRuntime(oldDone)
+	close(oldDone)
+	select {
+	case <-requests:
+	case <-time.After(2 * time.Second):
+		t.Fatal("new runtime did not start after the old runtime completed")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if got := requestCount.Load(); got != 1 {
+		t.Fatalf("new runtime starts=%d, want exactly 1", got)
+	}
+	app.mu.Lock()
+	newDone := app.runtimeDone
+	restartAfter := app.runtimeRestartAfter
+	app.mu.Unlock()
+	if newDone == nil || newDone == oldDone {
+		t.Fatal("delayed restart did not install a new runtime handle")
+	}
+	if restartAfter != nil {
+		t.Fatal("delayed restart marker was not cleared")
+	}
+
+	close(releaseRequest)
+	if !app.stopRuntimeWithin(2 * time.Second) {
+		t.Fatal("new runtime did not stop during test cleanup")
+	}
+	if err := agent.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUnexpectedRuntimeReturnCancelsSharedBridgeContext(t *testing.T) {
+	runCtx, cancel := context.WithCancel(context.Background())
+	unexpected := errors.New("runtime returned unexpectedly")
+	err := runRuntimeClient(runCtx, cancel, nil, func(got context.Context) error {
+		if got != runCtx {
+			t.Fatal("runRuntimeClient() passed a different context")
+		}
+		return unexpected
+	})
+	if !errors.Is(err, unexpected) {
+		t.Fatalf("runRuntimeClient() error=%v, want %v", err, unexpected)
+	}
+	select {
+	case <-runCtx.Done():
+	default:
+		t.Fatal("runtime return did not cancel the context shared with local bridge")
+	}
+}
+
+func TestRuntimeReturnWaitsForLocalBridgeCleanup(t *testing.T) {
+	runCtx, cancel := context.WithCancel(context.Background())
+	bridgeDone := make(chan struct{})
+	bridgeCanceled := make(chan struct{})
+	releaseBridge := make(chan struct{})
+	go func() {
+		<-runCtx.Done()
+		close(bridgeCanceled)
+		<-releaseBridge
+		close(bridgeDone)
+	}()
+	runtimeDone := make(chan error, 1)
+	go func() {
+		runtimeDone <- runRuntimeClient(runCtx, cancel, bridgeDone, func(context.Context) error { return nil })
+	}()
+	select {
+	case <-bridgeCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("runtime return did not cancel the local bridge")
+	}
+	select {
+	case <-runtimeDone:
+		t.Fatal("runtime completed before local bridge cleanup")
+	default:
+	}
+	close(releaseBridge)
+	select {
+	case err := <-runtimeDone:
+		if err != nil {
+			t.Fatalf("runtime error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime did not finish after local bridge cleanup")
+	}
+}
+
+func waitForRuntimeClear(t *testing.T, app *App) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		app.mu.Lock()
+		cleared := app.runtimeCancel == nil && app.runtimeDone == nil
+		app.mu.Unlock()
+		if cleared {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("runtime did not clear after Client.Run returned")
 }

@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/isguang2024/fast-spider/internal/nodeupdate"
 	"github.com/isguang2024/fast-spider/internal/releaseinfo"
@@ -33,6 +35,7 @@ type Installed struct {
 var (
 	ErrComponentNotInstalled = errors.New("managed component is not installed")
 	ErrComponentInvalid      = errors.New("managed component installation is invalid")
+	componentLocks           [64]sync.RWMutex
 )
 
 func Root(dataDir string) string { return filepath.Join(dataDir, "components") }
@@ -40,6 +43,9 @@ func Root(dataDir string) string { return filepath.Join(dataDir, "components") }
 // FindInstalled returns the newest verified managed component installation.
 // It exposes no PATH-based or unverified installation fallback.
 func FindInstalled(dataDir, componentID string) (Installed, error) {
+	lock := componentLock(dataDir, componentID)
+	lock.RLock()
+	defer lock.RUnlock()
 	return findInstalled(dataDir, componentID, nil)
 }
 
@@ -49,6 +55,9 @@ func FindInstalledExecutable(dataDir, componentID, executableName string) (Insta
 	if !validID(componentID) || strings.TrimSpace(executableName) == "" || filepath.Base(executableName) != executableName {
 		return Installed{}, "", ErrComponentInvalid
 	}
+	lock := componentLock(dataDir, componentID)
+	lock.RLock()
+	defer lock.RUnlock()
 	var executablePath string
 	installed, err := findInstalled(dataDir, componentID, func(versionDir string) bool {
 		candidate := filepath.Join(versionDir, executableName)
@@ -74,7 +83,28 @@ func findInstalled(dataDir, componentID string, accept func(string) bool) (Insta
 	if err != nil {
 		return Installed{}, fmt.Errorf("read managed component: %w", ErrComponentInvalid)
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() > entries[j].Name() })
+	sort.SliceStable(entries, func(i, j int) bool {
+		left, leftErr := releaseinfo.ParseVersion(entries[i].Name())
+		right, rightErr := releaseinfo.ParseVersion(entries[j].Name())
+		if leftErr == nil && rightErr == nil {
+			if left.Major != right.Major {
+				return left.Major > right.Major
+			}
+			if left.Minor != right.Minor {
+				return left.Minor > right.Minor
+			}
+			if left.Patch != right.Patch {
+				return left.Patch > right.Patch
+			}
+		}
+		if leftErr == nil && rightErr != nil {
+			return true
+		}
+		if leftErr != nil && rightErr == nil {
+			return false
+		}
+		return entries[i].Name() < entries[j].Name()
+	})
 	platform := runtime.GOOS + "-" + runtime.GOARCH
 	foundInvalid := false
 	for _, entry := range entries {
@@ -116,6 +146,9 @@ func CleanupConfigured(dataDir, componentID, componentPath string) error {
 	if !validID(componentID) || componentPath == "" {
 		return nil
 	}
+	lock := componentLock(dataDir, componentID)
+	lock.Lock()
+	defer lock.Unlock()
 	managedRoot, err := filepath.Abs(filepath.Join(Root(dataDir), componentID))
 	if err != nil {
 		return err
@@ -142,10 +175,17 @@ func CleanupConfigured(dataDir, componentID, componentPath string) error {
 	if manifest.Kind != "component" || manifest.ID != componentID || manifest.Version != rel || strings.TrimSpace(manifest.Platform) == "" {
 		return nil
 	}
-	return CleanupInstalled(dataDir, Installed{ID: manifest.ID, Platform: manifest.Platform, Version: manifest.Version, Path: configuredPath})
+	return cleanupInstalled(dataDir, Installed{ID: manifest.ID, Platform: manifest.Platform, Version: manifest.Version, Path: configuredPath})
 }
 
 func CleanupInstalled(dataDir string, installed Installed) error {
+	lock := componentLock(dataDir, installed.ID)
+	lock.Lock()
+	defer lock.Unlock()
+	return cleanupInstalled(dataDir, installed)
+}
+
+func cleanupInstalled(dataDir string, installed Installed) error {
 	if !validID(installed.ID) || strings.TrimSpace(installed.Version) == "" || strings.TrimSpace(installed.Platform) == "" {
 		return errors.New("installed component metadata is invalid")
 	}
@@ -153,8 +193,11 @@ func CleanupInstalled(dataDir string, installed Installed) error {
 	cacheDir := filepath.Join(dataDir, "cache", "components")
 	if entries, err := os.ReadDir(cacheDir); err == nil {
 		prefix := installed.ID + "-" + installed.Platform + "-"
+		stagingPrefix := ".fast-spider-component-download-" + installed.ID + "-" + installed.Platform + "-"
 		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) || !strings.HasSuffix(entry.Name(), ".zip") {
+			managedArchive := !entry.IsDir() && strings.HasPrefix(entry.Name(), prefix) && strings.HasSuffix(entry.Name(), ".zip")
+			stagedArchive := !entry.IsDir() && strings.HasPrefix(entry.Name(), stagingPrefix) && (strings.HasSuffix(entry.Name(), ".zip") || strings.HasSuffix(entry.Name(), ".zip.tmp"))
+			if !managedArchive && !stagedArchive {
 				continue
 			}
 			if err := os.Remove(filepath.Join(cacheDir, entry.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -189,6 +232,9 @@ func Ensure(ctx context.Context, dataDir, hubURL, encodedHubPublicKey, component
 	if !validID(componentID) {
 		return Installed{}, errors.New("component id is invalid")
 	}
+	lock := componentLock(dataDir, componentID)
+	lock.Lock()
+	defer lock.Unlock()
 	platform := runtime.GOOS + "-" + runtime.GOARCH
 	manifest, err := nodeupdate.FetchManifest(ctx, hubURL, encodedHubPublicKey,
 		"/api/v1/node/components/"+componentID+"/"+platform+"/latest", "component", componentID, platform)
@@ -198,7 +244,8 @@ func Ensure(ctx context.Context, dataDir, hubURL, encodedHubPublicKey, component
 	if manifest.SizeBytes > maxComponentArchiveBytes {
 		return Installed{}, errors.New("component archive exceeds size limit")
 	}
-	finalDir := filepath.Join(Root(dataDir), componentID, manifest.Version)
+	componentRoot := filepath.Join(Root(dataDir), componentID)
+	finalDir := filepath.Join(componentRoot, manifest.Version)
 	if installedManifestMatches(finalDir, manifest) {
 		return Installed{ID: componentID, Platform: platform, Version: manifest.Version, Path: finalDir}, nil
 	}
@@ -207,12 +254,31 @@ func Ensure(ctx context.Context, dataDir, hubURL, encodedHubPublicKey, component
 		return Installed{}, err
 	}
 	archivePath := filepath.Join(cacheDir, componentID+"-"+platform+"-"+manifest.Version+".zip")
-	if err := nodeupdate.DownloadVerified(ctx, hubURL, manifest, archivePath); err != nil {
+	archiveStaging, err := os.CreateTemp(cacheDir, ".fast-spider-component-download-"+componentID+"-"+platform+"-*.zip")
+	if err != nil {
 		return Installed{}, err
 	}
-	tmpDir := finalDir + ".tmp"
-	_ = os.RemoveAll(tmpDir)
-	if err := extractArchive(archivePath, tmpDir); err != nil {
+	archiveStagingPath := archiveStaging.Name()
+	if closeErr := archiveStaging.Close(); closeErr != nil {
+		_ = os.Remove(archiveStagingPath)
+		return Installed{}, closeErr
+	}
+	if err := os.Remove(archiveStagingPath); err != nil {
+		return Installed{}, err
+	}
+	defer os.Remove(archiveStagingPath)
+	if err := nodeupdate.DownloadVerified(ctx, hubURL, manifest, archiveStagingPath); err != nil {
+		return Installed{}, err
+	}
+	if err := os.MkdirAll(componentRoot, 0o700); err != nil {
+		return Installed{}, err
+	}
+	tmpDir, err := os.MkdirTemp(componentRoot, ".fast-spider-component-install-")
+	if err != nil {
+		return Installed{}, err
+	}
+	defer os.RemoveAll(tmpDir)
+	if err := extractArchive(archiveStagingPath, tmpDir); err != nil {
 		_ = os.RemoveAll(tmpDir)
 		return Installed{}, err
 	}
@@ -225,16 +291,58 @@ func Ensure(ctx context.Context, dataDir, hubURL, encodedHubPublicKey, component
 		_ = os.RemoveAll(tmpDir)
 		return Installed{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(finalDir), 0o700); err != nil {
-		_ = os.RemoveAll(tmpDir)
+	if err := replaceComponentArchive(archiveStagingPath, archivePath); err != nil {
 		return Installed{}, err
 	}
-	_ = os.RemoveAll(finalDir)
-	if err := os.Rename(tmpDir, finalDir); err != nil {
-		_ = os.RemoveAll(tmpDir)
+	if err := publishComponentDir(tmpDir, finalDir); err != nil {
 		return Installed{}, err
 	}
 	return Installed{ID: componentID, Platform: platform, Version: manifest.Version, Path: finalDir}, nil
+}
+
+func componentLock(dataDir, componentID string) *sync.RWMutex {
+	root, err := filepath.Abs(Root(dataDir))
+	if err != nil {
+		root = filepath.Clean(Root(dataDir))
+	}
+	key := filepath.Clean(root) + "\x00" + strings.TrimSpace(componentID)
+	if runtime.GOOS == "windows" {
+		key = strings.ToLower(key)
+	}
+	hash := fnv.New64a()
+	_, _ = hash.Write([]byte(key))
+	return &componentLocks[hash.Sum64()%uint64(len(componentLocks))]
+}
+
+func publishComponentDir(stagingDir, finalDir string) error {
+	if _, err := os.Lstat(finalDir); errors.Is(err, os.ErrNotExist) {
+		return os.Rename(stagingDir, finalDir)
+	} else if err != nil {
+		return err
+	}
+	parent := filepath.Dir(finalDir)
+	backupDir, err := os.MkdirTemp(parent, ".fast-spider-component-replaced-")
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(backupDir); err != nil {
+		return err
+	}
+	if err := os.Rename(finalDir, backupDir); err != nil {
+		return err
+	}
+	if err := os.Rename(stagingDir, finalDir); err != nil {
+		rollbackErr := os.Rename(backupDir, finalDir)
+		return errors.Join(err, rollbackErr)
+	}
+	return os.RemoveAll(backupDir)
+}
+
+func replaceComponentArchive(stagingPath, finalPath string) error {
+	if err := os.Remove(finalPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.Rename(stagingPath, finalPath)
 }
 
 func installedManifestMatches(dir string, expected releaseinfo.Manifest) bool {

@@ -25,16 +25,18 @@ const (
 	auditRetention                     = 30 * 24 * time.Hour
 	oauthAuthorizationHistoryRetention = 90 * 24 * time.Hour
 	oauthClientOrphanRetention         = 30 * time.Minute
+	oauthMaxClientsPerOwner            = 128
 )
 
 var (
-	ErrNotFound     = errors.New("not found")
-	ErrUnauthorized = errors.New("unauthorized")
-	ErrExpired      = errors.New("expired")
-	ErrConsumed     = errors.New("consumed")
-	ErrRevoked      = errors.New("revoked")
-	ErrReplay       = errors.New("replay detected")
-	ErrConflict     = errors.New("conflict")
+	ErrNotFound      = errors.New("not found")
+	ErrUnauthorized  = errors.New("unauthorized")
+	ErrExpired       = errors.New("expired")
+	ErrConsumed      = errors.New("consumed")
+	ErrRevoked       = errors.New("revoked")
+	ErrReplay        = errors.New("replay detected")
+	ErrConflict      = errors.New("conflict")
+	ErrResourceLimit = errors.New("resource limit exceeded")
 )
 
 //go:embed migrations/*.sql
@@ -144,6 +146,18 @@ type ArtifactUsageRecord struct {
 	ActiveUploads int
 	MachineBytes  int64
 	OwnerBytes    int64
+}
+
+type ArtifactQuota struct {
+	MaxActiveUploads int
+	MaxMachineBytes  int64
+	MaxOwnerBytes    int64
+}
+
+type ArtifactFileDeletion struct {
+	Kind     string
+	PathKey  string
+	Attempts int
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -666,7 +680,7 @@ func (s *Store) ArtifactUsage(ctx context.Context, ownerID, machineID string, no
 	return usage, nil
 }
 
-func (s *Store) CreateArtifactUpload(ctx context.Context, artifact ArtifactRecord, upload ArtifactUploadRecord) error {
+func (s *Store) CreateArtifactUpload(ctx context.Context, artifact ArtifactRecord, upload ArtifactUploadRecord, quota ArtifactQuota) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -681,6 +695,26 @@ func (s *Store) CreateArtifactUpload(ctx context.Context, artifact ArtifactRecor
 	}
 	if ownerID != artifact.OwnerID || status != "active" || upload.MachineID != artifact.MachineID || upload.ArtifactID != artifact.ID {
 		return ErrUnauthorized
+	}
+	var usage ArtifactUsageRecord
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(expected_size),0)
+		FROM artifact_uploads WHERE machine_id = ? AND status = 'active' AND expires_at > ?`, artifact.MachineID, artifact.CreatedAt.Unix()).
+		Scan(&usage.ActiveUploads, &usage.MachineBytes); err != nil {
+		return err
+	}
+	var completedMachineBytes int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(size_bytes),0) FROM artifacts
+		WHERE machine_id = ? AND status = 'complete' AND expires_at > ?`, artifact.MachineID, artifact.CreatedAt.Unix()).Scan(&completedMachineBytes); err != nil {
+		return err
+	}
+	usage.MachineBytes += completedMachineBytes
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(a.size_bytes),0) FROM artifacts a
+		WHERE a.owner_id = ? AND ((a.status = 'complete' AND a.expires_at > ?)
+		OR (a.status = 'uploading' AND EXISTS (SELECT 1 FROM artifact_uploads u WHERE u.artifact_id = a.id AND u.status = 'active' AND u.expires_at > ?)))`, artifact.OwnerID, artifact.CreatedAt.Unix(), artifact.CreatedAt.Unix()).Scan(&usage.OwnerBytes); err != nil {
+		return err
+	}
+	if usage.ActiveUploads >= quota.MaxActiveUploads || usage.MachineBytes+artifact.SizeBytes > quota.MaxMachineBytes || usage.OwnerBytes+artifact.SizeBytes > quota.MaxOwnerBytes {
+		return ErrResourceLimit
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO artifacts(
 		id, owner_id, machine_id, job_id, logical_name, content_type, size_bytes, sha256, status, created_at, expires_at
@@ -767,8 +801,14 @@ func (s *Store) CompleteArtifactUpload(ctx context.Context, machineID, uploadID,
 	if _, err := tx.ExecContext(ctx, "UPDATE artifact_uploads SET status = 'complete' WHERE id = ?", uploadID); err != nil {
 		return ArtifactRecord{}, err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE artifacts SET status = 'complete', storage_key = ?, completed_at = ? WHERE id = ? AND machine_id = ? AND status = 'uploading'", storageKey, now.Unix(), artifactID, machineID); err != nil {
+	result, err := tx.ExecContext(ctx, "UPDATE artifacts SET status = 'complete', storage_key = ?, completed_at = ? WHERE id = ? AND machine_id = ? AND status = 'uploading'", storageKey, now.Unix(), artifactID, machineID)
+	if err != nil {
 		return ArtifactRecord{}, err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return ArtifactRecord{}, err
+	} else if affected != 1 {
+		return ArtifactRecord{}, ErrConflict
 	}
 	if err := tx.Commit(); err != nil {
 		return ArtifactRecord{}, err
@@ -782,14 +822,20 @@ func (s *Store) AbortArtifactUpload(ctx context.Context, machineID, uploadID str
 		return err
 	}
 	defer tx.Rollback()
-	var artifactID string
-	if err := tx.QueryRowContext(ctx, "SELECT artifact_id FROM artifact_uploads WHERE id = ? AND machine_id = ?", uploadID, machineID).Scan(&artifactID); err != nil {
+	var artifactID, status string
+	if err := tx.QueryRowContext(ctx, "SELECT artifact_id, status FROM artifact_uploads WHERE id = ? AND machine_id = ?", uploadID, machineID).Scan(&artifactID, &status); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
 		}
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, "UPDATE artifact_uploads SET status = 'aborted' WHERE id = ?", uploadID); err != nil {
+	if status == "aborted" {
+		return tx.Commit()
+	}
+	if status != "active" {
+		return ErrConflict
+	}
+	if _, err := tx.ExecContext(ctx, "UPDATE artifact_uploads SET status = 'aborted' WHERE id = ? AND status = 'active'", uploadID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, "UPDATE artifacts SET status = 'aborted' WHERE id = ? AND status = 'uploading'", artifactID); err != nil {
@@ -830,71 +876,281 @@ func (s *Store) getArtifact(ctx context.Context, scopeColumn, scopeID, artifactI
 	return rec, nil
 }
 
-func (s *Store) CleanupArtifacts(ctx context.Context, now time.Time) (uploadIDs []string, orphanStorageKeys []string, err error) {
+func (s *Store) CleanupArtifacts(ctx context.Context, now time.Time, limit int) ([]ArtifactFileDeletion, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, "SELECT id, artifact_id, status FROM artifact_uploads WHERE expires_at <= ? OR status = 'aborted'", now.Unix())
+	rows, err := tx.QueryContext(ctx, `SELECT u.id, u.artifact_id, u.status, COALESCE(a.sha256,'')
+		FROM artifact_uploads u LEFT JOIN artifacts a ON a.id = u.artifact_id
+		WHERE u.expires_at <= ? OR u.status = 'aborted' ORDER BY u.expires_at, u.id LIMIT ?`, now.Unix(), limit)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
+	var uploadIDs, allUploadIDs, candidateStorageKeys []string
 	var staleArtifactIDs []string
 	for rows.Next() {
-		var id, artifactID, status string
-		if err := rows.Scan(&id, &artifactID, &status); err != nil {
+		var id, artifactID, status, artifactSHA string
+		if err := rows.Scan(&id, &artifactID, &status, &artifactSHA); err != nil {
 			rows.Close()
-			return nil, nil, err
+			return nil, err
 		}
+		allUploadIDs = append(allUploadIDs, id)
+		// A completed upload can still have a .part file if the process exited
+		// after committing reused-blob metadata but before removing the part.
+		uploadIDs = append(uploadIDs, id)
 		if status != "complete" {
-			uploadIDs = append(uploadIDs, id)
 			staleArtifactIDs = append(staleArtifactIDs, artifactID)
+			if storageKey, ok := artifactStorageKeyFromSHA256(artifactSHA); ok {
+				// CompleteArtifactUpload moves the part file before committing its
+				// metadata. Deriving the content-addressed key lets maintenance
+				// recover a blob left by a process crash in that small window.
+				candidateStorageKeys = append(candidateStorageKeys, storageKey)
+			}
 		}
 	}
 	if err := rows.Close(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	storageRows, err := tx.QueryContext(ctx, "SELECT DISTINCT storage_key FROM artifacts WHERE expires_at <= ? AND storage_key IS NOT NULL", now.Unix())
+	if err := enqueueArtifactFileDeletions(ctx, tx, "upload", uploadIDs, now); err != nil {
+		return nil, err
+	}
+	if err := deleteByIDs(ctx, tx, "artifact_uploads", allUploadIDs); err != nil {
+		return nil, err
+	}
+	if err := deleteArtifactsByIDs(ctx, tx, staleArtifactIDs, true); err != nil {
+		return nil, err
+	}
+
+	artifactRows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(storage_key,'') FROM artifacts a
+		WHERE (a.status = 'complete' AND a.expires_at <= ?)
+		OR (a.status <> 'complete' AND NOT EXISTS (SELECT 1 FROM artifact_uploads u WHERE u.artifact_id = a.id))
+		ORDER BY a.expires_at, a.id LIMIT ?`, now.Unix(), limit)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	var candidates []string
-	for storageRows.Next() {
-		var key string
-		if err := storageRows.Scan(&key); err != nil {
-			storageRows.Close()
-			return nil, nil, err
+	var artifactIDs []string
+	for artifactRows.Next() {
+		var id, storageKey string
+		if err := artifactRows.Scan(&id, &storageKey); err != nil {
+			artifactRows.Close()
+			return nil, err
 		}
-		candidates = append(candidates, key)
-	}
-	if err := storageRows.Close(); err != nil {
-		return nil, nil, err
-	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM artifact_uploads WHERE expires_at <= ? OR status = 'aborted'", now.Unix()); err != nil {
-		return nil, nil, err
-	}
-	for _, artifactID := range staleArtifactIDs {
-		if _, err := tx.ExecContext(ctx, "DELETE FROM artifacts WHERE id = ? AND status <> 'complete'", artifactID); err != nil {
-			return nil, nil, err
+		artifactIDs = append(artifactIDs, id)
+		if storageKey != "" {
+			candidateStorageKeys = append(candidateStorageKeys, storageKey)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM artifacts WHERE expires_at <= ? OR status = 'aborted'", now.Unix()); err != nil {
-		return nil, nil, err
+	if err := artifactRows.Close(); err != nil {
+		return nil, err
 	}
-	for _, key := range candidates {
-		var count int
-		if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM artifacts WHERE storage_key = ?", key).Scan(&count); err != nil {
-			return nil, nil, err
-		}
-		if count == 0 {
-			orphanStorageKeys = append(orphanStorageKeys, key)
-		}
+	if err := deleteArtifactsByIDs(ctx, tx, artifactIDs, false); err != nil {
+		return nil, err
+	}
+	orphanStorageKeys, err := filterUnreferencedStorageKeys(ctx, tx, candidateStorageKeys)
+	if err != nil {
+		return nil, err
+	}
+	if err := enqueueArtifactFileDeletions(ctx, tx, "blob", orphanStorageKeys, now); err != nil {
+		return nil, err
+	}
+
+	deletions, err := dueArtifactFileDeletions(ctx, tx, now, limit)
+	if err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return uploadIDs, orphanStorageKeys, nil
+	return deletions, nil
+}
+
+func (s *Store) CompleteArtifactFileDeletions(ctx context.Context, deletions []ArtifactFileDeletion) error {
+	if len(deletions) == 0 {
+		return nil
+	}
+	query := "DELETE FROM artifact_file_deletions WHERE "
+	args := make([]any, 0, len(deletions)*2)
+	for i, deletion := range deletions {
+		if i > 0 {
+			query += " OR "
+		}
+		query += "(kind = ? AND path_key = ?)"
+		args = append(args, deletion.Kind, deletion.PathKey)
+	}
+	_, err := s.db.ExecContext(ctx, query, args...)
+	return err
+}
+
+// ArtifactStorageKeyReferenced is used immediately before a queued blob
+// deletion. A previous removal failure may have outlived the metadata that
+// queued it, while a later upload can legitimately reuse the same blob.
+func (s *Store) ArtifactStorageKeyReferenced(ctx context.Context, storageKey string) (bool, error) {
+	var referenced int
+	if err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM artifacts WHERE storage_key = ?)", storageKey).Scan(&referenced); err != nil {
+		return false, err
+	}
+	return referenced != 0, nil
+}
+
+func (s *Store) FailArtifactFileDeletion(ctx context.Context, deletion ArtifactFileDeletion, failure error, now time.Time) error {
+	message := "artifact file deletion failed"
+	if failure != nil {
+		message = failure.Error()
+	}
+	if len(message) > 512 {
+		message = message[:512]
+	}
+	delay := 30 * time.Second
+	for i := 0; i < deletion.Attempts && delay < time.Hour; i++ {
+		delay *= 2
+		if delay > time.Hour {
+			delay = time.Hour
+		}
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE artifact_file_deletions
+		SET attempts = attempts + 1, last_error = ?, next_attempt_at = ?, updated_at = ?
+		WHERE kind = ? AND path_key = ?`, message, now.Add(delay).Unix(), now.Unix(), deletion.Kind, deletion.PathKey)
+	return err
+}
+
+func enqueueArtifactFileDeletions(ctx context.Context, tx *sql.Tx, kind string, keys []string, now time.Time) error {
+	keys = uniqueStrings(keys)
+	if len(keys) == 0 {
+		return nil
+	}
+	query := `INSERT INTO artifact_file_deletions(kind, path_key, attempts, next_attempt_at, created_at, updated_at) VALUES `
+	args := make([]any, 0, len(keys)*5)
+	for i, key := range keys {
+		if i > 0 {
+			query += ","
+		}
+		query += "(?,?,0,?,?,?)"
+		args = append(args, kind, key, now.Unix(), now.Unix(), now.Unix())
+	}
+	query += " ON CONFLICT(kind, path_key) DO NOTHING"
+	_, err := tx.ExecContext(ctx, query, args...)
+	return err
+}
+
+func dueArtifactFileDeletions(ctx context.Context, tx *sql.Tx, now time.Time, limit int) ([]ArtifactFileDeletion, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT kind, path_key, attempts FROM artifact_file_deletions
+		WHERE next_attempt_at <= ? ORDER BY next_attempt_at, kind, path_key LIMIT ?`, now.Unix(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ArtifactFileDeletion
+	for rows.Next() {
+		var item ArtifactFileDeletion
+		if err := rows.Scan(&item.Kind, &item.PathKey, &item.Attempts); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func deleteByIDs(ctx context.Context, tx *sql.Tx, table string, ids []string) error {
+	ids = uniqueStrings(ids)
+	if len(ids) == 0 {
+		return nil
+	}
+	if table != "artifact_uploads" {
+		return ErrUnauthorized
+	}
+	args := stringsToAny(ids)
+	_, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE id IN ("+placeholders(len(ids))+")", args...)
+	return err
+}
+
+func deleteArtifactsByIDs(ctx context.Context, tx *sql.Tx, ids []string, nonCompleteOnly bool) error {
+	ids = uniqueStrings(ids)
+	if len(ids) == 0 {
+		return nil
+	}
+	query := "DELETE FROM artifacts WHERE id IN (" + placeholders(len(ids)) + ")"
+	if nonCompleteOnly {
+		query += " AND status <> 'complete'"
+	}
+	_, err := tx.ExecContext(ctx, query, stringsToAny(ids)...)
+	return err
+}
+
+func filterUnreferencedStorageKeys(ctx context.Context, tx *sql.Tx, candidates []string) ([]string, error) {
+	candidates = uniqueStrings(candidates)
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.QueryContext(ctx, "SELECT DISTINCT storage_key FROM artifacts WHERE storage_key IN ("+placeholders(len(candidates))+")", stringsToAny(candidates)...)
+	if err != nil {
+		return nil, err
+	}
+	referenced := make(map[string]struct{}, len(candidates))
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		referenced[key] = struct{}{}
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	orphans := make([]string, 0, len(candidates))
+	for _, key := range candidates {
+		if _, ok := referenced[key]; !ok {
+			orphans = append(orphans, key)
+		}
+	}
+	return orphans, nil
+}
+
+func artifactStorageKeyFromSHA256(value string) (string, bool) {
+	if len(value) != len("sha256:")+64 || !strings.HasPrefix(value, "sha256:") || strings.ToLower(value) != value {
+		return "", false
+	}
+	digest := strings.TrimPrefix(value, "sha256:")
+	if _, err := hex.DecodeString(digest); err != nil {
+		return "", false
+	}
+	return digest[:2] + "/" + digest[2:4] + "/" + digest, true
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func stringsToAny(values []string) []any {
+	out := make([]any, len(values))
+	for i, value := range values {
+		out[i] = value
+	}
+	return out
+}
+
+func placeholders(count int) string {
+	if count <= 0 {
+		return ""
+	}
+	return strings.TrimSuffix(strings.Repeat("?,", count), ",")
 }
 
 func (s *Store) CleanupExpired(ctx context.Context, now time.Time) error {

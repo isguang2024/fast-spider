@@ -48,7 +48,7 @@ func TestBackupPruneCLIHelperUsesSafeDefaultsAndAbsoluteDirectory(t *testing.T) 
 	if defaultReleaseBackupKeep != 3 {
 		t.Fatalf("default keep=%d want=3", defaultReleaseBackupKeep)
 	}
-	if _, err := runBackupPrune(context.Background(), "relative", 1); err == nil {
+	if _, err := runBackupPrune(context.Background(), "relative", 1, false); err == nil {
 		t.Fatal("relative backup prune directory was accepted")
 	}
 
@@ -65,12 +65,24 @@ func TestBackupPruneCLIHelperUsesSafeDefaultsAndAbsoluteDirectory(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	result, err := runBackupPrune(context.Background(), root, 1)
+	result, err := runBackupPrune(context.Background(), root, 1, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.CandidateCount != 2 || result.KeptCount != 1 || result.DeletedCount != 1 {
-		t.Fatalf("unexpected prune result: %+v", result)
+	if result.Applied || result.CandidateCount != 2 || result.KeptCount != 1 || result.PlannedCount != 1 || result.DeletedCount != 0 {
+		t.Fatalf("unexpected prune plan: %+v", result)
+	}
+	for _, name := range []string{"pre-0.4.3-aaaaaaa.zip", "pre-0.4.4-bbbbbbb.zip"} {
+		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
+			t.Fatalf("plan changed backup %q: %v", name, err)
+		}
+	}
+	result, err = runBackupPrune(context.Background(), root, 1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Applied || result.CandidateCount != 2 || result.KeptCount != 1 || result.PlannedCount != 1 || result.DeletedCount != 1 {
+		t.Fatalf("unexpected prune apply: %+v", result)
 	}
 }
 

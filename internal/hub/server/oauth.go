@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -20,11 +21,14 @@ import (
 )
 
 const (
-	oauthScope           = "fast-spider"
-	oauthCodeTTL         = 5 * time.Minute
-	oauthMaxPendingCodes = 1024
-	oauthAccessTokenTTL  = time.Hour
-	oauthRefreshTokenTTL = 30 * 24 * time.Hour
+	oauthScope                        = "fast-spider"
+	oauthCodeTTL                      = 5 * time.Minute
+	oauthMaxPendingCodes              = 1024
+	oauthAccessTokenTTL               = time.Hour
+	oauthRefreshTokenTTL              = 30 * 24 * time.Hour
+	oauthMaxRegistrationBodyBytes     = 32 << 10
+	oauthMaxRegistrationMetadataBytes = 16 << 10
+	oauthMaxRedirectURIBytes          = 2048
 )
 
 var defaultOAuthRedirectHosts = []string{"chatgpt.com", "localhost", "127.0.0.1", "::1"}
@@ -179,10 +183,23 @@ func (s *Server) handleOAuthAuthorizationServer(w http.ResponseWriter, r *http.R
 }
 
 func (s *Server) handleOAuthRegister(w http.ResponseWriter, r *http.Request) {
+	now := time.Now().UTC()
+	sourceHash := oauthRegistrationSourceHash(r)
+	if s.oauthRegistrations == nil || !s.oauthRegistrations.allow(sourceHash, now) {
+		w.Header().Set("Retry-After", "60")
+		writeOAuthError(w, http.StatusTooManyRequests, "temporarily_unavailable", errOAuthRegistrationLimited.Error())
+		return
+	}
 	var req oauthClientRegistrationRequest
-	r.Body = http.MaxBytesReader(w, r.Body, maxControlMessageBytes)
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, oauthMaxRegistrationBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&req); err != nil {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "invalid client registration request")
+		return
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "client registration must contain exactly one JSON value")
 		return
 	}
 	if len(req.RedirectURIs) == 0 || len(req.RedirectURIs) > 8 {
@@ -211,11 +228,23 @@ func (s *Server) handleOAuthRegister(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "unsupported scope")
 		return
 	}
+	metadataBytes := len(req.ClientName) + len(req.TokenEndpointAuthMethod) + len(req.Scope)
+	for _, value := range req.GrantTypes {
+		metadataBytes += len(value)
+	}
+	for _, value := range req.ResponseTypes {
+		metadataBytes += len(value)
+	}
 	for _, raw := range req.RedirectURIs {
-		if !validOAuthRedirectURI(raw, s.config.OAuthRedirectHosts) {
+		metadataBytes += len(raw)
+		if len(raw) == 0 || len(raw) > oauthMaxRedirectURIBytes || !validOAuthRedirectURI(raw, s.config.OAuthRedirectHosts) {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_redirect_uri", "redirect URI is not allowed")
 			return
 		}
+	}
+	if metadataBytes > oauthMaxRegistrationMetadataBytes {
+		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "client registration metadata is too large")
+		return
 	}
 	clientID, err := security.RandomOpaque("mcpcli_")
 	if err != nil {
@@ -230,16 +259,21 @@ func (s *Server) handleOAuthRegister(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, "invalid_client_metadata", "client name is too long")
 		return
 	}
-	now := time.Now().UTC()
-	if err := s.service.Store().RegisterOAuthClient(r.Context(), store.OAuthClientRecord{
-		ClientID:      clientID,
-		ClientName:    name,
-		RedirectURIs:  req.RedirectURIs,
-		GrantTypes:    grantTypes,
-		ResponseTypes: responseTypes,
-		Scope:         clientScope,
-		CreatedAt:     now,
-	}); err != nil {
+	if err := s.oauthRegistrations.register(r.Context(), s.service.Store(), store.OAuthClientRecord{
+		ClientID:               clientID,
+		ClientName:             name,
+		RedirectURIs:           req.RedirectURIs,
+		GrantTypes:             grantTypes,
+		ResponseTypes:          responseTypes,
+		Scope:                  clientScope,
+		RegistrationSourceHash: sourceHash,
+		CreatedAt:              now,
+	}, now); err != nil {
+		if errors.Is(err, errOAuthClientQuota) {
+			w.Header().Set("Retry-After", "60")
+			writeOAuthError(w, http.StatusServiceUnavailable, "temporarily_unavailable", err.Error())
+			return
+		}
 		writeOAuthError(w, http.StatusInternalServerError, "server_error", "failed to register client")
 		return
 	}
@@ -497,6 +531,10 @@ func (s *Server) issueOAuthTokens(w http.ResponseWriter, r *http.Request, ownerI
 			CreatedAt:       now,
 			ExpiresAt:       authorizationExpires,
 		}); err != nil {
+			if errors.Is(err, store.ErrResourceLimit) {
+				writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "authorization code cannot be exchanged because the owner's client limit is reached")
+				return
+			}
 			writeOAuthError(w, http.StatusInternalServerError, "server_error", "failed to persist authorization")
 			return
 		}

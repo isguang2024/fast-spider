@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 ## Current 当前事实
 
-- 当前源码版本为 `0.4.17`。MCP 顶层仍固定 17 个工具，但 ChatGPT 长会话恢复不再要求一次物化全部 Schema：命名空间缺失时使用唯一发现标记 `fsprobe` 只加载 `machine_list`，真实连通后再按当前动作加载 `capability_list`、`machine_get` 或业务工具。initialize 常驻指令继续受 2 KiB 门禁约束，完整工具目录受 48 KiB、连接入口受 8 KiB、单工具受 8 KiB 的发布预算约束，复杂说明留在按需 Guide。Hub MCP 诊断新增“最近已认证 MCP 请求”时间，可区分“请求已到 Hub”与“旧会话根本未发请求”；OAuth/PKCE、Node/WSS 协议和工具数量不变。
+- 当前源码版本为 `0.4.18`。MCP 顶层仍固定 17 个工具，继续使用 `fsprobe` 按需恢复长会话工具物化；本版补齐 OAuth 历史保留、Presentation/Artifact 可恢复清理、Release manifest 可取消哈希、staging 原子隔离、Codex/Job 生命周期代际保护，以及秘密门禁的路径与历史扫描。缓存和临时数据均有 TTL/容量/失败重试边界，复杂说明留在按需 Guide；OAuth/PKCE、Node/WSS 协议和工具数量不变。
 - Machine 是唯一远程资源边界。Fast Spider 不再维护旧目录对象、目录列表工具、目录授权、目录白名单或路径注册表。
 - Node 以启动它的当前 OS 用户运行，直接使用该用户对整台电脑的操作系统权限；Fast Spider 不把文件系统再切成一层目录权限。
 - 同一 OS 用户只允许运行一个 Fast Spider Node 主实例；重复双击、开机自启动与手动启动、不同 EXE 位置或不同 `--data-dir` 都不能建立第二条 Node 连接。重复启动只打开现有本地界面后退出。
@@ -17,8 +17,9 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 - `file_read` 2.0 保留 byte range，并支持 line/head/tail/around/statOnly/line numbers；校验、原文件 SHA 和选择在一次流式扫描内完成。`file_edit` 2.1 在同一工具内提供 legacy edit、create、replace、editMany、preview，现有文件写入使用 SHA CAS 与原子替换；mutation 不回显正文/diff，preview 仅返回 bounded hunk。
 - Node 自更新启动时先处理 `ready.json`；仅在没有待应用更新且 Ready 检查成功后清理 `updates/<currentVersion>` 已消费 staging。Ready/apply 失败和 future pending staging 均保留，正式 EXE 的 `.previous` 回滚副本不受 data-dir 清理影响。0.4.14 的发布推送复用同一 `Ready → StartApply → .previous → restart` 链，不引入第二套 updater；Node 心跳会按真实活动状态上报 `ready|busy`。
 - Windows Node 在上述更新维护完成后，会对当前 `fast-spider-node.exe` 同级目录执行一次 fail-closed legacy cleanup：只清理旧手工安装器严格命名的临时 EXE、marker 和直接位于安全 `backups` 目录内的旧备份；未知项、子目录、reparse/junction、当前 EXE 与 `.previous` 永不删除。非 Windows 不执行该迁移。
-- Hub release backup rotation 由显式运维命令执行：新标准 backup 通过 Verify 且正式升级成功后，运行 `spiderctl backup-prune --dir <absolute-backup-dir> --keep 3`。它只识别直接子级 `pre-<semver>-<commit>.zip`，先验证全部候选再按 manifest `CreatedAt` 清理；历史异名、Hub binary backup、目录与 symlink/reparse 永不自动删除。
-- Release staging 清理由 `spiderctl staging-prune --dir <absolute-root> --layout local|server --through <semver> [--apply]` 显式执行；默认仅输出计划。它只识别严格的 `release-<semver>[-<commit>]` 或 `fast-spider-<semver>[-<commit>]` 直接子目录，只清理版本不高于 `--through` 的已完成 staging，并对 root/candidate/tree reparse、扫描上限与删除前身份变化 fail-closed；future/unknown/legacy deploy 目录保留。
+- Hub release backup rotation 由显式运维命令执行：新标准 backup 通过 Verify 且正式升级成功后，先运行 `spiderctl backup-prune --dir <absolute-backup-dir> --keep 3` 查看计划，再追加 `--apply` 执行。它只识别直接子级 `pre-<semver>-<commit>.zip`，先验证全部候选再按 manifest `CreatedAt` 清理；应用期间与同进程 backup 创建串行，并在每次删除前即时复核候选；历史异名、Hub binary backup、目录与 symlink/reparse 永不自动删除。
+- Release staging `--apply` 会先把候选原子隔离到同盘临时 quarantine，再复核身份/内容后递归删除；删除失败恢复原名，进程崩溃留下的 `.fast-spider-prune-*` 目录保留待下一次人工 plan/apply 对账，不会被宽泛扫描误删。
+- Browser 孤儿 Session 目录启动时和每分钟维护时都按有界批次清理；组件中心按语义版本选择最新已验证安装，避免字符串排序误选旧版本。
 - `ai_control` 1.1 已是多 AI Harness 控制面：当前支持 `codex` 与 `claude_code`；`provider.readiness` 分开报告 route/provider/harness/session backend/create readiness，Codex `session.create` 使用持久幂等记录防止重试重复 Thread。
 - Codex 保留 Provider/Model 能力发现、Skills/Hooks/Permission Profiles/Plugins/MCP 状态、Thread/Goal/Settings/Review、steer/respond、原生 Turn input 与 `outputSchema`；app-server 重启后按需 resume 持久 Thread。
 - Claude Code 使用原生 Session UUID + `stream-json` + `--resume`，Prompt 通过 stdin 传入；Fast Spider 只保存小型 Session 控制索引，不复制完整对话。模型和有效能力以 CC Switch Route + Harness 能力共同解释，不把 `sonnet`/`opus` 等别名直接当真实上游模型。
@@ -84,13 +85,16 @@ npm install --no-package-lock
 npx playwright install chromium
 cd ../..
 
-# Hub 运维：备份、校验、恢复到新空目录
-go run ./cmd/spiderctl backup --data-dir ./data --out ../fast-spider-backup.zip
-go run ./cmd/spiderctl backup-verify --file ../fast-spider-backup.zip
+# Hub 运维：普通时间戳备份不会进入 release rotation
+go run ./cmd/spiderctl backup --data-dir ./data --out ../fast-spider-backup-<timestamp>.zip
+go run ./cmd/spiderctl backup-verify --file ../fast-spider-backup-<timestamp>.zip
+
+# 正式升级备份使用 pre-<semver>-<commit>.zip；先预览，再明确应用轮换
 go run ./cmd/spiderctl backup-prune --dir <absolute-backup-dir> --keep 3
-go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through 0.4.14
-go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through 0.4.14 --apply
-go run ./cmd/spiderctl restore --file ../fast-spider-backup.zip --data-dir ./data-restored
+go run ./cmd/spiderctl backup-prune --dir <absolute-backup-dir> --keep 3 --apply
+go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through <last-completed-version>
+go run ./cmd/spiderctl staging-prune --dir <absolute-staging-root> --layout local --through <last-completed-version> --apply
+go run ./cmd/spiderctl restore --file ../fast-spider-backup-<timestamp>.zip --data-dir ./data-restored
 ```
 
 Node 不需要添加目录、配置目录权限或维护浏览器私网白名单。文件、Shell、Git、Build 和 AI Harness 请求直接携带目标绝对路径；Node 按当前 OS 用户权限、参数安全检查、资源限制和 Job 规则执行。CC Switch Provider/模型/Takeover 由 CC Switch 自己管理，Fast Spider 只读其数据库事实。
@@ -147,6 +151,7 @@ working_context
 - [路线图](docs/19-roadmap.md)
 - [开放问题](docs/20-open-questions.md)
 - [Thinking Team 角色协作](docs/22-thinking-team.md)
+- [缓存与生命周期维护](docs/23-cache-and-lifecycle.md)
 - [架构决策记录](docs/adr/)
 
 ## 设计约束
@@ -164,6 +169,8 @@ working_context
 ```bash
 bash scripts/release-gate.sh
 bash scripts/release-gate.sh --full
+go run ./cmd/secretscan
+go run ./cmd/secretscan --history
 ```
 
-门禁覆盖格式、秘密模式、模块校验、`go vet`、测试、构建、恢复后 Hub 健康检查；完整模式显式运行 Task Workspace、Managed ripgrep/native、file_read 2.0、file_edit 2.1、host/WSL runtime、Node update/reconnect、历史升级清理专项，以及 Browser readiness/真实交互、真实 CC Switch 只读路由、Claude Code、Codex readiness/幂等 Session、Local Bridge 多 Provider discovery 和产品 smoke。具体平台限制以门禁输出为准。
+统一秘密扫描器默认覆盖 tracked/untracked nonignored 工作树和 Git index，包含原始二进制与有界 ZIP 展开；`--history` 追加扫描 Git 全对象库，`--tree <dir>` 用于校验实际导出树。`.local/public-private-markers.txt` 默认只应用于当前 worktree/index 和 `--tree` 导出检查；历史扫描默认只使用内置凭据规则，只有显式 `--markers <file>` 才把本地 marker 应用于历史。命中只输出 source、path/object、line 和 rule，不回显值或整行；locator 自身含敏感值时改为哈希标识，读取、对象枚举、ZIP 展开或资源上限异常均失败关闭。门禁还覆盖格式、模块校验、`go vet`、测试、构建、恢复后 Hub 健康检查；完整模式额外运行历史扫描、合成脱敏自检及各产品专项。具体平台限制以门禁输出为准。

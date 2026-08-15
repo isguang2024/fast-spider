@@ -1,4 +1,4 @@
-# 部署与运维（0.4.17）
+# 部署与运维（0.4.18）
 
 ## Hub
 
@@ -63,27 +63,37 @@ spiderctl backup --data-dir /var/lib/fast-spider --out /srv/backups/fast-spider-
 spiderctl backup-verify --file /srv/backups/fast-spider-<timestamp>.zip
 ```
 
-备份包含 Hub secrets，必须按敏感数据保存。升级生产前必须先生成并校验备份。
+备份包含 Hub secrets，必须按敏感数据保存。升级生产前必须先生成并校验备份。普通 `fast-spider-<timestamp>.zip` 不属于 release rotation，`backup-prune` 永远不会识别或删除它。
 
-正式 release backup 使用严格文件名 `pre-<semver>-<commit>.zip`，其中 semver 为无前导零的三段十进制版本，commit 为 7–40 位十六进制。新 backup 完成 `backup-verify` 且正式升级成功后，执行：
+正式 release backup 使用严格文件名 `pre-<semver>-<commit>.zip`，其中 semver 为无前导零的三段十进制版本，commit 为 7–40 位十六进制。标准闭环是“升级前创建 → Verify → 升级并验收 → 预览轮换 → 明确应用”：
 
 ```bash
+# 用即将升级到的版本与当前来源提交生成标准名称
+spiderctl backup --data-dir /var/lib/fast-spider --out /srv/backups/pre-<target-semver>-<source-commit>.zip
+spiderctl backup-verify --file /srv/backups/pre-<target-semver>-<source-commit>.zip
+
+# 仅在升级成功后执行；第一条只输出计划，不写磁盘
 spiderctl backup-prune --dir <absolute-backup-dir> --keep 3
+spiderctl backup-prune --dir <absolute-backup-dir> --keep 3 --apply
 ```
 
-`backup-prune` 默认保留最新 3 份，root 必须是已存在的绝对普通目录且不能是 symlink/reparse。它只枚举直接子级、最多接受 256 个标准候选，并在任何删除前对全部候选执行完整 Verify；任一匹配候选损坏、manifest 无效、不是普通文件或为 reparse 时整次零删除。排序使用 manifest `CreatedAt` 的 UTC 时刻从新到旧，同时间按 basename 升序稳定决胜。`fast-spider-pre-*.zip` 等历史异名、Hub binary backup、未知文件和子目录全部保留；删除阶段若个别文件失败，JSON 结果仍明确列出 bounded kept/deleted basenames 与计数并返回错误。
+`backup-prune` 默认保留最新 3 份且只生成计划，只有 `--apply` 才删除。root 必须是已存在的绝对普通目录且不能是 symlink/reparse。它只枚举直接子级、最多接受 256 个标准候选，并在任何删除前对全部候选执行完整 Verify；任一匹配候选损坏、manifest 无效、不是普通文件或为 reparse 时整次零删除。排序使用 manifest `CreatedAt` 的 UTC 时刻从新到旧，同时间按 basename 升序稳定决胜。Apply 与同进程 `backup` 创建使用目录级串行化；Windows/Linux 在初检时从打开句柄冻结身份，并在每个 remove 前即时复核，身份改变或取消时保留当前及后续候选并返回准确的部分结果。其它平台在存在候选时明确 fail-closed。`fast-spider-pre-*.zip` 等历史异名、Hub binary backup、未知文件和子目录全部保留；删除阶段若个别文件失败，JSON 结果仍明确列出 bounded kept/planned/deleted basenames 与计数并返回错误。
 
 ## Release staging 清理
 
-发布构建和服务器上传 staging 不进入正式 release-dir，也不应长期保留。0.4.6 提供显式、默认只规划的清理命令：
+发布构建和服务器上传 staging 不进入正式 release-dir，也不应长期保留。清理命令显式接收“已经完成、验收且确认不再引用的最高版本”，默认只规划：
 
 ```bash
-spiderctl staging-prune --dir <absolute-root> --layout local --through 0.4.6
-spiderctl staging-prune --dir <absolute-root> --layout local --through 0.4.6 --apply
-spiderctl staging-prune --dir /tmp --layout server --through 0.4.6 --apply
+spiderctl staging-prune --dir <absolute-root> --layout local --through <last-completed-version>
+spiderctl staging-prune --dir <absolute-root> --layout local --through <last-completed-version> --apply
+spiderctl staging-prune --dir /tmp --layout server --through <last-completed-version> --apply
 ```
 
 `local` 只识别直接子级 `release-<semver>` / `release-<semver>-<7..40hex>`；`server` 只识别 `fast-spider-<semver>` / `fast-spider-<semver>-<7..40hex>`。只规划/删除版本不高于 `--through` 的候选；future、未知目录、legacy deploy 名称和普通文件均保留。root 或匹配 candidate 为 symlink/reparse/junction、候选树内出现 reparse/非普通项、扫描超过 256 candidates / 10000 files / 16 GiB / depth 32，或删除前身份/内容变化时均 fail-closed；`--apply` 前会完整扫描并重新核对，默认无 `--apply` 时绝不写磁盘。
+
+## 周期维护
+
+缓存、临时目录、Artifact、Agent 索引与开发协作资料室的生命周期边界、自动/手动清理方式和定时执行建议统一见[缓存与生命周期维护](23-cache-and-lifecycle.md)。无人值守任务只应执行无副作用检查或 plan-only 命令；任何 `--apply` / `--yes` 删除都必须先固定保留期、绝对根目录、结果留存和失败告警。
 
 ## 升级验收
 
@@ -99,4 +109,4 @@ spiderctl staging-prune --dir /tmp --layout server --through 0.4.6 --apply
 - 已登录 Web 后台“MCP 调用诊断”除 initialize/tools/list/tools/call 外还显示最近一次通过 OAuth 的 MCP HTTP 请求时间；若 ChatGPT 正报告不可用但该时间不变化，优先判定为会话侧未发请求，而不是 Node/Hub 断线。
 - ChatGPT App 在工具 Schema/描述变化后执行 Refresh；普通长会话中若 FastSpider_FS 命名空间缺失，先以唯一标记 `fsprobe` 过滤发现并只物化 `machine_list`，真实连接成功后再按当前动作加载 `capability_list`、`machine_get` 或业务工具。禁止为了健康检查一次加载全部 17 个 Schema；完整目录、连接入口与单工具分别不得超过 48 KiB、8 KiB、8 KiB。
 
-0.3.x 完成权限模型收敛；0.4.2 正式交付 Task Workspace、多 AI Harness/CC Switch 只读 Routing、Managed ripgrep 与文件能力 2.0；0.4.3-0.4.6 收敛更新、backup 与 staging 生命周期；0.4.7/0.4.8 收敛 Browser 与 Codex runtime；0.4.9 交付 file_edit 响应瘦身、搜索稳定码/统计、host/WSL runtime、Agent/Browser readiness、持久 Session create 幂等与轻量 timing；0.4.10 收敛大型仓库静态 include 前缀下推；0.4.11 收敛 Artifact/MCP 原生回显与临时分享边界；0.4.12 引入调用侧 Thinking Team；0.4.13 将其协作资料室收敛到 Working Context 标准六文件与 CAS 写入协议；0.4.14 新增任务空闲保护的 Node 发布推送与真实 ready/busy heartbeat；0.4.15 补充 MCP 调用路由提示；0.4.16 将其收敛为 initialize 常驻能力地图、`capability_list` 按需指南和每 Owner 有界 MCP 诊断；0.4.17 针对 ChatGPT 长会话偶发丢失工具物化状态增加过滤式恢复协议与认证请求到达性诊断。本次只发布 Hub 与 `spiderctl`，Node release、`version.txt` 和 `push.json` 均不变。
+0.3.x 完成权限模型收敛；0.4.2 正式交付 Task Workspace、多 AI Harness/CC Switch 只读 Routing、Managed ripgrep 与文件能力 2.0；0.4.3-0.4.6 收敛更新、backup 与 staging 生命周期；0.4.7/0.4.8 收敛 Browser 与 Codex runtime；0.4.9 交付 file_edit 响应瘦身、搜索稳定码/统计、host/WSL runtime、Agent/Browser readiness、持久 Session create 幂等与轻量 timing；0.4.10 收敛大型仓库静态 include 前缀下推；0.4.11 收敛 Artifact/MCP 原生回显与临时分享边界；0.4.12 引入调用侧 Thinking Team；0.4.13 将其协作资料室收敛到 Working Context 标准六文件与 CAS 写入协议；0.4.14 新增任务空闲保护的 Node 发布推送与真实 ready/busy heartbeat；0.4.15 补充 MCP 调用路由提示；0.4.16 将其收敛为 initialize 常驻能力地图、`capability_list` 按需指南和每 Owner 有界 MCP 诊断；0.4.17 针对 ChatGPT 长会话偶发丢失工具物化状态增加过滤式恢复协议与认证请求到达性诊断；0.4.18 补齐 OAuth 历史保留、Presentation/Artifact 可恢复清理、Release manifest 取消传播、staging 原子隔离、Node/Agent 代际生命周期和秘密发布门禁。本次同时发布 Hub、`spiderctl` 与 Windows Node，Node release、`version.txt` 和 `push.json` 必须来自同一提交。

@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -13,7 +14,13 @@ import (
 	"github.com/isguang2024/fast-spider/internal/security"
 )
 
-const browserSessionIdleTTL = 10 * time.Minute
+const (
+	browserSessionIdleTTL       = 10 * time.Minute
+	browserSessionOrphanTTL     = time.Hour
+	maxBrowserSessionScan       = 256
+	maxBrowserSessionCleanup    = 32
+	browserOpaqueIDEncodedBytes = 32
+)
 
 type BrowserActionError struct {
 	Code      string
@@ -273,6 +280,7 @@ func (m *BrowserManager) ManagedScreenshotPath(browserSessionID, rawPath string)
 }
 
 func (m *BrowserManager) StartMaintenance(ctx context.Context) {
+	m.cleanupOrphanSessions(time.Now().UTC())
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 	for {
@@ -281,8 +289,87 @@ func (m *BrowserManager) StartMaintenance(ctx context.Context) {
 			return
 		case now := <-ticker.C:
 			m.closeIdle(ctx, now.UTC())
+			// Continue draining orphaned session directories after startup. The
+			// bounded scan/removal keeps each tick cheap while ensuring a large
+			// backlog does not become permanent when the process stays alive.
+			m.cleanupOrphanSessions(now.UTC())
 		}
 	}
+}
+
+func (m *BrowserManager) cleanupOrphanSessions(now time.Time) {
+	m.actionMu.Lock()
+	defer m.actionMu.Unlock()
+	m.mu.Lock()
+	activeSessionID := ""
+	if m.session != nil {
+		activeSessionID = m.session.BrowserSessionID
+	}
+	m.mu.Unlock()
+	removed, err := cleanupOrphanBrowserSessions(m.dataDir, activeSessionID, now)
+	if err != nil {
+		m.logger.Warn("cleanup orphan browser sessions failed", "error", err)
+	}
+	if removed > 0 {
+		m.logger.Debug("cleaned orphan browser sessions", "count", removed)
+	}
+}
+
+func cleanupOrphanBrowserSessions(dataDir, activeSessionID string, now time.Time) (int, error) {
+	root := filepath.Join(dataDir, "browser", "sessions")
+	directory, err := os.Open(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer directory.Close()
+	entries, readErr := directory.ReadDir(maxBrowserSessionScan)
+	if errors.Is(readErr, io.EOF) {
+		readErr = nil
+	}
+	removed := 0
+	var cleanupErr error
+	for _, entry := range entries {
+		if removed >= maxBrowserSessionCleanup {
+			break
+		}
+		name := entry.Name()
+		if name == activeSessionID || !validManagedBrowserSessionID(name) {
+			continue
+		}
+		path := filepath.Join(root, name)
+		info, statErr := os.Lstat(path)
+		if statErr != nil {
+			if !errors.Is(statErr, os.ErrNotExist) {
+				cleanupErr = errors.Join(cleanupErr, statErr)
+			}
+			continue
+		}
+		if !info.IsDir() || info.Mode()&(os.ModeSymlink|os.ModeIrregular) != 0 || now.Sub(info.ModTime()) < browserSessionOrphanTTL {
+			continue
+		}
+		if removeErr := os.RemoveAll(path); removeErr != nil {
+			cleanupErr = errors.Join(cleanupErr, removeErr)
+			continue
+		}
+		removed++
+	}
+	return removed, errors.Join(readErr, cleanupErr)
+}
+
+func validManagedBrowserSessionID(value string) bool {
+	if len(value) != len("brs_")+browserOpaqueIDEncodedBytes || !strings.HasPrefix(value, "brs_") {
+		return false
+	}
+	for _, character := range value[len("brs_"):] {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '-' || character == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (m *BrowserManager) closeIdle(parent context.Context, now time.Time) {

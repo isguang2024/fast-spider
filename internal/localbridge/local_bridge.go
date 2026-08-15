@@ -50,6 +50,15 @@ func (s *localBridgeServer) serveConnection(parent context.Context, conn io.Read
 		return
 	}
 	defer conn.Close()
+	connectionDone := make(chan struct{})
+	defer close(connectionDone)
+	go func() {
+		select {
+		case <-parent.Done():
+			_ = conn.Close()
+		case <-connectionDone:
+		}
+	}()
 
 	connectionID, err := security.RandomOpaque("lconn_")
 	if err != nil {

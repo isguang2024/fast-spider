@@ -51,3 +51,11 @@
 - 工作树：此前保留的 Node UI 窗口尺寸改动经确认与升级无关后已撤销；文档同步前工作树 clean。
 - 最终状态：0.4.10 源码修订 `019ade0` 已推送并完成 full release gate；生产 Hub/spiderctl/PCa Node 均为 0.4.10，Node generation=68、online/ready，FastSpider_FS 文件、搜索、host/WSL、Agent 与 Browser 自举验收全部 PASS。
 - 回滚与备份：Hub、spiderctl、Node `.previous` 均保留 0.4.9；`pre-0.4.10-019ade0.zip`、`pre-0.4.9-46ef762.zip`、`pre-0.4.6-0de7bf1.zip` 为最近三份标准验证备份。
+
+### 2026-08-15 — 本地缓存与生命周期全量审计（未发布）
+
+- 本地工作树完成 10 项缓存、长期运行资源、Artifact、组件、Browser、Agent 索引、Release manifest、备份清理和维护文档优化；删除策略继续排除用户数据、原生 Agent 历史、未知项、活动项与 `in_doubt`。
+- 效率与恢复重点：内存缓存有界且返回值隔离；不同 Artifact 上传可并发，删除失败进入持久重试队列；Release manifest 复用 hash/sign；临时资源采用严格命名、有界扫描和失败恢复。
+- 安全清理重点：`backup-prune` 默认 plan-only，同进程创建/清理串行，Windows/Linux 删除前比较已冻结的句柄身份；同尺寸、同 mtime 原子替换不会误删。
+- 验证：`go test ./... -count=1` 548 项通过，`go vet ./...`、`git diff --check`、core 与 full release gate 通过；Agent、Hub、Node/备份三条独立返工复核均 PASS。当前 windows/386 工具链不支持 race detector，完整门禁已明确跳过，后续由 Linux amd64 CI 补跑。
+- 状态边界：这些结果仅属于本地工作树，没有改写上方 managed 生产事实，未提交、未推送、未构建发布版本、未部署。资料室 30 天清理只执行 dry-run，候选与删除均为 0；没有创建定时任务。

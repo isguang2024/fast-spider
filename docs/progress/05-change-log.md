@@ -130,3 +130,11 @@
 - 增加工具上下文发布预算：initialize <=2 KiB、完整工具目录 <=48 KiB、连接三工具 <=8 KiB、任一单工具 <=8 KiB；首次实现曾因 initialize 达 2076 bytes 被门禁拒绝，最终通过压缩常驻指令而不是放宽预算。
 - MCP 诊断增加 `lastMcpRequestAt`，在 OAuth Bearer 验证成功后更新请求到达时间，但不制造虚假 method event；后台可直接识别“ChatGPT 此会话未向 Hub 发请求”。
 - release commit `f2c2b14635575ed4459c5a5bf2db3295d11541c0` 已推送，full release gate 全绿；生产 Hub/spiderctl 已部署 0.4.17，PCa Node 保持 0.4.14。发布后 ChatGPT App Refresh 复验已完成：`fsprobe` 精确只物化 `machine_list`，当前会话可继续按需恢复其它工具，无需新会话、重新登录或 OAuth 授权；0.4.17 最终状态为 `FINAL PASS / PRODUCTION READY`。
+
+### 2026-08-15 — 0.4.18 缓存、生命周期与发布安全（实现阶段）
+
+- OAuth 注册回收只删除没有任何授权/Access Token/Refresh Token 的 Client；撤销授权保留至 90 天历史清理，Owner 删除共享 Client 只解绑自己的授权与 Token。
+- Presentation 根目录和过期文件删除失败会保持不可用/追踪状态等待维护重试；Artifact 维护领取批次与慢磁盘删除解耦，Blob 引用在删除前复核，`.part` 崩溃残留进入持久队列。
+- Release manifest singleflight 支持独立取消与共享哈希取消；staging prune 采用同盘原子 quarantine + 身份/内容复核；Codex/Job/Node 关闭路径加入代际和 starting reservation 保护。
+- Browser 孤儿目录每分钟持续分批清理；组件选择按语义版本；secretscan 覆盖文件名、ZIP entry、Git index/history/export 并统一 locator 脱敏。
+- 本条待补充 full gate、release commit、推送、备份哈希、生产 Hub/spiderctl/Node 版本与健康验收事实。

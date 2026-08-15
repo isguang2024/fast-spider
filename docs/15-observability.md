@@ -1,4 +1,4 @@
-# 可观测性（0.4.17）
+# 可观测性（0.4.18）
 
 Fast Spider 的日志和指标以低噪音、低基数、可排障为目标。
 
@@ -48,3 +48,5 @@ Hub 使用 MCP SDK 正式 Receiving Middleware 观察 `initialize`、`tools/list
 ## 清理
 
 维护任务分批清理过期 Web/OAuth/连接令牌、旧审计、过期 Artifact/上传和临时状态，避免长期运维无限堆日志/文件。
+
+0.4.18 的清理失败必须保留可重试事实：Artifact 文件删除进入持久队列并记录尝试次数，Presentation 初始化/清理失败保持不可用状态，Release/staging 失败保留现场。运维诊断只输出阶段、计数和稳定错误分类，不输出文件正文、Token 或密钥。

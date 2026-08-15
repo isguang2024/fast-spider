@@ -30,10 +30,12 @@ type sessionCreateIndex struct {
 }
 
 type sessionCreateStore struct {
-	mu      sync.Mutex
-	path    string
-	records map[string]sessionCreateRecord
-	loadErr error
+	mu                       sync.Mutex
+	path                     string
+	records                  map[string]sessionCreateRecord
+	loadErr                  error
+	beforeCommitSaveOverride func() error
+	syncParentOverride       func(string) error
 }
 
 type createIdempotencyError struct{ code, message string }
@@ -67,7 +69,6 @@ func (s *sessionCreateStore) load() error {
 	if err := json.Unmarshal(raw, &index); err != nil || index.SchemaVersion != 1 || len(index.Records) > maxSessionCreateRecords {
 		return fmt.Errorf("invalid session create idempotency index")
 	}
-	now := time.Now().UTC()
 	seen := make(map[string]struct{}, len(index.Records))
 	for _, record := range index.Records {
 		if err := validateSessionCreateRecord(record); err != nil {
@@ -77,13 +78,20 @@ func (s *sessionCreateStore) load() error {
 			return fmt.Errorf("invalid session create idempotency index: duplicate key")
 		}
 		seen[record.Key] = struct{}{}
+		s.records[record.Key] = record
+	}
+	markInterruptedSessionCreateRecords(s.records, time.Now().UTC())
+	return nil
+}
+
+func markInterruptedSessionCreateRecords(records map[string]sessionCreateRecord, now time.Time) {
+	for key, record := range records {
 		if record.State == "reserved" || record.State == "thread_created" {
 			record.State = "in_doubt"
 			record.UpdatedAt = now
+			records[key] = record
 		}
-		s.records[record.Key] = record
 	}
-	return nil
 }
 
 func validateSessionCreateRecord(record sessionCreateRecord) error {
@@ -139,8 +147,10 @@ func (s *sessionCreateStore) abort(key string) error {
 		return fmt.Errorf("session create reservation is no longer abortable")
 	}
 	delete(s.records, key)
-	if err := s.saveLocked(); err != nil {
-		s.records[key] = record
+	if committed, err := s.saveLocked(); err != nil {
+		if !committed {
+			s.records[key] = record
+		}
 		return err
 	}
 	return nil
@@ -160,8 +170,10 @@ func (s *sessionCreateStore) releaseUnresolved(key string) (bool, error) {
 		return false, &createIdempotencyError{code: "IDEMPOTENCY_CONFLICT", message: "only an unresolved session.create without a known session can be released by idempotencyKey"}
 	}
 	delete(s.records, key)
-	if err := s.saveLocked(); err != nil {
-		s.records[key] = record
+	if committed, err := s.saveLocked(); err != nil {
+		if !committed {
+			s.records[key] = record
+		}
 		return false, err
 	}
 	return true, nil
@@ -193,8 +205,10 @@ func (s *sessionCreateStore) begin(key, specHash string) (map[string]any, bool, 
 		return nil, false, &createIdempotencyError{code: "RESOURCE_LIMIT", message: "session.create idempotency store is full"}
 	}
 	s.records[key] = sessionCreateRecord{Key: key, SpecHash: specHash, State: "reserved", UpdatedAt: time.Now().UTC()}
-	if err := s.saveLocked(); err != nil {
-		delete(s.records, key)
+	if committed, err := s.saveLocked(); err != nil {
+		if !committed {
+			delete(s.records, key)
+		}
 		return nil, false, err
 	}
 	return nil, false, nil
@@ -210,6 +224,7 @@ func (s *sessionCreateStore) update(key, state string, result map[string]any) er
 	if !ok {
 		return fmt.Errorf("session create reservation is missing")
 	}
+	previous := record
 	record.State = state
 	record.Result = cloneAgentMap(result)
 	record.UpdatedAt = time.Now().UTC()
@@ -217,7 +232,13 @@ func (s *sessionCreateStore) update(key, state string, result map[string]any) er
 		return err
 	}
 	s.records[key] = record
-	return s.saveLocked()
+	if committed, err := s.saveLocked(); err != nil {
+		if !committed && state != "in_doubt" {
+			s.records[key] = previous
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *sessionCreateStore) prepareSessionDelete(sessionID string) (bool, error) {
@@ -252,9 +273,11 @@ func (s *sessionCreateStore) prepareSessionDelete(sessionID string) (bool, error
 		}
 		return false, nil
 	}
-	if err := s.saveLocked(); err != nil {
-		for key, record := range previous {
-			s.records[key] = record
+	if committed, err := s.saveLocked(); err != nil {
+		if !committed {
+			for key, record := range previous {
+				s.records[key] = record
+			}
 		}
 		return false, err
 	}
@@ -282,18 +305,23 @@ func (s *sessionCreateStore) finalizeSessionDelete(sessionID string) error {
 	if len(removed) == 0 {
 		return nil
 	}
-	if err := s.saveLocked(); err != nil {
-		for key, record := range removed {
-			s.records[key] = record
+	if committed, err := s.saveLocked(); err != nil {
+		if !committed {
+			for key, record := range removed {
+				s.records[key] = record
+			}
 		}
 		return err
 	}
 	return nil
 }
 
-func (s *sessionCreateStore) saveLocked() error {
+func (s *sessionCreateStore) saveLocked() (bool, error) {
+	if s.beforeCommitSaveOverride != nil {
+		return false, s.beforeCommitSaveOverride()
+	}
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return err
+		return false, err
 	}
 	records := make([]sessionCreateRecord, 0, len(s.records))
 	for _, record := range s.records {
@@ -302,31 +330,42 @@ func (s *sessionCreateStore) saveLocked() error {
 	sort.Slice(records, func(i, j int) bool { return records[i].UpdatedAt.Before(records[j].UpdatedAt) })
 	raw, err := json.Marshal(sessionCreateIndex{SchemaVersion: 1, Records: records})
 	if err != nil {
-		return err
+		return false, err
 	}
 	temp, err := os.CreateTemp(filepath.Dir(s.path), ".session-create-idempotency-*")
 	if err != nil {
-		return err
+		return false, err
 	}
 	tempPath := temp.Name()
 	defer os.Remove(tempPath)
 	if err := temp.Chmod(0o600); err != nil {
 		_ = temp.Close()
-		return err
+		return false, err
 	}
 	if _, err := temp.Write(raw); err != nil {
 		_ = temp.Close()
-		return err
+		return false, err
 	}
 	if err := temp.Sync(); err != nil {
 		_ = temp.Close()
-		return err
+		return false, err
 	}
 	if err := temp.Close(); err != nil {
-		return err
+		return false, err
 	}
 	if err := replaceAgentFile(tempPath, s.path); err != nil {
-		return err
+		return false, err
 	}
-	return syncAgentParentDirectory(s.path)
+	syncParent := syncAgentParentDirectory
+	if s.syncParentOverride != nil {
+		syncParent = s.syncParentOverride
+	}
+	if err := syncParent(s.path); err != nil {
+		// The atomic replacement is already visible. Keep memory aligned with
+		// what load would recover, while conservatively resolving transitional
+		// records whose directory entry durability is now uncertain.
+		markInterruptedSessionCreateRecords(s.records, time.Now().UTC())
+		return true, err
+	}
+	return true, nil
 }

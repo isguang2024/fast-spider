@@ -1,9 +1,9 @@
 # Fast Spider 0.4 Roadmap
 
 <!-- fast-spider:managed:roadmap:start -->
-## Plan `fast-spider-0.4.0-to-0.4.10`
+## Plan `fast-spider-0.4.x-through-0.4.18`
 
-状态枚举：`pending` / `in_progress` / `blocked` / `done`。0.4.1 是连续开发阶段，不做独立发布；截至 0.4.10 本路线图全部完成。
+状态枚举：`pending` / `in_progress` / `blocked` / `done`。0.4.1 是连续开发阶段，不做独立发布；本文件记录 0.4.x 至 0.4.18 的发布与验收事实，后续未版本化维护方向见 `docs/19-roadmap.md`。
 
 ### 0.4.0 基线收口
 
@@ -151,6 +151,22 @@
 | FS-0417-005 Hub 专项、full release gate 与跨产品 E2E | done |
 | FS-0417-006 commit/push、生产备份与 Hub/spiderctl 部署 | done |
 | EXT-CHATGPT-0417-REFRESH 一次 Refresh 后同会话恢复验收 | done |
+
+### 0.4.18 缓存、生命周期与发布安全
+
+| Task | 状态 |
+|---|---|
+| FS-0418-001 OAuth 注册孤儿配额与历史授权保留边界 | done |
+| FS-0418-002 Owner 删除共享 OAuth Client 的隔离事务 | done |
+| FS-0418-003 可信反向代理来源与 DCR 限额 | done |
+| FS-0418-004 Presentation/Artifact 清理失败可重试 | done |
+| FS-0418-005 Artifact 清理锁、共享 Blob 与 `.part` 崩溃恢复 | done |
+| FS-0418-006 Release manifest singleflight 取消与发布替换失效 | done |
+| FS-0418-007 staging prune 原子隔离、TOCTOU 与失败恢复 | done |
+| FS-0418-008 secretscan 密集输入有界扫描、路径检测与脱敏 | done |
+| FS-0418-009 Codex generation 与 Node runtime 关闭生命周期 | done |
+| FS-0418-010 starting Job shutdown、Browser/组件持续清理与语义版本 | done |
+| FS-0418-011 全量门禁、版本提交、生产备份、Hub/spiderctl/Node 发布 | in_progress |
 
 ### Final Acceptance Matrix
 

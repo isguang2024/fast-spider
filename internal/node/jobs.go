@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,6 +41,7 @@ var (
 	ErrJobNotComplete      = errors.New("job is not complete")
 	ErrJobLogUnavailable   = errors.New("job log is unavailable")
 	ErrIdempotencyConflict = errors.New("idempotency key conflicts with an existing job")
+	ErrJobManagerClosed    = errors.New("job manager is closed")
 )
 
 type JobEvent struct {
@@ -81,6 +83,7 @@ type idempotencyRecord struct {
 type jobStartReservation struct {
 	specHash string
 	done     chan struct{}
+	cancel   context.CancelFunc
 }
 
 type Job struct {
@@ -120,6 +123,7 @@ type JobManager struct {
 	starting    map[string]*jobStartReservation
 	semaphore   chan struct{}
 	logDir      string
+	closed      bool
 	prepare     func(context.Context, string, []string, executionRuntime) (string, []string, string, error)
 	keepAlive   func([]string) error
 }
@@ -163,6 +167,10 @@ func (m *JobManager) StartExecution(ctx context.Context, cwd string, argv []stri
 	var reservation *jobStartReservation
 	for {
 		m.mu.Lock()
+		if m.closed {
+			m.mu.Unlock()
+			return JobSnapshot{}, ErrJobManagerClosed
+		}
 		if previous, ok := m.idempotency[idempotencyKey]; ok {
 			job := m.jobs[previous.JobID]
 			m.mu.Unlock()
@@ -201,9 +209,11 @@ func (m *JobManager) StartExecution(ctx context.Context, cwd string, argv []stri
 			m.mu.Unlock()
 			return JobSnapshot{}, ErrJobLimit
 		}
-		reservation = &jobStartReservation{specHash: specHash, done: make(chan struct{})}
+		prepareCtx, cancel := context.WithCancel(ctx)
+		reservation = &jobStartReservation{specHash: specHash, done: make(chan struct{}), cancel: cancel}
 		m.starting[idempotencyKey] = reservation
 		m.mu.Unlock()
+		ctx = prepareCtx
 		break
 	}
 
@@ -211,6 +221,7 @@ func (m *JobManager) StartExecution(ctx context.Context, cwd string, argv []stri
 	var logFile *os.File
 	var logPath string
 	defer func() {
+		reservation.cancel()
 		if committed {
 			return
 		}
@@ -229,6 +240,15 @@ func (m *JobManager) StartExecution(ctx context.Context, cwd string, argv []stri
 
 	execCwd, execArgv, runtimeKind, err := m.prepare(ctx, cwd, argv, runtimeSpec)
 	if err != nil {
+		return JobSnapshot{}, err
+	}
+	m.mu.RLock()
+	closed := m.closed || m.starting[idempotencyKey] != reservation
+	m.mu.RUnlock()
+	if closed {
+		return JobSnapshot{}, ErrJobManagerClosed
+	}
+	if err := ctx.Err(); err != nil {
 		return JobSnapshot{}, err
 	}
 	if err := m.keepAlive(execArgv); err != nil {
@@ -256,7 +276,17 @@ func (m *JobManager) StartExecution(ctx context.Context, cwd string, argv []stri
 	if err != nil {
 		return JobSnapshot{}, err
 	}
+	m.mu.Lock()
+	if m.closed || m.starting[idempotencyKey] != reservation {
+		m.mu.Unlock()
+		return JobSnapshot{}, ErrJobManagerClosed
+	}
+	if err := ctx.Err(); err != nil {
+		m.mu.Unlock()
+		return JobSnapshot{}, err
+	}
 	if err := cmd.Start(); err != nil {
+		m.mu.Unlock()
 		return JobSnapshot{}, err
 	}
 	now := time.Now().UTC()
@@ -266,8 +296,6 @@ func (m *JobManager) StartExecution(ctx context.Context, cwd string, argv []stri
 		notify: make(chan struct{}), cmd: cmd, stop: make(chan string, 1), done: make(chan struct{}), logPath: logPath, logFile: logFile,
 	}
 	job.appendEvent("started", "process started")
-
-	m.mu.Lock()
 	m.jobs[jobID] = job
 	m.order = append(m.order, jobID)
 	m.idempotency[idempotencyKey] = idempotencyRecord{JobID: jobID, SpecHash: specHash}
@@ -392,12 +420,20 @@ func (m *JobManager) Cancel(ctx context.Context, jobID string) (JobSnapshot, err
 }
 
 func (m *JobManager) CancelAll(ctx context.Context) error {
-	m.mu.RLock()
+	m.mu.Lock()
+	m.closed = true
 	jobs := make([]*Job, 0, len(m.jobs))
 	for _, job := range m.jobs {
 		jobs = append(jobs, job)
 	}
-	m.mu.RUnlock()
+	starting := make([]*jobStartReservation, 0, len(m.starting))
+	for _, reservation := range m.starting {
+		starting = append(starting, reservation)
+	}
+	m.mu.Unlock()
+	for _, reservation := range starting {
+		reservation.cancel()
+	}
 	for _, job := range jobs {
 		job.mu.Lock()
 		terminal := isTerminalJobState(job.state)
@@ -407,6 +443,13 @@ func (m *JobManager) CancelAll(ctx context.Context) error {
 			case job.stop <- "shutdown":
 			default:
 			}
+		}
+	}
+	for _, reservation := range starting {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-reservation.done:
 		}
 	}
 	for _, job := range jobs {
@@ -507,17 +550,34 @@ func (m *JobManager) cleanupLocked() {
 }
 
 func (j *Job) captureStream(eventType string, reader interface{ Read([]byte) (int, error) }) {
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64*1024), maxScannerTokenSize)
-	for scanner.Scan() {
-		text, normalizationNote := normalizeProcessOutput(scanner.Bytes())
-		if normalizationNote != "" {
-			j.appendEvent("warning", eventType+" "+normalizationNote)
+	buffered := bufio.NewReaderSize(reader, maxScannerTokenSize)
+	for {
+		fragment, err := buffered.ReadSlice('\n')
+		if len(fragment) > 0 {
+			completeLine := !errors.Is(err, bufio.ErrBufferFull)
+			if completeLine && fragment[len(fragment)-1] == '\n' {
+				fragment = fragment[:len(fragment)-1]
+				if len(fragment) > 0 && fragment[len(fragment)-1] == '\r' {
+					fragment = fragment[:len(fragment)-1]
+				}
+			}
+			text, normalizationNote := normalizeProcessOutput(fragment)
+			if normalizationNote != "" {
+				j.appendEvent("warning", eventType+" "+normalizationNote)
+			}
+			if completeLine {
+				text += "\n"
+			}
+			j.appendEvent(eventType, text)
 		}
-		j.appendEvent(eventType, text+"\n")
-	}
-	if err := scanner.Err(); err != nil {
+		if err == nil || errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			return
+		}
 		j.appendEvent("warning", eventType+" capture stopped: "+err.Error())
+		return
 	}
 }
 

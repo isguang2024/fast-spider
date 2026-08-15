@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/isguang2024/fast-spider/internal/hub/core"
 	"github.com/isguang2024/fast-spider/internal/hub/registry"
@@ -52,6 +53,9 @@ func TestSignedNodeReleaseManifestAndDownload(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("manifest status=%d", resp.StatusCode)
 	}
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("manifest Cache-Control=%q, want no-store", got)
+	}
 	var manifest releaseinfo.Manifest
 	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
 		t.Fatal(err)
@@ -66,6 +70,42 @@ func TestSignedNodeReleaseManifestAndDownload(t *testing.T) {
 	if manifest.Version != "0.2.0" || manifest.Kind != "node" || manifest.ID != "fast-spider-node" || manifest.Platform != "windows-amd64" {
 		t.Fatalf("unexpected manifest: %+v", manifest)
 	}
+
+	artifact = []byte("new-windows-node-release!")
+	artifactPath := filepath.Join(releaseDir, "fast-spider-node.exe")
+	versionPath := filepath.Join(releaseDir, "version.txt")
+	if err := os.WriteFile(artifactPath, artifact, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(versionPath, []byte("0.2.1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changedAt := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(artifactPath, changedAt, changedAt); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(versionPath, changedAt, changedAt); err != nil {
+		t.Fatal(err)
+	}
+	changedResp, err := http.Get(hub.URL + "/api/v1/node/releases/windows-amd64/latest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer changedResp.Body.Close()
+	var changed releaseinfo.Manifest
+	if err := json.NewDecoder(changedResp.Body).Decode(&changed); err != nil {
+		t.Fatal(err)
+	}
+	if changedResp.StatusCode != http.StatusOK || changedResp.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("changed manifest status=%d cache=%q", changedResp.StatusCode, changedResp.Header.Get("Cache-Control"))
+	}
+	if changed.Version != "0.2.1" || changed.SHA256 == manifest.SHA256 || changed.Signature == manifest.Signature {
+		t.Fatalf("release file change did not invalidate manifest: before=%+v after=%+v", manifest, changed)
+	}
+	if err := releaseinfo.Verify(publicKey, changed); err != nil {
+		t.Fatalf("changed release manifest signature: %v", err)
+	}
+	manifest = changed
 	download, err := http.Get(hub.URL + manifest.DownloadPath)
 	if err != nil {
 		t.Fatal(err)

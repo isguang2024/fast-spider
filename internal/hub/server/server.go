@@ -26,13 +26,14 @@ type Config struct {
 }
 
 type Server struct {
-	service        *core.Service
-	config         Config
-	oauth          *oauthState
-	loginLimiter   *loginFailureLimiter
-	presentations  *presentationStore
-	mcpDiagnostics *mcpDiagnosticsStore
-	http           *http.Server
+	service            *core.Service
+	config             Config
+	oauth              *oauthState
+	oauthRegistrations *oauthRegistrationGuard
+	loginLimiter       *loginFailureLimiter
+	presentations      *presentationStore
+	mcpDiagnostics     *mcpDiagnosticsStore
+	http               *http.Server
 }
 
 type apiError struct {
@@ -45,12 +46,13 @@ func New(service *core.Service, cfg Config) *Server {
 	}
 	startedAt := time.Now().UTC()
 	s := &Server{
-		service:        service,
-		config:         cfg,
-		oauth:          newOAuthState(),
-		loginLimiter:   newLoginFailureLimiter(),
-		presentations:  newPresentationStore(presentationTempRoot(service.DataDir())),
-		mcpDiagnostics: newMCPDiagnosticsStore(service.Version(), startedAt),
+		service:            service,
+		config:             cfg,
+		oauth:              newOAuthState(),
+		oauthRegistrations: newOAuthRegistrationGuard(),
+		loginLimiter:       newLoginFailureLimiter(),
+		presentations:      newPresentationStore(presentationTempRoot(service.DataDir())),
+		mcpDiagnostics:     newMCPDiagnosticsStore(service.Version(), startedAt),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.handleWebRoot)
