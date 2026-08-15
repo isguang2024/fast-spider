@@ -27,5 +27,5 @@
 ### 2026-08-15 — 缓存与生命周期审计
 
 - 本轮 10 项问题均已实现；主控已补做 Hub/Node/Artifact/Release/secret 关键路径复核，当前无已知本地代码阻断。
-- 后续门禁：在 Linux amd64 + CGO 环境补跑 `go test -race ./...`；当前 windows/386 工具链不支持 race detector。
+- `go test -race ./...` 已在 WSL Linux/amd64 + CGO 环境全量通过；Windows/386 原生工具链仍按平台限制不执行 race，但该验收缺口已闭环。
 - 后续仅在真实进入条件出现时启动：清理可观测性、Session 显式 reconcile、Working Context 归档、大规模清理背压，以及组件/发布目录的跨进程协作锁。详见 `docs/19-roadmap.md` 与 `docs/23-cache-and-lifecycle.md`。

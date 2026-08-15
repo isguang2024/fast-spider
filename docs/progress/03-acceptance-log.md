@@ -215,12 +215,13 @@
 ## 2026-08-15 — 0.4.18 缓存、生命周期与生产发布
 
 - `FS-0418-001..010`: PASS；OAuth/Presentation/Artifact/Release manifest/staging/Node Agent/Job/Browser/component/secretscan 十项审计问题均完成实现、回归测试与门禁接线。Artifact 慢删除与上传解耦、Release hash 支持取消、staging 使用同盘 quarantine、Browser 持续分批清理、组件按语义版本选择，敏感路径/ZIP/Git history/export 均 fail-closed 脱敏。
-- `FS-0418-011`: PASS；`go test ./... -count=1` 为 592 passed / 26 packages；`go vet ./...`、`git diff --check`、current/history `secretscan`、脚本语法检查及完整 `scripts/release-gate.sh --full` 均通过。Windows/386 + CGO=0 环境未执行 race（缺少 CGO C 编译器），不影响常规门禁结论。
+- `FS-0418-011`: PASS；`go test ./... -count=1` 为 592 passed / 26 packages；`go vet ./...`、`git diff --check`、current/history `secretscan`、脚本语法检查及完整 `scripts/release-gate.sh --full` 均通过。Windows/386 + CGO=0 原生环境无法执行 race，已在同一工作树的 WSL Linux/amd64 + CGO 环境补跑 `go test -race ./...` 并全量通过。
 - Git 事实：release commit `a8934c8be0ab2482071dc87fe1f7a81d799c321a` 已推送到 `origin/codex/release-0.4.18`，PR #1 已创建并完成合并前验收。
 - 生产 Hub/spiderctl 原子部署：Hub SHA256=`2665b635ef898a3aebb6861ad9e0525ffe5f30110acfe4db5cff18c847334a13`、spiderctl SHA256=`1e2911bc223fb79f830b64b9f12574c55e8d0065c53a1b4ff6021f8b47c1f1b3`，版本均为 0.4.18；systemd active，Hub PID=`1844594`，本机与公网 livez/readyz 均为 200。
 - 升级前备份 `pre-0.4.18-a8934c8.zip` SHA256=`2409b522785223e1865d8db6b7c56f8b5ff8608efbda65eab64ba45f959b247e`，Verify `valid=true`、22 files、manifest source version=0.4.17；旧 Hub/spiderctl 版本化回滚副本和 Node 0.4.14 rollback 均保留。
 - PCa Node 发布文件与 manifest SHA256=`75cb6b274095ff2dad12bf6a9df5fe8faa1f5ba2a02345532e8722f0da1ed41d`，Node idle-safe 更新后为 0.4.18 / windows-amd64 / generation=89 / active+online+ready。
 - 备份清理执行 `backup-prune --keep 3` plan-only：candidate=6、kept=3、planned=3、deleted=0；没有未经确认删除历史备份。资料室 30 天清理仍为 dry-run，未创建定时任务。
+- 发布后补充验收：同一工作树在 WSL Linux/amd64 + CGO 环境执行 `go test -race ./...`，全量包通过，exitCode=0；Windows/386 原生 race 限制不再构成未验证项。
 - **Final Acceptance: PASS / PRODUCTION READY**。0.4.18 源码、门禁、备份、Hub/spiderctl、Node、健康检查与回滚证据均已闭环。
 <!-- fast-spider:managed:acceptance:end -->
 
