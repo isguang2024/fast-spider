@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 )
 
@@ -32,24 +33,32 @@ func runLocalBridgeServer(ctx context.Context, dataDir string, handler func(cont
 		_ = os.Remove(endpoint)
 		return err
 	}
+	serverCtx, cancel := context.WithCancel(ctx)
+	var connections sync.WaitGroup
 	defer func() {
-		listener.Close()
+		cancel()
+		_ = listener.Close()
+		connections.Wait()
 		_ = os.Remove(endpoint)
 	}()
 	go func() {
-		<-ctx.Done()
+		<-serverCtx.Done()
 		_ = listener.Close()
 	}()
 
 	for {
 		conn, err := listener.AcceptUnix()
 		if err != nil {
-			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+			if serverCtx.Err() != nil || errors.Is(err, net.ErrClosed) {
 				return nil
 			}
 			return fmt.Errorf("accept local bridge: %w", err)
 		}
-		go handler(ctx, conn)
+		connections.Add(1)
+		go func() {
+			defer connections.Done()
+			handler(serverCtx, conn)
+		}()
 	}
 }
 

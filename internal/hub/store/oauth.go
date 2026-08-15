@@ -9,13 +9,21 @@ import (
 )
 
 type OAuthClientRecord struct {
-	ClientID      string
-	ClientName    string
-	RedirectURIs  []string
-	GrantTypes    []string
-	ResponseTypes []string
-	Scope         string
-	CreatedAt     time.Time
+	ClientID               string
+	ClientName             string
+	RedirectURIs           []string
+	GrantTypes             []string
+	ResponseTypes          []string
+	Scope                  string
+	RegistrationSourceHash string
+	CreatedAt              time.Time
+}
+
+type OAuthClientRegistrationLimits struct {
+	MaxClients       int
+	MaxOrphans       int
+	MaxSourceOrphans int
+	OrphanCutoff     time.Time
 }
 
 type OAuthAuthorizationRecord struct {
@@ -54,10 +62,104 @@ func (s *Store) RegisterOAuthClient(ctx context.Context, rec OAuthClientRecord) 
 		return err
 	}
 	_, err = s.db.ExecContext(ctx, `INSERT INTO oauth_clients(
-		client_id, client_name, redirect_uris_json, grant_types_json, response_types_json, scope, created_at
-	) VALUES(?,?,?,?,?,?,?)`,
-		rec.ClientID, rec.ClientName, string(redirectsJSON), string(grantsJSON), string(responsesJSON), rec.Scope, rec.CreatedAt.Unix())
+		client_id, client_name, redirect_uris_json, grant_types_json, response_types_json, scope, registration_source_hash, created_at
+	) VALUES(?,?,?,?,?,?,?,?)`,
+		rec.ClientID, rec.ClientName, string(redirectsJSON), string(grantsJSON), string(responsesJSON), rec.Scope, nullString(rec.RegistrationSourceHash), rec.CreatedAt.Unix())
 	return err
+}
+
+// RegisterOAuthClientWithinLimits atomically reclaims stale unowned clients,
+// checks all persistent registration quotas, and inserts the new client.
+func (s *Store) RegisterOAuthClientWithinLimits(ctx context.Context, rec OAuthClientRecord, limits OAuthClientRegistrationLimits) error {
+	redirectsJSON, err := json.Marshal(rec.RedirectURIs)
+	if err != nil {
+		return err
+	}
+	grantsJSON, err := json.Marshal(rec.GrantTypes)
+	if err != nil {
+		return err
+	}
+	responsesJSON, err := json.Marshal(rec.ResponseTypes)
+	if err != nil {
+		return err
+	}
+	if limits.MaxClients <= 0 || limits.MaxOrphans <= 0 || limits.MaxSourceOrphans <= 0 || rec.RegistrationSourceHash == "" {
+		return ErrResourceLimit
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	quotaNow := rec.CreatedAt.Unix()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_clients
+				WHERE created_at <= ?
+				AND NOT EXISTS (SELECT 1 FROM oauth_authorizations a WHERE a.client_id = oauth_clients.client_id)
+				AND NOT EXISTS (SELECT 1 FROM oauth_access_tokens t WHERE t.client_id = oauth_clients.client_id)
+				AND NOT EXISTS (SELECT 1 FROM oauth_refresh_tokens t WHERE t.client_id = oauth_clients.client_id)`,
+		limits.OrphanCutoff.Unix()); err != nil {
+		return err
+	}
+	var totalClients int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM oauth_clients").Scan(&totalClients); err != nil {
+		return err
+	}
+	if totalClients >= limits.MaxClients {
+		return ErrResourceLimit
+	}
+	var orphanClients int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM oauth_clients c
+			WHERE NOT EXISTS (SELECT 1 FROM oauth_authorizations a
+				WHERE a.client_id = c.client_id AND a.deleted_at IS NULL
+				AND a.revoked_at IS NULL AND a.expires_at > ?)
+			AND NOT EXISTS (SELECT 1 FROM oauth_access_tokens t
+				WHERE t.client_id = c.client_id AND t.expires_at > ?)
+			AND NOT EXISTS (SELECT 1 FROM oauth_refresh_tokens t
+				WHERE t.client_id = c.client_id AND t.expires_at > ?)`,
+		quotaNow, quotaNow, quotaNow).Scan(&orphanClients); err != nil {
+		return err
+	}
+	if orphanClients >= limits.MaxOrphans {
+		return ErrResourceLimit
+	}
+	var sourceOrphans int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM oauth_clients c
+			WHERE c.registration_source_hash = ?
+			AND NOT EXISTS (SELECT 1 FROM oauth_authorizations a
+				WHERE a.client_id = c.client_id AND a.deleted_at IS NULL
+				AND a.revoked_at IS NULL AND a.expires_at > ?)
+			AND NOT EXISTS (SELECT 1 FROM oauth_access_tokens t
+				WHERE t.client_id = c.client_id AND t.expires_at > ?)
+			AND NOT EXISTS (SELECT 1 FROM oauth_refresh_tokens t
+				WHERE t.client_id = c.client_id AND t.expires_at > ?)`,
+		rec.RegistrationSourceHash, quotaNow, quotaNow, quotaNow).Scan(&sourceOrphans); err != nil {
+		return err
+	}
+	if sourceOrphans >= limits.MaxSourceOrphans {
+		return ErrResourceLimit
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO oauth_clients(
+		client_id, client_name, redirect_uris_json, grant_types_json, response_types_json, scope, registration_source_hash, created_at
+	) VALUES(?,?,?,?,?,?,?,?)`,
+		rec.ClientID, rec.ClientName, string(redirectsJSON), string(grantsJSON), string(responsesJSON), rec.Scope, rec.RegistrationSourceHash, rec.CreatedAt.Unix()); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) CountOrphanOAuthClients(ctx context.Context) (int, error) {
+	var count int
+	now := time.Now().UTC().Unix()
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM oauth_clients c
+			WHERE NOT EXISTS (SELECT 1 FROM oauth_authorizations a
+				WHERE a.client_id = c.client_id AND a.deleted_at IS NULL
+				AND a.revoked_at IS NULL AND a.expires_at > ?)
+			AND NOT EXISTS (SELECT 1 FROM oauth_access_tokens t
+				WHERE t.client_id = c.client_id AND t.expires_at > ?)
+			AND NOT EXISTS (SELECT 1 FROM oauth_refresh_tokens t
+				WHERE t.client_id = c.client_id AND t.expires_at > ?)`, now, now, now).Scan(&count)
+	return count, err
 }
 
 func (s *Store) ListOAuthClients(ctx context.Context) ([]OAuthClientRecord, error) {
@@ -114,12 +216,43 @@ func (s *Store) DeleteOAuthClient(ctx context.Context, clientID string) error {
 }
 
 func (s *Store) DeleteOAuthClientForOwner(ctx context.Context, ownerID, clientID string) error {
-	return s.deleteOAuthClient(ctx, `DELETE FROM oauth_clients
-		WHERE client_id = ?
-		AND EXISTS (
-			SELECT 1 FROM oauth_authorizations owner_auth
-			WHERE owner_auth.client_id = oauth_clients.client_id AND owner_auth.owner_id = ?
-		)`, clientID, ownerID)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var associated int
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM oauth_authorizations
+		WHERE owner_id = ? AND client_id = ? AND deleted_at IS NULL
+	)`, ownerID, clientID).Scan(&associated); err != nil {
+		return err
+	}
+	if associated == 0 {
+		return ErrNotFound
+	}
+	for _, table := range []string{"oauth_access_tokens", "oauth_refresh_tokens"} {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE owner_id = ? AND client_id = ?", ownerID, clientID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM oauth_authorizations WHERE owner_id = ? AND client_id = ?", ownerID, clientID); err != nil {
+		return err
+	}
+	var stillShared int
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM oauth_authorizations WHERE client_id = ?
+		UNION ALL SELECT 1 FROM oauth_access_tokens WHERE client_id = ?
+		UNION ALL SELECT 1 FROM oauth_refresh_tokens WHERE client_id = ?
+	)`, clientID, clientID, clientID).Scan(&stillShared); err != nil {
+		return err
+	}
+	if stillShared == 0 {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM oauth_clients WHERE client_id = ?", clientID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) deleteOAuthClient(ctx context.Context, query string, args ...any) error {
@@ -181,7 +314,29 @@ func (s *Store) CreateOAuthAuthorization(ctx context.Context, rec OAuthAuthoriza
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO oauth_authorizations(
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var alreadyAssociated int
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM oauth_authorizations
+		WHERE owner_id = ? AND client_id = ?
+	)`, rec.OwnerID, rec.ClientID).Scan(&alreadyAssociated); err != nil {
+		return err
+	}
+	if alreadyAssociated == 0 {
+		var associatedClients int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(DISTINCT client_id) FROM oauth_authorizations
+			WHERE owner_id = ?`, rec.OwnerID).Scan(&associatedClients); err != nil {
+			return err
+		}
+		if associatedClients >= oauthMaxClientsPerOwner {
+			return ErrResourceLimit
+		}
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO oauth_authorizations(
 		id, owner_id, client_id, scopes_json, resource, created_at, expires_at
 	) VALUES(?,?,?,?,?,?,?)`,
 		rec.AuthorizationID,
@@ -191,8 +346,10 @@ func (s *Store) CreateOAuthAuthorization(ctx context.Context, rec OAuthAuthoriza
 		rec.Resource,
 		rec.CreatedAt.Unix(),
 		rec.ExpiresAt.Unix(),
-	)
-	return err
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) ListOAuthAuthorizations(ctx context.Context, ownerID string) ([]OAuthAuthorizationRecord, error) {

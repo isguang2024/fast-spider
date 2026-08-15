@@ -23,11 +23,45 @@ import (
 )
 
 const (
-	maxPresentationUploadBytes int64 = 64 << 20
-	presentationTTL                  = 20 * time.Minute
+	maxPresentationUploadBytes              int64 = 64 << 20
+	maxPresentationMachineBytes             int64 = 256 << 20
+	maxPresentationOwnerBytes               int64 = 512 << 20
+	maxPresentationGlobalBytes              int64 = 1 << 30
+	maxPresentationEntries                        = 128
+	maxConcurrentPresentationUploads              = 8
+	maxConcurrentPresentationOwnerUploads         = 4
+	maxConcurrentPresentationMachineUploads       = 2
+	maxPresentationUploadDuration                 = 5 * time.Minute
+	presentationTTL                               = 20 * time.Minute
 )
 
-var errPresentationNotFound = errors.New("presentation not found")
+var (
+	errPresentationNotFound    = errors.New("presentation not found")
+	errPresentationQuota       = errors.New("presentation relay quota exceeded")
+	errPresentationUnavailable = errors.New("presentation relay is unavailable")
+)
+
+type presentationLimits struct {
+	entries           int
+	concurrent        int
+	ownerConcurrent   int
+	machineConcurrent int
+	globalBytes       int64
+	ownerBytes        int64
+	machineBytes      int64
+}
+
+func defaultPresentationLimits() presentationLimits {
+	return presentationLimits{
+		entries:           maxPresentationEntries,
+		concurrent:        maxConcurrentPresentationUploads,
+		ownerConcurrent:   maxConcurrentPresentationOwnerUploads,
+		machineConcurrent: maxConcurrentPresentationMachineUploads,
+		globalBytes:       maxPresentationGlobalBytes,
+		ownerBytes:        maxPresentationOwnerBytes,
+		machineBytes:      maxPresentationMachineBytes,
+	}
+}
 
 type presentationRecord struct {
 	ID          string
@@ -42,9 +76,31 @@ type presentationRecord struct {
 }
 
 type presentationStore struct {
-	root string
-	mu   sync.Mutex
-	data map[string]presentationRecord
+	root             string
+	mu               sync.Mutex
+	data             map[string]presentationRecord
+	limits           presentationLimits
+	uploading        int
+	uploadingOwner   map[string]int
+	uploadingMachine map[string]int
+	reservedBytes    int64
+	reservedOwner    map[string]int64
+	reservedMachine  map[string]int64
+	storedBytes      int64
+	storedOwner      map[string]int64
+	storedMachine    map[string]int64
+	removeFile       func(string) error
+	removeAll        func(string) error
+	mkdirAll         func(string, os.FileMode) error
+	ready            bool
+}
+
+type presentationReservation struct {
+	store     *presentationStore
+	ownerID   string
+	machineID string
+	sizeBytes int64
+	active    bool
 }
 
 func presentationTempRoot(dataDir string) string {
@@ -53,15 +109,56 @@ func presentationTempRoot(dataDir string) string {
 }
 
 func newPresentationStore(root string) *presentationStore {
+	return newPresentationStoreWithFileOps(root, os.Remove, os.RemoveAll, os.MkdirAll)
+}
+
+func newPresentationStoreWithFileOps(
+	root string,
+	removeFile func(string) error,
+	removeAll func(string) error,
+	mkdirAll func(string, os.FileMode) error,
+) *presentationStore {
+	if removeFile == nil {
+		removeFile = os.Remove
+	}
+	if removeAll == nil {
+		removeAll = os.RemoveAll
+	}
+	if mkdirAll == nil {
+		mkdirAll = os.MkdirAll
+	}
 	root = filepath.Clean(root)
-	_ = os.RemoveAll(root)
-	_ = os.MkdirAll(root, 0o700)
-	return &presentationStore{root: root, data: make(map[string]presentationRecord)}
+	s := &presentationStore{
+		root:             root,
+		data:             make(map[string]presentationRecord),
+		limits:           defaultPresentationLimits(),
+		reservedOwner:    make(map[string]int64),
+		reservedMachine:  make(map[string]int64),
+		uploadingOwner:   make(map[string]int),
+		uploadingMachine: make(map[string]int),
+		storedOwner:      make(map[string]int64),
+		storedMachine:    make(map[string]int64),
+		removeFile:       removeFile,
+		removeAll:        removeAll,
+		mkdirAll:         mkdirAll,
+	}
+	s.initializeRootLocked()
+	return s
 }
 
 func (s *presentationStore) put(session store.DeviceSession, fileName, contentType, expectedSHA string, sizeBytes int64, body io.Reader, now time.Time) (presentationRecord, error) {
+	return s.putInternal(context.Background(), session, fileName, contentType, expectedSHA, sizeBytes, body, now)
+}
+
+func (s *presentationStore) putContext(ctx context.Context, session store.DeviceSession, fileName, contentType, expectedSHA string, sizeBytes int64, body io.ReadCloser, now time.Time) (presentationRecord, error) {
+	stopClose := context.AfterFunc(ctx, func() { _ = body.Close() })
+	defer stopClose()
+	return s.putInternal(ctx, session, fileName, contentType, expectedSHA, sizeBytes, body, now)
+}
+
+func (s *presentationStore) putInternal(ctx context.Context, session store.DeviceSession, fileName, contentType, expectedSHA string, sizeBytes int64, body io.Reader, now time.Time) (presentationRecord, error) {
 	if s == nil || strings.TrimSpace(s.root) == "" {
-		return presentationRecord{}, errors.New("presentation relay is unavailable")
+		return presentationRecord{}, errPresentationUnavailable
 	}
 	if sizeBytes <= 0 || sizeBytes > maxPresentationUploadBytes {
 		return presentationRecord{}, errors.New("presentation size is outside the allowed range")
@@ -74,7 +171,15 @@ func (s *presentationStore) put(session store.DeviceSession, fileName, contentTy
 	if !validPresentationSHA256(expectedSHA) {
 		return presentationRecord{}, errors.New("presentation SHA-256 is invalid")
 	}
-	if err := os.MkdirAll(s.root, 0o700); err != nil {
+	reservation, err := s.reserve(session, sizeBytes, now.UTC())
+	if err != nil {
+		return presentationRecord{}, err
+	}
+	defer reservation.release()
+	if err := ctx.Err(); err != nil {
+		return presentationRecord{}, err
+	}
+	if err := s.mkdirAll(s.root, 0o700); err != nil {
 		return presentationRecord{}, err
 	}
 	id, err := security.RandomOpaque("prs_")
@@ -92,6 +197,9 @@ func (s *presentationStore) put(session store.DeviceSession, fileName, contentTy
 	closeErr := file.Close()
 	if copyErr != nil || closeErr != nil || written != sizeBytes || written > maxPresentationUploadBytes {
 		_ = os.Remove(tempPath)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return presentationRecord{}, ctxErr
+		}
 		if copyErr != nil {
 			return presentationRecord{}, copyErr
 		}
@@ -105,6 +213,10 @@ func (s *presentationStore) put(session store.DeviceSession, fileName, contentTy
 		_ = os.Remove(tempPath)
 		return presentationRecord{}, errors.New("presentation SHA-256 mismatch")
 	}
+	if err := ctx.Err(); err != nil {
+		_ = os.Remove(tempPath)
+		return presentationRecord{}, err
+	}
 	if err := os.Rename(tempPath, finalPath); err != nil {
 		_ = os.Remove(tempPath)
 		return presentationRecord{}, err
@@ -114,11 +226,110 @@ func (s *presentationStore) put(session store.DeviceSession, fileName, contentTy
 		FileName: fileName, ContentType: contentType, SizeBytes: sizeBytes,
 		SHA256: actualSHA, Path: finalPath, ExpiresAt: now.UTC().Add(presentationTTL),
 	}
-	s.mu.Lock()
-	s.cleanupExpiredLocked(now.UTC())
-	s.data[id] = record
-	s.mu.Unlock()
+	reservation.commit(record, now.UTC())
 	return record, nil
+}
+
+func (s *presentationStore) reserve(session store.DeviceSession, sizeBytes int64, now time.Time) (*presentationReservation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.ready {
+		return nil, errPresentationUnavailable
+	}
+	s.cleanupExpiredLocked(now)
+	limits := s.limits
+	if limits.entries <= 0 || limits.concurrent <= 0 || limits.ownerConcurrent <= 0 || limits.machineConcurrent <= 0 || limits.globalBytes <= 0 || limits.ownerBytes <= 0 || limits.machineBytes <= 0 {
+		return nil, errPresentationQuota
+	}
+	if len(s.data)+s.uploading >= limits.entries || s.uploading >= limits.concurrent ||
+		s.uploadingOwner[session.OwnerID] >= limits.ownerConcurrent ||
+		s.uploadingMachine[session.MachineID] >= limits.machineConcurrent ||
+		s.storedBytes+s.reservedBytes+sizeBytes > limits.globalBytes ||
+		s.storedOwner[session.OwnerID]+s.reservedOwner[session.OwnerID]+sizeBytes > limits.ownerBytes ||
+		s.storedMachine[session.MachineID]+s.reservedMachine[session.MachineID]+sizeBytes > limits.machineBytes {
+		return nil, errPresentationQuota
+	}
+	s.uploading++
+	s.uploadingOwner[session.OwnerID]++
+	s.uploadingMachine[session.MachineID]++
+	s.reservedBytes += sizeBytes
+	s.reservedOwner[session.OwnerID] += sizeBytes
+	s.reservedMachine[session.MachineID] += sizeBytes
+	return &presentationReservation{store: s, ownerID: session.OwnerID, machineID: session.MachineID, sizeBytes: sizeBytes, active: true}, nil
+}
+
+func (r *presentationReservation) release() {
+	if r == nil || r.store == nil {
+		return
+	}
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
+	if !r.active {
+		return
+	}
+	r.store.releaseReservationLocked(r)
+}
+
+func (r *presentationReservation) commit(record presentationRecord, now time.Time) {
+	if r == nil || r.store == nil {
+		return
+	}
+	r.store.mu.Lock()
+	defer r.store.mu.Unlock()
+	if !r.active {
+		return
+	}
+	r.store.cleanupExpiredLocked(now)
+	r.store.releaseReservationLocked(r)
+	r.store.data[record.ID] = record
+	r.store.storedBytes += record.SizeBytes
+	r.store.storedOwner[record.OwnerID] += record.SizeBytes
+	r.store.storedMachine[record.MachineID] += record.SizeBytes
+}
+
+func (s *presentationStore) releaseReservationLocked(reservation *presentationReservation) {
+	reservation.active = false
+	s.uploading--
+	decrementPresentationCount(s.uploadingOwner, reservation.ownerID)
+	decrementPresentationCount(s.uploadingMachine, reservation.machineID)
+	s.reservedBytes -= reservation.sizeBytes
+	decrementPresentationUsage(s.reservedOwner, reservation.ownerID, reservation.sizeBytes)
+	decrementPresentationUsage(s.reservedMachine, reservation.machineID, reservation.sizeBytes)
+}
+
+func decrementPresentationCount(usage map[string]int, key string) {
+	if remaining := usage[key] - 1; remaining > 0 {
+		usage[key] = remaining
+	} else {
+		delete(usage, key)
+	}
+}
+
+func decrementPresentationUsage(usage map[string]int64, key string, sizeBytes int64) {
+	if remaining := usage[key] - sizeBytes; remaining > 0 {
+		usage[key] = remaining
+	} else {
+		delete(usage, key)
+	}
+}
+
+func (s *presentationStore) removeRecordLocked(id string, record presentationRecord) {
+	delete(s.data, id)
+	s.storedBytes -= record.SizeBytes
+	decrementPresentationUsage(s.storedOwner, record.OwnerID, record.SizeBytes)
+	decrementPresentationUsage(s.storedMachine, record.MachineID, record.SizeBytes)
+}
+
+func (s *presentationStore) deleteRecordFileLocked(id string, record presentationRecord) bool {
+	removeFile := s.removeFile
+	if removeFile == nil {
+		removeFile = os.Remove
+	}
+	if err := removeFile(record.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	s.removeRecordLocked(id, record)
+	return true
 }
 
 func (s *presentationStore) getForOwner(ownerID, id string, now time.Time) (presentationRecord, error) {
@@ -145,8 +356,7 @@ func (s *presentationStore) get(id string, now time.Time) (presentationRecord, e
 	}
 	info, err := os.Stat(record.Path)
 	if err != nil || !info.Mode().IsRegular() || info.Size() != record.SizeBytes {
-		delete(s.data, id)
-		_ = os.Remove(record.Path)
+		s.deleteRecordFileLocked(id, record)
 		return presentationRecord{}, errPresentationNotFound
 	}
 	return record, nil
@@ -157,17 +367,51 @@ func (s *presentationStore) cleanupExpired(now time.Time) {
 		return
 	}
 	s.mu.Lock()
+	if !s.ready && !s.initializeRootLocked() {
+		s.mu.Unlock()
+		return
+	}
 	s.cleanupExpiredLocked(now.UTC())
 	s.mu.Unlock()
 }
 
 func (s *presentationStore) cleanupExpiredLocked(now time.Time) {
+	if !s.ready {
+		return
+	}
 	for id, record := range s.data {
 		if !record.ExpiresAt.After(now) {
-			delete(s.data, id)
-			_ = os.Remove(record.Path)
+			s.deleteRecordFileLocked(id, record)
 		}
 	}
+}
+
+func (s *presentationStore) initializeRootLocked() bool {
+	removeAll := s.removeAll
+	if removeAll == nil {
+		removeAll = os.RemoveAll
+	}
+	mkdirAll := s.mkdirAll
+	if mkdirAll == nil {
+		mkdirAll = os.MkdirAll
+	}
+	s.ready = false
+	if err := removeAll(s.root); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	s.resetStoredLocked()
+	if err := mkdirAll(s.root, 0o700); err != nil {
+		return false
+	}
+	s.ready = true
+	return true
+}
+
+func (s *presentationStore) resetStoredLocked() {
+	s.data = make(map[string]presentationRecord)
+	s.storedBytes = 0
+	s.storedOwner = make(map[string]int64)
+	s.storedMachine = make(map[string]int64)
 }
 
 func (s *presentationStore) clear() {
@@ -175,9 +419,15 @@ func (s *presentationStore) clear() {
 		return
 	}
 	s.mu.Lock()
-	s.data = make(map[string]presentationRecord)
+	s.ready = false
+	removeAll := s.removeAll
+	if removeAll == nil {
+		removeAll = os.RemoveAll
+	}
+	if err := removeAll(s.root); err == nil || errors.Is(err, os.ErrNotExist) {
+		s.resetStoredLocked()
+	}
 	s.mu.Unlock()
-	_ = os.RemoveAll(s.root)
 }
 
 func (s *Server) handlePresentationUpload(w http.ResponseWriter, r *http.Request) {
@@ -195,7 +445,13 @@ func (s *Server) handlePresentationUpload(w http.ResponseWriter, r *http.Request
 		writeArtifactError(w, http.StatusBadRequest, "PRESENTATION_NAME_INVALID", "presentation file name is invalid", false)
 		return
 	}
-	record, err := s.presentations.put(
+	uploadCtx, cancel := context.WithTimeout(r.Context(), maxPresentationUploadDuration)
+	defer cancel()
+	controller := http.NewResponseController(w)
+	_ = controller.SetReadDeadline(time.Now().Add(maxPresentationUploadDuration))
+	defer controller.SetReadDeadline(time.Time{})
+	record, err := s.presentations.putContext(
+		uploadCtx,
 		session,
 		string(fileNameRaw),
 		r.Header.Get("Content-Type"),
@@ -205,6 +461,14 @@ func (s *Server) handlePresentationUpload(w http.ResponseWriter, r *http.Request
 		time.Now().UTC(),
 	)
 	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			writeArtifactError(w, http.StatusRequestTimeout, "PRESENTATION_UPLOAD_TIMEOUT", "presentation upload did not complete before its deadline", true)
+			return
+		}
+		if errors.Is(err, errPresentationQuota) {
+			writeArtifactError(w, http.StatusTooManyRequests, "PRESENTATION_QUOTA_EXCEEDED", err.Error(), true)
+			return
+		}
 		writeArtifactError(w, http.StatusBadRequest, "PRESENTATION_UPLOAD_FAILED", err.Error(), true)
 		return
 	}

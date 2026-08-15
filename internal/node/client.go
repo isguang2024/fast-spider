@@ -37,9 +37,12 @@ type Config struct {
 	AllowInsecure     bool
 	BrowserSidecarDir string
 	Agent             AgentController
-	Logger            *slog.Logger
-	ConnectionStatus  func(ConnectionStatus)
-	ReleaseNotice     func(*Client, string, string)
+	// AgentCallerOwned keeps the injected Agent under the caller's ownership.
+	// When false, Client.Run closes Agent before it returns.
+	AgentCallerOwned bool
+	Logger           *slog.Logger
+	ConnectionStatus func(ConnectionStatus)
+	ReleaseNotice    func(*Client, string, string)
 }
 
 type Client struct {

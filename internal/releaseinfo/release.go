@@ -1,6 +1,7 @@
 package releaseinfo
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -128,11 +129,20 @@ func Verify(publicKey ed25519.PublicKey, manifest Manifest) error {
 }
 
 func FileSHA256(path string) (string, int64, error) {
+	return FileSHA256Context(context.Background(), path)
+}
+
+func FileSHA256Context(ctx context.Context, path string) (string, int64, error) {
+	if err := ctx.Err(); err != nil {
+		return "", 0, err
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return "", 0, err
 	}
 	defer file.Close()
+	stopCloseOnCancel := context.AfterFunc(ctx, func() { _ = file.Close() })
+	defer stopCloseOnCancel()
 	stat, err := file.Stat()
 	if err != nil {
 		return "", 0, err
@@ -140,11 +150,36 @@ func FileSHA256(path string) (string, int64, error) {
 	if !stat.Mode().IsRegular() || stat.Size() <= 0 {
 		return "", 0, errors.New("release artifact is not a non-empty regular file")
 	}
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
+	sha256Hex, _, err := hashSHA256Context(ctx, file)
+	if err != nil {
 		return "", 0, err
 	}
-	return hex.EncodeToString(hash.Sum(nil)), stat.Size(), nil
+	return sha256Hex, stat.Size(), nil
+}
+
+func hashSHA256Context(ctx context.Context, reader io.Reader) (string, int64, error) {
+	hash := sha256.New()
+	written, err := io.CopyBuffer(hash, contextReader{ctx: ctx, reader: reader}, make([]byte, 128<<10))
+	if err != nil {
+		return "", written, err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), written, nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(buffer []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	read, err := r.reader.Read(buffer)
+	if ctxErr := r.ctx.Err(); ctxErr != nil {
+		return read, ctxErr
+	}
+	return read, err
 }
 
 type Version struct {

@@ -2,6 +2,7 @@ package opsbackup
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -67,7 +68,7 @@ func TestPruneReleaseBackupsKeepsNewestAndPreservesUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := PruneReleaseBackups(context.Background(), root, 2)
+	result, err := PruneReleaseBackups(context.Background(), root, 2, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,6 +95,31 @@ func TestPruneReleaseBackupsKeepsNewestAndPreservesUnknown(t *testing.T) {
 	}
 }
 
+func TestPruneReleaseBackupsDefaultsToAReadOnlyPlan(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	newest := "pre-0.4.5-eeeeeee.zip"
+	oldest := "pre-0.4.4-ddddddd.zip"
+	writePruneTestBackup(t, filepath.Join(root, newest), "2026-08-12T02:00:00Z")
+	writePruneTestBackup(t, filepath.Join(root, oldest), "2026-08-11T02:00:00Z")
+
+	result, err := PruneReleaseBackups(context.Background(), root, 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Applied || result.CandidateCount != 2 || result.KeptCount != 1 || result.PlannedCount != 1 || result.DeletedCount != 0 {
+		t.Fatalf("unexpected plan result: %+v", result)
+	}
+	if !slices.Equal(result.Kept, []string{newest}) || !slices.Equal(result.Planned, []string{oldest}) || len(result.Deleted) != 0 {
+		t.Fatalf("unexpected plan entries: %+v", result)
+	}
+	for _, name := range []string{newest, oldest} {
+		if _, err := os.Stat(filepath.Join(root, name)); err != nil {
+			t.Fatalf("plan changed %q: %v", name, err)
+		}
+	}
+}
+
 func TestPruneReleaseBackupsUsesFilenameTieBreak(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
@@ -101,7 +127,7 @@ func TestPruneReleaseBackupsUsesFilenameTieBreak(t *testing.T) {
 	for _, name := range []string{"pre-0.4.3-ccccccc.zip", "pre-0.4.5-eeeeeee.zip", "pre-0.4.4-ddddddd.zip"} {
 		writePruneTestBackup(t, filepath.Join(root, name), created)
 	}
-	result, err := PruneReleaseBackups(context.Background(), root, 1)
+	result, err := PruneReleaseBackups(context.Background(), root, 1, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +145,7 @@ func TestPruneReleaseBackupsCorruptCandidateCausesZeroDeletion(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, corrupt), []byte("not a backup"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	result, err := PruneReleaseBackups(context.Background(), root, 1)
+	result, err := PruneReleaseBackups(context.Background(), root, 1, true)
 	if err == nil || result.DeletedCount != 0 || len(result.Deleted) != 0 {
 		t.Fatalf("corrupt prune result=%+v err=%v", result, err)
 	}
@@ -139,7 +165,7 @@ func TestPruneReleaseBackupsMatchingDirectoryCausesZeroDeletion(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, matchingDirectory), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	result, err := PruneReleaseBackups(context.Background(), root, 1)
+	result, err := PruneReleaseBackups(context.Background(), root, 1, true)
 	if err == nil || result.DeletedCount != 0 {
 		t.Fatalf("matching directory result=%+v err=%v", result, err)
 	}
@@ -164,7 +190,7 @@ func TestPruneReleaseBackupsMatchingSymlinkCausesZeroDeletion(t *testing.T) {
 		}
 		t.Fatal(err)
 	}
-	result, err := PruneReleaseBackups(context.Background(), root, 1)
+	result, err := PruneReleaseBackups(context.Background(), root, 1, true)
 	if err == nil || result.DeletedCount != 0 {
 		t.Fatalf("symlink prune result=%+v err=%v", result, err)
 	}
@@ -186,7 +212,7 @@ func TestPruneReleaseBackupsRejectsRootSymlink(t *testing.T) {
 		}
 		t.Fatal(err)
 	}
-	if _, err := PruneReleaseBackups(context.Background(), link, 1); err == nil {
+	if _, err := PruneReleaseBackups(context.Background(), link, 1, true); err == nil {
 		t.Fatal("root symlink was accepted")
 	}
 }
@@ -202,7 +228,7 @@ func TestPruneReleaseBackupsInjectedReparseCandidateIsFailClosed(t *testing.T) {
 		}
 	}
 	verifyCalls := 0
-	result, err := pruneReleaseBackups(context.Background(), root, 1, releaseBackupPruneDependencies{
+	result, err := pruneReleaseBackups(context.Background(), root, 1, true, releaseBackupPruneDependencies{
 		verify: func(context.Context, string) (Manifest, error) {
 			verifyCalls++
 			return Manifest{CreatedAt: "2026-08-11T01:00:00Z"}, nil
@@ -229,7 +255,7 @@ func TestPruneReleaseBackupsInjectedRootReparseIsRejected(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	verifyCalled := false
-	_, err := pruneReleaseBackups(context.Background(), root, 1, releaseBackupPruneDependencies{
+	_, err := pruneReleaseBackups(context.Background(), root, 1, true, releaseBackupPruneDependencies{
 		verify: func(context.Context, string) (Manifest, error) {
 			verifyCalled = true
 			return Manifest{}, nil
@@ -251,14 +277,14 @@ func TestPruneReleaseBackupsKeepBoundsAndNoCandidates(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	for _, keep := range []int{0, MaxReleaseBackupKeep + 1} {
-		if _, err := PruneReleaseBackups(context.Background(), root, keep); err == nil {
+		if _, err := PruneReleaseBackups(context.Background(), root, keep, true); err == nil {
 			t.Fatalf("keep=%d was accepted", keep)
 		}
 	}
-	if _, err := PruneReleaseBackups(context.Background(), "relative", 1); err == nil {
+	if _, err := PruneReleaseBackups(context.Background(), "relative", 1, true); err == nil {
 		t.Fatal("relative root was accepted")
 	}
-	result, err := PruneReleaseBackups(context.Background(), root, 3)
+	result, err := PruneReleaseBackups(context.Background(), root, 3, true)
 	if err != nil || result.CandidateCount != 0 || result.KeptCount != 0 || result.DeletedCount != 0 || result.Kept == nil || result.Deleted == nil {
 		t.Fatalf("empty prune result=%+v err=%v", result, err)
 	}
@@ -273,7 +299,7 @@ func TestPruneReleaseBackupsCandidateLimitIsFailClosed(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	result, err := PruneReleaseBackups(context.Background(), root, 1)
+	result, err := PruneReleaseBackups(context.Background(), root, 1, true)
 	if err == nil || result.CandidateCount != maxReleaseBackupCandidates+1 || result.DeletedCount != 0 {
 		t.Fatalf("candidate limit result=%+v err=%v", result, err)
 	}
@@ -296,7 +322,7 @@ func TestPruneReleaseBackupsRemoveErrorReportsPartialFacts(t *testing.T) {
 		}
 	}
 	removeErr := errors.New("remove denied")
-	result, err := pruneReleaseBackups(context.Background(), root, 1, releaseBackupPruneDependencies{
+	result, err := pruneReleaseBackups(context.Background(), root, 1, true, releaseBackupPruneDependencies{
 		verify: func(_ context.Context, path string) (Manifest, error) {
 			return Manifest{CreatedAt: map[string]string{
 				names[0]: "2026-08-11T03:00:00Z",
@@ -317,6 +343,75 @@ func TestPruneReleaseBackupsRemoveErrorReportsPartialFacts(t *testing.T) {
 	}
 	if !slices.Contains(result.Deleted, names[1]) || !slices.Contains(result.Kept, names[2]) {
 		t.Fatalf("partial facts are inaccurate: %+v", result)
+	}
+}
+
+func TestPruneReleaseBackupsStopsWhenLaterCandidateChangesDuringApply(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	names := []string{"pre-0.4.6-fffffff.zip", "pre-0.4.5-eeeeeee.zip", "pre-0.4.4-ddddddd.zip", "pre-0.4.3-ccccccc.zip"}
+	for _, name := range names {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	replacedPath := filepath.Join(root, names[2])
+	originalData, err := os.ReadFile(replacedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalInfo, err := os.Stat(replacedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacementData := bytes.Repeat([]byte("x"), len(originalData))
+	removeCalls := 0
+	result, err := pruneReleaseBackups(context.Background(), root, 1, true, releaseBackupPruneDependencies{
+		verify: func(_ context.Context, path string) (Manifest, error) {
+			return Manifest{CreatedAt: map[string]string{
+				names[0]: "2026-08-11T04:00:00Z",
+				names[1]: "2026-08-11T03:00:00Z",
+				names[2]: "2026-08-11T02:00:00Z",
+				names[3]: "2026-08-11T01:00:00Z",
+			}[filepath.Base(path)]}, nil
+		},
+		isReparse: func(string, os.FileInfo) (bool, error) { return false, nil },
+		removeFile: func(path string) error {
+			removeCalls++
+			if filepath.Base(path) == names[1] {
+				temporary := filepath.Join(root, ".replacement.tmp")
+				if err := os.WriteFile(temporary, replacementData, 0o600); err != nil {
+					return err
+				}
+				if err := os.Rename(temporary, replacedPath); err != nil {
+					return err
+				}
+				if err := os.Chtimes(replacedPath, originalInfo.ModTime(), originalInfo.ModTime()); err != nil {
+					return err
+				}
+			}
+			return os.Remove(path)
+		},
+	})
+	if err == nil || removeCalls != 1 || result.CandidateCount != 4 || result.PlannedCount != 3 || result.DeletedCount != 1 || result.KeptCount != 3 {
+		t.Fatalf("changed candidate result=%+v err=%v", result, err)
+	}
+	if !slices.Equal(result.Deleted, []string{names[1]}) || !slices.Equal(result.Kept, []string{names[0], names[2], names[3]}) {
+		t.Fatalf("partial facts are inaccurate: %+v", result)
+	}
+	gotReplacement, readErr := os.ReadFile(replacedPath)
+	if readErr != nil {
+		t.Fatalf("replacement backup was deleted: %v", readErr)
+	}
+	replacementInfo, statErr := os.Stat(replacedPath)
+	if statErr != nil {
+		t.Fatal(statErr)
+	}
+	if !bytes.Equal(gotReplacement, replacementData) || len(gotReplacement) != len(originalData) || !replacementInfo.ModTime().Equal(originalInfo.ModTime()) {
+		t.Fatalf("replacement fixture changed unexpectedly: size=%d want=%d mtime=%v want=%v", len(gotReplacement), len(originalData), replacementInfo.ModTime(), originalInfo.ModTime())
+	}
+	if _, statErr := os.Stat(filepath.Join(root, names[3])); statErr != nil {
+		t.Fatalf("deletion continued after changed candidate: %v", statErr)
 	}
 }
 
@@ -365,7 +460,7 @@ func TestPruneReleaseBackupsOrdersCreatedAtInUTC(t *testing.T) {
 	newer := "pre-0.4.5-eeeeeee.zip"
 	writePruneTestBackup(t, filepath.Join(root, older), "2026-08-11T09:00:00+08:00")
 	writePruneTestBackup(t, filepath.Join(root, newer), "2026-08-11T02:00:00Z")
-	result, err := PruneReleaseBackups(context.Background(), root, 1)
+	result, err := PruneReleaseBackups(context.Background(), root, 1, true)
 	if err != nil {
 		t.Fatal(err)
 	}

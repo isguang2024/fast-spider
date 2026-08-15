@@ -122,18 +122,97 @@ func TestCodexWaitLoopClearsActiveTurnsForExitedProcess(t *testing.T) {
 	}
 	adapter.mu.Lock()
 	adapter.cmd = cmd
-	adapter.processDone = make(chan struct{})
+	adapter.generation = 1
+	done := make(chan struct{})
+	adapter.processDone = done
 	adapter.mu.Unlock()
 	adapter.eventMu.Lock()
 	adapter.activeTurns["session-1"] = "turn-1"
 	adapter.eventMu.Unlock()
-	adapter.waitLoop(cmd)
+	adapter.waitLoop(cmd, 1, done)
 	if active := adapter.ActiveTurn("session-1"); active != "" {
 		t.Fatalf("active turn survived app-server exit: %q", active)
 	}
 	events, _, _, err := adapter.Watch(context.Background(), "session-1", 0, 0)
 	if err != nil || len(events) != 1 || events[0].Type != "turn.failed" || events[0].TurnID != "turn-1" {
 		t.Fatalf("process exit events=%#v err=%v", events, err)
+	}
+}
+
+func TestCodexExitedGenerationCannotClearReplacementProcess(t *testing.T) {
+	adapter := NewCodexAdapter(nil)
+	oldCmd := &exec.Cmd{}
+	newCmd := &exec.Cmd{}
+	oldDone := make(chan struct{})
+	newDone := make(chan struct{})
+	oldPending := make(chan codexRPCMessage, 1)
+	newPending := make(chan codexRPCMessage, 1)
+	newStdin := &bufferWriteCloser{}
+
+	adapter.mu.Lock()
+	adapter.cmd = newCmd
+	adapter.stdin = newStdin
+	adapter.processDone = newDone
+	adapter.generation = 2
+	adapter.pending[1] = codexPending{ch: oldPending, generation: 1}
+	adapter.pending[2] = codexPending{ch: newPending, generation: 2}
+	adapter.loaded["new-thread"] = struct{}{}
+	adapter.mu.Unlock()
+	adapter.serverMu.Lock()
+	adapter.serverRequests["new-request"] = codexServerRequest{RequestID: "new-request"}
+	adapter.serverMu.Unlock()
+	adapter.eventMu.Lock()
+	adapter.activeTurns["new-thread"] = "new-turn"
+	adapter.eventMu.Unlock()
+
+	adapter.finishProcess(oldCmd, 1, oldDone, errors.New("old process exited"))
+
+	select {
+	case <-oldDone:
+	default:
+		t.Fatal("exited generation completion was not closed")
+	}
+	select {
+	case <-newDone:
+		t.Fatal("exited generation closed the replacement process completion")
+	default:
+	}
+	select {
+	case response := <-oldPending:
+		if response.Error == nil || response.Error.Code != -1 {
+			t.Fatalf("old generation pending response=%#v", response)
+		}
+	default:
+		t.Fatal("old generation pending request was not released")
+	}
+	select {
+	case response := <-newPending:
+		t.Fatalf("replacement generation pending request was released: %#v", response)
+	default:
+	}
+
+	adapter.mu.Lock()
+	if adapter.cmd != newCmd || adapter.stdin != newStdin || adapter.processDone != newDone || adapter.generation != 2 {
+		t.Fatalf("replacement process state was changed: cmd=%p stdin=%p done=%p generation=%d", adapter.cmd, adapter.stdin, adapter.processDone, adapter.generation)
+	}
+	if _, ok := adapter.pending[1]; ok {
+		t.Fatal("old generation pending request remained registered")
+	}
+	if _, ok := adapter.pending[2]; !ok {
+		t.Fatal("replacement generation pending request was removed")
+	}
+	if _, ok := adapter.loaded["new-thread"]; !ok {
+		t.Fatal("replacement generation loaded-thread state was cleared")
+	}
+	adapter.mu.Unlock()
+	if active := adapter.ActiveTurn("new-thread"); active != "new-turn" {
+		t.Fatalf("replacement generation active turn=%q", active)
+	}
+	adapter.serverMu.Lock()
+	_, requestPresent := adapter.serverRequests["new-request"]
+	adapter.serverMu.Unlock()
+	if !requestPresent {
+		t.Fatal("replacement generation server request was cleared")
 	}
 }
 
@@ -293,6 +372,34 @@ type bufferWriteCloser struct{ bytes.Buffer }
 
 func (w *bufferWriteCloser) Close() error { return nil }
 
+type blockingWriteCloser struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	calls   int32
+}
+
+func (w *blockingWriteCloser) Write(p []byte) (int, error) {
+	atomic.AddInt32(&w.calls, 1)
+	w.once.Do(func() { close(w.started) })
+	<-w.release
+	return len(p), nil
+}
+
+func (w *blockingWriteCloser) Close() error { return nil }
+
+type failOnceWriteCloser struct {
+	bufferWriteCloser
+	calls int32
+}
+
+func (w *failOnceWriteCloser) Write(p []byte) (int, error) {
+	if atomic.AddInt32(&w.calls, 1) == 1 {
+		return 0, errors.New("injected write failure")
+	}
+	return w.bufferWriteCloser.Write(p)
+}
+
 func TestCodexAdapterRespondPendingRequestWritesJSONRPCResponse(t *testing.T) {
 	adapter := NewCodexAdapter(nil)
 	writer := &bufferWriteCloser{}
@@ -325,6 +432,72 @@ func TestCodexAdapterRespondPendingRequestWritesJSONRPCResponse(t *testing.T) {
 	adapter.serverMu.Unlock()
 	if pending {
 		t.Fatal("responded request remained pending")
+	}
+}
+
+func TestCodexAdapterRespondPendingRequestClaimsRequestBeforeBlockingWrite(t *testing.T) {
+	adapter := NewCodexAdapter(nil)
+	writer := &blockingWriteCloser{started: make(chan struct{}), release: make(chan struct{})}
+	adapter.mu.Lock()
+	adapter.stdin = writer
+	adapter.mu.Unlock()
+	adapter.handleServerRequest(json.RawMessage(`9`), "item/commandExecution/requestApproval", json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1"}`))
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := adapter.RespondPendingRequest(context.Background(), "thread-1", "9", agentControlParams{Decision: "accept"})
+		firstDone <- err
+	}()
+	select {
+	case <-writer.started:
+	case <-time.After(time.Second):
+		t.Fatal("first response did not reach the blocking writer")
+	}
+	if snapshot := adapter.PendingRequests("thread-1"); len(snapshot) != 0 {
+		t.Fatalf("claimed request remained visible as pending: %#v", snapshot)
+	}
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := adapter.RespondPendingRequest(context.Background(), "thread-1", "9", agentControlParams{Decision: "decline"})
+		secondDone <- err
+	}()
+	select {
+	case err := <-secondDone:
+		if err == nil || !strings.Contains(err.Error(), "already being responded to") {
+			t.Fatalf("concurrent response error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("concurrent response blocked behind the JSON-RPC writer")
+	}
+	close(writer.release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first response failed: %v", err)
+	}
+	if calls := atomic.LoadInt32(&writer.calls); calls != 1 {
+		t.Fatalf("JSON-RPC writes=%d want=1", calls)
+	}
+}
+
+func TestCodexAdapterRespondPendingRequestRestoresClaimAfterWriteFailure(t *testing.T) {
+	adapter := NewCodexAdapter(nil)
+	writer := &failOnceWriteCloser{}
+	adapter.mu.Lock()
+	adapter.stdin = writer
+	adapter.mu.Unlock()
+	adapter.handleServerRequest(json.RawMessage(`11`), "item/commandExecution/requestApproval", json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1"}`))
+
+	if _, err := adapter.RespondPendingRequest(context.Background(), "thread-1", "11", agentControlParams{Decision: "accept"}); err == nil {
+		t.Fatal("injected JSON-RPC write failure unexpectedly succeeded")
+	}
+	if snapshot := adapter.PendingRequests("thread-1"); len(snapshot) != 1 || snapshot[0]["requestId"] != "11" {
+		t.Fatalf("failed response was not restored for retry: %#v", snapshot)
+	}
+	result, err := adapter.RespondPendingRequest(context.Background(), "thread-1", "11", agentControlParams{Decision: "accept"})
+	if err != nil || result["responded"] != true {
+		t.Fatalf("retry result=%#v err=%v", result, err)
+	}
+	if calls := atomic.LoadInt32(&writer.calls); calls != 2 {
+		t.Fatalf("JSON-RPC writes=%d want=2 attempts", calls)
 	}
 }
 
@@ -485,7 +658,7 @@ func TestClaudeCodeStreamParserAndSessionIndex(t *testing.T) {
 	}
 
 	adapter.mu.Lock()
-	if err := adapter.saveIndexLocked(); err != nil {
+	if _, err := adapter.saveIndexLocked(); err != nil {
 		adapter.mu.Unlock()
 		t.Fatal(err)
 	}

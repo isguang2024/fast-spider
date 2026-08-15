@@ -44,7 +44,7 @@ func (c *Client) Run(ctx context.Context) error {
 				c.cfg.Logger.Error("browser shutdown incomplete", "error", err)
 			}
 		}
-		if c.agent != nil {
+		if c.agent != nil && !c.cfg.AgentCallerOwned {
 			if err := c.agent.Close(shutdownCtx); err != nil {
 				c.cfg.Logger.Error("agent provider shutdown incomplete", "error", err)
 			}

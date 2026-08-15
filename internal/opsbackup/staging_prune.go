@@ -85,6 +85,8 @@ type stagingPruneDependencies struct {
 	lstat         func(string) (os.FileInfo, error)
 	readDir       func(string) ([]os.DirEntry, error)
 	isReparse     func(string, os.FileInfo) (bool, error)
+	makeTemp      func(string, string) (string, error)
+	rename        func(string, string) error
 	remove        func(string) error
 	beforeRecheck func()
 	limits        stagingScanLimits
@@ -110,6 +112,8 @@ func PruneReleaseStaging(ctx context.Context, options StagingPruneOptions) (Stag
 		lstat:     os.Lstat,
 		readDir:   os.ReadDir,
 		isReparse: releaseBackupPathIsReparse,
+		makeTemp:  os.MkdirTemp,
+		rename:    os.Rename,
 		remove:    os.Remove,
 		limits: stagingScanLimits{
 			maxFiles: MaxStagingPruneFiles,
@@ -263,16 +267,95 @@ func pruneReleaseStaging(ctx context.Context, options StagingPruneOptions, deps 
 			removeErr = errors.Join(removeErr, err)
 			continue
 		}
-		if err := removeStagingTree(candidate.path, candidate.item.BaseName, 0, deps); err != nil {
+		isolatedPath, quarantineDir, isolateErr := isolateStagingCandidate(ctx, root, candidate, deps)
+		if isolateErr != nil {
 			result.Retained = append(result.Retained, candidate.item)
-			removeErr = errors.Join(removeErr, err)
+			removeErr = errors.Join(removeErr, isolateErr)
+			continue
+		}
+		if err := removeStagingTree(isolatedPath, candidate.item.BaseName, 0, deps); err != nil {
+			result.Retained = append(result.Retained, candidate.item)
+			restoreErr := restoreIsolatedStagingCandidate(candidate.path, isolatedPath, quarantineDir, candidate.item.BaseName, deps)
+			removeErr = errors.Join(removeErr, err, restoreErr)
 			continue
 		}
 		result.Deleted = append(result.Deleted, candidate.item)
+		if err := deps.remove(quarantineDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+			removeErr = errors.Join(removeErr, stagingError(fmt.Sprintf("remove staging candidate %q isolation directory failed", candidate.item.BaseName), err))
+		}
 	}
 	result.DeletedCount = len(result.Deleted)
 	result.RetainedCount = len(result.Retained)
 	return result, removeErr
+}
+
+func isolateStagingCandidate(ctx context.Context, root string, candidate stagingPruneCandidate, deps stagingPruneDependencies) (string, string, error) {
+	quarantineDir, err := deps.makeTemp(root, ".fast-spider-prune-")
+	if err != nil {
+		return "", "", stagingError(fmt.Sprintf("isolate staging candidate %q failed", candidate.item.BaseName), err)
+	}
+	cleanupQuarantine := func() {
+		_ = deps.remove(quarantineDir)
+	}
+	quarantineInfo, err := deps.lstat(quarantineDir)
+	if err != nil {
+		cleanupQuarantine()
+		return "", "", stagingError(fmt.Sprintf("inspect staging candidate %q isolation directory failed", candidate.item.BaseName), err)
+	}
+	quarantineReparse, err := deps.isReparse(quarantineDir, quarantineInfo)
+	if err != nil {
+		cleanupQuarantine()
+		return "", "", stagingError(fmt.Sprintf("inspect staging candidate %q isolation attributes failed", candidate.item.BaseName), err)
+	}
+	if quarantineReparse || !quarantineInfo.IsDir() {
+		cleanupQuarantine()
+		return "", "", fmt.Errorf("staging candidate %q isolation directory is unsafe", candidate.item.BaseName)
+	}
+
+	isolatedPath := filepath.Join(quarantineDir, candidate.item.BaseName)
+	if err := deps.rename(candidate.path, isolatedPath); err != nil {
+		cleanupQuarantine()
+		return "", "", stagingError(fmt.Sprintf("isolate staging candidate %q failed", candidate.item.BaseName), err)
+	}
+	restore := func(cause error) error {
+		return errors.Join(cause, restoreIsolatedStagingCandidate(candidate.path, isolatedPath, quarantineDir, candidate.item.BaseName, deps))
+	}
+
+	isolatedInfo, err := deps.lstat(isolatedPath)
+	if err != nil {
+		return "", "", restore(stagingError(fmt.Sprintf("inspect isolated staging candidate %q failed", candidate.item.BaseName), err))
+	}
+	isReparse, err := deps.isReparse(isolatedPath, isolatedInfo)
+	if err != nil {
+		return "", "", restore(stagingError(fmt.Sprintf("inspect isolated staging candidate %q attributes failed", candidate.item.BaseName), err))
+	}
+	if isReparse || !isolatedInfo.IsDir() || !os.SameFile(candidate.info, isolatedInfo) || candidate.info.Size() != isolatedInfo.Size() || !candidate.info.ModTime().Equal(isolatedInfo.ModTime()) {
+		return "", "", restore(fmt.Errorf("staging candidate %q identity changed before isolation", candidate.item.BaseName))
+	}
+	scanState := stagingScanState{}
+	bytes, scanErr := scanStagingTree(ctx, isolatedPath, 0, deps, &scanState)
+	if scanErr != nil {
+		return "", "", restore(stagingError(fmt.Sprintf("scan isolated staging candidate %q failed", candidate.item.BaseName), scanErr))
+	}
+	if bytes != candidate.item.EstimatedBytes {
+		return "", "", restore(fmt.Errorf("staging candidate %q contents changed before isolation", candidate.item.BaseName))
+	}
+	return isolatedPath, quarantineDir, nil
+}
+
+func restoreIsolatedStagingCandidate(originalPath, isolatedPath, quarantineDir, candidateName string, deps stagingPruneDependencies) error {
+	if _, inspectErr := deps.lstat(originalPath); inspectErr == nil {
+		return fmt.Errorf("staging candidate %q original path was reused; isolated contents were preserved at %q", candidateName, quarantineDir)
+	} else if !errors.Is(inspectErr, os.ErrNotExist) {
+		return stagingError(fmt.Sprintf("inspect staging candidate %q restore path failed", candidateName), inspectErr)
+	}
+	if restoreErr := deps.rename(isolatedPath, originalPath); restoreErr != nil {
+		return stagingError(fmt.Sprintf("restore staging candidate %q after isolation failed", candidateName), restoreErr)
+	}
+	if cleanupErr := deps.remove(quarantineDir); cleanupErr != nil && !errors.Is(cleanupErr, os.ErrNotExist) {
+		return stagingError(fmt.Sprintf("remove staging candidate %q isolation directory after restore failed", candidateName), cleanupErr)
+	}
+	return nil
 }
 
 func emptyStagingPruneResult() StagingPruneResult {

@@ -27,7 +27,49 @@ const (
 	artifactRetention              = 30 * 24 * time.Hour
 )
 
-var artifactUploadMu sync.Mutex
+type artifactKeyLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+type artifactLifecycleLocks struct {
+	maintenance sync.RWMutex
+	mu          sync.Mutex
+	keys        map[string]*artifactKeyLock
+}
+
+func (s *Service) lockArtifactOperation(key string) func() {
+	s.artifactLocks.maintenance.RLock()
+	unlockKey := s.lockArtifactKey(key)
+	return func() {
+		unlockKey()
+		s.artifactLocks.maintenance.RUnlock()
+	}
+}
+
+func (s *Service) lockArtifactKey(key string) func() {
+	s.artifactLocks.mu.Lock()
+	if s.artifactLocks.keys == nil {
+		s.artifactLocks.keys = make(map[string]*artifactKeyLock)
+	}
+	lock := s.artifactLocks.keys[key]
+	if lock == nil {
+		lock = &artifactKeyLock{}
+		s.artifactLocks.keys[key] = lock
+	}
+	lock.refs++
+	s.artifactLocks.mu.Unlock()
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		s.artifactLocks.mu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(s.artifactLocks.keys, key)
+		}
+		s.artifactLocks.mu.Unlock()
+	}
+}
 
 type ArtifactCreateRequest struct {
 	JobID       string `json:"jobId,omitempty"`
@@ -46,9 +88,6 @@ type ArtifactCreateResult struct {
 }
 
 func (s *Service) CreateArtifactUpload(ctx context.Context, session store.DeviceSession, req ArtifactCreateRequest) (ArtifactCreateResult, error) {
-	artifactUploadMu.Lock()
-	defer artifactUploadMu.Unlock()
-
 	req.LogicalName = strings.TrimSpace(req.LogicalName)
 	req.ContentType = strings.TrimSpace(req.ContentType)
 	req.SHA256 = strings.ToLower(strings.TrimSpace(req.SHA256))
@@ -73,23 +112,21 @@ func (s *Service) CreateArtifactUpload(ctx context.Context, session store.Device
 	if len(req.JobID) > 128 {
 		return ArtifactCreateResult{}, store.ErrConflict
 	}
+	unlock := s.lockArtifactOperation("create\x00" + session.MachineID + "\x00" + strings.TrimSpace(req.JobID) + "\x00" + req.LogicalName + "\x00" + req.ContentType + "\x00" + req.SHA256)
+	defer unlock()
 	now := s.now().UTC()
 	if resumable, ok, err := s.store.FindResumableArtifactUpload(ctx, session.OwnerID, session.MachineID, strings.TrimSpace(req.JobID), req.LogicalName, req.ContentType, req.SizeBytes, req.SHA256, now); err != nil {
 		return ArtifactCreateResult{}, err
 	} else if ok {
+		if !validArtifactUploadID(resumable.ID) {
+			return ArtifactCreateResult{}, store.ErrConflict
+		}
 		partPath := s.artifactUploadPath(resumable.ID)
 		if info, statErr := os.Stat(partPath); statErr == nil && info.Mode().IsRegular() && info.Size() == resumable.ReceivedSize || errors.Is(statErr, os.ErrNotExist) && resumable.ReceivedSize == 0 {
 			return ArtifactCreateResult{ArtifactID: resumable.ArtifactID, UploadID: resumable.ID, ChunkBytes: MaxArtifactChunkBytes, ReceivedBytes: resumable.ReceivedSize, ExpiresAt: resumable.ExpiresAt}, nil
 		}
 		_ = s.store.AbortArtifactUpload(ctx, session.MachineID, resumable.ID)
 		_ = os.Remove(partPath)
-	}
-	usage, err := s.store.ArtifactUsage(ctx, session.OwnerID, session.MachineID, now)
-	if err != nil {
-		return ArtifactCreateResult{}, err
-	}
-	if usage.ActiveUploads >= MaxActiveArtifactUploads || usage.MachineBytes+req.SizeBytes > MaxMachineArtifactBytes || usage.OwnerBytes+req.SizeBytes > MaxOwnerArtifactBytes {
-		return ArtifactCreateResult{}, &CapabilityCallError{Code: "ARTIFACT_QUOTA_EXCEEDED", Message: "artifact quota exceeded", Retryable: false}
 	}
 	artifactID, err := security.RandomOpaque("art_")
 	if err != nil {
@@ -110,7 +147,14 @@ func (s *Service) CreateArtifactUpload(ctx context.Context, session store.Device
 		ID: uploadID, ArtifactID: artifactID, MachineID: session.MachineID,
 		ExpectedSize: req.SizeBytes, ExpectedSHA256: req.SHA256, Status: "active", ExpiresAt: uploadExpires,
 	}
-	if err := s.store.CreateArtifactUpload(ctx, artifact, upload); err != nil {
+	if err := s.store.CreateArtifactUpload(ctx, artifact, upload, store.ArtifactQuota{
+		MaxActiveUploads: MaxActiveArtifactUploads,
+		MaxMachineBytes:  MaxMachineArtifactBytes,
+		MaxOwnerBytes:    MaxOwnerArtifactBytes,
+	}); err != nil {
+		if errors.Is(err, store.ErrResourceLimit) {
+			return ArtifactCreateResult{}, &CapabilityCallError{Code: "ARTIFACT_QUOTA_EXCEEDED", Message: "artifact quota exceeded", Retryable: false}
+		}
 		return ArtifactCreateResult{}, err
 	}
 	if err := os.MkdirAll(filepath.Join(s.dataDir, "artifacts", "uploads"), 0o700); err != nil {
@@ -122,11 +166,11 @@ func (s *Service) CreateArtifactUpload(ctx context.Context, session store.Device
 }
 
 func (s *Service) UploadArtifactChunk(ctx context.Context, machineID, uploadID string, offset int64, chunk []byte) (int64, error) {
-	if offset < 0 || len(chunk) == 0 || len(chunk) > MaxArtifactChunkBytes || !strings.HasPrefix(uploadID, "upl_") {
+	if offset < 0 || len(chunk) == 0 || len(chunk) > MaxArtifactChunkBytes || !validArtifactUploadID(uploadID) {
 		return 0, store.ErrConflict
 	}
-	artifactUploadMu.Lock()
-	defer artifactUploadMu.Unlock()
+	unlock := s.lockArtifactOperation("upload\x00" + uploadID)
+	defer unlock()
 
 	now := s.now().UTC()
 	rec, err := s.store.GetArtifactUpload(ctx, machineID, uploadID, now)
@@ -170,8 +214,11 @@ func (s *Service) UploadArtifactChunk(ctx context.Context, machineID, uploadID s
 }
 
 func (s *Service) CompleteArtifactUpload(ctx context.Context, session store.DeviceSession, uploadID string) (store.ArtifactRecord, error) {
-	artifactUploadMu.Lock()
-	defer artifactUploadMu.Unlock()
+	if !validArtifactUploadID(uploadID) {
+		return store.ArtifactRecord{}, store.ErrConflict
+	}
+	unlock := s.lockArtifactOperation("upload\x00" + uploadID)
+	defer unlock()
 
 	now := s.now().UTC()
 	upload, err := s.store.GetArtifactUploadState(ctx, session.MachineID, uploadID)
@@ -229,6 +276,8 @@ func (s *Service) CompleteArtifactUpload(ctx context.Context, session store.Devi
 		return store.ArtifactRecord{}, &CapabilityCallError{Code: "HASH_MISMATCH", Message: "artifact SHA-256 mismatch", Retryable: false}
 	}
 	storageKey := artifactStorageKey(actualSHA)
+	unlockBlob := s.lockArtifactKey("blob\x00" + storageKey)
+	defer unlockBlob()
 	blobPath, err := s.artifactBlobPath(storageKey)
 	if err != nil {
 		return store.ArtifactRecord{}, err
@@ -273,8 +322,11 @@ func (s *Service) CompleteArtifactUpload(ctx context.Context, session store.Devi
 }
 
 func (s *Service) AbortArtifactUpload(ctx context.Context, session store.DeviceSession, uploadID string) error {
-	artifactUploadMu.Lock()
-	defer artifactUploadMu.Unlock()
+	if !validArtifactUploadID(uploadID) {
+		return store.ErrConflict
+	}
+	unlock := s.lockArtifactOperation("upload\x00" + uploadID)
+	defer unlock()
 	if err := s.store.AbortArtifactUpload(ctx, session.MachineID, uploadID); err != nil {
 		return err
 	}
@@ -326,11 +378,10 @@ func (s *Service) artifactUploadPath(uploadID string) string {
 }
 
 func (s *Service) artifactBlobPath(storageKey string) (string, error) {
-	clean := filepath.Clean(filepath.FromSlash(storageKey))
-	if clean == "." || clean == ".." || filepath.IsAbs(clean) || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+	if !validArtifactStorageKey(storageKey) {
 		return "", store.ErrConflict
 	}
-	return filepath.Join(s.dataDir, "artifacts", "blobs", clean), nil
+	return filepath.Join(s.dataDir, "artifacts", "blobs", filepath.FromSlash(storageKey)), nil
 }
 
 func artifactStorageKey(sha string) string {
@@ -361,4 +412,26 @@ func validArtifactSHA256(value string) bool {
 	}
 	_, err := hex.DecodeString(strings.TrimPrefix(value, "sha256:"))
 	return err == nil
+}
+
+func validArtifactUploadID(value string) bool {
+	if len(value) != len("upl_")+32 || !strings.HasPrefix(value, "upl_") {
+		return false
+	}
+	for _, r := range strings.TrimPrefix(value, "upl_") {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validArtifactStorageKey(value string) bool {
+	parts := strings.Split(value, "/")
+	if len(parts) != 3 || len(parts[0]) != 2 || len(parts[1]) != 2 || len(parts[2]) != 64 || parts[0] != parts[2][:2] || parts[1] != parts[2][2:4] {
+		return false
+	}
+	_, err := hex.DecodeString(parts[2])
+	return err == nil && strings.ToLower(value) == value
 }

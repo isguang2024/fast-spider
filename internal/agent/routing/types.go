@@ -72,7 +72,7 @@ func (i *Inspector) cached(appType string) (map[string]any, bool) {
 func (i *Inspector) store(appType string, value map[string]any) {
 	i.cacheMu.Lock()
 	defer i.cacheMu.Unlock()
-	if len(i.cache) >= maxRouteCacheKeys {
+	if _, exists := i.cache[appType]; !exists && len(i.cache) >= maxRouteCacheKeys {
 		var oldestKey string
 		var oldest time.Time
 		for key, entry := range i.cache {
@@ -99,22 +99,28 @@ func cloneMap(value map[string]any) map[string]any {
 	}
 	copyValue := make(map[string]any, len(value))
 	for key, item := range value {
-		switch typed := item.(type) {
-		case map[string]any:
-			copyValue[key] = cloneMap(typed)
-		case []map[string]any:
-			items := make([]map[string]any, len(typed))
-			for index := range typed {
-				items[index] = cloneMap(typed[index])
-			}
-			copyValue[key] = items
-		case []any:
-			items := make([]any, len(typed))
-			copy(items, typed)
-			copyValue[key] = items
-		default:
-			copyValue[key] = item
-		}
+		copyValue[key] = cloneValue(item)
 	}
 	return copyValue
+}
+
+func cloneValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneMap(typed)
+	case []map[string]any:
+		items := make([]map[string]any, len(typed))
+		for index := range typed {
+			items[index] = cloneMap(typed[index])
+		}
+		return items
+	case []any:
+		items := make([]any, len(typed))
+		for index := range typed {
+			items[index] = cloneValue(typed[index])
+		}
+		return items
+	default:
+		return value
+	}
 }

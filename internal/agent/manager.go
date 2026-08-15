@@ -985,20 +985,25 @@ func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlPara
 		if idempotencyKey != "" {
 			if isDefinitiveCodexRPCRejection(err) {
 				if cleanupErr := m.createStore.abort(storeKey); cleanupErr != nil {
-					return nil, cleanupErr
+					return nil, errors.Join(err, cleanupErr)
 				}
 			} else {
-				_ = m.createStore.update(storeKey, "in_doubt", nil)
+				if persistenceErr := m.createStore.update(storeKey, "in_doubt", nil); persistenceErr != nil {
+					err = errors.Join(err, fmt.Errorf("persist ambiguous Codex thread creation: %w", persistenceErr))
+				}
 			}
 		}
 		return nil, err
 	}
 	sessionID := mapNestedString(threadResult, "thread", "id")
 	if sessionID == "" {
+		missingSessionErr := fmt.Errorf("Codex did not return a session ID")
 		if idempotencyKey != "" {
-			_ = m.createStore.update(storeKey, "in_doubt", nil)
+			if persistenceErr := m.createStore.update(storeKey, "in_doubt", nil); persistenceErr != nil {
+				missingSessionErr = errors.Join(missingSessionErr, fmt.Errorf("persist ambiguous Codex thread creation: %w", persistenceErr))
+			}
 		}
-		return nil, fmt.Errorf("Codex did not return a session ID")
+		return nil, missingSessionErr
 	}
 	if idempotencyKey != "" {
 		if err := m.createStore.update(storeKey, "thread_created", map[string]any{"sessionId": sessionID}); err != nil {
@@ -1049,12 +1054,20 @@ func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlPara
 		OutputSchema:     input.OutputSchema,
 	})
 	if err != nil {
-		if idempotencyKey != "" {
-			_ = m.createStore.update(storeKey, "in_doubt", map[string]any{"sessionId": sessionID})
-		}
-		_ = m.codex.ArchiveThread(context.Background(), sessionID)
-		if cleanupErr := removeCodexDesktopThreadAssignment(m.codexStatePath, sessionID); cleanupErr != nil {
-			m.logger.Warn("remove failed Codex Desktop thread assignment", "sessionId", sessionID, "error", cleanupErr)
+		if isDefinitiveCodexRPCRejection(err) {
+			if cleanupErr := m.cleanupRejectedInitialTurn(sessionID, idempotencyKey != "", m.codex.DeleteThread); cleanupErr != nil {
+				return nil, errors.Join(err, cleanupErr)
+			}
+		} else {
+			if idempotencyKey != "" {
+				if persistenceErr := m.createStore.update(storeKey, "in_doubt", map[string]any{"sessionId": sessionID}); persistenceErr != nil {
+					err = errors.Join(err, fmt.Errorf("persist ambiguous Codex initial turn: %w", persistenceErr))
+				}
+			}
+			_ = m.codex.ArchiveThread(context.Background(), sessionID)
+			if cleanupErr := removeCodexDesktopThreadAssignment(m.codexStatePath, sessionID); cleanupErr != nil {
+				m.logger.Warn("remove failed Codex Desktop thread assignment", "sessionId", sessionID, "error", cleanupErr)
+			}
 		}
 		return nil, err
 	}
@@ -1067,6 +1080,28 @@ func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlPara
 		}
 	}
 	return out, nil
+}
+
+func (m *AgentManager) cleanupRejectedInitialTurn(sessionID string, idempotencyProtected bool, deleteThread func(context.Context, string) error) error {
+	if idempotencyProtected {
+		if _, err := m.createStore.prepareSessionDelete(sessionID); err != nil {
+			return fmt.Errorf("record rejected Codex session cleanup: %w", err)
+		}
+	}
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := deleteThread(cleanupCtx, sessionID); err != nil && !isAgentSessionNotFound(err) {
+		return fmt.Errorf("delete Codex session after rejected initial turn: %w", err)
+	}
+	if idempotencyProtected {
+		if err := m.createStore.finalizeSessionDelete(sessionID); err != nil {
+			return fmt.Errorf("release rejected Codex session reservation: %w", err)
+		}
+	}
+	if err := removeCodexDesktopThreadAssignment(m.codexStatePath, sessionID); err != nil {
+		m.logger.Warn("remove rejected Codex Desktop thread assignment", "sessionId", sessionID, "error", err)
+	}
+	return nil
 }
 
 func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams) (map[string]any, error) {

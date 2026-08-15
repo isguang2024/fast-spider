@@ -53,15 +53,19 @@ func (a *ClaudeCodeAdapter) loadIndex() error {
 	if err := json.Unmarshal(raw, &index); err != nil {
 		return err
 	}
+	if index.SchemaVersion != 1 {
+		return fmt.Errorf("unsupported Claude Code session index schema version %d", index.SchemaVersion)
+	}
+	seen := make(map[string]struct{}, len(index.Sessions))
 	for _, record := range index.Sessions {
 		if record == nil || strings.TrimSpace(record.SessionID) == "" || strings.TrimSpace(record.WorkingDirectory) == "" {
-			continue
+			return fmt.Errorf("invalid Claude Code session index record")
 		}
-		if record.Status == "running" {
-			record.Status = "interrupted"
-			record.LastError = "Fast Spider Node restarted while this Claude Code turn was running"
-			record.ErrorClass = ErrorRuntimeUnavailable
-		} else if record.LastError != "" {
+		if _, duplicate := seen[record.SessionID]; duplicate {
+			return fmt.Errorf("invalid Claude Code session index: duplicate session ID")
+		}
+		seen[record.SessionID] = struct{}{}
+		if record.Status != "running" && record.LastError != "" {
 			if !validErrorClass(record.ErrorClass) {
 				record.ErrorClass = classifyExecutionText(record.LastError)
 			}
@@ -69,12 +73,19 @@ func (a *ClaudeCodeAdapter) loadIndex() error {
 		}
 		a.sessions[record.SessionID] = record
 	}
+	markInterruptedClaudeSessions(a.sessions)
 	return nil
 }
 
-func (a *ClaudeCodeAdapter) saveIndexLocked() error {
+func (a *ClaudeCodeAdapter) saveIndexLocked() (bool, error) {
+	if a.indexLoadErr != nil {
+		return false, fmt.Errorf("Claude Code session index is unavailable; repair the existing index before making session changes: %w", a.indexLoadErr)
+	}
+	if a.beforeCommitSaveOverride != nil {
+		return false, a.beforeCommitSaveOverride()
+	}
 	if err := os.MkdirAll(filepath.Dir(a.indexPath), 0o700); err != nil {
-		return err
+		return false, err
 	}
 	records := make([]*ClaudeSessionRecord, 0, len(a.sessions))
 	for _, record := range a.sessions {
@@ -85,34 +96,51 @@ func (a *ClaudeCodeAdapter) saveIndexLocked() error {
 	index := claudeSessionIndex{SchemaVersion: 1, Sessions: records}
 	raw, err := json.MarshalIndent(index, "", "  ")
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(raw) > claudeCodeIndexMaxBytes {
-		return fmt.Errorf("Claude Code session index exceeds limit")
+		return false, fmt.Errorf("Claude Code session index exceeds its %d-byte capacity; delete inactive Fast Spider session entries to continue (native Claude history is preserved)", claudeCodeIndexMaxBytes)
 	}
 	temp, err := os.CreateTemp(filepath.Dir(a.indexPath), ".claude-code-sessions-*")
 	if err != nil {
-		return err
+		return false, err
 	}
 	tempPath := temp.Name()
 	defer os.Remove(tempPath)
 	if err := temp.Chmod(0o600); err != nil {
 		_ = temp.Close()
-		return err
+		return false, err
 	}
 	if _, err := temp.Write(raw); err != nil {
 		_ = temp.Close()
-		return err
+		return false, err
 	}
 	if err := temp.Sync(); err != nil {
 		_ = temp.Close()
-		return err
+		return false, err
 	}
 	if err := temp.Close(); err != nil {
-		return err
+		return false, err
 	}
 	if err := replaceAgentFile(tempPath, a.indexPath); err != nil {
-		return err
+		return false, err
 	}
-	return syncAgentParentDirectory(a.indexPath)
+	syncParent := syncAgentParentDirectory
+	if a.syncParentOverride != nil {
+		syncParent = a.syncParentOverride
+	}
+	if err := syncParent(a.indexPath); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func markInterruptedClaudeSessions(sessions map[string]*ClaudeSessionRecord) {
+	for _, record := range sessions {
+		if record != nil && record.Status == "running" {
+			record.Status = "interrupted"
+			record.LastError = "Fast Spider Node restarted while this Claude Code turn was running"
+			record.ErrorClass = ErrorRuntimeUnavailable
+		}
+	}
 }

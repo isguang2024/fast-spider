@@ -22,6 +22,9 @@ import (
 const (
 	browserSidecarProtocolVersion = "1.1"
 	maxBrowserSidecarLineBytes    = 2 << 20
+	browserSidecarCloseTimeout    = 5 * time.Second
+	maxBrowserAvailabilityHolders = 128
+	browserAvailabilityHolderTTL  = time.Minute
 )
 
 var (
@@ -62,18 +65,60 @@ type browserAvailabilityHolder struct {
 	cache browserAvailabilityCache
 }
 
+type browserAvailabilityHolderEntry struct {
+	holder   *browserAvailabilityHolder
+	lastUsed time.Time
+}
+
+type browserAvailabilityHolderRegistry struct {
+	mu      sync.Mutex
+	entries map[string]browserAvailabilityHolderEntry
+}
+
 // NodeUI builds a lightweight local capability client on every diagnostics
 // refresh. Keep availability probes keyed by the resolved component directory
 // so those clients share the same 30s/5s cache without sharing browser sessions.
-var browserAvailabilityHolders sync.Map
+var browserAvailabilityHolders = browserAvailabilityHolderRegistry{entries: make(map[string]browserAvailabilityHolderEntry)}
 
 func browserAvailabilityFor(dir string) *browserAvailabilityHolder {
+	return browserAvailabilityForAt(dir, time.Now())
+}
+
+func browserAvailabilityForAt(dir string, now time.Time) *browserAvailabilityHolder {
 	key := filepath.Clean(strings.TrimSpace(dir))
 	if key == "." || key == "" {
 		key = "<not-configured>"
 	}
-	value, _ := browserAvailabilityHolders.LoadOrStore(key, &browserAvailabilityHolder{})
-	return value.(*browserAvailabilityHolder)
+	if runtime.GOOS == "windows" {
+		key = strings.ToLower(key)
+	}
+	registry := &browserAvailabilityHolders
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	for existingKey, entry := range registry.entries {
+		if !entry.lastUsed.IsZero() && now.Sub(entry.lastUsed) >= browserAvailabilityHolderTTL {
+			delete(registry.entries, existingKey)
+		}
+	}
+	if entry, ok := registry.entries[key]; ok {
+		entry.lastUsed = now
+		registry.entries[key] = entry
+		return entry.holder
+	}
+	if len(registry.entries) >= maxBrowserAvailabilityHolders {
+		var oldestKey string
+		var oldest time.Time
+		for existingKey, entry := range registry.entries {
+			if oldestKey == "" || entry.lastUsed.Before(oldest) {
+				oldestKey = existingKey
+				oldest = entry.lastUsed
+			}
+		}
+		delete(registry.entries, oldestKey)
+	}
+	holder := &browserAvailabilityHolder{}
+	registry.entries[key] = browserAvailabilityHolderEntry{holder: holder, lastUsed: now}
+	return holder
 }
 
 type browserCallTiming struct {
@@ -93,16 +138,23 @@ type BrowserSidecar struct {
 	dir    string
 	logger *slog.Logger
 
-	startMu   sync.Mutex
-	mu        sync.Mutex
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	pending   map[string]chan browserSidecarResponse
-	ready     bool
-	starting  bool
-	startDone chan struct{}
-	startErr  error
-	closed    bool
+	startMu     sync.Mutex
+	writeMu     sync.Mutex
+	mu          sync.Mutex
+	cmd         *exec.Cmd
+	stdin       io.WriteCloser
+	processDone chan struct{}
+	closeInput  func(io.WriteCloser) error
+	killTree    func(*exec.Cmd) error
+	pending     map[string]chan browserSidecarResponse
+	ready       bool
+	starting    bool
+	startDone   chan struct{}
+	startErr    error
+	closed      bool
+	closing     bool
+	closeDone   chan struct{}
+	closeErr    error
 }
 
 func ResolveBrowserSidecarDir(explicit string) string {
@@ -308,25 +360,61 @@ func (s *BrowserSidecar) callStarted(ctx context.Context, action string, params 
 		s.removePending(requestID)
 		return nil, fmt.Errorf("browser sidecar request exceeds limit")
 	}
-	s.mu.Lock()
-	if s.stdin != stdin || s.closed {
+	writeDone := make(chan error, 1)
+	go func() {
+		s.writeMu.Lock()
+		defer s.writeMu.Unlock()
+		if err := ctx.Err(); err != nil {
+			writeDone <- err
+			return
+		}
+		s.mu.Lock()
+		current := s.stdin == stdin && !s.closed
 		s.mu.Unlock()
+		if !current {
+			writeDone <- ErrBrowserSidecarLost
+			return
+		}
+		frame := append(raw, '\n')
+		for len(frame) > 0 {
+			n, err := stdin.Write(frame)
+			if err != nil {
+				writeDone <- err
+				return
+			}
+			if n <= 0 {
+				writeDone <- io.ErrShortWrite
+				return
+			}
+			frame = frame[n:]
+		}
+		writeDone <- nil
+	}()
+	select {
+	case <-ctx.Done():
 		s.removePending(requestID)
-		return nil, ErrBrowserSidecarLost
-	}
-	_, writeErr := stdin.Write(append(raw, '\n'))
-	s.mu.Unlock()
-	if writeErr != nil {
+		_ = s.Close(ctx)
+		return nil, ctx.Err()
+	case writeErr := <-writeDone:
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			s.removePending(requestID)
+			_ = s.Close(ctx)
+			return nil, ctxErr
+		}
+		if writeErr == nil {
+			break
+		}
 		s.removePending(requestID)
+		// A failed write may have emitted only part of a JSON frame. Retire the
+		// process so a later request cannot continue on a corrupted stream.
+		_ = s.Close(context.Background())
 		return nil, fmt.Errorf("write browser sidecar request: %w", writeErr)
 	}
 
 	select {
 	case <-ctx.Done():
 		s.removePending(requestID)
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = s.Close(shutdownCtx)
-		cancel()
+		_ = s.Close(ctx)
 		return nil, ctx.Err()
 	case response := <-responseCh:
 		if !response.OK {
@@ -343,12 +431,28 @@ func (s *BrowserSidecar) ensureStarted(ctx context.Context) error {
 	s.startMu.Lock()
 	defer s.startMu.Unlock()
 
-	s.mu.Lock()
-	if s.cmd != nil && s.ready && !s.closed {
+	for {
+		s.mu.Lock()
+		closing := s.closing
+		closeDone := s.closeDone
+		closeErr := s.closeErr
+		if !closing && s.cmd != nil && s.ready && !s.closed {
+			s.mu.Unlock()
+			return nil
+		}
 		s.mu.Unlock()
-		return nil
+		if !closing {
+			if closeErr != nil {
+				return fmt.Errorf("%w: previous browser sidecar cleanup failed: %v", ErrBrowserSidecarLost, closeErr)
+			}
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-closeDone:
+		}
 	}
-	s.mu.Unlock()
 	if err := s.Available(); err != nil {
 		return err
 	}
@@ -393,11 +497,13 @@ func (s *BrowserSidecar) ensureStarted(ctx context.Context) error {
 	}
 	s.cmd = cmd
 	s.stdin = stdin
+	s.processDone = make(chan struct{})
 	s.ready = false
+	processDone := s.processDone
 	s.mu.Unlock()
 	go s.readResponses(stdout)
 	go s.readStderr(stderr)
-	go s.waitProcess(cmd)
+	go s.waitProcess(cmd, processDone)
 
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -429,6 +535,7 @@ func (s *BrowserSidecar) beginStart() {
 	s.startDone = make(chan struct{})
 	s.startErr = nil
 	s.closed = false
+	s.closeErr = nil
 	s.mu.Unlock()
 }
 
@@ -497,19 +604,24 @@ func truncateBrowserLog(value string, limit int) string {
 	return value[:limit] + "…"
 }
 
-func (s *BrowserSidecar) waitProcess(cmd *exec.Cmd) {
+func (s *BrowserSidecar) waitProcess(cmd *exec.Cmd, done chan struct{}) {
 	err := cmd.Wait()
 	s.mu.Lock()
 	if s.cmd != cmd {
 		s.mu.Unlock()
+		close(done)
 		return
 	}
 	s.cmd = nil
 	s.stdin = nil
+	if s.processDone == done {
+		s.processDone = nil
+	}
 	s.ready = false
 	pending := s.pending
 	s.pending = make(map[string]chan browserSidecarResponse)
 	s.mu.Unlock()
+	close(done)
 	for id, ch := range pending {
 		ch <- browserSidecarResponse{ID: id, OK: false, Error: &browserSidecarError{Code: "BROWSER_SIDECAR_LOST", Message: "browser sidecar process exited", Retryable: true}}
 	}
@@ -526,30 +638,115 @@ func (s *BrowserSidecar) removePending(requestID string) {
 
 func (s *BrowserSidecar) Close(ctx context.Context) error {
 	s.mu.Lock()
+	if s.closing {
+		done := s.closeDone
+		s.mu.Unlock()
+		return s.waitClose(ctx, done)
+	}
+	if s.cmd == nil && s.stdin == nil {
+		s.closed = true
+		s.ready = false
+		pending := s.pending
+		s.pending = make(map[string]chan browserSidecarResponse)
+		err := s.closeErr
+		s.mu.Unlock()
+		s.notifyClosed(pending)
+		return err
+	}
 	cmd := s.cmd
 	stdin := s.stdin
+	processDone := s.processDone
 	s.closed = true
-	s.cmd = nil
-	s.stdin = nil
 	s.ready = false
+	s.closing = true
+	s.closeDone = make(chan struct{})
+	s.closeErr = nil
+	done := s.closeDone
 	pending := s.pending
 	s.pending = make(map[string]chan browserSidecarResponse)
 	s.mu.Unlock()
-	if stdin != nil {
-		_ = stdin.Close()
-	}
+	s.notifyClosed(pending)
+	go s.finishClose(cmd, stdin, processDone, done)
+	return s.waitClose(ctx, done)
+}
+
+func (s *BrowserSidecar) notifyClosed(pending map[string]chan browserSidecarResponse) {
 	for id, ch := range pending {
 		ch <- browserSidecarResponse{ID: id, OK: false, Error: &browserSidecarError{Code: "BROWSER_SIDECAR_CLOSED", Message: "browser sidecar closed", Retryable: true}}
 	}
-	if cmd == nil || cmd.Process == nil {
-		return nil
+}
+
+func (s *BrowserSidecar) finishClose(cmd *exec.Cmd, stdin io.WriteCloser, processDone <-chan struct{}, done chan struct{}) {
+	inputDone := make(chan error, 1)
+	if stdin != nil {
+		go func() {
+			if s.closeInput != nil {
+				inputDone <- s.closeInput(stdin)
+				return
+			}
+			inputDone <- stdin.Close()
+		}()
+	} else {
+		inputDone <- nil
 	}
-	done := make(chan error, 1)
-	go func() { done <- killProcessTree(cmd) }()
+	killDone := make(chan error, 1)
+	if cmd != nil && cmd.Process != nil {
+		go func() {
+			if s.killTree != nil {
+				killDone <- s.killTree(cmd)
+				return
+			}
+			killDone <- killProcessTree(cmd)
+		}()
+	} else {
+		killDone <- nil
+	}
+	inputErr := <-inputDone
+	killErr := <-killDone
+	if processDone != nil {
+		<-processDone
+	}
+	closeErr := killErr
+	if closeErr == nil {
+		closeErr = inputErr
+	}
+	if processDone != nil && closeErr != nil {
+		// Kill/pipe-close operations can race with a process that has already
+		// exited. Once Wait has completed, cleanup is definitive and a stale
+		// helper error must not permanently block the next sidecar generation.
+		if s.logger != nil {
+			s.logger.Debug("browser sidecar cleanup completed after helper error", "error", closeErr)
+		}
+		closeErr = nil
+	}
+
+	s.mu.Lock()
+	if s.cmd == cmd {
+		s.cmd = nil
+	}
+	if s.stdin == stdin {
+		s.stdin = nil
+	}
+	if s.processDone == processDone {
+		s.processDone = nil
+	}
+	s.ready = false
+	s.closing = false
+	s.closeErr = closeErr
+	close(done)
+	s.mu.Unlock()
+}
+
+func (s *BrowserSidecar) waitClose(ctx context.Context, done <-chan struct{}) error {
+	closeCtx, cancel := context.WithTimeout(ctx, browserSidecarCloseTimeout)
+	defer cancel()
 	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err := <-done:
+	case <-closeCtx.Done():
+		return closeCtx.Err()
+	case <-done:
+		s.mu.Lock()
+		err := s.closeErr
+		s.mu.Unlock()
 		return err
 	}
 }

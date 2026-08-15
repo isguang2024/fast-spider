@@ -53,7 +53,7 @@ func (c *ttlCache[T]) get(key string) (T, bool) {
 func (c *ttlCache[T]) set(key string, value T) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.entries) >= c.maxKeys {
+	if _, exists := c.entries[key]; !exists && len(c.entries) >= c.maxKeys {
 		var oldestKey string
 		var oldest time.Time
 		for itemKey, entry := range c.entries {
@@ -77,22 +77,28 @@ func cloneAgentMap(value map[string]any) map[string]any {
 	}
 	out := make(map[string]any, len(value))
 	for key, item := range value {
-		switch typed := item.(type) {
-		case map[string]any:
-			out[key] = cloneAgentMap(typed)
-		case []map[string]any:
-			items := make([]map[string]any, len(typed))
-			for index := range typed {
-				items[index] = cloneAgentMap(typed[index])
-			}
-			out[key] = items
-		case []any:
-			items := make([]any, len(typed))
-			copy(items, typed)
-			out[key] = items
-		default:
-			out[key] = item
-		}
+		out[key] = cloneAgentValue(item)
 	}
 	return out
+}
+
+func cloneAgentValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneAgentMap(typed)
+	case []map[string]any:
+		items := make([]map[string]any, len(typed))
+		for index := range typed {
+			items[index] = cloneAgentMap(typed[index])
+		}
+		return items
+	case []any:
+		items := make([]any, len(typed))
+		for index := range typed {
+			items[index] = cloneAgentValue(typed[index])
+		}
+		return items
+	default:
+		return value
+	}
 }

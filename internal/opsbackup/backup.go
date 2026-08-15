@@ -61,6 +61,8 @@ func Create(ctx context.Context, dataDir, outputPath, appVersion string) (Manife
 	if pathWithin(root, output) {
 		return Manifest{}, fmt.Errorf("backup output must be outside the Hub data directory")
 	}
+	unlockDirectory := lockReleaseBackupDirectory(filepath.Dir(output))
+	defer unlockDirectory()
 	if _, err := os.Lstat(output); err == nil {
 		return Manifest{}, fmt.Errorf("backup output already exists")
 	} else if !errors.Is(err, os.ErrNotExist) {

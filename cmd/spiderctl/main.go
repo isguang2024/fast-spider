@@ -106,6 +106,7 @@ func backupPrune(args []string) {
 	fs := flag.NewFlagSet("backup-prune", flag.ExitOnError)
 	directory := fs.String("dir", "", "absolute directory containing standard release backups")
 	keep := fs.Int("keep", defaultReleaseBackupKeep, "number of newest verified release backups to keep")
+	apply := fs.Bool("apply", false, "apply the planned deletion; default is plan-only")
 	_ = fs.Parse(args)
 	if strings.TrimSpace(*directory) == "" {
 		fatalf("--dir is required")
@@ -115,18 +116,18 @@ func backupPrune(args []string) {
 	}
 	ctx, cancel := operationContext()
 	defer cancel()
-	result, err := runBackupPrune(ctx, *directory, *keep)
+	result, err := runBackupPrune(ctx, *directory, *keep, *apply)
 	if err == nil || result.CandidateCount > 0 {
 		printJSON(result)
 	}
 	fatalIf(err)
 }
 
-func runBackupPrune(ctx context.Context, directory string, keep int) (opsbackup.PruneResult, error) {
+func runBackupPrune(ctx context.Context, directory string, keep int, apply bool) (opsbackup.PruneResult, error) {
 	if strings.TrimSpace(directory) == "" || !filepath.IsAbs(directory) {
 		return opsbackup.PruneResult{}, fmt.Errorf("backup prune directory must be an absolute path")
 	}
-	return opsbackup.PruneReleaseBackups(ctx, directory, keep)
+	return opsbackup.PruneReleaseBackups(ctx, directory, keep, apply)
 }
 
 func stagingPrune(args []string) {

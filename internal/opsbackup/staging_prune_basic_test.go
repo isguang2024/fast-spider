@@ -123,5 +123,5 @@ func TestPruneReleaseStagingInjectedReparseZeroDelete(t *testing.T) {
 	}
 }
 func stageDeps() stagingPruneDependencies {
-	return stagingPruneDependencies{lstat: os.Lstat, readDir: os.ReadDir, isReparse: releaseBackupPathIsReparse, remove: os.Remove, limits: stagingScanLimits{maxFiles: MaxStagingPruneFiles, maxBytes: MaxStagingPruneBytes, maxDepth: MaxStagingPruneDepth}}
+	return stagingPruneDependencies{lstat: os.Lstat, readDir: os.ReadDir, isReparse: releaseBackupPathIsReparse, makeTemp: os.MkdirTemp, rename: os.Rename, remove: os.Remove, limits: stagingScanLimits{maxFiles: MaxStagingPruneFiles, maxBytes: MaxStagingPruneBytes, maxDepth: MaxStagingPruneDepth}}
 }

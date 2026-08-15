@@ -101,11 +101,17 @@ func (c *Client) gitControl(ctx context.Context, params map[string]any) (gitCont
 		if len(paths) == 0 {
 			return gitControlResult{}, fmt.Errorf("paths are required for git add")
 		}
+		if err := validateGitSideEffects(ctx, repositoryPath, input.Action, paths, ""); err != nil {
+			return gitControlResult{}, err
+		}
 		return c.runGitWrite(ctx, repositoryPath, input.Action, append([]string{"add", "--"}, paths...))
 	case "commit":
 		message := strings.TrimSpace(input.Message)
 		if message == "" || len(message) > 4096 {
 			return gitControlResult{}, fmt.Errorf("commit message is required and must be at most 4096 bytes")
+		}
+		if err := validateGitSideEffects(ctx, repositoryPath, input.Action, nil, ""); err != nil {
+			return gitControlResult{}, err
 		}
 		return c.runGitWrite(ctx, repositoryPath, input.Action, []string{"commit", "--no-gpg-sign", "-m", message})
 	case "fetch", "pull", "push":
@@ -115,6 +121,9 @@ func (c *Client) gitControl(ctx context.Context, params map[string]any) (gitCont
 		if err := validateConfiguredRemote(ctx, repositoryPath, input.Remote, c.cfg.DataDir); err != nil {
 			return gitControlResult{}, err
 		}
+		if err := validateGitSideEffects(ctx, repositoryPath, input.Action, nil, input.Remote); err != nil {
+			return gitControlResult{}, err
+		}
 		args := []string{input.Action, input.Remote}
 		if input.Branch != "" {
 			if err := validateGitRef(input.Branch); err != nil {
@@ -122,7 +131,8 @@ func (c *Client) gitControl(ctx context.Context, params map[string]any) (gitCont
 			}
 			args = append(args, input.Branch)
 		}
-		gitArgv := append([]string{"git", "-c", "color.ui=false", "-c", "core.pager=cat", "-c", "core.fsmonitor=false", "-c", "diff.external=", "-c", "interactive.diffFilter="}, args...)
+		gitArgv := append([]string{"git", "-c", "color.ui=false", "-c", "core.pager=cat", "-c", "core.fsmonitor=false", "-c", "diff.external=", "-c", "interactive.diffFilter="}, gitSideEffectCommandConfig(input.Remote)...)
+		gitArgv = append(gitArgv, args...)
 		job, err := c.jobs.StartShell(repositoryPath, gitArgv, gitNetworkTimeout, input.IdempotencyKey)
 		if err != nil {
 			return gitControlResult{}, err
@@ -133,6 +143,9 @@ func (c *Client) gitControl(ctx context.Context, params map[string]any) (gitCont
 			return gitControlResult{}, fmt.Errorf("branch is required")
 		}
 		if err := validateGitRef(input.Branch); err != nil {
+			return gitControlResult{}, err
+		}
+		if err := validateGitSideEffects(ctx, repositoryPath, input.Action, nil, ""); err != nil {
 			return gitControlResult{}, err
 		}
 		target := strings.TrimSpace(input.WorktreePath)
@@ -231,7 +244,8 @@ func (c *Client) runGitRead(ctx context.Context, root, action string, args []str
 func (c *Client) runGitWrite(ctx context.Context, root, action string, args []string) (gitControlResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, gitWriteTimeout)
 	defer cancel()
-	output, truncated, err := runGitCommand(ctx, root, args)
+	safeArgs := append(gitSideEffectCommandConfig(""), args...)
+	output, truncated, err := runGitCommand(ctx, root, safeArgs)
 	if err != nil {
 		return gitControlResult{}, err
 	}
@@ -323,6 +337,76 @@ func activeGitHooks(ctx context.Context, root string) (bool, error) {
 	return false, nil
 }
 
+func validateGitSideEffects(ctx context.Context, root, action string, paths []string, remote string) error {
+	hooks, err := activeGitHooks(ctx, root)
+	if err != nil {
+		return fmt.Errorf("inspect Git hooks: %w", err)
+	}
+	if hooks {
+		return fmt.Errorf("%w: active Git hook", ErrGitHooksDenied)
+	}
+
+	switch action {
+	case "add":
+		usesFilters, err := gitPathsUseFilters(ctx, root, paths)
+		if err != nil {
+			return fmt.Errorf("inspect Git path filters: %w", err)
+		}
+		if !usesFilters {
+			return nil
+		}
+		executable, err := hasExecutableGitFilters(ctx, root)
+		if err != nil {
+			return fmt.Errorf("inspect executable Git filters: %w", err)
+		}
+		if executable {
+			return fmt.Errorf("%w: executable Git filter", ErrGitHooksDenied)
+		}
+	case "pull":
+		executable, err := hasExecutableGitFilters(ctx, root)
+		if err != nil {
+			return fmt.Errorf("inspect executable Git filters: %w", err)
+		}
+		if executable {
+			return fmt.Errorf("%w: executable Git filter or merge driver", ErrGitHooksDenied)
+		}
+		fallthrough
+	case "fetch", "push":
+		executable, err := hasExecutableGitNetworkConfig(ctx, root, remote)
+		if err != nil {
+			return fmt.Errorf("inspect executable Git network configuration: %w", err)
+		}
+		if executable {
+			return fmt.Errorf("%w: executable Git network configuration", ErrGitHooksDenied)
+		}
+	case "createWorktree":
+		executable, err := hasExecutableGitFilters(ctx, root)
+		if err != nil {
+			return fmt.Errorf("inspect executable Git filters: %w", err)
+		}
+		if executable {
+			return fmt.Errorf("%w: executable Git checkout filter", ErrGitHooksDenied)
+		}
+	}
+	return nil
+}
+
+func gitSideEffectCommandConfig(remote string) []string {
+	args := []string{"-c", "core.hooksPath="}
+	if remote == "" {
+		return args
+	}
+	return append(args,
+		"-c", "core.askPass=",
+		"-c", "core.sshCommand=",
+		"-c", "core.gitProxy=",
+		"-c", "remote."+remote+".proxy=",
+		"-c", "remote."+remote+".uploadpack=git-upload-pack",
+		"-c", "remote."+remote+".receivepack=git-receive-pack",
+		"-c", "remote."+remote+".vcs=",
+	)
+}
+
 func validateGitRef(value string) error {
 	value = strings.TrimSpace(value)
 	if value == "" || len(value) > 256 || strings.HasPrefix(value, "-") || strings.ContainsAny(value, "\x00\r\n") {
@@ -375,7 +459,15 @@ func hasExecutableGitNetworkConfig(ctx context.Context, root, remote string) (bo
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	for _, key := range []string{"core.sshCommand", "core.gitProxy", "remote." + remote + ".vcs"} {
+	for _, key := range []string{
+		"core.sshCommand",
+		"core.gitProxy",
+		"core.askPass",
+		"remote." + remote + ".proxy",
+		"remote." + remote + ".uploadpack",
+		"remote." + remote + ".receivepack",
+		"remote." + remote + ".vcs",
+	} {
 		cmd := exec.CommandContext(checkCtx, gitPath, "-C", root, "config", "--get", key)
 		cmd.Env = safeShellEnvironment()
 		out, err := cmd.Output()
@@ -393,6 +485,45 @@ func hasExecutableGitNetworkConfig(ctx context.Context, root, remote string) (bo
 			return false, checkCtx.Err()
 		}
 		return false, err
+	}
+	hasHelper, err := hasRepositoryCredentialHelper(checkCtx, gitPath, root)
+	if err != nil {
+		return false, err
+	}
+	if hasHelper {
+		return true, nil
+	}
+	return false, nil
+}
+
+func hasRepositoryCredentialHelper(ctx context.Context, gitPath, root string) (bool, error) {
+	cmd := exec.CommandContext(ctx, gitPath, "-C", root, "config", "--show-scope", "--get-regexp", `^credential(\..*)?\.helper$`)
+	cmd.Env = safeShellEnvironment()
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return false, nil
+		}
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		return false, err
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		if len(fields) < 2 {
+			return false, fmt.Errorf("unexpected scoped Git configuration output")
+		}
+		if fields[0] != "local" && fields[0] != "worktree" {
+			continue
+		}
+		if len(fields) >= 3 {
+			return true, nil
+		}
 	}
 	return false, nil
 }
@@ -426,11 +557,23 @@ func hasExecutableGitFilters(ctx context.Context, root string) (bool, error) {
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(checkCtx, gitPath, "-C", root, "config", "--get-regexp", `^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$`)
+	cmd := exec.CommandContext(checkCtx, gitPath, "-C", root, "config", "--show-scope", "--get-regexp", `^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$`)
 	cmd.Env = safeShellEnvironment()
 	out, err := cmd.Output()
 	if err == nil {
-		return strings.TrimSpace(string(out)) != "", nil
+		for _, line := range strings.Split(string(out), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 0 {
+				continue
+			}
+			if len(fields) < 2 {
+				return false, fmt.Errorf("unexpected scoped Git configuration output")
+			}
+			if (fields[0] == "local" || fields[0] == "worktree") && len(fields) >= 3 {
+				return true, nil
+			}
+		}
+		return false, nil
 	}
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {

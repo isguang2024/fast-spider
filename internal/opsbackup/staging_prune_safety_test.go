@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 )
 
@@ -68,6 +67,73 @@ func TestPruneReleaseStagingTOCTOUZeroDelete(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestPruneReleaseStagingIsolationPreservesConcurrentReplacement(t *testing.T) {
+	root := t.TempDir()
+	candidate := mkStage(t, root, "release-0.4.6", map[string]string{"x": "old"})
+	deps := stageDeps()
+	originalRename := deps.rename
+	var injected bool
+	deps.rename = func(oldPath, newPath string) error {
+		if err := originalRename(oldPath, newPath); err != nil {
+			return err
+		}
+		if !injected && oldPath == candidate {
+			injected = true
+			if err := os.MkdirAll(candidate, 0o700); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(candidate, "new"), []byte("new release"), 0o600)
+		}
+		return nil
+	}
+	result, err := pruneReleaseStaging(context.Background(), StagingPruneOptions{
+		Directory: root, Layout: StagingLayoutLocal, ThroughVersion: "0.4.6", Apply: true,
+	}, deps)
+	if err != nil || result.DeletedCount != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	raw, err := os.ReadFile(filepath.Join(candidate, "new"))
+	if err != nil || string(raw) != "new release" {
+		t.Fatalf("concurrent replacement was removed or changed: raw=%q err=%v", raw, err)
+	}
+}
+
+func TestPruneReleaseStagingIsolationRejectsIdentitySwap(t *testing.T) {
+	root := t.TempDir()
+	candidate := mkStage(t, root, "release-0.4.6", map[string]string{"x": "old"})
+	preservedOriginal := candidate + ".planned"
+	deps := stageDeps()
+	originalRename := deps.rename
+	var injected bool
+	deps.rename = func(oldPath, newPath string) error {
+		if !injected && oldPath == candidate {
+			injected = true
+			if err := originalRename(candidate, preservedOriginal); err != nil {
+				return err
+			}
+			if err := os.MkdirAll(candidate, 0o700); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(candidate, "fresh"), []byte("fresh release"), 0o600); err != nil {
+				return err
+			}
+		}
+		return originalRename(oldPath, newPath)
+	}
+	result, err := pruneReleaseStaging(context.Background(), StagingPruneOptions{
+		Directory: root, Layout: StagingLayoutLocal, ThroughVersion: "0.4.6", Apply: true,
+	}, deps)
+	if err == nil || result.DeletedCount != 0 {
+		t.Fatalf("identity swap result=%+v err=%v", result, err)
+	}
+	if raw, readErr := os.ReadFile(filepath.Join(candidate, "fresh")); readErr != nil || string(raw) != "fresh release" {
+		t.Fatalf("swapped candidate was deleted: raw=%q err=%v", raw, readErr)
+	}
+	if raw, readErr := os.ReadFile(filepath.Join(preservedOriginal, "x")); readErr != nil || string(raw) != "old" {
+		t.Fatalf("planned candidate was not preserved: raw=%q err=%v", raw, readErr)
+	}
+}
 func TestPruneReleaseStagingPartialDeleteFacts(t *testing.T) {
 	r := t.TempDir()
 	f := mkStage(t, r, "release-0.4.4", map[string]string{"x": "fail"})
@@ -75,7 +141,7 @@ func TestPruneReleaseStagingPartialDeleteFacts(t *testing.T) {
 	boom := errors.New("denied")
 	d := stageDeps()
 	d.remove = func(p string) error {
-		if strings.HasPrefix(p, f+string(os.PathSeparator)) {
+		if filepath.Base(filepath.Dir(p)) == filepath.Base(f) {
 			return boom
 		}
 		return os.Remove(p)

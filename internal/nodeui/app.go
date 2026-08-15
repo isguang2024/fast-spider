@@ -42,25 +42,26 @@ type Options struct {
 type App struct {
 	opts Options
 
-	mu                 sync.Mutex
-	ctx                context.Context
-	cancel             context.CancelFunc
-	config             LocalConfig
-	uiToken            string
-	runtimeCancel      context.CancelFunc
-	runtimeDone        chan struct{}
-	runtimeOwned       bool
-	runtimeStatus      string
-	runtimeError       string
-	updateStatus       updateStatusResponse
-	updateArtifact     string
-	updateRunning      bool
-	releasePushID      string
-	releasePushRunning bool
-	trayActive         bool
-	openFolder         func(string) error
-	agentController    node.AgentController
-	componentEnsure    componentEnsureFunc
+	mu                  sync.Mutex
+	ctx                 context.Context
+	cancel              context.CancelFunc
+	config              LocalConfig
+	uiToken             string
+	runtimeCancel       context.CancelFunc
+	runtimeDone         chan struct{}
+	runtimeRestartAfter chan struct{}
+	runtimeOwned        bool
+	runtimeStatus       string
+	runtimeError        string
+	updateStatus        updateStatusResponse
+	updateArtifact      string
+	updateRunning       bool
+	releasePushID       string
+	releasePushRunning  bool
+	trayActive          bool
+	openFolder          func(string) error
+	agentController     node.AgentController
+	componentEnsure     componentEnsureFunc
 }
 
 type statusResponse struct {
@@ -508,7 +509,7 @@ func (a *App) startRuntime() {
 		a.mu.Unlock()
 		return
 	}
-	if a.runtimeCancel != nil || a.ctx == nil {
+	if a.runtimeCancel != nil || a.ctx == nil || a.ctx.Err() != nil {
 		a.mu.Unlock()
 		return
 	}
@@ -541,6 +542,7 @@ func (a *App) startRuntime() {
 			AllowInsecure:     cfg.AllowInsecureLocalHub,
 			BrowserSidecarDir: cfg.BrowserSidecarDir,
 			Agent:             a.agentController,
+			AgentCallerOwned:  true,
 			Logger:            a.opts.Logger,
 			ConnectionStatus:  a.setConnectionStatus,
 			ReleaseNotice:     a.handleReleaseNotice,
@@ -550,18 +552,30 @@ func (a *App) startRuntime() {
 			a.clearRuntime(done)
 			return
 		}
+		var bridgeDone chan struct{}
 		if cfg.LocalBridgeEnabled {
+			bridgeDone = make(chan struct{})
 			go func() {
+				defer close(bridgeDone)
 				if bridgeErr := localbridge.Run(runCtx, a.opts.DataDir, client.HandleLocalCapability); bridgeErr != nil && runCtx.Err() == nil {
 					a.opts.Logger.Error("local bridge stopped", "endpoint", localbridge.Endpoint(a.opts.DataDir), "error", bridgeErr)
 				}
 			}()
 		}
-		if err := client.Run(runCtx); err != nil && !errors.Is(err, context.Canceled) {
+		if err := runRuntimeClient(runCtx, cancel, bridgeDone, client.Run); err != nil && !errors.Is(err, context.Canceled) {
 			a.setConnectionStatus(node.ConnectionStatus{State: "error", Error: err.Error()})
 		}
 		a.clearRuntime(done)
 	}()
+}
+
+func runRuntimeClient(ctx context.Context, cancel context.CancelFunc, bridgeDone <-chan struct{}, run func(context.Context) error) error {
+	err := run(ctx)
+	cancel()
+	if bridgeDone != nil {
+		<-bridgeDone
+	}
+	return err
 }
 
 func (a *App) clearRuntime(done chan struct{}) {
@@ -581,29 +595,67 @@ func (a *App) setConnectionStatus(status node.ConnectionStatus) {
 }
 
 func (a *App) stopRuntime() {
+	a.stopRuntimeWithin(5 * time.Second)
+}
+
+func (a *App) stopRuntimeWithin(timeout time.Duration) bool {
 	a.mu.Lock()
 	cancel := a.runtimeCancel
 	done := a.runtimeDone
-	a.runtimeCancel = nil
-	a.runtimeDone = nil
 	a.mu.Unlock()
 	if cancel == nil {
-		return
+		return done == nil
 	}
 	cancel()
 	if done == nil {
-		return
+		return true
 	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+		return true
+	case <-timer.C:
 		a.opts.Logger.Warn("Node runtime did not stop within timeout")
+		return false
 	}
 }
 
 func (a *App) restartRuntime() {
-	a.stopRuntime()
-	a.startRuntime()
+	a.restartRuntimeWithin(5 * time.Second)
+}
+
+func (a *App) restartRuntimeWithin(timeout time.Duration) {
+	if a.stopRuntimeWithin(timeout) {
+		a.startRuntime()
+		return
+	}
+
+	a.mu.Lock()
+	done := a.runtimeDone
+	if done == nil {
+		a.mu.Unlock()
+		a.startRuntime()
+		return
+	}
+	if a.runtimeRestartAfter == done {
+		a.mu.Unlock()
+		return
+	}
+	a.runtimeRestartAfter = done
+	a.mu.Unlock()
+
+	go func() {
+		<-done
+		a.mu.Lock()
+		if a.runtimeRestartAfter != done {
+			a.mu.Unlock()
+			return
+		}
+		a.runtimeRestartAfter = nil
+		a.mu.Unlock()
+		a.startRuntime()
+	}()
 }
 
 func decodeJSON(r *http.Request, output any) error {

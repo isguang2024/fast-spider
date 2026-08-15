@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -64,6 +65,11 @@ type ClaudeCodeAdapter struct {
 	versionCache              *ttlCache[versionProbe]
 	authCache                 *ttlCache[map[string]any]
 	modelsCache               *ttlCache[map[string]any]
+	indexLoadErr              error
+	beforeCommitSaveOverride  func() error
+	syncParentOverride        func(string) error
+	beforeSendStartOverride   func(string, string)
+	afterTurnReservedOverride func(string, string)
 
 	mu       sync.Mutex
 	sessions map[string]*ClaudeSessionRecord
@@ -96,7 +102,8 @@ func NewClaudeCodeAdapter(dataDir string, routing *CCSwitchInspector, logger *sl
 		modelsCache:  newTTLCache[map[string]any](modelsTTL, 1, cloneAgentMap),
 	}
 	if err := a.loadIndex(); err != nil {
-		logger.Warn("load Claude Code session index", "error", err)
+		a.indexLoadErr = err
+		logger.Error("load Claude Code session index; session mutations are disabled", "error", err)
 	}
 	return a
 }
@@ -285,13 +292,24 @@ func (a *ClaudeCodeAdapter) Create(ctx context.Context, workingDirectory, prompt
 	}
 	a.mu.Lock()
 	a.sessions[sessionID] = record
-	_ = a.saveIndexLocked()
+	if committed, err := a.saveIndexLocked(); err != nil {
+		if !committed {
+			delete(a.sessions, sessionID)
+		}
+		a.mu.Unlock()
+		return nil, fmt.Errorf("persist new Claude Code session: %w", err)
+	}
 	a.mu.Unlock()
 	result, err := a.startTurn(ctx, record, prompt, false, outputSchema)
 	if err != nil {
 		a.mu.Lock()
 		delete(a.sessions, sessionID)
-		_ = a.saveIndexLocked()
+		if committed, cleanupErr := a.saveIndexLocked(); cleanupErr != nil {
+			if !committed {
+				a.sessions[sessionID] = record
+			}
+			err = errors.Join(err, fmt.Errorf("persist Claude Code session rollback: %w", cleanupErr))
+		}
 		a.mu.Unlock()
 		return nil, err
 	}
@@ -308,25 +326,22 @@ func (a *ClaudeCodeAdapter) Send(ctx context.Context, sessionID, prompt, working
 		a.mu.Unlock()
 		return nil, node.ErrAgentSessionNotFound
 	}
-	if _, busy := a.active[sessionID]; busy {
-		a.mu.Unlock()
-		return nil, node.ErrAgentSessionBusy
-	}
 	if strings.TrimSpace(workingDirectory) != "" && !sameAgentPath(record.WorkingDirectory, workingDirectory) {
 		a.mu.Unlock()
 		return nil, fmt.Errorf("Claude Code session workingDirectory is fixed; create a new session for a different directory")
 	}
-	if strings.TrimSpace(model) != "" {
-		record.RequestedModel = strings.TrimSpace(model)
-	}
-	if strings.TrimSpace(effort) != "" {
-		record.RequestedEffort = strings.TrimSpace(effort)
-	}
 	a.mu.Unlock()
-	return a.startTurn(ctx, record, prompt, true, outputSchema)
+	if a.beforeSendStartOverride != nil {
+		a.beforeSendStartOverride(sessionID, strings.TrimSpace(model))
+	}
+	return a.startTurnWithOverrides(ctx, record, prompt, true, outputSchema, strings.TrimSpace(model), strings.TrimSpace(effort))
 }
 
 func (a *ClaudeCodeAdapter) startTurn(ctx context.Context, record *ClaudeSessionRecord, prompt string, resume bool, outputSchema map[string]any) (map[string]any, error) {
+	return a.startTurnWithOverrides(ctx, record, prompt, resume, outputSchema, "", "")
+}
+
+func (a *ClaudeCodeAdapter) startTurnWithOverrides(ctx context.Context, record *ClaudeSessionRecord, prompt string, resume bool, outputSchema map[string]any, modelOverride, effortOverride string) (map[string]any, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -340,6 +355,10 @@ func (a *ClaudeCodeAdapter) startTurn(ctx context.Context, record *ClaudeSession
 	}
 
 	a.mu.Lock()
+	if current := a.sessions[record.SessionID]; current != record {
+		a.mu.Unlock()
+		return nil, node.ErrAgentSessionNotFound
+	}
 	if _, busy := a.active[record.SessionID]; busy {
 		a.mu.Unlock()
 		return nil, node.ErrAgentSessionBusy
@@ -348,10 +367,19 @@ func (a *ClaudeCodeAdapter) startTurn(ctx context.Context, record *ClaudeSession
 	name := record.Name
 	workingDirectory := record.WorkingDirectory
 	requestedModel := record.RequestedModel
+	if modelOverride != "" {
+		requestedModel = modelOverride
+	}
 	requestedEffort := record.RequestedEffort
+	if effortOverride != "" {
+		requestedEffort = effortOverride
+	}
 	run := &claudeRun{turnID: turnID, outputDone: make(chan struct{})}
 	a.active[sessionID] = run
 	a.mu.Unlock()
+	if a.afterTurnReservedOverride != nil {
+		a.afterTurnReservedOverride(sessionID, requestedModel)
+	}
 	cleanupReservation := func() {
 		a.mu.Lock()
 		if current := a.active[sessionID]; current == run {
@@ -417,19 +445,15 @@ func (a *ClaudeCodeAdapter) startTurn(ctx context.Context, record *ClaudeSession
 
 	routeBefore := a.captureRoute()
 	a.mu.Lock()
-	run.cmd = cmd
 	canceledBeforeStart := run.canceled
-	a.mu.Unlock()
 	if canceledBeforeStart {
+		a.mu.Unlock()
 		cleanupReservation()
 		return nil, context.Canceled
 	}
-	if err := cmd.Start(); err != nil {
-		cleanupReservation()
-		return nil, fmt.Errorf("start Claude Code: %w", err)
-	}
-
-	a.mu.Lock()
+	previous := *record
+	record.RequestedModel = requestedModel
+	record.RequestedEffort = requestedEffort
 	record.Status = "running"
 	record.LatestTurnID = turnID
 	record.LatestResult = ""
@@ -439,12 +463,64 @@ func (a *ClaudeCodeAdapter) startTurn(ctx context.Context, record *ClaudeSession
 	record.RouteAfter = nil
 	record.ActualUpstream = nil
 	record.UpdatedAt = protocolTimestampNow()
-	_ = a.saveIndexLocked()
+	if committed, err := a.saveIndexLocked(); err != nil {
+		if !committed {
+			*record = previous
+		} else {
+			record.Status = "interrupted"
+			record.LastError = "Fast Spider Node restarted while this Claude Code turn was running"
+			record.ErrorClass = ErrorRuntimeUnavailable
+		}
+		a.mu.Unlock()
+		cleanupReservation()
+		return nil, fmt.Errorf("persist Claude Code turn start: %w", err)
+	}
+	a.mu.Unlock()
+	a.mu.Lock()
+	canceledBeforeStart = run.canceled
+	if canceledBeforeStart {
+		running := *record
+		*record = previous
+		committed, rollbackErr := a.saveIndexLocked()
+		if rollbackErr != nil && !committed {
+			*record = running
+		}
+		a.mu.Unlock()
+		cleanupReservation()
+		if rollbackErr != nil {
+			return nil, errors.Join(context.Canceled, fmt.Errorf("persist Claude Code cancellation rollback: %w", rollbackErr))
+		}
+		return nil, context.Canceled
+	}
+	a.mu.Unlock()
+	if err := cmd.Start(); err != nil {
+		a.mu.Lock()
+		running := *record
+		*record = previous
+		committed, rollbackErr := a.saveIndexLocked()
+		if rollbackErr != nil && !committed {
+			*record = running
+		}
+		a.mu.Unlock()
+		cleanupReservation()
+		if rollbackErr != nil {
+			return nil, errors.Join(fmt.Errorf("start Claude Code: %w", err), fmt.Errorf("persist Claude Code start rollback: %w", rollbackErr))
+		}
+		return nil, fmt.Errorf("start Claude Code: %w", err)
+	}
+	a.mu.Lock()
+	run.cmd = cmd
+	canceledAfterStart := run.canceled
 	a.mu.Unlock()
 	a.recordEvent(AgentEvent{Type: "turn.started", SessionID: sessionID, TurnID: turnID, State: "running", Timestamp: protocolTimestampNow()})
 	go a.readStdout(sessionID, turnID, stdout, run.outputDone)
 	go a.readStderr(sessionID, stderr)
 	go a.waitRun(sessionID, run)
+	if canceledAfterStart {
+		if err := node.KillProcessTree(cmd); err != nil {
+			a.logger.Debug("kill Claude Code process canceled during start", "sessionId", sessionID, "error", err)
+		}
+	}
 
 	return map[string]any{
 		"providerId":       "claude_code",
@@ -498,7 +574,7 @@ func (a *ClaudeCodeAdapter) handleStreamLine(sessionID, turnID string, raw []byt
 			if record := a.sessions[sessionID]; record != nil {
 				record.NativeModel = mapString(message, "model")
 				record.UpdatedAt = protocolTimestampNow()
-				_ = a.saveIndexLocked()
+				a.persistIndexAsyncLocked(sessionID, turnID, "record runtime initialization")
 			}
 			a.mu.Unlock()
 			a.recordEvent(AgentEvent{Type: "session.status", SessionID: sessionID, TurnID: turnID, State: "initialized", Timestamp: protocolTimestampNow()})
@@ -548,7 +624,7 @@ func (a *ClaudeCodeAdapter) handleStreamLine(sessionID, turnID string, raw []byt
 			record.RouteAfter = routeAfter
 			record.ActualUpstream = claudeActualUpstream(sessionID, routeAfter)
 			record.UpdatedAt = protocolTimestampNow()
-			_ = a.saveIndexLocked()
+			a.persistIndexAsyncLocked(sessionID, turnID, "record turn result")
 		}
 		a.mu.Unlock()
 		eventText := result
@@ -583,7 +659,7 @@ func (a *ClaudeCodeAdapter) waitRun(sessionID string, run *claudeRun) {
 		record.RouteAfter = routeAfter
 		record.ActualUpstream = claudeActualUpstream(sessionID, routeAfter)
 		record.UpdatedAt = protocolTimestampNow()
-		_ = a.saveIndexLocked()
+		a.persistIndexAsyncLocked(sessionID, run.turnID, "record process completion")
 		state := record.Status
 		text := record.LastError
 		errorClass := record.ErrorClass
@@ -603,7 +679,7 @@ func (a *ClaudeCodeAdapter) waitRun(sessionID string, run *claudeRun) {
 	}
 	if record != nil {
 		record.UpdatedAt = protocolTimestampNow()
-		_ = a.saveIndexLocked()
+		a.persistIndexAsyncLocked(sessionID, run.turnID, "record process exit")
 	}
 	a.mu.Unlock()
 }
@@ -725,9 +801,16 @@ func (a *ClaudeCodeAdapter) Rename(sessionID, name string) (map[string]any, erro
 		a.mu.Unlock()
 		return nil, node.ErrAgentSessionNotFound
 	}
+	previous := *record
 	record.Name = name
 	record.UpdatedAt = protocolTimestampNow()
-	_ = a.saveIndexLocked()
+	if committed, err := a.saveIndexLocked(); err != nil {
+		if !committed {
+			*record = previous
+		}
+		a.mu.Unlock()
+		return nil, fmt.Errorf("persist Claude Code session rename: %w", err)
+	}
 	a.mu.Unlock()
 	return map[string]any{"sessionId": sessionID, "name": name, "nativeHistoryRenamed": false}, nil
 }
@@ -739,9 +822,16 @@ func (a *ClaudeCodeAdapter) SetArchived(sessionID string, archived bool) (map[st
 		a.mu.Unlock()
 		return nil, node.ErrAgentSessionNotFound
 	}
+	previous := *record
 	record.Archived = archived
 	record.UpdatedAt = protocolTimestampNow()
-	_ = a.saveIndexLocked()
+	if committed, err := a.saveIndexLocked(); err != nil {
+		if !committed {
+			*record = previous
+		}
+		a.mu.Unlock()
+		return nil, fmt.Errorf("persist Claude Code archive state: %w", err)
+	}
 	a.mu.Unlock()
 	return map[string]any{"sessionId": sessionID, "archived": archived, "nativeHistoryPreserved": true}, nil
 }
@@ -758,8 +848,10 @@ func (a *ClaudeCodeAdapter) Delete(sessionID string) (map[string]any, error) {
 		return nil, fmt.Errorf("cannot delete an active Claude Code session")
 	}
 	delete(a.sessions, sessionID)
-	if err := a.saveIndexLocked(); err != nil {
-		a.sessions[sessionID] = record
+	if committed, err := a.saveIndexLocked(); err != nil {
+		if !committed {
+			a.sessions[sessionID] = record
+		}
 		a.mu.Unlock()
 		return nil, err
 	}
@@ -810,6 +902,22 @@ func (a *ClaudeCodeAdapter) Watch(ctx context.Context, sessionID string, cursor 
 		case <-timer.C:
 			return nil, cursor, 0, nil
 		}
+	}
+}
+
+// persistIndexAsyncLocked reports failures that happen after an asynchronous
+// turn was accepted. The caller must hold a.mu.
+func (a *ClaudeCodeAdapter) persistIndexAsyncLocked(sessionID, turnID, operation string) {
+	if _, err := a.saveIndexLocked(); err != nil {
+		a.logger.Error("persist Claude Code session index", "operation", operation, "sessionId", sessionID, "turnId", turnID, "error", err)
+		a.recordEvent(AgentEvent{
+			Type:      "warning",
+			SessionID: sessionID,
+			TurnID:    turnID,
+			State:     "persistence_failed",
+			Text:      "Fast Spider could not persist the latest Claude Code session state",
+			Timestamp: protocolTimestampNow(),
+		})
 	}
 }
 

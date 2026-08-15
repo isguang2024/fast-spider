@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/isguang2024/fast-spider/internal/hub/core"
 	"github.com/isguang2024/fast-spider/internal/hub/registry"
@@ -27,6 +29,8 @@ type oauthTestFixture struct {
 	httpServer      *httptest.Server
 	webSessionToken string
 	csrfToken       string
+	store           *store.Store
+	ownerID         string
 }
 
 type oauthClientResponse struct {
@@ -79,6 +83,8 @@ func newOAuthTestFixture(t *testing.T) oauthTestFixture {
 		httpServer:      httpServer,
 		webSessionToken: webSession.Token,
 		csrfToken:       webSession.CSRFToken,
+		store:           st,
+		ownerID:         account.OwnerID,
 	}
 }
 
@@ -431,6 +437,150 @@ func TestWebOAuthClientsExcludeOrphanDCR(t *testing.T) {
 	}
 }
 
+func TestOAuthRegistrationRejectsOversizedRedirectURI(t *testing.T) {
+	fixture := newOAuthTestFixture(t)
+	client := newOAuthTestHTTPClient(fixture.httpServer.URL, fixture.webSessionToken)
+	redirect := "https://chatgpt.com/" + strings.Repeat("a", 2048)
+	status, _, body := registerOAuthClientRaw(t, client, fixture.httpServer.URL+"/oauth/register", []string{redirect}, "")
+	if status != http.StatusBadRequest {
+		t.Fatalf("oversized redirect status=%d body=%s", status, body)
+	}
+	assertOAuthError(t, body, "invalid_redirect_uri", true)
+}
+
+func TestOAuthRegistrationIgnoresStandardAndExtensionMetadata(t *testing.T) {
+	fixture := newOAuthTestFixture(t)
+	client := newOAuthTestHTTPClient(fixture.httpServer.URL, fixture.webSessionToken)
+	status, _, body := registerOAuthClientJSON(t, client, fixture.httpServer.URL+"/oauth/register", map[string]any{
+		"client_name":                "OAuth extension client",
+		"redirect_uris":              []string{"https://chatgpt.com/oauth/callback"},
+		"token_endpoint_auth_method": "none",
+		"grant_types":                []string{"authorization_code"},
+		"response_types":             []string{"code"},
+		"scope":                      "fast-spider",
+		"contacts":                   []string{"ops@example.com"},
+		"client_uri":                 "https://client.example/about",
+		"software_id":                "example-client",
+		"software_version":           "1.2.3",
+		"x_vendor_extension":         map[string]any{"mode": "compatible"},
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("DCR extension metadata status=%d body=%s", status, body)
+	}
+	var response oauthClientResponse
+	decodeOAuthJSON(t, body, &response)
+	if response.ClientID == "" || len(response.GrantTypes) != 1 || response.GrantTypes[0] != "authorization_code" {
+		t.Fatalf("DCR extension metadata response=%s", body)
+	}
+}
+
+func TestOAuthRegistrationRetainsBodyAndKnownMetadataLimits(t *testing.T) {
+	fixture := newOAuthTestFixture(t)
+	client := newOAuthTestHTTPClient(fixture.httpServer.URL, fixture.webSessionToken)
+	endpoint := fixture.httpServer.URL + "/oauth/register"
+	base := map[string]any{
+		"client_name":                "OAuth limit client",
+		"redirect_uris":              []string{"https://chatgpt.com/oauth/callback"},
+		"token_endpoint_auth_method": "none",
+		"grant_types":                []string{"authorization_code"},
+		"response_types":             []string{"code"},
+		"scope":                      "fast-spider",
+	}
+	base["x_large_extension"] = strings.Repeat("x", 33<<10)
+	status, _, body := registerOAuthClientJSON(t, client, endpoint, base)
+	if status != http.StatusBadRequest {
+		t.Fatalf("oversized DCR body status=%d body=%s", status, body)
+	}
+	assertOAuthError(t, body, "invalid_client_metadata", true)
+
+	redirects := make([]string, 8)
+	for i := range redirects {
+		prefix := fmt.Sprintf("https://chatgpt.com/%d/", i)
+		redirects[i] = prefix + strings.Repeat("a", 2048-len(prefix))
+	}
+	delete(base, "x_large_extension")
+	base["client_name"] = strings.Repeat("n", 128)
+	base["redirect_uris"] = redirects
+	status, _, body = registerOAuthClientJSON(t, client, endpoint, base)
+	if status != http.StatusBadRequest {
+		t.Fatalf("oversized known DCR metadata status=%d body=%s", status, body)
+	}
+	assertOAuthError(t, body, "invalid_client_metadata", true)
+}
+
+func TestOAuthOwnerClientQuotaConsumesAuthorizationCodeAsTerminalInvalidGrant(t *testing.T) {
+	fixture := newOAuthTestFixture(t)
+	client := newOAuthTestHTTPClient(fixture.httpServer.URL, fixture.webSessionToken)
+	now := time.Now().UTC().Truncate(time.Second)
+	for i := 0; i < 128; i++ {
+		clientID := fmt.Sprintf("mcpcli_quota_%03d", i)
+		authorizationID := fmt.Sprintf("authz_quota_%03d", i)
+		if err := fixture.store.RegisterOAuthClient(context.Background(), store.OAuthClientRecord{
+			ClientID: clientID, ClientName: clientID, RedirectURIs: []string{"https://chatgpt.com/oauth/callback"},
+			GrantTypes: []string{"authorization_code"}, ResponseTypes: []string{"code"}, Scope: "fast-spider", CreatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := fixture.store.CreateOAuthAuthorization(context.Background(), store.OAuthAuthorizationRecord{
+			AuthorizationID: authorizationID, OwnerID: fixture.ownerID, ClientID: clientID,
+			Scopes: []string{"fast-spider"}, Resource: oauthTestPublicBaseURL + "/mcp",
+			CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := fixture.store.RevokeOAuthAuthorization(context.Background(), fixture.ownerID, authorizationID, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	redirectURI := "https://chatgpt.com/oauth/callback"
+	clientID, _ := registerOAuthClient(t, client, fixture.httpServer.URL+"/oauth/register", []string{redirectURI}, "")
+	verifier := strings.Repeat("q", 43)
+	values := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {clientID},
+		"redirect_uri":          {redirectURI},
+		"code_challenge":        {oauthPKCEChallenge(verifier)},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"fast-spider"},
+		"resource":              {oauthTestPublicBaseURL + "/mcp"},
+		"state":                 {"owner-client-quota"},
+	}
+	code := obtainOAuthCode(t, client, fixture.httpServer.URL+"/oauth/authorize", values, fixture.csrfToken)
+	tokenForm := url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {clientID},
+		"code":          {code},
+		"redirect_uri":  {redirectURI},
+		"resource":      {oauthTestPublicBaseURL + "/mcp"},
+		"code_verifier": {verifier},
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		status, headers, body := oauthTestRequest(t, client, http.MethodPost, fixture.httpServer.URL+"/oauth/token", tokenForm)
+		if status != http.StatusBadRequest || headers.Get("Retry-After") != "" {
+			t.Fatalf("quota token attempt %d status=%d retry-after=%q body=%s", attempt, status, headers.Get("Retry-After"), body)
+		}
+		assertOAuthError(t, body, "invalid_grant", true)
+	}
+}
+
+func TestOAuthRegistrationRateLimit(t *testing.T) {
+	fixture := newOAuthTestFixture(t)
+	client := newOAuthTestHTTPClient(fixture.httpServer.URL, fixture.webSessionToken)
+	endpoint := fixture.httpServer.URL + "/oauth/register"
+	redirect := []string{"https://chatgpt.com/oauth/callback"}
+	for attempt := 0; attempt < 30; attempt++ {
+		status, _, body := registerOAuthClientRaw(t, client, endpoint, redirect, "")
+		if status != http.StatusCreated {
+			t.Fatalf("registration %d status=%d body=%s", attempt+1, status, body)
+		}
+	}
+	status, headers, body := registerOAuthClientRaw(t, client, endpoint, redirect, "")
+	if status != http.StatusTooManyRequests || headers.Get("Retry-After") == "" {
+		t.Fatalf("rate-limited registration status=%d retry-after=%q body=%s", status, headers.Get("Retry-After"), body)
+	}
+	assertOAuthError(t, body, "temporarily_unavailable", true)
+}
+
 func registerOAuthClient(t *testing.T, client *http.Client, endpoint string, redirects []string, scope string) (string, oauthClientResponse) {
 	t.Helper()
 	status, _, body := registerOAuthClientRaw(t, client, endpoint, redirects, scope)
@@ -451,7 +601,7 @@ func registerOAuthClientRaw(t *testing.T, client *http.Client, endpoint string, 
 
 func registerOAuthClientRawWithMetadata(t *testing.T, client *http.Client, endpoint string, redirects []string, scope string, grantTypes, responseTypes []string) (int, http.Header, []byte) {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{
+	return registerOAuthClientJSON(t, client, endpoint, map[string]any{
 		"client_name":                "OAuth test client",
 		"redirect_uris":              redirects,
 		"token_endpoint_auth_method": "none",
@@ -459,6 +609,11 @@ func registerOAuthClientRawWithMetadata(t *testing.T, client *http.Client, endpo
 		"response_types":             responseTypes,
 		"scope":                      scope,
 	})
+}
+
+func registerOAuthClientJSON(t *testing.T, client *http.Client, endpoint string, metadata map[string]any) (int, http.Header, []byte) {
+	t.Helper()
+	body, err := json.Marshal(metadata)
 	if err != nil {
 		t.Fatal(err)
 	}
