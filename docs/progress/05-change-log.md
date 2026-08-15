@@ -50,6 +50,10 @@
 - 完成 0.4.16 分层能力指南与 MCP 调用可观测性：17 个工具共享 Guide 1.0 单一事实源，owner 级 64 条脱敏诊断、Web 面板和冷客户端阻断测试落地。
 - 最终源码 commit `c93373e2ce2d1b7138be8f0f613f4713955509fb` 的 full release gate Job `j-ofkr5w` 全绿；生产 Hub/spiderctl 已升级至 0.4.16，验证备份、回滚产物、公开健康检查、OAuth+PKCE 冷 MCP 与 Dashboard 诊断均 PASS。
 - PCa Node 保持 0.4.14 online/ready，未修改 Node release、version.txt 或 push.json；最终状态为 `PASS / PRODUCTION READY`，仅剩 ChatGPT 管理页 Refresh 与新会话 connection-check。
+- 完成 0.4.18 十项缓存、生命周期、发布安全与资料清理审计修复；增加 Browser 持续孤儿清理、组件语义版本选择、Artifact/Release/staging 生命周期保护、Node/Job 代际关闭保护和 secretscan 全表面脱敏。
+- release commit `a8934c8be0ab2482071dc87fe1f7a81d799c321a` 已推送；`go test ./... -count=1` 592 passed / 26 packages，`scripts/release-gate.sh --full`、secret scan、vet、bash syntax、diff check 全部 PASS。
+- 0.4.18 已完成生产部署：Hub/spiderctl 原子升级、备份 Verify、PCa Node idle-safe 更新至 generation=89，公网/本机健康检查均 200，版本化回滚副本保留。
+- `backup-prune --keep 3` 与资料室 30 天清理均按安全策略只执行 plan/dry-run，实际删除为 0；资料室定时清理可由 Codex Automations 触发 dry-run，team-workspace 本身不内置调度器。
 <!-- fast-spider:managed:change-log:end -->
 
 ## Manual Change Notes

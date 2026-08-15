@@ -166,7 +166,7 @@
 | FS-0418-008 secretscan 密集输入有界扫描、路径检测与脱敏 | done |
 | FS-0418-009 Codex generation 与 Node runtime 关闭生命周期 | done |
 | FS-0418-010 starting Job shutdown、Browser/组件持续清理与语义版本 | done |
-| FS-0418-011 全量门禁、版本提交、生产备份、Hub/spiderctl/Node 发布 | in_progress |
+| FS-0418-011 全量门禁、版本提交、生产备份、Hub/spiderctl/Node 发布 | done |
 
 ### Final Acceptance Matrix
 

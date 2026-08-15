@@ -211,6 +211,17 @@
 - `FS-046-A07`: PASS；同版本 0.4.6 被正常 updater 按设计判定为无需更新，因此采用独立 rollback + 精确 PID + 同卷预置/rename 的人工受控切换。首次构建受本机持久 `GOARCH=386` 影响，验收通过 Machine `arch` 立即识别并拒绝该产物作为最终态；随后显式 `CGO_ENABLED=0 GOOS=windows GOARCH=amd64` 从 `b72f13a` clean VCS 重建并再次切换。最终 PCa Node 0.4.6 / windows-amd64 / generation=57 / SHA256=`617c3e430c3317818641302472ae0873f5ba56384c247923838450bb6667498b` / online+ready，原生产 amd64 rollback SHA256=`148a89c58fc4d02542edf2d4c1e862db1de232bfe49e0f36054a95373240618b` 独立保留。
 - `FS-046-A08`: PASS；新生产 Node 对隔离 `round4` 再次执行 `plan.sync`，`00-current-state.md` 已真实输出 `dirtyBeforeSync` 且 completion=100%，返回 `currentGit` 与实时 Git 事实一致。
 - **Final Acceptance: PASS / PRODUCTION READY**。当前既有 ChatGPT 会话可能仍缓存热更新前的 `goal` 字段描述；服务端新 Schema 已由源码 E2E + full release gate 验证，刷新连接器/新会话后再核对展示层即可，不作为运行态缺陷。
+
+## 2026-08-15 — 0.4.18 缓存、生命周期与生产发布
+
+- `FS-0418-001..010`: PASS；OAuth/Presentation/Artifact/Release manifest/staging/Node Agent/Job/Browser/component/secretscan 十项审计问题均完成实现、回归测试与门禁接线。Artifact 慢删除与上传解耦、Release hash 支持取消、staging 使用同盘 quarantine、Browser 持续分批清理、组件按语义版本选择，敏感路径/ZIP/Git history/export 均 fail-closed 脱敏。
+- `FS-0418-011`: PASS；`go test ./... -count=1` 为 592 passed / 26 packages；`go vet ./...`、`git diff --check`、current/history `secretscan`、脚本语法检查及完整 `scripts/release-gate.sh --full` 均通过。Windows/386 + CGO=0 环境未执行 race（缺少 CGO C 编译器），不影响常规门禁结论。
+- Git 事实：release commit `a8934c8be0ab2482071dc87fe1f7a81d799c321a` 已推送到 `origin/codex/release-0.4.18`，PR #1 已创建并完成合并前验收。
+- 生产 Hub/spiderctl 原子部署：Hub SHA256=`2665b635ef898a3aebb6861ad9e0525ffe5f30110acfe4db5cff18c847334a13`、spiderctl SHA256=`1e2911bc223fb79f830b64b9f12574c55e8d0065c53a1b4ff6021f8b47c1f1b3`，版本均为 0.4.18；systemd active，Hub PID=`1844594`，本机与公网 livez/readyz 均为 200。
+- 升级前备份 `pre-0.4.18-a8934c8.zip` SHA256=`2409b522785223e1865d8db6b7c56f8b5ff8608efbda65eab64ba45f959b247e`，Verify `valid=true`、22 files、manifest source version=0.4.17；旧 Hub/spiderctl 版本化回滚副本和 Node 0.4.14 rollback 均保留。
+- PCa Node 发布文件与 manifest SHA256=`75cb6b274095ff2dad12bf6a9df5fe8faa1f5ba2a02345532e8722f0da1ed41d`，Node idle-safe 更新后为 0.4.18 / windows-amd64 / generation=89 / active+online+ready。
+- 备份清理执行 `backup-prune --keep 3` plan-only：candidate=6、kept=3、planned=3、deleted=0；没有未经确认删除历史备份。资料室 30 天清理仍为 dry-run，未创建定时任务。
+- **Final Acceptance: PASS / PRODUCTION READY**。0.4.18 源码、门禁、备份、Hub/spiderctl、Node、健康检查与回滚证据均已闭环。
 <!-- fast-spider:managed:acceptance:end -->
 
 ## Manual Acceptance Notes

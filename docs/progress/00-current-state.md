@@ -5,19 +5,19 @@
 <!-- fast-spider:managed:current-state:start -->
 ## Managed Current State
 
-- planId: `mcp-session-recovery-0.4.17`
-- targetVersion: `0.4.17`
+- planId: `fs-0.4.18-release`
+- targetVersion: `0.4.18`
 - branch: `main`
-- sourceReleaseCommit: `f2c2b14635575ed4459c5a5bf2db3295d11541c0`
-- phase: `0.4.17 FINAL PASS / PRODUCTION READY`
-- finalReleaseGate: `job_OQB48opU06AxylxMZ6DdiPCEGIy_6n68 / PASS: Fast Spider full release gate / exitCode=0`
-- productionHub: `0.4.17 / SHA256 84df61c5860847cf755c463741e2bc1f4e61141bc6f5f5bea390da12bc0978da / PID 1157989 / systemd active / local+public livez+readyz 200`
-- productionSpiderctl: `0.4.17 / SHA256 a35b47d76b97f8ce8fbbafc118a917d0716f1e2e94d9408ce94f8123e49d1ce5`
-- productionNode: `PCa / 0.4.14 / windows-amd64 / generation=82 / online+ready；0.4.17 未构建或部署 Node`
-- hubRollback: `.previous 精确保留 0.4.16 / Hub SHA256 30437a500f398503000f37c70cec05782058d744e93c8c2706301b18d595423e / spiderctl SHA256 7dba50690e53d8cbf8881be9825bfdffc49cf8e3af7f194ce5f36b2efe7cb078`
-- verifiedBackups: `pre-0.4.17-f2c2b14.zip / SHA256 f0558585cc47baa19233f42eb2dab435aecd81cff95d095a6dc2927f2ecbcd78 / valid=true / 18 files / manifest source version=0.4.16`
-- workingContext11: `mcp-session-recovery-0.4.17 completion=100%；全部任务 done`
-- schemaStatus: `发布后 ChatGPT App Refresh 已完成；query=fsprobe 精确只物化 machine_list，随后 machine_list、capability_list 与 working_context 均可按需恢复，生产 ServerVersion=0.4.17`
+- sourceReleaseCommit: `a8934c8be0ab2482071dc87fe1f7a81d799c321a`
+- phase: `0.4.18 FINAL PASS / PRODUCTION READY`
+- finalReleaseGate: `scripts/release-gate.sh --full / PASS: Fast Spider full release gate / exitCode=0 / go test 592 passed in 26 packages`
+- productionHub: `0.4.18 / SHA256 2665b635ef898a3aebb6861ad9e0525ffe5f30110acfe4db5cff18c847334a13 / PID 1844594 / systemd active / local+public livez+readyz 200`
+- productionSpiderctl: `0.4.18 / SHA256 1e2911bc223fb79f830b64b9f12574c55e8d0065c53a1b4ff6021f8b47c1f1b3`
+- productionNode: `PCa / 0.4.18 / windows-amd64 / generation=89 / active+online+ready；manifest SHA256 75cb6b274095ff2dad12bf6a9df5fe8faa1f5ba2a02345532e8722f0da1ed41d`
+- hubRollback: `版本化回滚副本保留 0.4.17 / Hub SHA256 84df61c5860847cf755c463741e2bc1f4e61141bc6f5f5bea390da12bc0978da / spiderctl SHA256 a35b47d76b97f8ce8fbbafc118a917d0716f1e2e94d9408ce94f8123e49d1ce5`
+- verifiedBackups: `pre-0.4.18-a8934c8.zip / SHA256 2409b522785223e1865d8db6b7c56f8b5ff8608efbda65eab64ba45f959b247e / valid=true / 22 files / manifest source version=0.4.17`
+- workingContext11: `fs-0.4.18-release completion=100%；全部任务 done`
+- schemaStatus: `0.4.18 发布后 Hub、Node 与 MCP/diagnostics 生产链路健康；公网 livez/readyz=200，PCa Node 0.4.18 active/online/ready`
 - completed041: `FS-041-001..015 PASS / no 0.4.1 release`
 - completed042: `FS-042-001..017 PASS / 0.4.2 formally released and deployed`
 - completed043: `0.4.3 formally released and deployed`
@@ -52,10 +52,11 @@
 - 最终状态：0.4.10 源码修订 `019ade0` 已推送并完成 full release gate；生产 Hub/spiderctl/PCa Node 均为 0.4.10，Node generation=68、online/ready，FastSpider_FS 文件、搜索、host/WSL、Agent 与 Browser 自举验收全部 PASS。
 - 回滚与备份：Hub、spiderctl、Node `.previous` 均保留 0.4.9；`pre-0.4.10-019ade0.zip`、`pre-0.4.9-46ef762.zip`、`pre-0.4.6-0de7bf1.zip` 为最近三份标准验证备份。
 
-### 2026-08-15 — 本地缓存与生命周期全量审计（未发布）
+### 2026-08-15 — 0.4.18 缓存与生命周期审计、发布验收
 
 - 本地工作树完成 10 项缓存、长期运行资源、Artifact、组件、Browser、Agent 索引、Release manifest、备份清理和维护文档优化；删除策略继续排除用户数据、原生 Agent 历史、未知项、活动项与 `in_doubt`。
 - 效率与恢复重点：内存缓存有界且返回值隔离；不同 Artifact 上传可并发，删除失败进入持久重试队列；Release manifest 复用 hash/sign；临时资源采用严格命名、有界扫描和失败恢复。
 - 安全清理重点：`backup-prune` 默认 plan-only，同进程创建/清理串行，Windows/Linux 删除前比较已冻结的句柄身份；同尺寸、同 mtime 原子替换不会误删。
-- 验证：`go test ./... -count=1` 548 项通过，`go vet ./...`、`git diff --check`、core 与 full release gate 通过；Agent、Hub、Node/备份三条独立返工复核均 PASS。当前 windows/386 工具链不支持 race detector，完整门禁已明确跳过，后续由 Linux amd64 CI 补跑。
-- 状态边界：这些结果仅属于本地工作树，没有改写上方 managed 生产事实，未提交、未推送、未构建发布版本、未部署。资料室 30 天清理只执行 dry-run，候选与删除均为 0；没有创建定时任务。
+- 验证：`go test ./... -count=1` 592 项通过（26 包），`go vet ./...`、`git diff --check`、current/history secretscan、`bash -n` 与 `scripts/release-gate.sh --full` 均 PASS；当前 windows/386 工具链无 CGO C 编译器，race detector 未执行，完整门禁已明确记录。
+- 生产事实：release commit `a8934c8` 已推送并部署；Hub/spiderctl 0.4.18、PCa Node 0.4.18 generation=89，Hub 本机/公网 livez/readyz 均 200；升级前备份已 Verify，旧 Hub/spiderctl/Node 回滚副本均保留。
+- 清理边界：`backup-prune --keep 3` 已完成 plan-only，候选 6、保留 3、计划删除 3、实际删除 0；资料室清理继续只做 dry-run，没有创建内置定时任务。可由 Codex Automations 外部定时触发 dry-run，实际删除仍需显式授权。
