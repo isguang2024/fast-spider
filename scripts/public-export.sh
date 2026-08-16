@@ -91,6 +91,11 @@ esac
 
 mkdir "$output"
 success=0
+private_marker_args=()
+private_marker_file="$ROOT/.local/public-private-markers.txt"
+if [[ -e "$private_marker_file" ]]; then
+  private_marker_args=(--markers "$private_marker_file")
+fi
 cleanup_on_exit() {
   if [[ "$success" != "1" ]]; then
     rm -rf "$output"
@@ -107,7 +112,7 @@ for forbidden in .git .local .learnings; do
   fi
 done
 
-go run ./cmd/secretscan --tree "$output"
+go run ./cmd/secretscan --tree "$output" "${private_marker_args[@]}"
 
 license_state="present"
 if [[ ! -f "$output/LICENSE" && ! -f "$output/LICENSE.txt" ]]; then

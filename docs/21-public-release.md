@@ -8,6 +8,8 @@ Fast Spider 的私有开发仓库可以保留完整迭代历史，但公开仓�
 
 `.learnings/` 与 `.local/` 属于内部开发记录/本机状态，通过 `export-ignore` 排除，不进入公共源码快照。
 
+私有 Provider、对象存储适配器、租约/签名流程和厂商专用协议不得通过删除文件、build tag 或配置开关“隐藏”在公共仓库中。公共仓库只保留通用上传契约和默认 Hub Relay；需要保留的私有实现应放在独立私有仓库或私有 sidecar，由私有构建或部署组合接入。公共 `go.mod` 不得包含指向私有模块的 `replace` 或依赖。
+
 ## 2. 发布前检查
 
 当前 release gate 会检查 tracked public-source 文件中的常见密钥/Token、Machine ID 和本机仓库绝对路径。私有部署还可以在本机创建：
@@ -25,6 +27,15 @@ Fast Spider 的私有开发仓库可以保留完整迭代历史，但公开仓�
 - `LICENSE` 或 `LICENSE.txt` 已由维护者明确选择；
 - README、部署文档和示例只使用 `example`/localhost 等公开安全值；
 - 没有把 `.git`、`.local`、`.learnings`、运行数据库、密钥、日志、Artifact 或生产备份复制进公开目录。
+
+如果 `.local/public-private-markers.txt` 存在，必须显式检查私有标识是否仍存在于当前 Git 对象库：
+
+```bash
+go run ./cmd/secretscan --history \
+  --markers .local/public-private-markers.txt
+```
+
+该检查命中时不能公开当前仓库历史；应改用下面的全新 root commit 导出流程。完整 release gate 也会在存在该 marker 文件时应用它，因此私有历史命中是有意的发布阻断。
 
 ## 3. 生成公开仓库
 

@@ -36,6 +36,12 @@ EOF
     ;;
 esac
 
+private_marker_args=()
+private_marker_file="$ROOT/.local/public-private-markers.txt"
+if [[ -e "$private_marker_file" ]]; then
+  private_marker_args=(--markers "$private_marker_file")
+fi
+
 step() {
   printf '\n==> %s\n' "$1"
   shift
@@ -54,7 +60,7 @@ if [[ -n "$format_output" ]]; then
 fi
 
 step "Git whitespace check" git diff --check
-step "Worktree and index secret scan" go run ./cmd/secretscan
+step "Worktree and index secret scan" go run ./cmd/secretscan "${private_marker_args[@]}"
 step "Public export script syntax" bash -n scripts/public-export.sh
 step "Module checksum verification" go mod verify
 step "go.mod/go.sum tidiness" go mod tidy -diff
@@ -68,7 +74,7 @@ step "Local Bridge E2E" go test -tags localbridgee2e ./internal/localbridge -cou
 
 if [[ "$mode" == "full" ]]; then
   step "Secret scanner synthetic self-test" go run ./cmd/secretscan --self-test
-  step "Full Git object database secret scan" go run ./cmd/secretscan --history
+  step "Full Git object database secret scan" go run ./cmd/secretscan --history "${private_marker_args[@]}"
   step "0.4.2 Task Workspace gate" go test ./internal/node ./internal/nodeui -run 'Test(WorkingPlan|WorkingMarkdown|WorkingProgress)' -count=1
   step "0.4.2 Managed ripgrep/native search gate" go test ./internal/node ./internal/nodeui -run 'Test(ManagedRipgrep|NativeSearch|RipgrepJSON|SearchFileSelfTest)' -count=1
   step "0.4.2 ripgrep component packager gate" go test ./cmd/ripgreppack -count=1
