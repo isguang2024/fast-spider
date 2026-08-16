@@ -143,3 +143,9 @@
 - Release manifest singleflight 支持独立取消与共享哈希取消；staging prune 采用同盘原子 quarantine + 身份/内容复核；Codex/Job/Node 关闭路径加入代际和 starting reservation 保护。
 - Browser 孤儿目录每分钟持续分批清理；组件选择按语义版本；secretscan 覆盖文件名、ZIP entry、Git index/history/export 并统一 locator 脱敏。
 - 本条待补充 full gate、release commit、推送、备份哈希、生产 Hub/spiderctl/Node 版本与健康验收事实。
+
+### 2026-08-17 — 0.4.19 分层 MCP 能力发现与 Hub 发布
+
+- `capability_list` 现在先返回完整但紧凑的工具摘要和底层 capability 摘要，需要时再按 capability/tool/workflow/error 读取单项细节；静态测试防止工具、能力和映射漏项。
+- `shell_run` 的指南和 Server Instructions 明确 Windows 通过显式 argv 调用 PowerShell/cmd，不再让调用方误以为存在独立 PowerShell 工具。
+- 0.4.19 Hub/spiderctl 已完成备份、版本化 staging、事务式替换和本机/公网健康验收；PCa Node 保持 0.4.18，认证 MCP 冷调用留待具备 FS/OAuth 入口的会话补验。

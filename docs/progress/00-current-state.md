@@ -5,19 +5,19 @@
 <!-- fast-spider:managed:current-state:start -->
 ## Managed Current State
 
-- planId: `fs-0.4.18-release`
-- targetVersion: `0.4.18`
+- planId: `fs-0.4.19-release`
+- targetVersion: `0.4.19`
 - branch: `main`
-- sourceReleaseCommit: `a8934c8be0ab2482071dc87fe1f7a81d799c321a`
-- phase: `0.4.18 FINAL PASS / PRODUCTION READY`
-- finalReleaseGate: `scripts/release-gate.sh --full / PASS: Fast Spider full release gate / exitCode=0 / go test 592 passed in 26 packages / WSL Linux amd64 go test -race ./... PASS`
-- productionHub: `0.4.18 / SHA256 2665b635ef898a3aebb6861ad9e0525ffe5f30110acfe4db5cff18c847334a13 / PID 1844594 / systemd active / local+public livez+readyz 200`
-- productionSpiderctl: `0.4.18 / SHA256 1e2911bc223fb79f830b64b9f12574c55e8d0065c53a1b4ff6021f8b47c1f1b3`
-- productionNode: `PCa / 0.4.18 / windows-amd64 / generation=89 / active+online+ready；manifest SHA256 75cb6b274095ff2dad12bf6a9df5fe8faa1f5ba2a02345532e8722f0da1ed41d`
-- hubRollback: `版本化回滚副本保留 0.4.17 / Hub SHA256 84df61c5860847cf755c463741e2bc1f4e61141bc6f5f5bea390da12bc0978da / spiderctl SHA256 a35b47d76b97f8ce8fbbafc118a917d0716f1e2e94d9408ce94f8123e49d1ce5`
-- verifiedBackups: `pre-0.4.18-a8934c8.zip / SHA256 2409b522785223e1865d8db6b7c56f8b5ff8608efbda65eab64ba45f959b247e / valid=true / 22 files / manifest source version=0.4.17`
-- workingContext11: `fs-0.4.18-release completion=100%；全部任务 done`
-- schemaStatus: `0.4.18 发布后 Hub、Node 与 MCP/diagnostics 生产链路健康；公网 livez/readyz=200，PCa Node 0.4.18 active/online/ready`
+- sourceReleaseCommit: `8efbdfc624bdfdfbc6eece527a55b8f022cdeacf`
+- phase: `0.4.19 PRODUCTION DEPLOYED / HEALTHY`
+- finalReleaseGate: `core PASS / go vet PASS / go test 595 passed in 26 packages / Linux amd64 Hub+spiderctl build PASS；full gate 在既有 private-marker history policy 处按设计阻断（80 个历史命中），未绕过`
+- productionHub: `0.4.19 / SHA256 76ea227ce95898c0a6caf98380bce32c9c23726d5f84d78008b37ff0010b6a6e / PID 2598437 / systemd active / local+public livez+readyz 200`
+- productionSpiderctl: `0.4.19 / SHA256 160a7bf2fb82996231ba4388fedcaa5cf982e3d7d5290cf32fc959325c1eb751`
+- productionNode: `PCa / 0.4.18 / windows-amd64 / generation=89；本次发布未构建、未修改 Node release/version.txt/push.json`
+- hubRollback: `版本化回滚副本保留 0.4.18 / Hub SHA256 2665b635ef898a3aebb6861ad9e0525ffe5f30110acfe4db5cff18c847334a13 / spiderctl SHA256 1e2911bc223fb79f830b64b9f12574c55e8d0065c53a1b4ff6021f8b47c1f1b3`
+- verifiedBackups: `pre-0.4.19-8efbdfc624bdfdfbc6eece527a55b8f022cdeacf.zip / SHA256 c33ce40aefa9e15971bf4add6ee6655d0148fd624a668fa0028b5cf95f24a5ae / size=11235070 / valid=true / manifest source version=0.4.18`
+- workingContext11: `fs-0.4.19-release completion=100%；Hub/spiderctl 部署与健康检查 done`
+- schemaStatus: `0.4.19 Hub MCP 分层 capability/tool guide 已上线；公网 OAuth discovery=200、MCP 未认证路由=401、livez/readyz=200；认证 tools/list/capability_list 冷调用待 FS/OAuth 入口补验`
 - completed041: `FS-041-001..015 PASS / no 0.4.1 release`
 - completed042: `FS-042-001..017 PASS / 0.4.2 formally released and deployed`
 - completed043: `0.4.3 formally released and deployed`
@@ -29,6 +29,7 @@
 - completed0410: `静态 include 搜索范围修订、重新发布与 FastSpider_FS 自举验收 PASS`
 - completed0416: `分层能力指南、MCP 调用可观测性、full gate、Hub/spiderctl 发布与冷客户端生产验收 PASS`
 - completed0417: `根因证据、过滤式按需发现、Schema 体积预算、请求到达诊断、full gate、commit/push、备份、Hub/spiderctl 生产发布及 Refresh 后同会话恢复均 PASS`
+- completed0419: `两层 MCP 能力地图、17 工具摘要、底层 capability 映射、Windows PowerShell/cmd 指引、Hub/spiderctl 0.4.19 生产部署与公网健康检查 PASS；认证 MCP 冷调用待补验`
 - currentTask: `none`
 - nextGate: `进入稳定使用阶段；仅在新的真实故障、可复现性能瓶颈或明确新需求出现时开启下一计划`
 

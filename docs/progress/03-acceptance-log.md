@@ -223,6 +223,16 @@
 - 备份清理执行 `backup-prune --keep 3` plan-only：candidate=6、kept=3、planned=3、deleted=0；没有未经确认删除历史备份。资料室 30 天清理仍为 dry-run，未创建定时任务。
 - 发布后补充验收：同一工作树在 WSL Linux/amd64 + CGO 环境执行 `go test -race ./...`，全量包通过，exitCode=0；Windows/386 原生 race 限制不再构成未验证项。
 - **Final Acceptance: PASS / PRODUCTION READY**。0.4.18 源码、门禁、备份、Hub/spiderctl、Node、健康检查与回滚证据均已闭环。
+ 
+## 2026-08-17 — 0.4.19 分层 MCP 能力发现与生产部署
+
+- 变更范围：`capability_list` 增加 overview/tool summary、底层 capability summary 与 `view=capability` 按需详情；17 个 MCP 工具和 13 个 Node capability 建立静态对账；`shell_run`/`shell.exec` 明确 Windows `powershell.exe`、`pwsh.exe`、`cmd.exe` 调用方式；Node/WSS 协议和 PCa Node 版本不变。
+- 验证：核心 release gate、`go vet ./...`、`go test ./... -count=1`（595 passed / 26 packages）、Linux amd64 clean build、MCP Hub 专项回归、`git diff --check` 均 PASS。完整 gate 在既有私有 marker 历史扫描处发现 80 个已知历史命中并按设计停止，未绕过该阻断。
+- Git 事实：release commit `8efbdfc624bdfdfbc6eece527a55b8f022cdeacf` 已推送 `origin/main`；构建元数据 `vcs.modified=false`。
+- 生产 Hub/spiderctl 已事务式更新为 0.4.19：Hub SHA256=`76ea227ce95898c0a6caf98380bce32c9c23726d5f84d78008b37ff0010b6a6e`、spiderctl SHA256=`160a7bf2fb82996231ba4388fedcaa5cf982e3d7d5290cf32fc959325c1eb751`；systemd active；本机与 shared-services 公网 livez/readyz 均为 200；MCP 未认证 POST 返回预期 401，OAuth discovery 两个端点返回 200。
+- 升级前备份 `pre-0.4.19-8efbdfc624bdfdfbc6eece527a55b8f022cdeacf.zip` SHA256=`c33ce40aefa9e15971bf4add6ee6655d0148fd624a668fa0028b5cf95f24a5ae`，Verify `valid=true`；旧 0.4.18 Hub/spiderctl 版本化回滚副本均保留；`backup-prune --keep 3` 仅 plan-only，无删除。
+- PCa Node 未构建、未修改、未推送更新；认证后的 MCP `tools/list`、`capability_list(view=overview)` 和 `view=capability` 冷调用需在具备 FS/OAuth 连接器的会话中补验。
+- **部署验收：PASS / PRODUCTION HEALTHY；认证 MCP 冷调用：待补验**。
 <!-- fast-spider:managed:acceptance:end -->
 
 ## Manual Acceptance Notes
