@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
 
 func TestMCPGuideCatalogMatchesRegisteredToolsAndDocumentation(t *testing.T) {
@@ -46,7 +48,7 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(overview.Categories) != 9 || len(overview.GoldenRules) == 0 || len(overview.RecommendedNext) == 0 {
+	if len(overview.Categories) != 9 || len(overview.ToolSummaries) != len(mcpToolGuides) || len(overview.GoldenRules) == 0 || len(overview.RecommendedNext) == 0 {
 		t.Fatalf("overview incomplete: %+v", overview)
 	}
 	assertMCPGuideSize(t, overview, 8<<10)
@@ -83,9 +85,114 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		}
 		assertMCPGuideSize(t, guide, 12<<10)
 	}
-	for _, input := range []struct{ view, name string }{{"unknown", ""}, {"tool", ""}, {"workflow", ""}, {"error", ""}, {"tool", "unknown"}, {"workflow", "unknown"}, {"error", "UNKNOWN"}} {
+	for _, input := range []struct{ view, name string }{{"unknown", ""}, {"capability", ""}, {"tool", ""}, {"workflow", ""}, {"error", ""}, {"tool", "unknown"}, {"workflow", "unknown"}, {"error", "UNKNOWN"}} {
 		if _, err := newMCPGuide("0.4.16", input.view, input.name); err == nil {
 			t.Fatalf("view=%q name=%q unexpectedly accepted", input.view, input.name)
+		}
+	}
+}
+
+func TestMCPToolSummaryCatalogHasNoGaps(t *testing.T) {
+	if len(mcpToolSummaryDefinitions) != len(mcpToolGuides) {
+		t.Fatalf("tool summary count=%d guide count=%d", len(mcpToolSummaryDefinitions), len(mcpToolGuides))
+	}
+	seen := make(map[string]bool, len(mcpToolSummaryDefinitions))
+	for _, summary := range mcpToolSummaryDefinitions {
+		if summary.Name == "" || summary.Category == "" || summary.Summary == "" || summary.Guide == "" {
+			t.Fatalf("incomplete tool summary: %+v", summary)
+		}
+		if seen[summary.Name] {
+			t.Fatalf("duplicate tool summary: %s", summary.Name)
+		}
+		seen[summary.Name] = true
+		if _, ok := mcpToolGuides[summary.Name]; !ok {
+			t.Fatalf("tool summary has no detailed guide: %s", summary.Name)
+		}
+	}
+	for name := range mcpToolGuides {
+		if !seen[name] {
+			t.Fatalf("tool guide has no overview summary: %s", name)
+		}
+	}
+	overview, err := newMCPGuide("test", "overview", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	categorySeen := make(map[string]bool, len(mcpToolGuides))
+	for _, category := range overview.Categories {
+		for _, name := range category.Tools {
+			if categorySeen[name] {
+				t.Fatalf("tool appears in multiple overview categories: %s", name)
+			}
+			categorySeen[name] = true
+			if _, ok := mcpToolGuides[name]; !ok {
+				t.Fatalf("overview category references unknown tool: %s", name)
+			}
+		}
+	}
+	if len(categorySeen) != len(mcpToolGuides) {
+		t.Fatalf("overview category coverage=%d guide count=%d", len(categorySeen), len(mcpToolGuides))
+	}
+}
+
+func TestMCPLowLevelCapabilitySummaryCatalogHasNoGaps(t *testing.T) {
+	capabilities := append([]protocolv1.CapabilityDescriptor(nil), protocolv1.NodeCapabilities...)
+	capabilities = append(capabilities, protocolv1.ScreenshotCapability, protocolv1.BrowserCapability)
+	summaries := mcpCapabilitySummaries(capabilities)
+	if len(summaries) != len(capabilities) {
+		t.Fatalf("capability summary count=%d capability count=%d", len(summaries), len(capabilities))
+	}
+	seen := make(map[string]bool, len(summaries))
+	for _, summary := range summaries {
+		if summary.CapabilityID == "" || summary.Version == "" || len(summary.Actions) == 0 || summary.Summary == "" || len(summary.MCPTools) == 0 {
+			t.Fatalf("incomplete capability summary: %+v", summary)
+		}
+		for _, tool := range summary.MCPTools {
+			if _, ok := mcpToolGuides[tool]; !ok {
+				t.Fatalf("capability %s maps to unknown MCP tool %s", summary.CapabilityID, tool)
+			}
+		}
+		if seen[summary.CapabilityID] {
+			t.Fatalf("duplicate capability summary: %s", summary.CapabilityID)
+		}
+		seen[summary.CapabilityID] = true
+	}
+	for _, capability := range capabilities {
+		if !seen[capability.CapabilityId] {
+			t.Fatalf("capability has no summary: %s", capability.CapabilityId)
+		}
+		if strings.TrimSpace(mcpCapabilitySummaryByID[capability.CapabilityId]) == "" {
+			t.Fatalf("capability summary source missing: %s", capability.CapabilityId)
+		}
+	}
+	for capabilityID := range mcpCapabilitySummaryByID {
+		if !seen[capabilityID] {
+			t.Fatalf("summary exists for capability not in catalog: %s", capabilityID)
+		}
+	}
+	for capabilityID := range mcpCapabilityMCPToolsByID {
+		if !seen[capabilityID] {
+			t.Fatalf("MCP mapping exists for capability not in catalog: %s", capabilityID)
+		}
+	}
+}
+
+func TestMCPCapabilityGuidesResolveEveryCatalogEntry(t *testing.T) {
+	capabilities := append([]protocolv1.CapabilityDescriptor(nil), protocolv1.NodeCapabilities...)
+	capabilities = append(capabilities, protocolv1.ScreenshotCapability, protocolv1.BrowserCapability)
+	for _, capability := range capabilities {
+		guide, err := newMCPCapabilityGuide("test", capabilities, capability.CapabilityId)
+		if err != nil {
+			t.Fatalf("capability %s: %v", capability.CapabilityId, err)
+		}
+		if guide.View != "capability" || guide.Name != capability.CapabilityId || guide.Capability == nil || len(guide.Capability.Actions) == 0 || len(guide.Capability.MCPTools) == 0 {
+			t.Fatalf("incomplete capability guide for %s: %+v", capability.CapabilityId, guide)
+		}
+		assertMCPGuideSize(t, guide, 12<<10)
+	}
+	for _, input := range []string{"", "unknown"} {
+		if _, err := newMCPCapabilityGuide("test", capabilities, input); err == nil {
+			t.Fatalf("capability %q unexpectedly accepted", input)
 		}
 	}
 }
@@ -97,8 +204,8 @@ func TestMCPServerInstructionsStayBoundedAndCoverCapabilityMap(t *testing.T) {
 	for _, needle := range []string{
 		"@FastSpider_FS", "capability_list", "machine_list", "machine_get", "file_read", "file_edit", "code_search",
 		"shell_run", "build_control", "job_watch", "job_cancel", "git_control", "browser_control", "screenshot_take",
-		"ai_control", "working_context", "thinking_team", "artifact_get", "session.list", "view=tool|workflow|error",
-		`query="fsprobe"`, "Never load all 17 schemas",
+		"ai_control", "working_context", "thinking_team", "artifact_get", "session.list", "view=tool|workflow|error", "view=capability",
+		`query="fsprobe"`, "Never load all 17 schemas", "powershell.exe", "tzutil /g", "not a separate PowerShell tool",
 	} {
 		if !strings.Contains(mcpServerInstructions, needle) {
 			t.Fatalf("instructions missing %q", needle)

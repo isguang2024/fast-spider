@@ -25,8 +25,8 @@ type machineGetInput struct {
 
 type capabilityListInput struct {
 	MachineID string `json:"machineId,omitempty" jsonschema:"optional machine ID; omit for the Hub capability catalog"`
-	View      string `json:"view,omitempty" jsonschema:"overview, catalog, tool, workflow, or error; omitted preserves the legacy catalog behavior"`
-	Name      string `json:"name,omitempty" jsonschema:"required for tool, workflow, or error; identifies exactly one bounded guide"`
+	View      string `json:"view,omitempty" jsonschema:"overview returns the compact FS map, catalog returns low-level capabilities, capability reads one low-level capability, tool/workflow/error reads one detailed guide; omitted preserves the legacy catalog behavior"`
+	Name      string `json:"name,omitempty" jsonschema:"required for capability, tool, workflow, or error; identifies exactly one bounded guide; use only when the overview is insufficient"`
 }
 
 type fileReadInput struct {
@@ -314,8 +314,9 @@ type machineGetOutput struct {
 }
 
 type capabilityListOutput struct {
-	Capabilities []protocolv1.CapabilityDescriptor `json:"capabilities"`
-	Guide        *mcpGuide                         `json:"guide,omitempty"`
+	Capabilities        []protocolv1.CapabilityDescriptor `json:"capabilities"`
+	CapabilitySummaries []mcpCapabilitySummary            `json:"capabilitySummaries,omitempty"`
+	Guide               *mcpGuide                         `json:"guide,omitempty"`
 }
 
 type fileReadOutput struct {
@@ -474,9 +475,9 @@ const mcpServerInstructions = `FastSpider_FS is the user's remote development co
 
 ChatGPT recovery: tools may be lazily loaded or evicted in long chats. If the FastSpider_FS namespace is absent, do not report disconnect or request login. Use filtered connector discovery for only the connection tools first, e.g. api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Never load all 17 schemas for a health check; load later tools only when needed. Report unmounted only if discovery itself fails.
 
-Capability map: connection = capability_list, machine_list, machine_get; files = code_search, file_read, file_edit; jobs = shell_run, build_control, job_watch, job_cancel; Git = git_control; browser = browser_control, screenshot_take; AI = ai_control; context = working_context; roles = thinking_team; artifacts = artifact_get.
+Capability map: connection = capability_list, machine_list, machine_get; files = code_search, file_read, file_edit; jobs = shell_run, build_control, job_watch, job_cancel; Git = git_control; browser = browser_control, screenshot_take; AI = ai_control; context = working_context; roles = thinking_team; artifacts = artifact_get. shell_run is the host/WSL process entry point; on Windows use explicit argv such as ["powershell.exe","-NoProfile","-NonInteractive","-Command","Get-Date; tzutil /g"] or ["cmd.exe","/d","/s","/c","tzutil /g"], not a separate PowerShell tool.
 
-Rules: unknown machineId -> machine_list. Connection check = capability_list(view=overview) + machine_list. Load detailed guidance only with view=tool|workflow|error for the current need. Codex history starts at ai_control(action=session.list), then get/watch/result. Every shell/build jobId must reach a terminal state via job_watch. File edits use search/read -> SHA -> preview -> CAS write -> read. Browser flow is readiness -> launch -> open -> snapshot refs -> actions -> close.`
+Rules: unknown machineId -> machine_list. Connection check = capability_list(view=overview) + machine_list. If a low-level capability ID is unclear, read capability_list(view=capability,name=<capabilityId>); then use its mcpTools mapping. Load detailed guidance only with view=tool|workflow|error for the current need. Codex history starts at ai_control(action=session.list), then get/watch/result. Every shell/build jobId must reach a terminal state via job_watch. File edits use search/read -> SHA -> preview -> CAS write -> read. Browser flow is readiness -> launch -> open -> snapshot refs -> actions -> close.`
 
 func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	server := mcp.NewServer(
@@ -508,29 +509,33 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	mcp.AddTool(server, mcpToolDefinition("capability_list", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input capabilityListInput) (*mcp.CallToolResult, capabilityListOutput, error) {
 		view := strings.TrimSpace(input.View)
 		capabilities := make([]protocolv1.CapabilityDescriptor, 0)
-		if view == "" || view == "catalog" {
-			if input.MachineID == "" {
-				capabilities = s.service.CapabilityCatalog()
-			} else {
-				machine, err := s.service.GetMachine(ctx, ownerID, input.MachineID)
-				if err != nil {
-					return nil, capabilityListOutput{}, err
-				}
-				capabilities = machine.Capabilities
+		if input.MachineID != "" {
+			machine, err := s.service.GetMachine(ctx, ownerID, input.MachineID)
+			if err != nil {
+				return nil, capabilityListOutput{}, err
 			}
+			capabilities = machine.Capabilities
+		} else if view == "" || view == "overview" || view == "catalog" || view == "capability" {
+			capabilities = s.service.CapabilityCatalog()
 		}
 		if view == "" && input.MachineID != "" {
-			return nil, capabilityListOutput{Capabilities: capabilities}, nil
+			return nil, capabilityListOutput{Capabilities: capabilities, CapabilitySummaries: mcpCapabilitySummaries(capabilities)}, nil
 		}
 		guideView := view
 		if guideView == "" {
 			guideView = "overview"
 		}
-		guide, err := newMCPGuide(s.service.Version(), guideView, input.Name)
+		var guide *mcpGuide
+		var err error
+		if guideView == "capability" {
+			guide, err = newMCPCapabilityGuide(s.service.Version(), capabilities, input.Name)
+		} else {
+			guide, err = newMCPGuide(s.service.Version(), guideView, input.Name)
+		}
 		if err != nil {
 			return nil, capabilityListOutput{}, err
 		}
-		return nil, capabilityListOutput{Capabilities: capabilities, Guide: guide}, nil
+		return nil, capabilityListOutput{Capabilities: capabilities, CapabilitySummaries: mcpCapabilitySummaries(capabilities), Guide: guide}, nil
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("file_read", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input fileReadInput) (*mcp.CallToolResult, fileReadOutput, error) {

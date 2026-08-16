@@ -82,6 +82,17 @@ native fallback 支持同一 content/files、glob、context 与 limit 语义；�
 
 `shell.exec/run` 和 `build.exec/run` 都使用显式 argv、Windows 绝对 `cwd` 与可选 `runtime={kind:"host"|"wsl",distribution?}`。host 直接执行 argv；WSL 由 Node 调用目标发行版 `wslpath` 映射 cwd，再以 `wsl.exe --cd <mapped> --exec <linux argv...>` 执行，不要求调用方拼接 `/mnt/<drive>`，也不接受嵌套 `wsl.exe` argv。
 
+Windows 不单独暴露 `powershell` 或 `cmd` capability；通过 `shell_run`/`shell.exec` 把解释器作为显式 argv[0] 调用。例如查询时间和时区：
+
+```json
+{
+  "argv": ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Get-Date; tzutil /g"],
+  "cwd": "C:\\"
+}
+```
+
+同一入口也支持 `pwsh.exe` 或 `cmd.exe`。调用 `shell_run` 成功只代表 Job 已启动，必须继续用 `job_watch` 读到 terminal state。
+
 启动成功后返回 `jobId/requestId/traceId/runtime/timing`。Job timing 只报告实测的 `nodeReceivedAt/processStartedAt/finishedAt/queueMs/runMs`；WSS 会话断开不会自动杀死已启动 Job，调用方通过 `watch/cancel` 读取或终止进程树。Windows WSL keepalive 按发行版去重且总数上限 8，Node 关闭只停止自己创建的进程。
 
 启动类动作必须使用幂等键时由具体 MCP/Capability schema要求；断线后是否重试要按 Job/状态查询结果决定，不能仅根据客户端是否收到响应判断。

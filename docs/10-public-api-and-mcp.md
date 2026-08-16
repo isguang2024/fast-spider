@@ -41,10 +41,12 @@ Hub 的 MCP `initialize` 会返回不超过 2 KiB 的常驻能力地图，并把
 - 省略 `machineId` 和 `view`：兼容返回 Hub Capability Catalog，并附带精简 overview。
 - 提供 `machineId`、省略 `view`：保持旧行为，只返回该 Machine 的能力目录。
 - `view=catalog`：显式返回 Hub 或指定 Machine 的能力目录。
-- `view=overview`：返回能力分类、黄金规则和推荐下一步。
+- `view=overview`：返回能力分类、17 个 MCP 工具的一句话 `toolSummaries`、黄金规则和推荐下一步；摘要足够选择入口，但不复制完整 Schema。
+- `capabilitySummaries`：在 overview/catalog 的结果中，按 `capabilityId/version` 返回底层 Node capability 的一句话语义；原始 `capabilities` 仍保留完整 actions。
+- `view=capability`：必须提供底层 `capabilityId`（例如 `shell.exec`），返回该 capability 的 actions、语义和对应 MCP 工具。
 - `view=tool|workflow|error`：必须提供 `name`，一次只返回一个工具、流程或真实稳定错误码的有界指南；未知 view/name 明确拒绝。
 
-工具指南固定包含 `whenToUse/requiredInputs/safeSequence/returns/recommendedNext/commonErrors/boundedExamples`。overview 不超过 8 KiB，单项指南不超过 12 KiB；示例有界且不含凭据、Prompt、Cookie、环境变量或本机事实。注册工具名、指南目录与本文工具列表由自动测试三方对账。
+工具指南固定包含 `whenToUse/requiredInputs/safeSequence/returns/recommendedNext/commonErrors/boundedExamples`；`view=capability` 额外返回底层 capability 的 actions、summary 和 `mcpTools` 映射。overview 不超过 8 KiB，单项指南不超过 12 KiB；示例有界且不含凭据、Prompt、Cookie、环境变量或本机事实。注册工具名、指南目录、overview 摘要和本文工具列表由自动测试对账。
 
 Codex/Claude Code 的会话能力不是独立顶层工具；统一位于 `ai_control`。查询 Codex 会话列表使用 `action=session.list`，后续读取使用 `session.get/session.watch/session.result`。因此 ChatGPT App 工具页只显示 `Ai control` 属于正常设计。
 

@@ -134,6 +134,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	var fileEditSchema []byte
 	var workingContextSchema []byte
 	var capabilityListSchema []byte
+	shellToolDescription := ""
 	toolCatalogBytes := 0
 	connectionToolBytes := 0
 	largestToolBytes := 0
@@ -166,6 +167,9 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		}
 		if tool.Name == "capability_list" {
 			capabilityListSchema, _ = json.Marshal(tool.InputSchema)
+		}
+		if tool.Name == "shell_run" {
+			shellToolDescription = tool.Description
 		}
 	}
 	t.Logf("MCP tool catalog bytes=%d connection=%d largest=%s/%d", toolCatalogBytes, connectionToolBytes, largestToolName, largestToolBytes)
@@ -206,10 +210,22 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 			t.Fatalf("capability_list schema missing %q: %s", field, capabilityListSchema)
 		}
 	}
+	if !strings.Contains(strings.ToLower(shellToolDescription), "powershell.exe") || !strings.Contains(shellToolDescription, "not a separate FS tool") {
+		t.Fatalf("shell_run description does not explain Windows PowerShell discovery: %q", shellToolDescription)
+	}
 
 	defaultGuide := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "capability_list", map[string]any{})
 	defaultGuideRaw, _ := json.Marshal(defaultGuide.StructuredContent)
-	if defaultGuide.IsError || !strings.Contains(string(defaultGuideRaw), `"capabilities"`) || !strings.Contains(string(defaultGuideRaw), `"view":"overview"`) {
+	var defaultGuidePayload struct {
+		CapabilitySummaries []json.RawMessage `json:"capabilitySummaries"`
+		Guide               struct {
+			ToolSummaries []json.RawMessage `json:"toolSummaries"`
+		} `json:"guide"`
+	}
+	if err := json.Unmarshal(defaultGuideRaw, &defaultGuidePayload); err != nil {
+		t.Fatal(err)
+	}
+	if defaultGuide.IsError || !strings.Contains(string(defaultGuideRaw), `"capabilities"`) || !strings.Contains(string(defaultGuideRaw), `"view":"overview"`) || len(defaultGuidePayload.Guide.ToolSummaries) != 17 || len(defaultGuidePayload.CapabilitySummaries) == 0 {
 		t.Fatalf("default capability_list=%s", defaultGuideRaw)
 	}
 	for _, guideCall := range []struct {
@@ -217,6 +233,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		want      string
 	}{
 		{map[string]any{"view": "overview"}, `"view":"overview"`},
+		{map[string]any{"view": "capability", "name": "shell.exec"}, `"capabilityId":"shell.exec"`},
 		{map[string]any{"view": "tool", "name": "browser_control"}, `"name":"browser_control"`},
 		{map[string]any{"view": "workflow", "name": "codex-session"}, `"name":"codex-session"`},
 		{map[string]any{"view": "error", "name": "INVALID_REQUEST"}, `"name":"INVALID_REQUEST"`},
@@ -227,8 +244,13 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 			t.Fatalf("guide args=%v result=%+v raw=%s", guideCall.arguments, result, raw)
 		}
 	}
+	explicitOverview := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "capability_list", map[string]any{"view": "overview"})
+	explicitOverviewRaw, _ := json.Marshal(explicitOverview.StructuredContent)
+	if explicitOverview.IsError || !strings.Contains(string(explicitOverviewRaw), `"capabilitySummaries"`) {
+		t.Fatalf("explicit overview missing low-level capability summaries=%s", explicitOverviewRaw)
+	}
 	for _, arguments := range []map[string]any{
-		{"view": "unknown"}, {"view": "tool"}, {"view": "workflow"}, {"view": "error"}, {"view": "tool", "name": "unknown"},
+		{"view": "unknown"}, {"view": "capability"}, {"view": "capability", "name": "unknown"}, {"view": "tool"}, {"view": "workflow"}, {"view": "error"}, {"view": "tool", "name": "unknown"},
 	} {
 		if result := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "capability_list", arguments); !result.IsError {
 			t.Fatalf("invalid capability_list args=%v result=%+v", arguments, result)
@@ -276,6 +298,11 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	machineCatalogRaw, _ := json.Marshal(machineCatalog.StructuredContent)
 	if machineCatalog.IsError || !strings.Contains(string(machineCatalogRaw), `"capabilities"`) || strings.Contains(string(machineCatalogRaw), `"guide"`) {
 		t.Fatalf("legacy machine capability_list=%s", machineCatalogRaw)
+	}
+	machineCapabilityGuide := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "capability_list", map[string]any{"machineId": state.MachineID, "view": "capability", "name": "shell.exec"})
+	machineCapabilityGuideRaw, _ := json.Marshal(machineCapabilityGuide.StructuredContent)
+	if machineCapabilityGuide.IsError || !strings.Contains(string(machineCapabilityGuideRaw), `"capabilityId":"shell.exec"`) || !strings.Contains(string(machineCapabilityGuideRaw), `"shell_run"`) {
+		t.Fatalf("machine capability guide=%s", machineCapabilityGuideRaw)
 	}
 
 	fileResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "file_read", Arguments: map[string]any{"machineId": state.MachineID, "path": filePath, "limit": 128}})

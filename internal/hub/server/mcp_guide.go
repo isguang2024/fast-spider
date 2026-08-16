@@ -5,10 +5,11 @@ import (
 	"sort"
 	"strings"
 
+	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const mcpGuideVersion = "1.0"
+const mcpGuideVersion = "1.1"
 
 type mcpGuideCategory struct {
 	Name    string   `json:"name"`
@@ -16,21 +17,45 @@ type mcpGuideCategory struct {
 	Tools   []string `json:"tools"`
 }
 
+// mcpToolSummary is the compact, first-pass description returned by the
+// capability overview. Keep this intentionally smaller than the full tool
+// input schema so clients can understand the whole FS surface before loading
+// one detailed guide.
+type mcpToolSummary struct {
+	Name     string `json:"name"`
+	Category string `json:"category"`
+	Summary  string `json:"summary"`
+	Guide    string `json:"guide"`
+}
+
+// mcpCapabilitySummary describes the lower-level Node capability catalog. It
+// complements the wire descriptor (capabilityId/version/actions) without
+// changing the Node protocol or making the model infer semantics from IDs.
+type mcpCapabilitySummary struct {
+	CapabilityID string   `json:"capabilityId"`
+	Version      string   `json:"version"`
+	Actions      []string `json:"actions"`
+	Summary      string   `json:"summary"`
+	MCPTools     []string `json:"mcpTools,omitempty"`
+}
+
 type mcpGuide struct {
-	GuideVersion    string             `json:"guideVersion"`
-	ServerVersion   string             `json:"serverVersion"`
-	View            string             `json:"view"`
-	Name            string             `json:"name"`
-	Summary         string             `json:"summary"`
-	Categories      []mcpGuideCategory `json:"categories,omitempty"`
-	GoldenRules     []string           `json:"goldenRules,omitempty"`
-	WhenToUse       []string           `json:"whenToUse,omitempty"`
-	RequiredInputs  []string           `json:"requiredInputs,omitempty"`
-	SafeSequence    []string           `json:"safeSequence,omitempty"`
-	Returns         []string           `json:"returns,omitempty"`
-	RecommendedNext []string           `json:"recommendedNext,omitempty"`
-	CommonErrors    []string           `json:"commonErrors,omitempty"`
-	BoundedExamples []map[string]any   `json:"boundedExamples,omitempty"`
+	GuideVersion    string                `json:"guideVersion"`
+	ServerVersion   string                `json:"serverVersion"`
+	View            string                `json:"view"`
+	Name            string                `json:"name"`
+	Summary         string                `json:"summary"`
+	Categories      []mcpGuideCategory    `json:"categories,omitempty"`
+	ToolSummaries   []mcpToolSummary      `json:"toolSummaries,omitempty"`
+	Capability      *mcpCapabilitySummary `json:"capability,omitempty"`
+	GoldenRules     []string              `json:"goldenRules,omitempty"`
+	WhenToUse       []string              `json:"whenToUse,omitempty"`
+	RequiredInputs  []string              `json:"requiredInputs,omitempty"`
+	SafeSequence    []string              `json:"safeSequence,omitempty"`
+	Returns         []string              `json:"returns,omitempty"`
+	RecommendedNext []string              `json:"recommendedNext,omitempty"`
+	CommonErrors    []string              `json:"commonErrors,omitempty"`
+	BoundedExamples []map[string]any      `json:"boundedExamples,omitempty"`
 }
 
 type mcpToolGuideEntry struct {
@@ -76,12 +101,12 @@ var mcpToolGuides = map[string]mcpToolGuideEntry{
 		BoundedExamples: []map[string]any{{"machineId": "<machine-id>"}},
 	},
 	"capability_list": {
-		Description:    "FastSpider_FS health check, capability catalog and on-demand guide entry. machineId is optional; view selects overview, catalog, one tool, one workflow or one error guide; usually continue with machine_list or the recommended tool.",
+		Description:    "FastSpider_FS health check, two-layer capability catalog and on-demand guide entry. machineId is optional; view selects overview, catalog, one low-level capability, one tool, one workflow or one error guide; usually continue with machine_list or the recommended tool.",
 		WhenToUse:      []string{"Check MCP connectivity", "Read the Hub or Machine catalog", "Load one detailed guide only when needed"},
-		RequiredInputs: []string{"view=tool|workflow|error requires name", "machineId is optional for catalog"},
-		SafeSequence:   []string{"Start with overview or the default call", "Read only the needed tool/workflow/error guide", "Do not fetch every guide"},
+		RequiredInputs: []string{"view=capability|tool|workflow|error requires name", "machineId is optional for catalog"},
+		SafeSequence:   []string{"Start with overview or the default call", "Read only the needed capability/tool/workflow/error guide", "Do not fetch every guide"},
 		Returns:        []string{"capabilities plus an optional bounded guide"}, RecommendedNext: []string{"machine_list", "the guide's recommendedNext"}, CommonErrors: []string{"INVALID_REQUEST", "NOT_FOUND"},
-		BoundedExamples: []map[string]any{{"view": "overview"}, {"view": "workflow", "name": "connection-check"}},
+		BoundedExamples: []map[string]any{{"view": "overview"}, {"view": "capability", "name": "shell.exec"}, {"view": "workflow", "name": "connection-check"}},
 	},
 	"file_read": {
 		Description: "Use to read a bounded UTF-8 file selection or obtain file metadata/SHA. Requires machineId and absolute path; returns content or stat plus fileSha256; usually continue with file_edit preview or verification.",
@@ -104,10 +129,13 @@ var mcpToolGuides = map[string]mcpToolGuideEntry{
 		BoundedExamples: []map[string]any{{"machineId": "<machine-id>", "query": "symbol", "path": "<absolute-project>", "include": []string{"internal/**/*.go"}, "limit": 20}},
 	},
 	"shell_run": {
-		Description: "Use to start a bounded non-interactive host/WSL process with explicit argv. Requires machineId, absolute cwd and idempotencyKey; returns a jobId, not completion; always continue with job_watch.",
+		Description: "Use to start a bounded non-interactive host/WSL process with explicit argv. On Windows, argv may explicitly invoke powershell.exe, pwsh.exe or cmd.exe; PowerShell is not a separate FS tool. Requires machineId, absolute cwd and idempotencyKey; returns a jobId, not completion; always continue with job_watch.",
 		WhenToUse:   []string{"Run a command that is not a dedicated Git or build action"}, RequiredInputs: []string{"machineId", "argv", "absolute cwd", "12-128 character idempotencyKey"},
 		SafeSequence: []string{"shell_run", "capture jobId", "job_watch until completed, failed or canceled"}, Returns: []string{"started Job metadata and jobId"}, RecommendedNext: []string{"job_watch", "job_cancel if needed"},
-		CommonErrors: []string{"ABSOLUTE_PATH_REQUIRED", "RUNTIME_UNAVAILABLE", "WSL_CWD_UNMAPPABLE"}, BoundedExamples: []map[string]any{{"machineId": "<machine-id>", "argv": []string{"go", "version"}, "cwd": "<absolute-project>", "idempotencyKey": "<unique-key>"}},
+		CommonErrors: []string{"ABSOLUTE_PATH_REQUIRED", "RUNTIME_UNAVAILABLE", "WSL_CWD_UNMAPPABLE"}, BoundedExamples: []map[string]any{
+			{"machineId": "<machine-id>", "argv": []string{"go", "version"}, "cwd": "<absolute-project>", "idempotencyKey": "<unique-key>"},
+			{"machineId": "<machine-id>", "argv": []string{"powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Get-Date; tzutil /g"}, "cwd": "C:\\", "idempotencyKey": "<unique-key>"},
+		},
 	},
 	"job_watch": {
 		Description: "Use after shell_run, build_control or asynchronous Git work to read bounded events and terminal state. Requires machineId and jobId; returns events/state/cursor; continue until completed, failed or canceled.",
@@ -167,6 +195,115 @@ var mcpToolGuides = map[string]mcpToolGuideEntry{
 	},
 }
 
+var mcpToolSummaryDefinitions = []mcpToolSummary{
+	{Name: "machine_list", Category: "connection", Summary: "Discover owned Machines, online state and machine IDs.", Guide: "capability_list(view=tool,name=machine_list)"},
+	{Name: "machine_get", Category: "connection", Summary: "Inspect one known Machine and its negotiated capabilities.", Guide: "capability_list(view=tool,name=machine_get)"},
+	{Name: "capability_list", Category: "connection", Summary: "Read the compact FS map, low-level catalog or one on-demand guide.", Guide: "capability_list(view=tool,name=capability_list)"},
+	{Name: "code_search", Category: "files", Summary: "Find bounded text or matching files below an absolute directory.", Guide: "capability_list(view=tool,name=code_search)"},
+	{Name: "file_read", Category: "files", Summary: "Read bounded UTF-8 content or file metadata and SHA-256.", Guide: "capability_list(view=tool,name=file_read)"},
+	{Name: "file_edit", Category: "files", Summary: "Preview or apply precise CAS-protected file changes.", Guide: "capability_list(view=tool,name=file_edit)"},
+	{Name: "shell_run", Category: "jobs", Summary: "Start an explicit-argv host/WSL Job; Windows argv can invoke PowerShell or cmd.exe.", Guide: "capability_list(view=tool,name=shell_run)"},
+	{Name: "build_control", Category: "jobs", Summary: "Start a bounded build, test or lint Job with explicit argv.", Guide: "capability_list(view=tool,name=build_control)"},
+	{Name: "job_watch", Category: "jobs", Summary: "Observe Job events until a terminal state is reached.", Guide: "capability_list(view=tool,name=job_watch)"},
+	{Name: "job_cancel", Category: "jobs", Summary: "Cancel one active Job and its process tree.", Guide: "capability_list(view=tool,name=job_cancel)"},
+	{Name: "git_control", Category: "git", Summary: "Run allowlisted Git inspection, mutation and network actions.", Guide: "capability_list(view=tool,name=git_control)"},
+	{Name: "browser_control", Category: "browser", Summary: "Operate isolated Chromium through accessibility snapshots and refs.", Guide: "capability_list(view=tool,name=browser_control)"},
+	{Name: "screenshot_take", Category: "browser", Summary: "Capture one-time desktop, display or window visual evidence.", Guide: "capability_list(view=tool,name=screenshot_take)"},
+	{Name: "ai_control", Category: "ai", Summary: "Discover and control local Codex or Claude Code sessions.", Guide: "capability_list(view=tool,name=ai_control)"},
+	{Name: "working_context", Category: "context", Summary: "Persist bounded Plan, Task, evidence and Markdown project state.", Guide: "capability_list(view=tool,name=working_context)"},
+	{Name: "thinking_team", Category: "guidance", Summary: "Return calling-side role, department and workflow guidance.", Guide: "capability_list(view=tool,name=thinking_team)"},
+	{Name: "artifact_get", Category: "artifacts", Summary: "Upload or retrieve bounded native MCP files and Job logs.", Guide: "capability_list(view=tool,name=artifact_get)"},
+}
+
+var mcpCapabilitySummaryByID = map[string]string{
+	"machine.status":     "Report Node OS, runtime health and negotiated capability state.",
+	"file.read":          "Read bounded UTF-8 files or return metadata and SHA-256 selectors.",
+	"file.write":         "Create or edit files with CAS checks, atomic replacement and preview.",
+	"code.search":        "Search bounded source content or matching files with stable scan facts.",
+	"shell.exec":         "Run explicit argv on host or WSL; Windows interpreters include powershell.exe, pwsh.exe and cmd.exe.",
+	"job.control":        "Watch Job events and cancel process trees with terminal-state accounting.",
+	"git.repository":     "Perform fixed, allowlisted Git repository actions.",
+	"build.exec":         "Run bounded host or WSL build/test commands as Jobs.",
+	"artifact.store":     "Store, retrieve or explicitly publish bounded local files and Job logs.",
+	"working.context":    "Maintain revisioned Plan, Task, evidence and Markdown project context.",
+	"browser.automation": "Control isolated Chromium through readiness, pages, snapshots and refs.",
+	"screenshot.capture": "Capture one-time desktop, display or window images.",
+	"agent.control":      "Discover and control supported local AI Harnesses and sessions.",
+}
+
+var mcpCapabilityMCPToolsByID = map[string][]string{
+	"machine.status":     {"machine_list", "machine_get"},
+	"file.read":          {"file_read"},
+	"file.write":         {"file_edit"},
+	"code.search":        {"code_search"},
+	"shell.exec":         {"shell_run"},
+	"job.control":        {"job_watch", "job_cancel"},
+	"git.repository":     {"git_control"},
+	"build.exec":         {"build_control"},
+	"artifact.store":     {"artifact_get"},
+	"working.context":    {"working_context"},
+	"browser.automation": {"browser_control"},
+	"screenshot.capture": {"screenshot_take"},
+	"agent.control":      {"ai_control"},
+}
+
+func mcpToolSummaries() []mcpToolSummary {
+	out := make([]mcpToolSummary, len(mcpToolSummaryDefinitions))
+	copy(out, mcpToolSummaryDefinitions)
+	return out
+}
+
+func mcpCapabilitySummaries(capabilities []protocolv1.CapabilityDescriptor) []mcpCapabilitySummary {
+	if len(capabilities) == 0 {
+		return nil
+	}
+	out := make([]mcpCapabilitySummary, 0, len(capabilities))
+	for _, capability := range capabilities {
+		summary := mcpCapabilitySummaryByID[capability.CapabilityId]
+		if summary == "" {
+			summary = "Use the declared actions for this negotiated Node capability; load a tool guide when needed."
+		}
+		out = append(out, mcpCapabilitySummary{
+			CapabilityID: capability.CapabilityId,
+			Version:      capability.Version,
+			Actions:      append([]string(nil), capability.Actions...),
+			Summary:      summary,
+			MCPTools:     append([]string(nil), mcpCapabilityMCPToolsByID[capability.CapabilityId]...),
+		})
+	}
+	return out
+}
+
+func newMCPCapabilityGuide(serverVersion string, capabilities []protocolv1.CapabilityDescriptor, name string) (*mcpGuide, error) {
+	name = strings.TrimSpace(name)
+	if len(name) > 128 {
+		return nil, fmt.Errorf("INVALID_REQUEST: capability guide selector exceeds its bound")
+	}
+	if name == "" {
+		return nil, fmt.Errorf("INVALID_REQUEST: name is required for a capability guide")
+	}
+	for _, capability := range capabilities {
+		if capability.CapabilityId != name {
+			continue
+		}
+		summaries := mcpCapabilitySummaries([]protocolv1.CapabilityDescriptor{capability})
+		if len(summaries) != 1 {
+			return nil, fmt.Errorf("INTERNAL: capability summary could not be built")
+		}
+		summary := summaries[0]
+		return &mcpGuide{
+			GuideVersion:    mcpGuideVersion,
+			ServerVersion:   serverVersion,
+			View:            "capability",
+			Name:            name,
+			Summary:         summary.Summary,
+			Capability:      &summary,
+			RecommendedNext: append([]string(nil), summary.MCPTools...),
+		}, nil
+	}
+	return nil, fmt.Errorf("NOT_FOUND: unknown Node capability")
+}
+
 var mcpWorkflowGuides = map[string]mcpWorkflowGuideEntry{
 	"connection-check": {Summary: "Verify real MCP and Machine connectivity without making changes, including ChatGPT per-conversation connector recovery.", SafeSequence: []string{"If ChatGPT does not expose the FastSpider_FS namespace, use filtered connector discovery for the lightweight machine tools first (api_tool.list_resources(paths=[\"FastSpider_FS\"], query=\"fsprobe\") when available)", "Never materialize the full 17-tool schema just to test connectivity; load later tools only for the current action", "Do not ask for login/reauthorization solely because one conversation lost its namespace", "capability_list(view=overview)", "machine_list", "machine_get only when details are needed"}, Returns: []string{"Lightweight recovered connection tools, Hub guide/catalog and current Machine availability"}, RecommendedNext: []string{"Load only the specific tool required by the next action"}, CommonErrors: []string{"MACHINE_OFFLINE"}},
 	"file-edit":        {Summary: "Locate, preview, CAS-write and verify a file change.", RequiredInputs: []string{"machineId", "absolute project/file path"}, SafeSequence: []string{"code_search", "file_read", "capture fileSha256", "file_edit preview", "file_edit(expectedFileSha256)", "file_read verification"}, Returns: []string{"Verified file change with before/after SHA"}, RecommendedNext: []string{"git-change when the project is versioned"}, CommonErrors: []string{"CONFLICT", "ABSOLUTE_PATH_REQUIRED"}},
@@ -219,6 +356,7 @@ func newMCPGuide(serverVersion, view, name string) (*mcpGuide, error) {
 	switch view {
 	case "overview":
 		base.Summary = "FastSpider_FS exposes one stable 17-tool surface: start with real read-only discovery, then load only the detailed guide needed for the current action."
+		base.ToolSummaries = mcpToolSummaries()
 		base.Categories = []mcpGuideCategory{
 			{Name: "连接与设备", Summary: "Discover Hub/Machine availability.", Tools: []string{"capability_list", "machine_list", "machine_get"}},
 			{Name: "文件与代码", Summary: "Search, read and CAS-edit local files.", Tools: []string{"code_search", "file_read", "file_edit"}},
@@ -234,7 +372,10 @@ func newMCPGuide(serverVersion, view, name string) (*mcpGuide, error) {
 			"When @FastSpider_FS is selected or mentioned, try a real read-only tool before judging availability from UI text.",
 			"On ChatGPT, an absent direct namespace is not proof of disconnection: first use filtered connector discovery for only the lightweight machine tools, then machine_list; never load all 17 schemas just to test connectivity and do not ask for login/reauthorization unless filtered discovery plus a real connection check fail.",
 			"If machineId is unknown, call machine_list first; connection checks use capability_list plus machine_list.",
-			"Use capability_list(view=tool|workflow|error,name=...) only for the current need; never load every detailed guide.",
+			"Use the compact toolSummaries to choose a tool, then call capability_list(view=tool,name=...) only when its detail is needed; never load every detailed guide.",
+			"The low-level catalog reports capabilityId/version/actions plus capabilitySummaries; do not infer behavior from an opaque ID alone.",
+			"If a low-level capability ID is unclear, call capability_list(view=capability,name=<capabilityId>) and follow its mcpTools mapping.",
+			"shell_run is the single host/WSL process entry point; on Windows put powershell.exe, pwsh.exe or cmd.exe explicitly in argv rather than looking for a separate PowerShell tool.",
 			"Codex session history is ai_control(action=session.list), not a separate top-level tool.",
 			"A started process is not completion: follow every shell/build jobId with job_watch to a terminal state.",
 		}
