@@ -25,7 +25,7 @@ var webTemplates = map[string]*template.Template{
 	"setup":      template.Must(template.ParseFS(webFiles, "web/setup.html")),
 	"login":      template.Must(template.ParseFS(webFiles, "web/login.html")),
 	"authorize":  template.Must(template.ParseFS(webFiles, "web/authorize.html")),
-	"app":        template.Must(template.ParseFS(webFiles, "web/app.html")),
+	"app":        template.Must(template.ParseFS(webFiles, "web/admin.html")),
 	"token":      template.Must(template.ParseFS(webFiles, "web/token.html")),
 	"direct-key": template.Must(template.ParseFS(webFiles, "web/direct-key.html")),
 }
@@ -97,7 +97,6 @@ type apiTokenPageView struct {
 type directKeyPageView struct {
 	ID         string
 	Label      string
-	TokenHint  string
 	Scopes     string
 	Machine    string
 	RateLimit  int
@@ -126,6 +125,9 @@ type directKeyPageData struct {
 }
 
 type appPageData struct {
+	Page                 string
+	PageTitle            string
+	Version              string
 	BasePath             string
 	BaseURL              string
 	MCPURL               string
@@ -279,6 +281,31 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request, session st
 }
 
 func (s *Server) handleApp(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
+	s.renderAppPage(w, r, session, "overview")
+}
+
+func (s *Server) handleAppPage(page string) func(http.ResponseWriter, *http.Request, store.WebSessionRecord) {
+	return func(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
+		s.renderAppPage(w, r, session, page)
+	}
+}
+
+func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord, page string) {
+	pageTitles := map[string]string{
+		"overview":    "概览",
+		"machines":    "设备管理",
+		"oauth":       "OAuth 授权",
+		"direct-keys": "临时直连密钥",
+		"tokens":      "连接令牌",
+		"security":    "账户安全",
+		"mcp":         "MCP 服务",
+		"system":      "运行状态",
+	}
+	pageTitle, ok := pageTitles[page]
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
 	machines, err := s.service.ListMachines(r.Context(), session.OwnerID)
 	if err != nil {
 		http.Error(w, "Failed to load machines", http.StatusInternalServerError)
@@ -307,6 +334,9 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request, session store
 
 	now := time.Now().UTC()
 	data := appPageData{
+		Page:        page,
+		PageTitle:   pageTitle,
+		Version:     s.service.Version(),
 		BasePath:    s.publicBasePath(r),
 		BaseURL:     strings.TrimRight(s.publicBaseURL(r), "/"),
 		Username:    session.Username,
@@ -390,7 +420,7 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request, session store
 			}
 		}
 		data.DirectKeys = append(data.DirectKeys, directKeyPageView{
-			ID: directKey.ID, Label: directKey.Label, TokenHint: directKey.TokenHint,
+			ID: directKey.ID, Label: directKey.Label,
 			Scopes: directScopeWebLabel(directKey.Scopes), Machine: machine, RateLimit: directKey.RateLimitPerMinute,
 			CreatedAt: formatWebTime(directKey.CreatedAt), LastUsedAt: lastUsed,
 			ExpiresAt: formatWebTime(directKey.ExpiresAt), Status: status,
@@ -472,7 +502,7 @@ func (s *Server) handleAppMachineNote(w http.ResponseWriter, r *http.Request, se
 		http.Error(w, "Unable to update machine note", http.StatusBadRequest)
 		return
 	}
-	s.redirectPublic(w, r, "/app?notice=machine-note-updated", http.StatusSeeOther)
+	s.redirectPublic(w, r, "/app/machines?notice=machine-note-updated", http.StatusSeeOther)
 }
 
 func (s *Server) handleAppMachineRevoke(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
@@ -483,7 +513,7 @@ func (s *Server) handleAppMachineRevoke(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "Unable to revoke machine", http.StatusBadRequest)
 		return
 	}
-	s.redirectPublic(w, r, "/app?notice=machine-revoked", http.StatusSeeOther)
+	s.redirectPublic(w, r, "/app/machines?notice=machine-revoked", http.StatusSeeOther)
 }
 
 func (s *Server) handleAppMachineDelete(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
@@ -494,7 +524,7 @@ func (s *Server) handleAppMachineDelete(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "Unable to delete machine", http.StatusBadRequest)
 		return
 	}
-	s.redirectPublic(w, r, "/app?notice=machine-deleted", http.StatusSeeOther)
+	s.redirectPublic(w, r, "/app/machines?notice=machine-deleted", http.StatusSeeOther)
 }
 
 func (s *Server) handleAppAuthorizationRevoke(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
@@ -507,7 +537,7 @@ func (s *Server) handleAppAuthorizationRevoke(w http.ResponseWriter, r *http.Req
 		http.Error(w, "Unable to revoke OAuth authorization", http.StatusBadRequest)
 		return
 	}
-	s.redirectPublic(w, r, "/app?notice=authorization-revoked", http.StatusSeeOther)
+	s.redirectPublic(w, r, "/app/access/oauth?notice=authorization-revoked", http.StatusSeeOther)
 }
 
 func (s *Server) handleAppAuthorizationDelete(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
@@ -520,7 +550,7 @@ func (s *Server) handleAppAuthorizationDelete(w http.ResponseWriter, r *http.Req
 		http.Error(w, "Unable to delete OAuth authorization", http.StatusBadRequest)
 		return
 	}
-	s.redirectPublic(w, r, "/app?notice=authorization-deleted", http.StatusSeeOther)
+	s.redirectPublic(w, r, "/app/access/oauth?notice=authorization-deleted", http.StatusSeeOther)
 }
 
 func (s *Server) handleAppClientDelete(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
@@ -531,7 +561,7 @@ func (s *Server) handleAppClientDelete(w http.ResponseWriter, r *http.Request, s
 		http.Error(w, "Unable to delete OAuth client", http.StatusBadRequest)
 		return
 	}
-	s.redirectPublic(w, r, "/app?notice=client-deleted", http.StatusSeeOther)
+	s.redirectPublic(w, r, "/app/access/oauth?notice=client-deleted", http.StatusSeeOther)
 }
 
 func (s *Server) handleAppPasswordChange(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
@@ -541,16 +571,16 @@ func (s *Server) handleAppPasswordChange(w http.ResponseWriter, r *http.Request,
 	current := r.PostForm.Get("current_password")
 	password := r.PostForm.Get("new_password")
 	if password == "" || password != r.PostForm.Get("password_confirm") {
-		s.redirectPublic(w, r, "/app?error=password-mismatch", http.StatusSeeOther)
+		s.redirectPublic(w, r, "/app/access/security?error=password-mismatch", http.StatusSeeOther)
 		return
 	}
 	if err := s.service.ChangeOwnerPassword(
 		r.Context(), session.OwnerID, current, password, session.ID, remoteIP(r),
 	); err != nil {
-		s.redirectPublic(w, r, "/app?error=password-invalid", http.StatusSeeOther)
+		s.redirectPublic(w, r, "/app/access/security?error=password-invalid", http.StatusSeeOther)
 		return
 	}
-	s.redirectPublic(w, r, "/app?notice=password-changed", http.StatusSeeOther)
+	s.redirectPublic(w, r, "/app/access/security?notice=password-changed", http.StatusSeeOther)
 }
 
 func (s *Server) handleAppTokenCreate(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
@@ -559,7 +589,7 @@ func (s *Server) handleAppTokenCreate(w http.ResponseWriter, r *http.Request, se
 	}
 	days, err := strconv.Atoi(strings.TrimSpace(r.PostForm.Get("expires_days")))
 	if err != nil || (days != 0 && days != 30 && days != 90 && days != 365) {
-		s.redirectPublic(w, r, "/app?error=token-invalid", http.StatusSeeOther)
+		s.redirectPublic(w, r, "/app/access/tokens?error=token-invalid", http.StatusSeeOther)
 		return
 	}
 	result, err := s.service.CreateConnectionToken(
@@ -570,7 +600,7 @@ func (s *Server) handleAppTokenCreate(w http.ResponseWriter, r *http.Request, se
 		remoteIP(r),
 	)
 	if err != nil {
-		s.redirectPublic(w, r, "/app?error=token-create", http.StatusSeeOther)
+		s.redirectPublic(w, r, "/app/access/tokens?error=token-create", http.StatusSeeOther)
 		return
 	}
 	expires := "长期有效"
@@ -591,12 +621,12 @@ func (s *Server) handleAppDirectKeyCreate(w http.ResponseWriter, r *http.Request
 	}
 	minutes, err := strconv.Atoi(strings.TrimSpace(r.PostForm.Get("expires_minutes")))
 	if err != nil || (minutes != 10 && minutes != 60 && minutes != 360 && minutes != 1440 && minutes != 10080) {
-		s.redirectPublic(w, r, "/app?error=direct-key-invalid#direct-keys", http.StatusSeeOther)
+		s.redirectPublic(w, r, "/app/access/direct-keys?error=direct-key-invalid", http.StatusSeeOther)
 		return
 	}
 	rateLimit, err := strconv.Atoi(strings.TrimSpace(r.PostForm.Get("rate_limit")))
 	if err != nil || rateLimit < 1 || rateLimit > 600 {
-		s.redirectPublic(w, r, "/app?error=direct-key-invalid#direct-keys", http.StatusSeeOther)
+		s.redirectPublic(w, r, "/app/access/direct-keys?error=direct-key-invalid", http.StatusSeeOther)
 		return
 	}
 	result, err := s.service.CreateDirectAccessKey(
@@ -604,7 +634,7 @@ func (s *Server) handleAppDirectKeyCreate(w http.ResponseWriter, r *http.Request
 		r.PostForm["scope"], time.Duration(minutes)*time.Minute, rateLimit, remoteIP(r),
 	)
 	if err != nil {
-		s.redirectPublic(w, r, "/app?error=direct-key-create#direct-keys", http.StatusSeeOther)
+		s.redirectPublic(w, r, "/app/access/direct-keys?error=direct-key-create", http.StatusSeeOther)
 		return
 	}
 	machine := "全部设备"
@@ -629,7 +659,7 @@ func (s *Server) handleAppDirectKeyRevoke(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Unable to revoke direct access key", http.StatusBadRequest)
 		return
 	}
-	s.redirectPublic(w, r, "/app?notice=direct-key-revoked#direct-keys", http.StatusSeeOther)
+	s.redirectPublic(w, r, "/app/access/direct-keys?notice=direct-key-revoked", http.StatusSeeOther)
 }
 
 func (s *Server) handleAppDirectKeyDelete(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
@@ -640,7 +670,7 @@ func (s *Server) handleAppDirectKeyDelete(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Unable to delete direct access key", http.StatusBadRequest)
 		return
 	}
-	s.redirectPublic(w, r, "/app?notice=direct-key-deleted#direct-keys", http.StatusSeeOther)
+	s.redirectPublic(w, r, "/app/access/direct-keys?notice=direct-key-deleted", http.StatusSeeOther)
 }
 
 func directScopeWebLabel(scopes []string) string {
@@ -673,7 +703,7 @@ func (s *Server) handleAppTokenRevoke(w http.ResponseWriter, r *http.Request, se
 		http.Error(w, "Unable to revoke access token", http.StatusBadRequest)
 		return
 	}
-	s.redirectPublic(w, r, "/app?notice=token-revoked", http.StatusSeeOther)
+	s.redirectPublic(w, r, "/app/access/tokens?notice=token-revoked", http.StatusSeeOther)
 }
 
 func (s *Server) handleAppTokenDelete(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
@@ -686,12 +716,12 @@ func (s *Server) handleAppTokenDelete(w http.ResponseWriter, r *http.Request, se
 		http.Error(w, "Unable to delete access token", http.StatusBadRequest)
 		return
 	}
-	s.redirectPublic(w, r, "/app?notice=token-deleted", http.StatusSeeOther)
+	s.redirectPublic(w, r, "/app/access/tokens?notice=token-deleted", http.StatusSeeOther)
 }
 
 func (s *Server) handleWebAsset(w http.ResponseWriter, r *http.Request) {
 	name := path.Base(r.PathValue("file"))
-	if name != "app.css" && name != "setup.js" && name != "app.js" {
+	if name != "app.css" && name != "admin.css" && name != "setup.js" && name != "app.js" {
 		http.NotFound(w, r)
 		return
 	}

@@ -75,6 +75,30 @@ func TestConnectionTokenLifecycleAndSecretRedaction(t *testing.T) {
 	}
 }
 
+func TestDirectAccessTokenHintRedactsLegacyHints(t *testing.T) {
+	for input, want := range map[string]string{
+		"fsp_tmp_abcdefghijklmnopqrstuvwxyz1234": "fsp_tmp_…1234",
+		"fsp_tmp_…ABCD":                          "fsp_tmp_…ABCD",
+		"legacy-secret-9876":                     "…9876",
+		"":                                       "",
+	} {
+		if got := directAccessTokenHint(input); got != want {
+			t.Fatalf("directAccessTokenHint(%q)=%q want %q", input, got, want)
+		}
+	}
+}
+
+func TestDirectAccessKeyViewRedactsLegacyStoredHint(t *testing.T) {
+	view := directAccessKeyView(store.DirectAccessKeyRecord{
+		ID:        "dak_test",
+		TokenHint: "fsp_tmp_abcdefghijklmnopqrstuvwxyz9876",
+		Label:     "legacy",
+	})
+	if view.TokenHint != "fsp_tmp_…9876" {
+		t.Fatalf("legacy stored token hint=%q, want minimal suffix", view.TokenHint)
+	}
+}
+
 func TestDirectAccessKeyLifecyclePolicyAndSecretRedaction(t *testing.T) {
 	ctx := context.Background()
 	dataDir := t.TempDir()
@@ -116,6 +140,10 @@ func TestDirectAccessKeyLifecyclePolicyAndSecretRedaction(t *testing.T) {
 	}
 	if strings.Contains(string(listedJSON), readonly.Token) {
 		t.Fatalf("direct key plaintext was persisted in list response: %s", listedJSON)
+	}
+	wantHint := "fsp_tmp_…" + readonly.Token[len(readonly.Token)-4:]
+	if len(listed) != 1 || listed[0].TokenHint != wantHint {
+		t.Fatalf("direct key hint=%q, want minimal hint %q", listed[0].TokenHint, wantHint)
 	}
 	authenticated, err := service.AuthenticateDirectAccessKey(ctx, readonly.Token)
 	if err != nil || authenticated.OwnerID != account.OwnerID {

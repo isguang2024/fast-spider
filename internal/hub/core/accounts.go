@@ -421,7 +421,7 @@ func DirectAccessKeyHasScope(record store.DirectAccessKeyRecord, scope string) b
 
 func directAccessKeyView(record store.DirectAccessKeyRecord) DirectAccessKeyView {
 	return DirectAccessKeyView{
-		ID: record.ID, TokenHint: record.TokenHint, Label: record.Label, Scopes: append([]string(nil), record.Scopes...),
+		ID: record.ID, TokenHint: directAccessTokenHint(record.TokenHint), Label: record.Label, Scopes: append([]string(nil), record.Scopes...),
 		MachineID: record.MachineID, RateLimitPerMinute: record.RateLimitPerMinute, CreatedAt: record.CreatedAt,
 		LastUsedAt: record.LastUsedAt, ExpiresAt: record.ExpiresAt, RevokedAt: record.RevokedAt,
 	}
@@ -449,10 +449,18 @@ func normalizeDirectAccessScopes(scopes []string) ([]string, error) {
 }
 
 func directAccessTokenHint(token string) string {
-	if len(token) <= 18 {
-		return token
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ""
 	}
-	return token[:14] + "…" + token[len(token)-4:]
+	suffix := token
+	if len(suffix) > 4 {
+		suffix = suffix[len(suffix)-4:]
+	}
+	if strings.HasPrefix(token, "fsp_tmp_") {
+		return "fsp_tmp_…" + suffix
+	}
+	return "…" + suffix
 }
 
 func (s *Service) CreateWebSession(ctx context.Context, ownerID string) (WebSessionResult, error) {

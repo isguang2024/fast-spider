@@ -425,7 +425,7 @@ func TestWebOAuthClientsExcludeOrphanDCR(t *testing.T) {
 		t.Fatalf("authorized client token exchange status=%d body=%s", status, body)
 	}
 
-	status, _, body = oauthTestRequest(t, client, http.MethodGet, fixture.httpServer.URL+"/app", nil)
+	status, _, body = oauthTestRequest(t, client, http.MethodGet, fixture.httpServer.URL+"/app/access/oauth", nil)
 	if status != http.StatusOK {
 		t.Fatalf("dashboard status=%d body=%s", status, body)
 	}

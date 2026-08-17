@@ -57,15 +57,43 @@ func TestWebSetupLoginAndDashboard(t *testing.T) {
 	}
 
 	status, _, body = webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app", nil)
-	if status != http.StatusOK || !strings.Contains(string(body), "设备与授权中心") {
+	if status != http.StatusOK || !strings.Contains(string(body), "Fast Spider 控制台") || !strings.Contains(string(body), "后台管理") {
 		t.Fatalf("dashboard status=%d body=%s", status, body)
 	}
-	if !strings.Contains(string(body), `href="/api/v1/node/releases/windows-amd64/download"`) || !strings.Contains(string(body), "下载最新版 Windows 客户端") {
-		t.Fatalf("dashboard latest Windows Node download entry missing: %s", body)
+	if !strings.Contains(string(body), `href="/api/v1/node/releases/windows-amd64/download"`) || !strings.Contains(string(body), "下载 Windows 客户端") {
+		t.Fatalf("dashboard Windows Node download entry missing: %s", body)
 	}
-	for _, marker := range []string{`id="mcp-diagnostics"`, `id="mcp-diagnostics-refresh"`, `/app/api/mcp-diagnostics`, "MCP 调用诊断", "最近 MCP 请求", "最近 Initialize", "最近 Tools List", "最近 Tool Call", `id="direct-keys"`, "临时直连密钥", "/direct/v1"} {
+	for _, marker := range []string{"设备管理", "OAuth 授权", "临时直连密钥", "连接令牌", "账户安全", "MCP 服务", "运行状态", "/app/access/direct-keys", "/direct/v1"} {
 		if !strings.Contains(string(body), marker) {
-			t.Fatalf("dashboard MCP diagnostics missing %q: %s", marker, body)
+			t.Fatalf("dashboard navigation missing %q: %s", marker, body)
+		}
+	}
+	status, _, body = webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app/tools/mcp", nil)
+	if status != http.StatusOK {
+		t.Fatalf("MCP admin page status=%d body=%s", status, body)
+	}
+	for _, marker := range []string{`id="mcp-diagnostics"`, `id="mcp-diagnostics-refresh"`, `/app/api/mcp-diagnostics`, "MCP 调用诊断", "最近 MCP 请求", "最近 Initialize", "最近 Tools List", "最近 Tool Call"} {
+		if !strings.Contains(string(body), marker) {
+			t.Fatalf("MCP admin page missing %q: %s", marker, body)
+		}
+	}
+	pageMarkers := map[string][]string{
+		"/app/machines":           {"设备管理", "生成连接令牌", "还没有设备"},
+		"/app/access/oauth":       {"OAuth 授权", "授权连接", "已授权客户端"},
+		"/app/access/direct-keys": {"创建密钥", "密钥列表", "/app/direct-keys", "列表永远不会再次显示密钥内容"},
+		"/app/access/tokens":      {"生成连接令牌", "令牌列表", "/app/tokens"},
+		"/app/access/security":    {"账户安全", "当前密码", "/app/account/password"},
+		"/app/system":             {"运行状态", "Liveness", "Readiness"},
+	}
+	for page, markers := range pageMarkers {
+		status, _, pageBody := webTestRequest(t, client, http.MethodGet, httpServer.URL+page, nil)
+		if status != http.StatusOK || !strings.Contains(string(pageBody), "sidebar-nav") {
+			t.Fatalf("admin page %s status=%d body=%s", page, status, pageBody)
+		}
+		for _, marker := range markers {
+			if !strings.Contains(string(pageBody), marker) {
+				t.Fatalf("admin page %s missing %q: %s", page, marker, pageBody)
+			}
 		}
 	}
 	if strings.Contains(string(body), "Owner Token") {
@@ -127,9 +155,9 @@ func TestWebConnectionTokenIsOneTimeAndCSRFProtected(t *testing.T) {
 	}
 	client.Jar.SetCookies(hubURL, []*http.Cookie{{Name: "fast_spider_session", Value: session.Token, Path: "/"}})
 
-	status, _, dashboard := webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app", nil)
-	if status != http.StatusOK || !strings.Contains(string(dashboard), "连接令牌") {
-		t.Fatalf("connection token dashboard status=%d body=%s", status, dashboard)
+	status, _, dashboard := webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app/access/tokens", nil)
+	if status != http.StatusOK || !strings.Contains(string(dashboard), "生成连接令牌") {
+		t.Fatalf("connection token page status=%d body=%s", status, dashboard)
 	}
 	status, _, body := webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/tokens", url.Values{
 		"csrf_token":   {"wrong-csrf"},
@@ -155,9 +183,9 @@ func TestWebConnectionTokenIsOneTimeAndCSRFProtected(t *testing.T) {
 	if strings.Count(string(body), secret) != 1 {
 		t.Fatalf("connection token secret displayed %d times, want once: %s", strings.Count(string(body), secret), body)
 	}
-	status, _, dashboard = webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app", nil)
-	if status != http.StatusOK || strings.Contains(string(dashboard), secret) {
-		t.Fatalf("dashboard leaked connection token secret: status=%d body=%s", status, dashboard)
+	status, _, dashboard = webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app/access/tokens", nil)
+	if status != http.StatusOK || strings.Contains(string(dashboard), secret) || !strings.Contains(string(dashboard), "maintenance") {
+		t.Fatalf("connection token page leaked secret or omitted record: status=%d body=%s", status, dashboard)
 	}
 
 	status, _, body = webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/direct-keys", url.Values{
@@ -197,9 +225,9 @@ func TestWebConnectionTokenIsOneTimeAndCSRFProtected(t *testing.T) {
 	if err != nil || len(keys) != 1 || strings.Join(keys[0].Scopes, ",") != core.DirectScopeFilesWrite {
 		t.Fatalf("direct key listing=%+v err=%v", keys, err)
 	}
-	status, _, dashboard = webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app", nil)
-	if status != http.StatusOK || strings.Contains(string(dashboard), directSecret) || !strings.Contains(string(dashboard), "http-ai") {
-		t.Fatalf("dashboard direct key redaction status=%d body=%s", status, dashboard)
+	status, _, dashboard = webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app/access/direct-keys", nil)
+	if status != http.StatusOK || strings.Contains(string(dashboard), directSecret) || strings.Contains(string(dashboard), keys[0].TokenHint) || !strings.Contains(string(dashboard), "http-ai") {
+		t.Fatalf("direct key page redaction status=%d body=%s", status, dashboard)
 	}
 }
 
@@ -361,10 +389,10 @@ func TestWebPasswordChangeProtectsSessionsAndPreservesOAuth(t *testing.T) {
 	passwordForm.Set("csrf_token", currentSession.CSRFToken)
 	passwordForm.Set("current_password", "wrong-current-password")
 	status, headers, body := webTestRequest(t, currentClient, http.MethodPost, httpServer.URL+"/app/account/password", passwordForm)
-	if status != http.StatusSeeOther || headers.Get("Location") != oauthTestPublicBaseURL+"/app?error=password-invalid" {
+	if status != http.StatusSeeOther || headers.Get("Location") != oauthTestPublicBaseURL+"/app/access/security?error=password-invalid" {
 		t.Fatalf("wrong current password status=%d location=%q body=%s", status, headers.Get("Location"), body)
 	}
-	status, headers, body = webTestRequest(t, currentClient, http.MethodGet, httpServer.URL+"/app?error=password-invalid", nil)
+	status, headers, body = webTestRequest(t, currentClient, http.MethodGet, httpServer.URL+"/app/access/security?error=password-invalid", nil)
 	if status != http.StatusOK || !strings.Contains(string(body), "当前密码不正确") || headers.Get("Location") != "" {
 		t.Fatalf("wrong current password error UX status=%d location=%q body=%s", status, headers.Get("Location"), body)
 	}
@@ -377,7 +405,7 @@ func TestWebPasswordChangeProtectsSessionsAndPreservesOAuth(t *testing.T) {
 
 	passwordForm.Set("current_password", "old-password-123")
 	status, headers, body = webTestRequest(t, currentClient, http.MethodPost, httpServer.URL+"/app/account/password", passwordForm)
-	if status != http.StatusSeeOther || headers.Get("Location") != oauthTestPublicBaseURL+"/app?notice=password-changed" {
+	if status != http.StatusSeeOther || headers.Get("Location") != oauthTestPublicBaseURL+"/app/access/security?notice=password-changed" {
 		t.Fatalf("password change status=%d location=%q body=%s", status, headers.Get("Location"), body)
 	}
 	if _, err := service.AuthenticateWebSession(ctx, currentSession.Token); err != nil {
@@ -386,7 +414,7 @@ func TestWebPasswordChangeProtectsSessionsAndPreservesOAuth(t *testing.T) {
 	if _, err := service.AuthenticateWebSession(ctx, otherSession.Token); err == nil {
 		t.Fatal("other Web session remained valid after password change")
 	}
-	status, _, body = webTestRequest(t, currentClient, http.MethodGet, httpServer.URL+"/app", nil)
+	status, _, body = webTestRequest(t, currentClient, http.MethodGet, httpServer.URL+"/app/access/security", nil)
 	if status != http.StatusOK || !strings.Contains(string(body), "账户安全") {
 		t.Fatalf("current session dashboard after password change status=%d body=%s", status, body)
 	}
@@ -450,7 +478,7 @@ func TestWebPathPrefixUsesPublicRedirectCookieAndAssets(t *testing.T) {
 	if status != http.StatusOK || !strings.Contains(string(body), "/fast-spider/assets/app.css") || !strings.Contains(string(body), "/fast-spider/assets/setup.js") {
 		t.Fatalf("path-prefix setup status=%d body=%s", status, body)
 	}
-	for _, asset := range []string{"app.css", "setup.js"} {
+	for _, asset := range []string{"app.css", "admin.css", "setup.js"} {
 		status, headers, body := webTestRequest(t, client, http.MethodGet, httpServer.URL+"/assets/"+asset, nil)
 		if status != http.StatusOK || len(body) == 0 {
 			t.Fatalf("asset %s status=%d body=%s", asset, status, body)
@@ -475,6 +503,22 @@ func TestWebPathPrefixUsesPublicRedirectCookieAndAssets(t *testing.T) {
 	}
 	if cookie.Path != "/fast-spider" || !cookie.Secure || !cookie.HttpOnly {
 		t.Fatalf("path-prefix session cookie=%+v", cookie)
+	}
+	// httptest serves HTTP while the configured public URL is HTTPS, so install a local-only
+	// copy of the authenticated cookie to inspect the rendered prefixed admin page.
+	hubURL, err := url.Parse(httpServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.Jar.SetCookies(hubURL, []*http.Cookie{{Name: cookie.Name, Value: cookie.Value, Path: "/"}})
+	status, _, body = webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app/access/direct-keys", nil)
+	if status != http.StatusOK {
+		t.Fatalf("path-prefix direct key page status=%d body=%s", status, body)
+	}
+	for _, marker := range []string{`href="/fast-spider/assets/admin.css"`, `href="/fast-spider/app/access/oauth"`, `action="/fast-spider/app/direct-keys"`, `https://hub.example/fast-spider/direct/v1`} {
+		if !strings.Contains(string(body), marker) {
+			t.Fatalf("path-prefix direct key page missing %q: %s", marker, body)
+		}
 	}
 }
 
@@ -556,8 +600,8 @@ func TestWebRevokedObjectsCanBeDeleted(t *testing.T) {
 	if status != http.StatusSeeOther {
 		t.Fatalf("machine revoke status=%d body=%s", status, body)
 	}
-	status, _, dashboard := webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app", nil)
-	if status != http.StatusOK || !strings.Contains(string(dashboard), "删除设备") || !strings.Contains(string(dashboard), state.MachineID) {
+	status, _, dashboard := webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app/machines", nil)
+	if status != http.StatusOK || !strings.Contains(string(dashboard), "删除") || !strings.Contains(string(dashboard), state.MachineID) {
 		t.Fatalf("revoked machine delete action missing: status=%d body=%s", status, dashboard)
 	}
 	status, _, body = webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/machines/"+state.MachineID+"/delete", url.Values{"csrf_token": {session.CSRFToken}})
@@ -577,8 +621,8 @@ func TestWebRevokedObjectsCanBeDeleted(t *testing.T) {
 	if status != http.StatusSeeOther {
 		t.Fatalf("token revoke status=%d body=%s", status, body)
 	}
-	status, _, dashboard = webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app", nil)
-	if status != http.StatusOK || !strings.Contains(string(dashboard), "删除令牌") || !strings.Contains(string(dashboard), "delete-me-token") {
+	status, _, dashboard = webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app/access/tokens", nil)
+	if status != http.StatusOK || !strings.Contains(string(dashboard), "删除") || !strings.Contains(string(dashboard), "delete-me-token") {
 		t.Fatalf("revoked token delete action missing: status=%d body=%s", status, dashboard)
 	}
 	status, _, body = webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/tokens/"+connectionToken.Record.ID+"/delete", url.Values{"csrf_token": {session.CSRFToken}})
@@ -598,8 +642,8 @@ func TestWebRevokedObjectsCanBeDeleted(t *testing.T) {
 	if status != http.StatusSeeOther {
 		t.Fatalf("authorization revoke status=%d body=%s", status, body)
 	}
-	status, _, dashboard = webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app", nil)
-	if status != http.StatusOK || !strings.Contains(string(dashboard), "删除授权") || !strings.Contains(string(dashboard), "Delete OAuth Client") {
+	status, _, dashboard = webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app/access/oauth", nil)
+	if status != http.StatusOK || !strings.Contains(string(dashboard), "删除") || !strings.Contains(string(dashboard), "Delete OAuth Client") {
 		t.Fatalf("revoked authorization delete action missing: status=%d body=%s", status, dashboard)
 	}
 	status, _, body = webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/oauth/authorizations/authz_delete_test/delete", url.Values{"csrf_token": {session.CSRFToken}})

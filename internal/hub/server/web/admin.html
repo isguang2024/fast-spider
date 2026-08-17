@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{{.PageTitle}} · Fast Spider</title>
+  <link rel="stylesheet" href="{{.BasePath}}/assets/app.css">
+  <link rel="stylesheet" href="{{.BasePath}}/assets/admin.css">
+  <script src="{{.BasePath}}/assets/app.js" defer></script>
+</head>
+<body class="admin-body">
+  <div class="admin-shell">
+    <aside class="sidebar">
+      <a class="sidebar-brand" href="{{.BasePath}}/app" aria-label="Fast Spider 后台首页">
+        <span class="brand-mark small">FS</span>
+        <span><strong>Fast Spider</strong><small>后台管理</small></span>
+      </a>
+
+      <nav class="sidebar-nav" aria-label="后台导航">
+        <a class="nav-item {{if eq .Page "overview"}}active{{end}}" href="{{.BasePath}}/app"><span class="nav-icon">⌂</span><span>概览</span></a>
+
+        <p class="nav-group">设备</p>
+        <a class="nav-item {{if eq .Page "machines"}}active{{end}}" href="{{.BasePath}}/app/machines"><span class="nav-icon">▣</span><span>设备管理</span></a>
+
+        <p class="nav-group">授权与访问</p>
+        <a class="nav-item {{if eq .Page "oauth"}}active{{end}}" href="{{.BasePath}}/app/access/oauth"><span class="nav-icon">◈</span><span>OAuth 授权</span></a>
+        <a class="nav-item {{if eq .Page "direct-keys"}}active{{end}}" href="{{.BasePath}}/app/access/direct-keys"><span class="nav-icon">⌁</span><span>临时直连密钥</span></a>
+        <a class="nav-item {{if eq .Page "tokens"}}active{{end}}" href="{{.BasePath}}/app/access/tokens"><span class="nav-icon">◇</span><span>连接令牌</span></a>
+        <a class="nav-item {{if eq .Page "security"}}active{{end}}" href="{{.BasePath}}/app/access/security"><span class="nav-icon">◉</span><span>账户安全</span></a>
+
+        <p class="nav-group">工具与能力</p>
+        <a class="nav-item {{if eq .Page "mcp"}}active{{end}}" href="{{.BasePath}}/app/tools/mcp"><span class="nav-icon">⌘</span><span>MCP 服务</span></a>
+
+        <p class="nav-group">系统</p>
+        <a class="nav-item {{if eq .Page "system"}}active{{end}}" href="{{.BasePath}}/app/system"><span class="nav-icon">◌</span><span>运行状态</span></a>
+      </nav>
+    </aside>
+
+    <div class="admin-main">
+      <header class="admin-topbar">
+        <div>
+          <p class="topbar-kicker">Fast Spider</p>
+          <h1>{{.PageTitle}}</h1>
+        </div>
+        <div class="admin-account">
+          <span class="account-avatar">FS</span>
+          <span class="account-copy"><strong>{{.DisplayName}}</strong><small>{{.Username}}</small></span>
+          <form method="post" action="{{.BasePath}}/logout">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <button class="text-button action-button" type="submit">退出</button>
+          </form>
+        </div>
+      </header>
+
+      <main class="admin-content">
+        {{if .Notice}}<div class="notice" role="status">{{.Notice}}</div>{{end}}
+        {{if .Error}}<div class="alert" role="alert">{{.Error}}</div>{{end}}
+
+        {{if eq .Page "overview"}}
+        <section class="page-heading">
+          <div>
+            <p class="eyebrow">Overview</p>
+            <h2>Fast Spider 控制台</h2>
+            <p>集中查看设备、授权入口和服务状态。需要具体操作时从左侧导航进入对应页面。</p>
+          </div>
+          <a class="primary button-link compact" href="{{.BasePath}}/api/v1/node/releases/windows-amd64/download">下载 Windows 客户端</a>
+        </section>
+
+        <section class="metric-grid" aria-label="状态摘要">
+          <article class="metric-card"><span>设备</span><strong>{{len .Machines}}</strong><small>{{.OnlineMachines}} 台在线</small></article>
+          <article class="metric-card"><span>OAuth 授权</span><strong>{{.ActiveAuthorizations}}</strong><small>当前有效</small></article>
+          <article class="metric-card"><span>临时直连密钥</span><strong>{{.ActiveDirectKeys}}</strong><small>当前有效</small></article>
+          <article class="metric-card"><span>连接令牌</span><strong>{{.ActiveTokens}}</strong><small>可登记 Node</small></article>
+        </section>
+
+        <section class="overview-grid">
+          <article class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">Service Endpoints</p><h2>服务入口</h2><p class="section-copy">生产入口统一由 Hub 提供，MCP 与 Direct API 使用独立认证。</p></div></div>
+            <div class="endpoint-list">
+              <div><span>后台地址</span><code>{{.BaseURL}}/app</code></div>
+              <div><span>MCP</span><code>{{.MCPURL}}</code></div>
+              <div><span>Direct API</span><code>{{.DirectURL}}</code></div>
+            </div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">Quick Access</p><h2>快速管理</h2><p class="section-copy">只保留当前真正可管理的功能入口。</p></div></div>
+            <div class="quick-admin-links">
+              <a href="{{.BasePath}}/app/machines"><strong>设备管理</strong><span>查看在线状态、备注与撤销</span></a>
+              <a href="{{.BasePath}}/app/access/direct-keys"><strong>临时直连密钥</strong><span>为 HTTP AI / Agent 创建授权</span></a>
+              <a href="{{.BasePath}}/app/access/oauth"><strong>OAuth 授权</strong><span>管理 MCP 客户端授权</span></a>
+              <a href="{{.BasePath}}/app/tools/mcp"><strong>MCP 调用诊断</strong><span>查看最近连接和 Tool Call</span></a>
+            </div>
+          </article>
+        </section>
+        {{end}}
+
+        {{if eq .Page "machines"}}
+        <section class="page-heading">
+          <div><p class="eyebrow">Machines</p><h2>设备管理</h2><p>管理已经登记到当前账户的 Fast Spider Node。客户端名称由 Node 自己同步，管理员备注只保存在 Hub。</p></div>
+          <a class="secondary button-link compact" href="{{.BasePath}}/app/access/tokens">生成连接令牌</a>
+        </section>
+        <section class="panel">
+          {{if .Machines}}
+          <div class="table-wrap"><table>
+            <thead><tr><th>设备</th><th>管理员备注</th><th>系统</th><th>状态</th><th>最近在线</th><th class="action-col">操作</th></tr></thead>
+            <tbody>{{range .Machines}}<tr>
+              <td data-label="设备"><strong>{{.DisplayName}}</strong><small>{{.MachineID}}</small><small>Node {{.NodeVersion}} · {{.RegistrationMode}} · {{.ConfigurationScope}}</small></td>
+              <td data-label="管理员备注"><form method="post" action="{{$.BasePath}}/app/machines/{{.MachineID}}/note" class="inline-note-form"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><input name="admin_note" maxlength="128" value="{{.AdminNote}}" placeholder="例如：办公室主机"><button class="secondary action-button" type="submit">保存</button></form></td>
+              <td data-label="系统">{{.OS}} / {{.Arch}}</td>
+              <td data-label="状态">{{if .Online}}<span class="pill success">在线</span>{{else if eq .Status "revoked"}}<span class="pill danger">已撤销</span>{{else}}<span class="pill">离线</span>{{end}}</td>
+              <td data-label="最近在线">{{.LastSeen}}</td>
+              <td data-label="操作" class="action-cell">{{if ne .Status "revoked"}}<form method="post" action="{{$.BasePath}}/app/machines/{{.MachineID}}/revoke" data-confirm="确认撤销这台设备？撤销后需要重新使用有效连接令牌登记。"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="danger-link action-button" type="submit">撤销</button></form>{{else}}<form method="post" action="{{$.BasePath}}/app/machines/{{.MachineID}}/delete" data-confirm="确认删除这台已撤销设备？"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="danger-link action-button" type="submit">删除</button></form>{{end}}</td>
+            </tr>{{end}}</tbody>
+          </table></div>
+          {{else}}<div class="empty-state"><strong>还没有设备</strong><span>先创建连接令牌，再在 Fast Spider Node 中连接 Hub。</span></div>{{end}}
+        </section>
+        {{end}}
+
+        {{if eq .Page "oauth"}}
+        <section class="page-heading"><div><p class="eyebrow">OAuth Authorizations</p><h2>OAuth 授权</h2><p>用于 ChatGPT 和其他 MCP 客户端的标准 OAuth 授权。Node 设备连接不使用这里的凭据。</p></div><div class="mini-endpoint"><span>MCP 地址</span><code>{{.MCPURL}}</code></div></section>
+        <section class="panel">
+          <div class="panel-heading"><div><h2>授权连接</h2><p class="section-copy">撤销后客户端必须重新授权。</p></div></div>
+          {{if .Authorizations}}<div class="table-wrap"><table><thead><tr><th>客户端</th><th>范围</th><th>创建</th><th>最近使用</th><th>状态</th><th class="action-col">操作</th></tr></thead><tbody>{{range .Authorizations}}<tr><td data-label="客户端"><strong>{{.ClientName}}</strong><small>{{.ClientID}}</small></td><td data-label="范围"><span class="pill neutral">{{.Scopes}}</span></td><td data-label="创建">{{.CreatedAt}}</td><td data-label="最近使用">{{.LastUsedAt}}</td><td data-label="状态"><span class="pill {{if eq .Status "有效"}}success{{else if eq .Status "已撤销"}}danger{{end}}">{{.Status}}</span></td><td data-label="操作" class="action-cell">{{if eq .Status "有效"}}<form method="post" action="{{$.BasePath}}/app/oauth/authorizations/{{.AuthorizationID}}/revoke" data-confirm="确认撤销这个 OAuth 授权？"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="danger-link action-button" type="submit">撤销</button></form>{{else}}<form method="post" action="{{$.BasePath}}/app/oauth/authorizations/{{.AuthorizationID}}/delete" data-confirm="确认删除这条已失效授权记录？"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="danger-link action-button" type="submit">删除</button></form>{{end}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="empty-state compact"><strong>还没有 OAuth 授权</strong><span>完成一次 MCP OAuth 登录后会自动出现。</span></div>{{end}}
+        </section>
+        <section class="panel secondary-panel">
+          <div class="panel-heading"><div><h2>已授权客户端</h2><p class="section-copy">只展示已经完成授权的 OAuth Client。</p></div></div>
+          {{if .Clients}}<div class="table-wrap"><table><thead><tr><th>名称</th><th>权限范围</th><th>授权模式</th><th>回调地址</th><th>登记时间</th><th class="action-col">操作</th></tr></thead><tbody>{{range .Clients}}<tr><td data-label="名称"><strong>{{.ClientName}}</strong><small>{{.ClientID}}</small></td><td data-label="权限范围"><span class="pill neutral">{{.Scope}}</span></td><td data-label="授权模式">{{.GrantTypes}}</td><td data-label="回调地址"><div class="uri-list">{{range .RedirectURIs}}<code>{{.}}</code>{{end}}</div></td><td data-label="登记时间">{{.CreatedAt}}</td><td data-label="操作" class="action-cell"><form method="post" action="{{$.BasePath}}/app/oauth/clients/{{.ClientID}}/delete" data-confirm="确认删除这个 OAuth 客户端？关联授权会一并失效。"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="danger-link action-button" type="submit">删除客户端</button></form></td></tr>{{end}}</tbody></table></div>{{else}}<div class="empty-state compact"><strong>还没有已授权客户端</strong></div>{{end}}
+        </section>
+        {{end}}
+
+        {{if eq .Page "direct-keys"}}
+        <section class="page-heading">
+          <div><p class="eyebrow">Direct Access Keys</p><h2>临时直连密钥</h2><p>给不支持 MCP / OAuth、但可以发送 HTTP 请求的 AI、Agent 或程序使用。密钥明文只在创建成功页显示一次，列表永远不会再次显示密钥内容。</p></div>
+          <div class="mini-endpoint"><span>Direct API</span><code>{{.DirectURL}}</code></div>
+        </section>
+        <section class="info-strip"><span>默认只读</span><span>高权限最长 24 小时</span><span>7 天仅支持只读</span><span>可绑定单一设备</span></section>
+        <section class="panel">
+          <div class="panel-heading"><div><h2>创建密钥</h2><p class="section-copy">只勾选实际需要的高权限；未勾选时为只读。</p></div></div>
+          <form class="direct-key-form" method="post" action="{{.BasePath}}/app/direct-keys">
+            <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+            <div class="direct-key-form-row">
+              <label>名称<input name="label" maxlength="80" placeholder="例如：临时 AI 连接" required></label>
+              <label>有效期<select name="expires_minutes"><option value="60" selected>1 小时</option><option value="10">10 分钟</option><option value="360">6 小时</option><option value="1440">24 小时</option><option value="10080">7 天（仅只读）</option></select></label>
+              <label>目标设备<select name="machine_id"><option value="">全部设备</option>{{range .Machines}}<option value="{{.MachineID}}">{{.DisplayName}}</option>{{end}}</select></label>
+              <label>每分钟请求<select name="rate_limit"><option value="60">60</option><option value="120" selected>120</option><option value="300">300</option><option value="600">600</option></select></label>
+            </div>
+            <fieldset class="scope-fieldset"><legend>附加高权限</legend><div class="scope-grid">
+              <label><input type="checkbox" name="scope" value="files.write">文件写入</label><label><input type="checkbox" name="scope" value="shell">Shell / Build</label><label><input type="checkbox" name="scope" value="jobs">任务取消</label><label><input type="checkbox" name="scope" value="git">Git 写入 / 网络</label><label><input type="checkbox" name="scope" value="browser">浏览器 / 截图</label><label><input type="checkbox" name="scope" value="ai">AI 控制</label><label><input type="checkbox" name="scope" value="context.write">上下文写入</label><label><input type="checkbox" name="scope" value="artifacts.write">文件上传 / 发布</label>
+            </div></fieldset>
+            <button class="primary" type="submit">生成直连密钥</button>
+          </form>
+        </section>
+        <section class="panel">
+          <div class="panel-heading"><div><h2>密钥列表</h2><p class="section-copy">这里只显示管理记录，不显示明文密钥，也不提供再次查看或复制密钥的入口。</p></div></div>
+          {{if .DirectKeys}}<div class="table-wrap"><table><thead><tr><th>名称</th><th>设备</th><th>权限</th><th>创建</th><th>最近使用</th><th>到期</th><th>限速</th><th>状态</th><th class="action-col">操作</th></tr></thead><tbody>{{range .DirectKeys}}<tr><td data-label="名称"><strong>{{.Label}}</strong><small>记录 {{.ID}}</small></td><td data-label="设备">{{.Machine}}</td><td data-label="权限"><span class="pill neutral">{{.Scopes}}</span></td><td data-label="创建">{{.CreatedAt}}</td><td data-label="最近使用">{{.LastUsedAt}}</td><td data-label="到期">{{.ExpiresAt}}</td><td data-label="限速">{{.RateLimit}} / 分钟</td><td data-label="状态"><span class="pill {{if eq .Status "有效"}}success{{else if eq .Status "已撤销"}}danger{{end}}">{{.Status}}</span></td><td data-label="操作" class="action-cell">{{if eq .Status "有效"}}<form method="post" action="{{$.BasePath}}/app/direct-keys/{{.ID}}/revoke" data-confirm="确认撤销这个临时直连密钥？"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="danger-link action-button" type="submit">撤销</button></form>{{else}}<form method="post" action="{{$.BasePath}}/app/direct-keys/{{.ID}}/delete" data-confirm="确认删除这条已失效密钥记录？"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="danger-link action-button" type="submit">删除</button></form>{{end}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="empty-state compact"><strong>还没有临时直连密钥</strong><span>创建后请在一次性页面立即保存密钥。</span></div>{{end}}
+        </section>
+        {{end}}
+
+        {{if eq .Page "tokens"}}
+        <section class="page-heading"><div><p class="eyebrow">Connection Tokens</p><h2>连接令牌</h2><p>用于把新的 Fast Spider Node 登记到当前账户。令牌不绑定单台设备，登记成功后 Node 不保存令牌。</p></div></section>
+        <section class="panel">
+          <div class="panel-heading"><div><h2>生成连接令牌</h2></div></div>
+          <form class="token-form" method="post" action="{{.BasePath}}/app/tokens"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label>名称<input name="label" maxlength="80" placeholder="例如：办公室设备" required></label><label>有效期<select name="expires_days"><option value="90" selected>90 天</option><option value="30">30 天</option><option value="365">1 年</option><option value="0">长期有效</option></select></label><button class="primary" type="submit">生成令牌</button></form>
+        </section>
+        <section class="panel">
+          <div class="panel-heading"><div><h2>令牌列表</h2><p class="section-copy">明文同样只在创建成功页显示一次。</p></div></div>
+          {{if .Tokens}}<div class="table-wrap"><table><thead><tr><th>名称</th><th>创建时间</th><th>最近使用</th><th>到期</th><th>状态</th><th class="action-col">操作</th></tr></thead><tbody>{{range .Tokens}}<tr><td data-label="名称"><strong>{{.Label}}</strong><small>{{.ID}}</small></td><td data-label="创建时间">{{.CreatedAt}}</td><td data-label="最近使用">{{.LastUsedAt}}</td><td data-label="到期">{{.ExpiresAt}}</td><td data-label="状态"><span class="pill {{if eq .Status "有效"}}success{{else if eq .Status "已撤销"}}danger{{end}}">{{.Status}}</span></td><td data-label="操作" class="action-cell">{{if eq .Status "有效"}}<form method="post" action="{{$.BasePath}}/app/tokens/{{.ID}}/revoke" data-confirm="确认撤销这个连接令牌？"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="danger-link action-button" type="submit">撤销</button></form>{{else}}<form method="post" action="{{$.BasePath}}/app/tokens/{{.ID}}/delete" data-confirm="确认删除这条已失效连接令牌记录？"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="danger-link action-button" type="submit">删除</button></form>{{end}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="empty-state compact"><strong>还没有连接令牌</strong></div>{{end}}
+        </section>
+        {{end}}
+
+        {{if eq .Page "security"}}
+        <section class="page-heading"><div><p class="eyebrow">Account Security</p><h2>账户安全</h2><p>当前登录账户：<strong>{{.Username}}</strong>。修改密码会保留当前浏览器，并立即退出其他后台会话。</p></div></section>
+        <section class="panel"><form class="password-form" method="post" action="{{.BasePath}}/app/account/password"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label>当前密码<input name="current_password" type="password" autocomplete="current-password" maxlength="256" required></label><label>新密码<input name="new_password" type="password" autocomplete="new-password" minlength="10" maxlength="256" required></label><label>确认新密码<input name="password_confirm" type="password" autocomplete="new-password" minlength="10" maxlength="256" required></label><button class="primary" type="submit">更新密码</button></form></section>
+        {{end}}
+
+        {{if eq .Page "mcp"}}
+        <section class="page-heading"><div><p class="eyebrow">MCP Service</p><h2>MCP 服务</h2><p>查看 MCP 地址与最近调用诊断。这里不记录 Token、arguments、Prompt、本机路径或正文。</p></div><div class="mini-endpoint"><span>MCP 地址</span><code>{{.MCPURL}}</code></div></section>
+        <section class="panel" id="mcp-diagnostics" data-diagnostics-url="{{.BasePath}}/app/api/mcp-diagnostics">
+          <div class="panel-heading"><div><h2>MCP 调用诊断</h2><p class="section-copy">每个账户仅保留最近 64 条低噪音内存事件。</p></div><button id="mcp-diagnostics-refresh" class="secondary" type="button">刷新诊断</button></div>
+          <div class="diagnostics-grid" aria-live="polite"><div><span>Server</span><strong id="mcp-server-version">—</strong></div><div><span>Guide</span><strong id="mcp-guide-version">—</strong></div><div><span>最近 MCP 请求</span><strong id="mcp-last-request">暂无事件</strong></div><div><span>最近 Initialize</span><strong id="mcp-last-initialize">暂无事件</strong></div><div><span>最近 Tools List</span><strong id="mcp-last-tools-list">暂无事件</strong></div><div><span>最近 Tool Call</span><strong id="mcp-last-tool-call">暂无事件</strong></div><div><span>最近工具</span><strong id="mcp-last-tool">—</strong></div><div><span>客户端类型</span><strong id="mcp-client-type">—</strong></div><div><span>结果</span><strong id="mcp-result">—</strong></div></div>
+          <div class="diagnostic-explanation"><strong id="mcp-diagnosis-title">尚无 Initialize</strong><span id="mcp-diagnosis-copy">客户端尚未真正连接到 MCP。</span></div>
+        </section>
+        {{end}}
+
+        {{if eq .Page "system"}}
+        <section class="page-heading"><div><p class="eyebrow">System</p><h2>运行状态</h2><p>当前 Hub 的基础运行信息。健康接口由生产反向代理公开，可用于监控。</p></div></section>
+        <section class="metric-grid three"><article class="metric-card"><span>Hub 版本</span><strong class="version-value">{{.Version}}</strong><small>当前运行版本</small></article><article class="metric-card"><span>在线设备</span><strong>{{.OnlineMachines}}</strong><small>共 {{len .Machines}} 台</small></article><article class="metric-card"><span>服务状态</span><strong class="status-word">运行中</strong><small>后台页面可正常读取</small></article></section>
+        <section class="panel"><div class="panel-heading"><div><h2>健康检查</h2><p class="section-copy">livez 用于进程存活，readyz 用于数据库和关键目录就绪。</p></div></div><div class="endpoint-list"><div><span>Liveness</span><code>{{.BaseURL}}/livez</code></div><div><span>Readiness</span><code>{{.BaseURL}}/readyz</code></div><div><span>Direct API</span><code>{{.DirectURL}}</code></div></div></section>
+        {{end}}
+      </main>
+    </div>
+  </div>
+</body>
+</html>
