@@ -155,9 +155,9 @@ func (a *App) Run(ctx context.Context) error {
 	a.mu.Lock()
 	autoStart := a.config.AutoStartEnabled
 	a.mu.Unlock()
-	if autoStart && autostartSupported() {
-		if err := setAutostart(true, a.opts.DataDir); err != nil {
-			a.opts.Logger.Warn("refresh Windows autostart failed", "error", err)
+	if autostartSupported() {
+		if err := setAutostart(autoStart, a.opts.DataDir); err != nil {
+			a.opts.Logger.Warn("synchronize Windows autostart failed", "error", err)
 		}
 	}
 	runCtx, runCancel := context.WithCancel(ctx)
@@ -241,6 +241,11 @@ func (a *App) Run(ctx context.Context) error {
 			return
 		}
 		serveErr <- nil
+	}()
+	go func() {
+		if err := ensureDesktopShortcut(runCtx); err != nil && runCtx.Err() == nil {
+			a.opts.Logger.Warn("ensure Fast Spider Desktop shortcut failed", "error", err)
+		}
 	}()
 
 	if !a.opts.NoOpenWindow {

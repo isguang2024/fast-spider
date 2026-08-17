@@ -27,9 +27,15 @@ func launchDefaultUI(logger *slog.Logger) {
 		fatalIf(err)
 	}
 	cmd := exec.Command(executable, "ui")
+	cmd.Env = append(os.Environ(), "FAST_SPIDER_HIDDEN_UI=1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
 	if err := cmd.Start(); err != nil {
-		logger.Warn("detached UI launch failed; running in foreground", "error", err)
+		// A stale compatibility setting or an older elevated install can make
+		// CreateProcess reject the stable copy. Keep the UI in this process,
+		// but remove the console first so the Node runtime is not tied to a
+		// visible command window.
+		hideConsoleWindow()
+		logger.Warn("detached UI launch failed; using hidden in-process UI", "error", err)
 		runUI(logger, nil)
 	}
 }

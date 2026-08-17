@@ -4,10 +4,11 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 ## Current 当前事实
 
-- 当前源码版本为 `0.4.19`。MCP 顶层仍固定 17 个工具，继续使用 `fsprobe` 按需恢复长会话工具物化；本版在 0.4.18 生命周期与发布安全基础上，补齐两层能力地图、17 个工具摘要、底层 capability 到 MCP 工具的映射，以及 Windows `shell_run` 调用 PowerShell/cmd 的明确指引。缓存和临时数据均有 TTL/容量/失败重试边界，复杂说明留在按需 Guide；OAuth/PKCE、Node/WSS 协议和工具数量不变。
+- 当前源码版本为 `0.4.20`。MCP 顶层仍固定 17 个工具，继续使用 `fsprobe` 按需恢复长会话工具物化；本版在 0.4.19 的能力地图与发布安全基础上，加入直接访问密钥能力，并收敛 Windows Node 的隐藏启动、开机自启动、桌面快捷方式和默认窗口行为。OAuth/PKCE、Node/WSS 协议和工具数量不变。
 - Machine 是唯一远程资源边界。Fast Spider 不再维护旧目录对象、目录列表工具、目录授权、目录白名单或路径注册表。
 - Node 以启动它的当前 OS 用户运行，直接使用该用户对整台电脑的操作系统权限；Fast Spider 不把文件系统再切成一层目录权限。
 - 同一 OS 用户只允许运行一个 Fast Spider Node 主实例；重复双击、开机自启动与手动启动、不同 EXE 位置或不同 `--data-dir` 都不能建立第二条 Node 连接。重复启动只打开现有本地界面后退出。
+- Windows 默认启动、桌面快捷方式和开机自启动都使用隐藏的 UI 启动路径；不会留下命令窗口。首次启动会在当前用户桌面补建 `Fast Spider Node.lnk`（已存在时不覆盖），关闭 UI 窗口后 Node 仍由托盘保持运行。
 - `file_read`、`file_edit`、`code_search` 使用绝对 `path`；`shell_run` 和 `build_control` 使用绝对 `cwd`；`git_control` 使用绝对 `repositoryPath`；`ai_control.session.create` 使用绝对 `workingDirectory`。Git 子目录和 linked worktree 会自动归到主工作树对应的 Codex Desktop 项目，实际执行目录保持不变；非 Git 临时目录不会自动注册成项目。
 - 浏览器在 Node 可访问的公网、localhost 和私网中运行，不需要 Fast Spider Origin/DNS/IP 白名单，也不对页面子资源执行逐请求 DNS 审查；Agent 优先使用 snapshot 返回的短期 ref，并可用 batch 一次完成多步交互。显式 `page.open/page.navigate` 仍拒绝非 HTTP(S) 危险 scheme。
 - Windows Node 的 `shell_run/build_control` 接受 `runtime={kind:"host"|"wsl",distribution?}`；WSL cwd 仍由调用方提供 Windows 绝对路径，Node 使用目标发行版的 `wslpath` 安全映射。每个发行版至多一个轻量 keepalive、全局最多 8 个，Node 退出只结束自己创建的 keepalive，不执行 `wsl --shutdown`。

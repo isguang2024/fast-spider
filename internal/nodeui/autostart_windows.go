@@ -4,7 +4,6 @@ package nodeui
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -58,11 +57,7 @@ func autostartEnabled(dataDir string) (bool, error) {
 }
 
 func expectedAutostartCommand(dataDir string) (string, error) {
-	executable, err := os.Executable()
-	if err != nil {
-		return "", err
-	}
-	executable, err = filepath.Abs(executable)
+	executable, err := preferredNodeExecutable()
 	if err != nil {
 		return "", err
 	}

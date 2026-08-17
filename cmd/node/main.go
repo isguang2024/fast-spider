@@ -55,6 +55,9 @@ func runUI(logger *slog.Logger, args []string) {
 	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
 	background := fs.Bool("background", false, "start Node without opening the local UI window")
 	_ = fs.Parse(args)
+	if *background || os.Getenv("FAST_SPIDER_HIDDEN_UI") == "1" {
+		hideConsoleWindow()
+	}
 	app, err := nodeui.New(nodeui.Options{DataDir: *dataDir, Version: version.Version, MachineName: hostname(), NoOpenWindow: *background, Logger: logger})
 	fatalIf(err)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

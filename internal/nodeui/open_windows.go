@@ -4,9 +4,15 @@ package nodeui
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+)
+
+const (
+	defaultUIWindowWidth  = 1280
+	defaultUIWindowHeight = 860
 )
 
 func openLocalUI(rawURL string) error {
@@ -22,7 +28,7 @@ func openLocalUI(rawURL string) error {
 	}
 	for _, path := range candidates {
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			cmd := exec.Command(path, "--app="+rawURL)
+			cmd := exec.Command(path, localUIEdgeArguments(rawURL)...)
 			if err := cmd.Start(); err == nil {
 				return nil
 			}
@@ -33,6 +39,13 @@ func openLocalUI(rawURL string) error {
 		return errors.New("unable to open local UI in Edge or the default browser")
 	}
 	return nil
+}
+
+func localUIEdgeArguments(rawURL string) []string {
+	return []string{
+		"--app=" + rawURL,
+		fmt.Sprintf("--window-size=%d,%d", defaultUIWindowWidth, defaultUIWindowHeight),
+	}
 }
 
 func openLocalFolder(path string) error {
