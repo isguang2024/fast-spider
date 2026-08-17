@@ -341,8 +341,8 @@ func (m *JobManager) runJob(job *Job, stdout, stderr interface{ Read([]byte) (in
 		}
 	}()
 
-	waitErr := job.cmd.Wait()
 	streams.Wait()
+	waitErr := job.cmd.Wait()
 	if !timer.Stop() {
 		select {
 		case <-timer.C:
