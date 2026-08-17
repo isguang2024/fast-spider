@@ -149,3 +149,11 @@
 - `capability_list` 现在先返回完整但紧凑的工具摘要和底层 capability 摘要，需要时再按 capability/tool/workflow/error 读取单项细节；静态测试防止工具、能力和映射漏项。
 - `shell_run` 的指南和 Server Instructions 明确 Windows 通过显式 argv 调用 PowerShell/cmd，不再让调用方误以为存在独立 PowerShell 工具。
 - 0.4.19 Hub/spiderctl 已完成备份、版本化 staging、事务式替换和本机/公网健康验收；PCa Node 保持 0.4.18，认证 MCP 冷调用留待具备 FS/OAuth 入口的会话补验。
+
+### 2026-08-17 — 0.4.20 Direct Access Key 与共享 Tool Executor
+
+- 新增独立 `Direct Access Key / 临时直连密钥`：`fsp_tmp_` 明文仅创建时显示，Hub 只持久化哈希/提示；支持过期、最近使用、撤销/删除、每分钟限速、Machine 绑定。默认只读，高危能力按 `files.write`、`shell`、`jobs`、`git`、`browser`、`ai`、`context.write`、`artifacts.write` 独立授权；高权限最长 24 小时、只读最长 7 天。
+- 新增 `GET /direct/v1/tools` 与 `POST /direct/v1/call`；生产 PublicBaseURL 下对应 `/fast-spider/direct/v1/*`。Direct Key、MCP OAuth、Node Connection Token 三套凭据互不通用；API/权限测试覆盖 401/403、限速、CSRF、Secret redaction、真实过期、只读 Scope 矩阵与跨 Machine 越权矩阵。
+- MCP 与 Direct API 已收敛到单一 `toolExecutor`：17 个顶层工具的参数映射、Capability 调用和结果标准化只维护一份；`mcp.go` / `direct.go` 不再直接调用 `CallCapability`，静态门禁防止未来重新分叉。独立 Codex 只读审查无阻断问题。
+- 源提交 `3fc82f85038ce71e3c8d90a783e795d617e87b30` 已推送 `main`；干净 worktree `release-gate.sh --full` 最终 PASS，Linux amd64 `go test -race ./...` PASS，另有全仓 `go test ./... -count=1`、targeted tests、`go vet` 与 `git diff --check` PASS。
+- 生产升级前备份 `/srv/backups/pre-0.4.20-3fc82f85038ce71e3c8d90a783e795d617e87b30.zip` Verify PASS，SHA-256 `cbef63897976548b3c5922ca772aa3bed08901f082bd30036ded9bb1da88efbb`。生产 Hub SHA-256 `180bd1ecda9a0c891d7aaa55534bdf54be2ab9738f7a58ecfeb417d27f8384e0`，spiderctl SHA-256 `5ee6863de1bd196a23161e23cdaa99729799fe33d47f9095d95757f6f6611362`，均为 0.4.20；systemd active，本机与公网 livez/readyz 均 200，公网未认证 Direct tools 返回预期 401。首轮部署因版本核验命令兼容性触发安全回滚，随后重新部署和完整验收成功，当前生产运行新 SHA。Node release 未因本次 Hub 补丁改动。
