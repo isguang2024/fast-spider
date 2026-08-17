@@ -32,6 +32,7 @@ type Server struct {
 	oauthRegistrations *oauthRegistrationGuard
 	loginLimiter       *loginFailureLimiter
 	directLimiter      *directRateLimiter
+	toolExecutor       *toolExecutor
 	presentations      *presentationStore
 	mcpDiagnostics     *mcpDiagnosticsStore
 	http               *http.Server
@@ -53,6 +54,7 @@ func New(service *core.Service, cfg Config) *Server {
 		oauthRegistrations: newOAuthRegistrationGuard(),
 		loginLimiter:       newLoginFailureLimiter(),
 		directLimiter:      newDirectRateLimiter(),
+		toolExecutor:       newToolExecutor(service),
 		presentations:      newPresentationStore(presentationTempRoot(service.DataDir())),
 		mcpDiagnostics:     newMCPDiagnosticsStore(service.Version(), startedAt),
 	}

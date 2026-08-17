@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -486,310 +485,114 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	)
 	server.AddReceivingMiddleware(s.mcpDiagnostics.middleware(ownerID))
 
-	mcp.AddTool(server, mcpToolDefinition("machine_list", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, _ machineListInput) (*mcp.CallToolResult, machineListOutput, error) {
-		machines, err := s.service.ListMachines(ctx, ownerID)
-		if err != nil {
-			return nil, machineListOutput{}, err
-		}
-		out := machineListOutput{Machines: make([]mcpMachine, 0, len(machines))}
-		for _, machine := range machines {
-			out.Machines = append(out.Machines, toMCPMachine(machine))
-		}
-		return nil, out, nil
+	mcp.AddTool(server, mcpToolDefinition("machine_list", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input machineListInput) (*mcp.CallToolResult, machineListOutput, error) {
+		out, err := executeTypedTool[machineListOutput](s.toolExecutor, ctx, ownerID, "machine_list", input)
+		return nil, out, err
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("machine_get", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input machineGetInput) (*mcp.CallToolResult, machineGetOutput, error) {
-		machine, err := s.service.GetMachine(ctx, ownerID, input.MachineID)
-		if err != nil {
-			return nil, machineGetOutput{}, err
-		}
-		return nil, machineGetOutput{Machine: toMCPMachine(machine)}, nil
+		out, err := executeTypedTool[machineGetOutput](s.toolExecutor, ctx, ownerID, "machine_get", input)
+		return nil, out, err
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("capability_list", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input capabilityListInput) (*mcp.CallToolResult, capabilityListOutput, error) {
-		view := strings.TrimSpace(input.View)
-		capabilities := make([]protocolv1.CapabilityDescriptor, 0)
-		if input.MachineID != "" {
-			machine, err := s.service.GetMachine(ctx, ownerID, input.MachineID)
-			if err != nil {
-				return nil, capabilityListOutput{}, err
-			}
-			capabilities = machine.Capabilities
-		} else if view == "" || view == "overview" || view == "catalog" || view == "capability" {
-			capabilities = s.service.CapabilityCatalog()
-		}
-		if view == "" && input.MachineID != "" {
-			return nil, capabilityListOutput{Capabilities: capabilities, CapabilitySummaries: mcpCapabilitySummaries(capabilities)}, nil
-		}
-		guideView := view
-		if guideView == "" {
-			guideView = "overview"
-		}
-		var guide *mcpGuide
-		var err error
-		if guideView == "capability" {
-			guide, err = newMCPCapabilityGuide(s.service.Version(), capabilities, input.Name)
-		} else {
-			guide, err = newMCPGuide(s.service.Version(), guideView, input.Name)
-		}
-		if err != nil {
-			return nil, capabilityListOutput{}, err
-		}
-		return nil, capabilityListOutput{Capabilities: capabilities, CapabilitySummaries: mcpCapabilitySummaries(capabilities), Guide: guide}, nil
+		out, err := executeTypedTool[capabilityListOutput](s.toolExecutor, ctx, ownerID, "capability_list", input)
+		return nil, out, err
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("file_read", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input fileReadInput) (*mcp.CallToolResult, fileReadOutput, error) {
-		params := map[string]any{"path": input.Path}
-		addOptionalFileReadParam(params, "offset", input.Offset)
-		addOptionalFileReadParam(params, "limit", input.Limit)
-		addOptionalFileReadParam(params, "lineStart", input.LineStart)
-		addOptionalFileReadParam(params, "lineCount", input.LineCount)
-		addOptionalFileReadParam(params, "headLines", input.HeadLines)
-		addOptionalFileReadParam(params, "tailLines", input.TailLines)
-		addOptionalFileReadParam(params, "aroundLine", input.AroundLine)
-		addOptionalFileReadParam(params, "contextLines", input.ContextLines)
-		addOptionalFileReadParam(params, "statOnly", input.StatOnly)
-		addOptionalFileReadParam(params, "includeLineNumbers", input.IncludeLineNumbers)
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "file.read", "read", params)
-		if err != nil {
-			return nil, fileReadOutput{}, err
-		}
-		var out fileReadOutput
-		if err := decodeCapabilityResult(result, &out); err != nil {
-			return nil, fileReadOutput{}, err
-		}
-		return nil, out, nil
+		out, err := executeTypedTool[fileReadOutput](s.toolExecutor, ctx, ownerID, "file_read", input)
+		return nil, out, err
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("code_search", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input codeSearchInput) (*mcp.CallToolResult, codeSearchOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "code.search", "search", map[string]any{
-			"query": input.Query, "path": input.Path, "mode": input.Mode, "regex": input.Regex, "ignoreCase": input.IgnoreCase,
-			"include": input.Include, "exclude": input.Exclude, "context": input.Context, "beforeContext": input.BeforeContext,
-			"afterContext": input.AfterContext, "limit": input.Limit,
-		})
-		if err != nil {
-			return nil, codeSearchOutput{}, err
-		}
-		adaptRollingCodeSearchResult(result)
-		var out codeSearchOutput
-		if err := decodeCapabilityResult(result, &out); err != nil {
-			return nil, codeSearchOutput{}, err
-		}
-		return nil, out, nil
+		out, err := executeTypedTool[codeSearchOutput](s.toolExecutor, ctx, ownerID, "code_search", input)
+		return nil, out, err
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("file_edit", toolAnnotations(false, true, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input fileEditInput) (*mcp.CallToolResult, fileEditOutput, error) {
-		action := input.Action
-		if action == "" {
-			action = "edit"
-		}
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "file.write", action, map[string]any{
-			"path": input.Path, "previewOf": input.PreviewOf, "content": input.Content,
-			"oldText": input.OldText, "newText": input.NewText, "edits": input.Edits,
-			"expectedFileSha256": input.ExpectedFileSHA256, "expectedAbsent": input.ExpectedAbsent,
-		})
-		if err != nil {
-			return nil, fileEditOutput{}, err
-		}
-		adaptRollingFileEditResult(result, action)
-		var out fileEditOutput
-		if err := decodeCapabilityResult(result, &out); err != nil {
-			return nil, fileEditOutput{}, err
-		}
-		if action != "preview" {
-			// Keep MCP lean during rolling upgrades even when an older Node still sends diff text.
-			out.Diff = ""
-			out.DiffTruncated = false
-		}
-		return nil, out, nil
+		out, err := executeTypedTool[fileEditOutput](s.toolExecutor, ctx, ownerID, "file_edit", input)
+		return nil, out, err
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("shell_run", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input shellRunInput) (*mcp.CallToolResult, jobOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "shell.exec", "run", map[string]any{"argv": input.Argv, "cwd": input.Cwd, "runtime": input.Runtime, "timeoutSeconds": input.TimeoutSeconds, "idempotencyKey": input.IdempotencyKey})
-		if err != nil {
-			return nil, jobOutput{}, err
-		}
-		var out jobOutput
-		if err := decodeCapabilityResult(result, &out); err != nil {
-			return nil, jobOutput{}, err
-		}
-		return nil, out, nil
+		out, err := executeTypedTool[jobOutput](s.toolExecutor, ctx, ownerID, "shell_run", input)
+		return nil, out, err
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("job_watch", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input jobWatchInput) (*mcp.CallToolResult, jobOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "job.control", "watch", map[string]any{"jobId": input.JobID, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds})
-		if err != nil {
-			return nil, jobOutput{}, err
-		}
-		var out jobOutput
-		if err := decodeCapabilityResult(result, &out); err != nil {
-			return nil, jobOutput{}, err
-		}
-		return nil, out, nil
+		out, err := executeTypedTool[jobOutput](s.toolExecutor, ctx, ownerID, "job_watch", input)
+		return nil, out, err
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("job_cancel", toolAnnotations(false, true, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input jobCancelInput) (*mcp.CallToolResult, jobOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "job.control", "cancel", map[string]any{"jobId": input.JobID})
-		if err != nil {
-			return nil, jobOutput{}, err
-		}
-		var out jobOutput
-		if err := decodeCapabilityResult(result, &out); err != nil {
-			return nil, jobOutput{}, err
-		}
-		return nil, out, nil
+		out, err := executeTypedTool[jobOutput](s.toolExecutor, ctx, ownerID, "job_cancel", input)
+		return nil, out, err
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("git_control", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input gitControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "git.repository", input.Action, map[string]any{
-			"repositoryPath": input.RepositoryPath, "revision": input.Revision, "paths": input.Paths, "message": input.Message, "remote": input.Remote,
-			"branch": input.Branch, "worktreePath": input.WorktreePath, "idempotencyKey": input.IdempotencyKey,
-		})
-		if err != nil {
-			return nil, genericCapabilityOutput{}, err
-		}
-		return nil, genericCapabilityOutput{Result: result}, nil
+		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "git_control", input)
+		return nil, out, err
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("build_control", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input buildControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "build.exec", input.Action, map[string]any{"argv": input.Argv, "cwd": input.Cwd, "runtime": input.Runtime, "timeoutSeconds": input.TimeoutSeconds, "idempotencyKey": input.IdempotencyKey})
-		if err != nil {
-			return nil, genericCapabilityOutput{}, err
-		}
-		return nil, genericCapabilityOutput{Result: result}, nil
+		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "build_control", input)
+		return nil, out, err
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("browser_control", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input browserControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		params := browserControlParams(input)
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "browser.automation", input.Action, params)
+		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "browser_control", input)
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
-		return s.presentationToolResult(ctx, ownerID, result, false), genericCapabilityOutput{Result: result}, nil
+		return s.presentationToolResult(ctx, ownerID, out.Result, false), out, nil
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("screenshot_take", toolAnnotations(false, false, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input screenshotTakeInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		params := map[string]any{"displayIndex": input.DisplayIndex, "windowId": input.WindowID, "format": input.Format, "quality": input.Quality}
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "screenshot.capture", input.Action, params)
+		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "screenshot_take", input)
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
-		return s.presentationToolResult(ctx, ownerID, result, false), genericCapabilityOutput{Result: result}, nil
+		return s.presentationToolResult(ctx, ownerID, out.Result, false), out, nil
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("thinking_team", toolAnnotations(true, false, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input thinkingTeamInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		result, err := thinkingTeamResult(input)
-		if err != nil {
-			return nil, genericCapabilityOutput{}, err
-		}
-		return nil, genericCapabilityOutput{Result: result}, nil
+		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "thinking_team", input)
+		return nil, out, err
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("ai_control", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input aiControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		params := map[string]any{
-			"providerId": input.ProviderID, "appType": input.AppType, "sessionId": input.SessionID, "turnId": input.TurnID, "requestId": input.RequestID,
-			"idempotencyKey": input.IdempotencyKey, "mode": input.Mode,
-			"prompt": input.Prompt, "workingDirectory": input.WorkingDirectory, "model": input.Model,
-			"thinking": input.Thinking, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds,
-			"limit": input.Limit, "pageCursor": input.PageCursor, "mcpDetail": input.MCPDetail, "name": input.Name, "forceReload": input.ForceReload,
-			"marketplaceKinds": input.MarketplaceKinds, "pluginName": input.PluginName, "marketplacePath": input.MarketplacePath,
-			"remoteMarketplaceName": input.RemoteMarketplaceName, "remotePluginId": input.RemotePluginID, "skillName": input.SkillName,
-			"numTurns": input.NumTurns, "objective": input.Objective, "goalStatus": input.GoalStatus, "tokenBudget": input.TokenBudget,
-			"skills": input.Skills, "images": input.Images, "localImages": input.LocalImages, "mentions": input.Mentions, "imageDetail": input.ImageDetail, "outputSchema": input.OutputSchema,
-			"decision": input.Decision, "answers": input.Answers, "responseContent": input.ResponseContent,
-			"effort": input.Effort, "permissions": input.Permissions, "personality": input.Personality, "serviceTier": input.ServiceTier, "summary": input.Summary,
-			"reviewType": input.ReviewType, "reviewDelivery": input.ReviewDelivery, "reviewBranch": input.ReviewBranch,
-			"reviewSha": input.ReviewSHA, "reviewTitle": input.ReviewTitle, "reviewInstructions": input.ReviewInstructions,
-		}
-		if input.Action == "session.create" && (len(input.IdempotencyKey) < 12 || len(input.IdempotencyKey) > 128) {
-			return nil, genericCapabilityOutput{}, fmt.Errorf("idempotencyKey is required for session.create and must be 12 to 128 characters")
-		}
-		if len(input.Skills) > 0 {
-			converted := make([]map[string]any, len(input.Skills))
-			for i, item := range input.Skills {
-				converted[i] = map[string]any{"name": item["name"], "path": item["path"]}
-			}
-			params["skills"] = converted
-		}
-		if len(input.Mentions) > 0 {
-			converted := make([]map[string]any, len(input.Mentions))
-			for i, item := range input.Mentions {
-				converted[i] = map[string]any{"name": item["name"], "path": item["path"]}
-			}
-			params["mentions"] = converted
-		}
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "agent.control", input.Action, params)
-		if err != nil {
-			return nil, genericCapabilityOutput{}, err
-		}
-		return nil, genericCapabilityOutput{Result: result}, nil
+		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "ai_control", input)
+		return nil, out, err
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("working_context", toolAnnotations(false, false, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input workingContextInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		params := map[string]any{
-			"projectPath": input.ProjectPath, "goal": input.Goal,
-			"planId": input.PlanID, "expectedRevision": input.ExpectedRevision, "title": input.Title,
-			"targetVersion": input.TargetVersion, "markdownRoot": input.MarkdownRoot, "initializeMarkdown": input.InitializeMarkdown,
-			"baselineBranch": input.BaselineBranch, "baselineCommit": input.BaselineCommit,
-			"completed": input.Completed, "constraints": input.Constraints, "pending": input.Pending,
-			"keyFiles": input.KeyFiles, "facts": input.Facts,
-			"tasks": input.Tasks, "taskId": input.TaskID, "taskTitle": input.TaskTitle, "taskStatus": input.TaskStatus,
-			"blockedReason": input.BlockedReason, "completion": input.Completion, "evidence": input.Evidence,
-			"markdownPath": input.MarkdownPath, "content": input.Content, "managedBlock": input.ManagedBlock,
-			"expectedFileRevision": input.ExpectedFileRevision, "sinceRevision": input.SinceRevision, "waitSeconds": input.WaitSeconds,
-		}
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "working.context", input.Action, params)
-		if err != nil {
-			return nil, genericCapabilityOutput{}, err
-		}
-		return nil, genericCapabilityOutput{Result: result}, nil
+		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "working_context", input)
+		return nil, out, err
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("artifact_get", toolAnnotations(false, false, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input artifactGetInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "artifact_get", input)
+		if err != nil {
+			return nil, genericCapabilityOutput{}, err
+		}
 		switch input.Action {
 		case "uploadFile", "uploadJobLog":
-			params := map[string]any{"path": input.Path, "jobId": input.JobID, "logicalName": input.LogicalName, "contentType": input.ContentType}
-			result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "artifact.store", input.Action, params)
-			if err != nil {
-				return nil, genericCapabilityOutput{}, err
-			}
-			if artifactID, _ := result["artifactId"].(string); strings.TrimSpace(artifactID) != "" {
+			if artifactID, _ := out.Result["artifactId"].(string); strings.TrimSpace(artifactID) != "" {
 				if artifact, getErr := s.service.GetArtifact(ctx, ownerID, artifactID); getErr == nil {
-					return s.artifactNativeToolResult(ctx, artifact), genericCapabilityOutput{Result: result}, nil
+					return s.artifactNativeToolResult(ctx, artifact), out, nil
 				}
 			}
-			return nil, genericCapabilityOutput{Result: result}, nil
 		case "publishFile":
-			params := map[string]any{"path": input.Path, "logicalName": input.LogicalName, "contentType": input.ContentType}
-			result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "artifact.store", input.Action, params)
-			if err != nil {
-				return nil, genericCapabilityOutput{}, err
-			}
-			return s.presentationToolResult(ctx, ownerID, result, true), genericCapabilityOutput{Result: result}, nil
+			return s.presentationToolResult(ctx, ownerID, out.Result, true), out, nil
 		case "get":
-			artifact, err := s.service.GetArtifact(ctx, ownerID, input.ArtifactID)
-			if err != nil {
-				return nil, genericCapabilityOutput{}, err
+			artifact, getErr := s.service.GetArtifact(ctx, ownerID, input.ArtifactID)
+			if getErr != nil {
+				return nil, genericCapabilityOutput{}, getErr
 			}
-			raw, err := json.Marshal(artifact)
-			if err != nil {
-				return nil, genericCapabilityOutput{}, err
-			}
-			var result map[string]any
-			if err := json.Unmarshal(raw, &result); err != nil {
-				return nil, genericCapabilityOutput{}, err
-			}
-			result["downloadPath"] = "/api/v1/artifacts/" + artifact.ID + "/content"
-			if content, ok, err := readArtifactInline(ctx, s.service, artifact); err != nil {
-				return nil, genericCapabilityOutput{}, err
-			} else if ok {
-				result["content"] = content
-				result["encoding"] = "utf-8"
-			}
-			return s.artifactNativeToolResult(ctx, artifact), genericCapabilityOutput{Result: result}, nil
-		default:
-			return nil, genericCapabilityOutput{}, fmt.Errorf("unsupported artifact action %q", input.Action)
+			return s.artifactNativeToolResult(ctx, artifact), out, nil
 		}
+		return nil, out, nil
 	})
 
 	return server

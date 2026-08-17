@@ -141,4 +141,18 @@ func TestDirectAccessKeyLifecyclePolicyAndSecretRedaction(t *testing.T) {
 	if _, err := service.AuthenticateDirectAccessKey(ctx, elevated.Token); !errors.Is(err, store.ErrRevoked) {
 		t.Fatalf("revoked direct key authentication error=%v, want ErrRevoked", err)
 	}
+
+	base := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return base }
+	expiring, err := service.CreateDirectAccessKey(ctx, account.OwnerID, "ten-minute-key", "", nil, 10*time.Minute, 120, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.AuthenticateDirectAccessKey(ctx, expiring.Token); err != nil {
+		t.Fatalf("fresh direct key authentication error=%v", err)
+	}
+	service.now = func() time.Time { return base.Add(11 * time.Minute) }
+	if _, err := service.AuthenticateDirectAccessKey(ctx, expiring.Token); !errors.Is(err, store.ErrExpired) {
+		t.Fatalf("expired direct key authentication error=%v, want ErrExpired", err)
+	}
 }

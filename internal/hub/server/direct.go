@@ -300,19 +300,22 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 	ownerID := key.OwnerID
 	switch tool {
 	case "machine_list":
-		if _, err := decodeDirectArguments[machineListInput](raw); err != nil {
-			return nil, err
-		}
-		machines, err := s.service.ListMachines(ctx, ownerID)
+		input, err := decodeDirectArguments[machineListInput](raw)
 		if err != nil {
 			return nil, err
 		}
-		out := machineListOutput{Machines: make([]mcpMachine, 0, len(machines))}
-		for _, machine := range machines {
-			if key.MachineID != "" && machine.MachineID != key.MachineID {
-				continue
+		out, err := executeTypedTool[machineListOutput](s.toolExecutor, ctx, ownerID, tool, input)
+		if err != nil {
+			return nil, err
+		}
+		if key.MachineID != "" {
+			filtered := out.Machines[:0]
+			for _, machine := range out.Machines {
+				if machine.MachineID == key.MachineID {
+					filtered = append(filtered, machine)
+				}
 			}
-			out.Machines = append(out.Machines, toMCPMachine(machine))
+			out.Machines = filtered
 		}
 		return out, nil
 
@@ -324,11 +327,7 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 		if err := directRequireMachine(key, input.MachineID); err != nil {
 			return nil, err
 		}
-		machine, err := s.service.GetMachine(ctx, ownerID, input.MachineID)
-		if err != nil {
-			return nil, err
-		}
-		return machineGetOutput{Machine: toMCPMachine(machine)}, nil
+		return executeTypedTool[machineGetOutput](s.toolExecutor, ctx, ownerID, tool, input)
 
 	case "capability_list":
 		input, err := decodeDirectArguments[capabilityListInput](raw)
@@ -340,34 +339,7 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 				return nil, err
 			}
 		}
-		view := strings.TrimSpace(input.View)
-		capabilities := make([]protocolv1.CapabilityDescriptor, 0)
-		if input.MachineID != "" {
-			machine, err := s.service.GetMachine(ctx, ownerID, input.MachineID)
-			if err != nil {
-				return nil, err
-			}
-			capabilities = machine.Capabilities
-		} else if view == "" || view == "overview" || view == "catalog" || view == "capability" {
-			capabilities = s.service.CapabilityCatalog()
-		}
-		if view == "" && input.MachineID != "" {
-			return capabilityListOutput{Capabilities: capabilities, CapabilitySummaries: mcpCapabilitySummaries(capabilities)}, nil
-		}
-		guideView := view
-		if guideView == "" {
-			guideView = "overview"
-		}
-		var guide *mcpGuide
-		if guideView == "capability" {
-			guide, err = newMCPCapabilityGuide(s.service.Version(), capabilities, input.Name)
-		} else {
-			guide, err = newMCPGuide(s.service.Version(), guideView, input.Name)
-		}
-		if err != nil {
-			return nil, err
-		}
-		return capabilityListOutput{Capabilities: capabilities, CapabilitySummaries: mcpCapabilitySummaries(capabilities), Guide: guide}, nil
+		return executeTypedTool[capabilityListOutput](s.toolExecutor, ctx, ownerID, tool, input)
 
 	case "file_read":
 		input, err := decodeDirectArguments[fileReadInput](raw)
@@ -377,26 +349,7 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 		if err := directRequireMachine(key, input.MachineID); err != nil {
 			return nil, err
 		}
-		params := map[string]any{"path": input.Path}
-		addOptionalFileReadParam(params, "offset", input.Offset)
-		addOptionalFileReadParam(params, "limit", input.Limit)
-		addOptionalFileReadParam(params, "lineStart", input.LineStart)
-		addOptionalFileReadParam(params, "lineCount", input.LineCount)
-		addOptionalFileReadParam(params, "headLines", input.HeadLines)
-		addOptionalFileReadParam(params, "tailLines", input.TailLines)
-		addOptionalFileReadParam(params, "aroundLine", input.AroundLine)
-		addOptionalFileReadParam(params, "contextLines", input.ContextLines)
-		addOptionalFileReadParam(params, "statOnly", input.StatOnly)
-		addOptionalFileReadParam(params, "includeLineNumbers", input.IncludeLineNumbers)
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "file.read", "read", params)
-		if err != nil {
-			return nil, err
-		}
-		var out fileReadOutput
-		if err := decodeCapabilityResult(result, &out); err != nil {
-			return nil, err
-		}
-		return out, nil
+		return executeTypedTool[fileReadOutput](s.toolExecutor, ctx, ownerID, tool, input)
 
 	case "code_search":
 		input, err := decodeDirectArguments[codeSearchInput](raw)
@@ -406,20 +359,7 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 		if err := directRequireMachine(key, input.MachineID); err != nil {
 			return nil, err
 		}
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "code.search", "search", map[string]any{
-			"query": input.Query, "path": input.Path, "mode": input.Mode, "regex": input.Regex, "ignoreCase": input.IgnoreCase,
-			"include": input.Include, "exclude": input.Exclude, "context": input.Context, "beforeContext": input.BeforeContext,
-			"afterContext": input.AfterContext, "limit": input.Limit,
-		})
-		if err != nil {
-			return nil, err
-		}
-		adaptRollingCodeSearchResult(result)
-		var out codeSearchOutput
-		if err := decodeCapabilityResult(result, &out); err != nil {
-			return nil, err
-		}
-		return out, nil
+		return executeTypedTool[codeSearchOutput](s.toolExecutor, ctx, ownerID, tool, input)
 
 	case "file_edit":
 		if err := directRequireScope(key, core.DirectScopeFilesWrite); err != nil {
@@ -432,27 +372,7 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 		if err := directRequireMachine(key, input.MachineID); err != nil {
 			return nil, err
 		}
-		action := input.Action
-		if action == "" {
-			action = "edit"
-		}
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "file.write", action, map[string]any{
-			"path": input.Path, "previewOf": input.PreviewOf, "content": input.Content, "oldText": input.OldText,
-			"newText": input.NewText, "edits": input.Edits, "expectedFileSha256": input.ExpectedFileSHA256, "expectedAbsent": input.ExpectedAbsent,
-		})
-		if err != nil {
-			return nil, err
-		}
-		adaptRollingFileEditResult(result, action)
-		var out fileEditOutput
-		if err := decodeCapabilityResult(result, &out); err != nil {
-			return nil, err
-		}
-		if action != "preview" {
-			out.Diff = ""
-			out.DiffTruncated = false
-		}
-		return out, nil
+		return executeTypedTool[fileEditOutput](s.toolExecutor, ctx, ownerID, tool, input)
 
 	case "shell_run":
 		if err := directRequireScope(key, core.DirectScopeShell); err != nil {
@@ -465,15 +385,7 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 		if err := directRequireMachine(key, input.MachineID); err != nil {
 			return nil, err
 		}
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "shell.exec", "run", map[string]any{"argv": input.Argv, "cwd": input.Cwd, "runtime": input.Runtime, "timeoutSeconds": input.TimeoutSeconds, "idempotencyKey": input.IdempotencyKey})
-		if err != nil {
-			return nil, err
-		}
-		var out jobOutput
-		if err := decodeCapabilityResult(result, &out); err != nil {
-			return nil, err
-		}
-		return out, nil
+		return executeTypedTool[jobOutput](s.toolExecutor, ctx, ownerID, tool, input)
 
 	case "job_watch":
 		input, err := decodeDirectArguments[jobWatchInput](raw)
@@ -483,15 +395,7 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 		if err := directRequireMachine(key, input.MachineID); err != nil {
 			return nil, err
 		}
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "job.control", "watch", map[string]any{"jobId": input.JobID, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds})
-		if err != nil {
-			return nil, err
-		}
-		var out jobOutput
-		if err := decodeCapabilityResult(result, &out); err != nil {
-			return nil, err
-		}
-		return out, nil
+		return executeTypedTool[jobOutput](s.toolExecutor, ctx, ownerID, tool, input)
 
 	case "job_cancel":
 		if err := directRequireScope(key, core.DirectScopeJobs); err != nil {
@@ -504,15 +408,7 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 		if err := directRequireMachine(key, input.MachineID); err != nil {
 			return nil, err
 		}
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "job.control", "cancel", map[string]any{"jobId": input.JobID})
-		if err != nil {
-			return nil, err
-		}
-		var out jobOutput
-		if err := decodeCapabilityResult(result, &out); err != nil {
-			return nil, err
-		}
-		return out, nil
+		return executeTypedTool[jobOutput](s.toolExecutor, ctx, ownerID, tool, input)
 
 	case "git_control":
 		input, err := decodeDirectArguments[gitControlInput](raw)
@@ -527,14 +423,7 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 		if err := directRequireMachine(key, input.MachineID); err != nil {
 			return nil, err
 		}
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "git.repository", input.Action, map[string]any{
-			"repositoryPath": input.RepositoryPath, "revision": input.Revision, "paths": input.Paths, "message": input.Message,
-			"remote": input.Remote, "branch": input.Branch, "worktreePath": input.WorktreePath, "idempotencyKey": input.IdempotencyKey,
-		})
-		if err != nil {
-			return nil, err
-		}
-		return genericCapabilityOutput{Result: result}, nil
+		return executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, tool, input)
 
 	case "build_control":
 		if err := directRequireScope(key, core.DirectScopeShell); err != nil {
@@ -547,11 +436,7 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 		if err := directRequireMachine(key, input.MachineID); err != nil {
 			return nil, err
 		}
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "build.exec", input.Action, map[string]any{"argv": input.Argv, "cwd": input.Cwd, "runtime": input.Runtime, "timeoutSeconds": input.TimeoutSeconds, "idempotencyKey": input.IdempotencyKey})
-		if err != nil {
-			return nil, err
-		}
-		return genericCapabilityOutput{Result: result}, nil
+		return executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, tool, input)
 
 	case "browser_control":
 		if err := directRequireScope(key, core.DirectScopeBrowser); err != nil {
@@ -564,12 +449,12 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 		if err := directRequireMachine(key, input.MachineID); err != nil {
 			return nil, err
 		}
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "browser.automation", input.Action, browserControlParams(input))
+		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, tool, input)
 		if err != nil {
 			return nil, err
 		}
-		s.presentationToolResult(ctx, ownerID, result, true)
-		return genericCapabilityOutput{Result: result}, nil
+		s.presentationToolResult(ctx, ownerID, out.Result, true)
+		return out, nil
 
 	case "screenshot_take":
 		if err := directRequireScope(key, core.DirectScopeBrowser); err != nil {
@@ -582,24 +467,19 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 		if err := directRequireMachine(key, input.MachineID); err != nil {
 			return nil, err
 		}
-		params := map[string]any{"displayIndex": input.DisplayIndex, "windowId": input.WindowID, "format": input.Format, "quality": input.Quality}
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "screenshot.capture", input.Action, params)
+		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, tool, input)
 		if err != nil {
 			return nil, err
 		}
-		s.presentationToolResult(ctx, ownerID, result, true)
-		return genericCapabilityOutput{Result: result}, nil
+		s.presentationToolResult(ctx, ownerID, out.Result, true)
+		return out, nil
 
 	case "thinking_team":
 		input, err := decodeDirectArguments[thinkingTeamInput](raw)
 		if err != nil {
 			return nil, err
 		}
-		result, err := thinkingTeamResult(input)
-		if err != nil {
-			return nil, err
-		}
-		return genericCapabilityOutput{Result: result}, nil
+		return executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, tool, input)
 
 	case "ai_control":
 		input, err := decodeDirectArguments[aiControlInput](raw)
@@ -614,42 +494,7 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 		if err := directRequireMachine(key, input.MachineID); err != nil {
 			return nil, err
 		}
-		params := map[string]any{
-			"providerId": input.ProviderID, "appType": input.AppType, "sessionId": input.SessionID, "turnId": input.TurnID, "requestId": input.RequestID,
-			"idempotencyKey": input.IdempotencyKey, "mode": input.Mode, "prompt": input.Prompt, "workingDirectory": input.WorkingDirectory,
-			"model": input.Model, "thinking": input.Thinking, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds, "limit": input.Limit,
-			"pageCursor": input.PageCursor, "mcpDetail": input.MCPDetail, "name": input.Name, "forceReload": input.ForceReload,
-			"marketplaceKinds": input.MarketplaceKinds, "pluginName": input.PluginName, "marketplacePath": input.MarketplacePath,
-			"remoteMarketplaceName": input.RemoteMarketplaceName, "remotePluginId": input.RemotePluginID, "skillName": input.SkillName,
-			"numTurns": input.NumTurns, "objective": input.Objective, "goalStatus": input.GoalStatus, "tokenBudget": input.TokenBudget,
-			"skills": input.Skills, "images": input.Images, "localImages": input.LocalImages, "mentions": input.Mentions, "imageDetail": input.ImageDetail,
-			"outputSchema": input.OutputSchema, "decision": input.Decision, "answers": input.Answers, "responseContent": input.ResponseContent,
-			"effort": input.Effort, "permissions": input.Permissions, "personality": input.Personality, "serviceTier": input.ServiceTier, "summary": input.Summary,
-			"reviewType": input.ReviewType, "reviewDelivery": input.ReviewDelivery, "reviewBranch": input.ReviewBranch, "reviewSha": input.ReviewSHA,
-			"reviewTitle": input.ReviewTitle, "reviewInstructions": input.ReviewInstructions,
-		}
-		if input.Action == "session.create" && (len(input.IdempotencyKey) < 12 || len(input.IdempotencyKey) > 128) {
-			return nil, &directProtocolError{status: http.StatusBadRequest, code: "INVALID_REQUEST", message: "idempotencyKey is required for session.create and must be 12 to 128 characters"}
-		}
-		if len(input.Skills) > 0 {
-			converted := make([]map[string]any, len(input.Skills))
-			for i, item := range input.Skills {
-				converted[i] = map[string]any{"name": item["name"], "path": item["path"]}
-			}
-			params["skills"] = converted
-		}
-		if len(input.Mentions) > 0 {
-			converted := make([]map[string]any, len(input.Mentions))
-			for i, item := range input.Mentions {
-				converted[i] = map[string]any{"name": item["name"], "path": item["path"]}
-			}
-			params["mentions"] = converted
-		}
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "agent.control", input.Action, params)
-		if err != nil {
-			return nil, err
-		}
-		return genericCapabilityOutput{Result: result}, nil
+		return executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, tool, input)
 
 	case "working_context":
 		input, err := decodeDirectArguments[workingContextInput](raw)
@@ -664,20 +509,7 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 		if err := directRequireMachine(key, input.MachineID); err != nil {
 			return nil, err
 		}
-		params := map[string]any{
-			"projectPath": input.ProjectPath, "goal": input.Goal, "planId": input.PlanID, "expectedRevision": input.ExpectedRevision, "title": input.Title,
-			"targetVersion": input.TargetVersion, "markdownRoot": input.MarkdownRoot, "initializeMarkdown": input.InitializeMarkdown,
-			"baselineBranch": input.BaselineBranch, "baselineCommit": input.BaselineCommit, "completed": input.Completed, "constraints": input.Constraints,
-			"pending": input.Pending, "keyFiles": input.KeyFiles, "facts": input.Facts, "tasks": input.Tasks, "taskId": input.TaskID,
-			"taskTitle": input.TaskTitle, "taskStatus": input.TaskStatus, "blockedReason": input.BlockedReason, "completion": input.Completion,
-			"evidence": input.Evidence, "markdownPath": input.MarkdownPath, "content": input.Content, "managedBlock": input.ManagedBlock,
-			"expectedFileRevision": input.ExpectedFileRevision, "sinceRevision": input.SinceRevision, "waitSeconds": input.WaitSeconds,
-		}
-		result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "working.context", input.Action, params)
-		if err != nil {
-			return nil, err
-		}
-		return genericCapabilityOutput{Result: result}, nil
+		return executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, tool, input)
 
 	case "artifact_get":
 		input, err := decodeDirectArguments[artifactGetInput](raw)
@@ -690,53 +522,32 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 			}
 		}
 		switch input.Action {
-		case "uploadFile", "uploadJobLog":
-			if err := directRequireMachine(key, input.MachineID); err != nil {
-				return nil, err
-			}
-			params := map[string]any{"path": input.Path, "jobId": input.JobID, "logicalName": input.LogicalName, "contentType": input.ContentType}
-			result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "artifact.store", input.Action, params)
-			if err != nil {
-				return nil, err
-			}
-			return genericCapabilityOutput{Result: result}, nil
-		case "publishFile":
-			if err := directRequireMachine(key, input.MachineID); err != nil {
-				return nil, err
-			}
-			params := map[string]any{"path": input.Path, "logicalName": input.LogicalName, "contentType": input.ContentType}
-			result, err := s.service.CallCapability(ctx, ownerID, input.MachineID, "artifact.store", input.Action, params)
-			if err != nil {
-				return nil, err
-			}
-			s.presentationToolResult(ctx, ownerID, result, true)
-			return genericCapabilityOutput{Result: result}, nil
 		case "get":
-			artifact, err := s.service.GetArtifact(ctx, ownerID, input.ArtifactID)
-			if err != nil {
+			if key.MachineID != "" {
+				artifact, getErr := s.service.GetArtifact(ctx, ownerID, input.ArtifactID)
+				if getErr != nil {
+					return nil, getErr
+				}
+				if err := directRequireMachine(key, artifact.MachineID); err != nil {
+					return nil, err
+				}
+			}
+		case "uploadFile", "uploadJobLog", "publishFile":
+			if err := directRequireMachine(key, input.MachineID); err != nil {
 				return nil, err
 			}
-			if err := directRequireMachine(key, artifact.MachineID); err != nil {
-				return nil, err
-			}
-			raw, err := json.Marshal(artifact)
-			if err != nil {
-				return nil, err
-			}
-			var result map[string]any
-			if err := json.Unmarshal(raw, &result); err != nil {
-				return nil, err
-			}
-			if content, ok, err := readArtifactInline(ctx, s.service, artifact); err != nil {
-				return nil, err
-			} else if ok {
-				result["content"] = content
-				result["encoding"] = "utf-8"
-			}
-			return genericCapabilityOutput{Result: result}, nil
 		default:
 			return nil, &directProtocolError{status: http.StatusBadRequest, code: "INVALID_REQUEST", message: "unsupported artifact action"}
 		}
+		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, tool, input)
+		if err != nil {
+			return nil, err
+		}
+		if input.Action == "publishFile" {
+			s.presentationToolResult(ctx, ownerID, out.Result, true)
+		}
+		return out, nil
+
 	default:
 		return nil, &directProtocolError{status: http.StatusNotFound, code: "TOOL_NOT_FOUND", message: "unknown direct tool"}
 	}
@@ -746,6 +557,11 @@ func writeDirectError(w http.ResponseWriter, err error) {
 	var directErr *directProtocolError
 	if errors.As(err, &directErr) {
 		writeJSON(w, directErr.status, apiError{Error: protocolv1.ProtocolError{Code: directErr.code, Message: directErr.message, Retryable: directErr.status >= 500}})
+		return
+	}
+	var requestErr *toolRequestError
+	if errors.As(err, &requestErr) {
+		writeJSON(w, http.StatusBadRequest, apiError{Error: protocolv1.ProtocolError{Code: "INVALID_REQUEST", Message: requestErr.message, Retryable: false}})
 		return
 	}
 	status := core.ErrorStatus(err)

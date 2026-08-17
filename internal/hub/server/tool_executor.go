@@ -1,0 +1,412 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/isguang2024/fast-spider/internal/hub/core"
+	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
+)
+
+// toolExecutor is the single transport-neutral execution path for Fast Spider tools.
+// MCP and Direct API keep their own authentication/authorization and response adapters,
+// but all tool-to-capability routing and argument mapping lives here.
+type toolExecutor struct {
+	service *core.Service
+}
+
+type toolRequestError struct {
+	message string
+}
+
+func (e *toolRequestError) Error() string { return e.message }
+
+func newToolExecutor(service *core.Service) *toolExecutor {
+	return &toolExecutor{service: service}
+}
+
+func toolInput[T any](tool string, input any) (T, error) {
+	value, ok := input.(T)
+	if !ok {
+		var zero T
+		return zero, fmt.Errorf("tool executor input mismatch for %s: %T", tool, input)
+	}
+	return value, nil
+}
+
+func executeTypedTool[T any](executor *toolExecutor, ctx context.Context, ownerID, tool string, input any) (T, error) {
+	var zero T
+	result, err := executor.Execute(ctx, ownerID, tool, input)
+	if err != nil {
+		return zero, err
+	}
+	value, ok := result.(T)
+	if !ok {
+		return zero, fmt.Errorf("tool executor output mismatch for %s: %T", tool, result)
+	}
+	return value, nil
+}
+
+func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInput any) (any, error) {
+	switch tool {
+	case "machine_list":
+		if _, err := toolInput[machineListInput](tool, rawInput); err != nil {
+			return nil, err
+		}
+		machines, err := e.service.ListMachines(ctx, ownerID)
+		if err != nil {
+			return nil, err
+		}
+		out := machineListOutput{Machines: make([]mcpMachine, 0, len(machines))}
+		for _, machine := range machines {
+			out.Machines = append(out.Machines, toMCPMachine(machine))
+		}
+		return out, nil
+
+	case "machine_get":
+		input, err := toolInput[machineGetInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		machine, err := e.service.GetMachine(ctx, ownerID, input.MachineID)
+		if err != nil {
+			return nil, err
+		}
+		return machineGetOutput{Machine: toMCPMachine(machine)}, nil
+
+	case "capability_list":
+		input, err := toolInput[capabilityListInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		view := strings.TrimSpace(input.View)
+		capabilities := make([]protocolv1.CapabilityDescriptor, 0)
+		if input.MachineID != "" {
+			machine, getErr := e.service.GetMachine(ctx, ownerID, input.MachineID)
+			if getErr != nil {
+				return nil, getErr
+			}
+			capabilities = machine.Capabilities
+		} else if view == "" || view == "overview" || view == "catalog" || view == "capability" {
+			capabilities = e.service.CapabilityCatalog()
+		}
+		if view == "" && input.MachineID != "" {
+			return capabilityListOutput{Capabilities: capabilities, CapabilitySummaries: mcpCapabilitySummaries(capabilities)}, nil
+		}
+		guideView := view
+		if guideView == "" {
+			guideView = "overview"
+		}
+		var guide *mcpGuide
+		if guideView == "capability" {
+			guide, err = newMCPCapabilityGuide(e.service.Version(), capabilities, input.Name)
+		} else {
+			guide, err = newMCPGuide(e.service.Version(), guideView, input.Name)
+		}
+		if err != nil {
+			return nil, err
+		}
+		return capabilityListOutput{Capabilities: capabilities, CapabilitySummaries: mcpCapabilitySummaries(capabilities), Guide: guide}, nil
+
+	case "file_read":
+		input, err := toolInput[fileReadInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		params := map[string]any{"path": input.Path}
+		addOptionalFileReadParam(params, "offset", input.Offset)
+		addOptionalFileReadParam(params, "limit", input.Limit)
+		addOptionalFileReadParam(params, "lineStart", input.LineStart)
+		addOptionalFileReadParam(params, "lineCount", input.LineCount)
+		addOptionalFileReadParam(params, "headLines", input.HeadLines)
+		addOptionalFileReadParam(params, "tailLines", input.TailLines)
+		addOptionalFileReadParam(params, "aroundLine", input.AroundLine)
+		addOptionalFileReadParam(params, "contextLines", input.ContextLines)
+		addOptionalFileReadParam(params, "statOnly", input.StatOnly)
+		addOptionalFileReadParam(params, "includeLineNumbers", input.IncludeLineNumbers)
+		result, err := e.service.CallCapability(ctx, ownerID, input.MachineID, "file.read", "read", params)
+		if err != nil {
+			return nil, err
+		}
+		var out fileReadOutput
+		if err := decodeCapabilityResult(result, &out); err != nil {
+			return nil, err
+		}
+		return out, nil
+
+	case "code_search":
+		input, err := toolInput[codeSearchInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		result, err := e.service.CallCapability(ctx, ownerID, input.MachineID, "code.search", "search", map[string]any{
+			"query": input.Query, "path": input.Path, "mode": input.Mode, "regex": input.Regex, "ignoreCase": input.IgnoreCase,
+			"include": input.Include, "exclude": input.Exclude, "context": input.Context, "beforeContext": input.BeforeContext,
+			"afterContext": input.AfterContext, "limit": input.Limit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		adaptRollingCodeSearchResult(result)
+		var out codeSearchOutput
+		if err := decodeCapabilityResult(result, &out); err != nil {
+			return nil, err
+		}
+		return out, nil
+
+	case "file_edit":
+		input, err := toolInput[fileEditInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		action := input.Action
+		if action == "" {
+			action = "edit"
+		}
+		result, err := e.service.CallCapability(ctx, ownerID, input.MachineID, "file.write", action, map[string]any{
+			"path": input.Path, "previewOf": input.PreviewOf, "content": input.Content,
+			"oldText": input.OldText, "newText": input.NewText, "edits": input.Edits,
+			"expectedFileSha256": input.ExpectedFileSHA256, "expectedAbsent": input.ExpectedAbsent,
+		})
+		if err != nil {
+			return nil, err
+		}
+		adaptRollingFileEditResult(result, action)
+		var out fileEditOutput
+		if err := decodeCapabilityResult(result, &out); err != nil {
+			return nil, err
+		}
+		if action != "preview" {
+			out.Diff = ""
+			out.DiffTruncated = false
+		}
+		return out, nil
+
+	case "shell_run":
+		input, err := toolInput[shellRunInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		result, err := e.service.CallCapability(ctx, ownerID, input.MachineID, "shell.exec", "run", map[string]any{
+			"argv": input.Argv, "cwd": input.Cwd, "runtime": input.Runtime,
+			"timeoutSeconds": input.TimeoutSeconds, "idempotencyKey": input.IdempotencyKey,
+		})
+		if err != nil {
+			return nil, err
+		}
+		var out jobOutput
+		if err := decodeCapabilityResult(result, &out); err != nil {
+			return nil, err
+		}
+		return out, nil
+
+	case "job_watch":
+		input, err := toolInput[jobWatchInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		result, err := e.service.CallCapability(ctx, ownerID, input.MachineID, "job.control", "watch", map[string]any{
+			"jobId": input.JobID, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds,
+		})
+		if err != nil {
+			return nil, err
+		}
+		var out jobOutput
+		if err := decodeCapabilityResult(result, &out); err != nil {
+			return nil, err
+		}
+		return out, nil
+
+	case "job_cancel":
+		input, err := toolInput[jobCancelInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		result, err := e.service.CallCapability(ctx, ownerID, input.MachineID, "job.control", "cancel", map[string]any{"jobId": input.JobID})
+		if err != nil {
+			return nil, err
+		}
+		var out jobOutput
+		if err := decodeCapabilityResult(result, &out); err != nil {
+			return nil, err
+		}
+		return out, nil
+
+	case "git_control":
+		input, err := toolInput[gitControlInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		result, err := e.service.CallCapability(ctx, ownerID, input.MachineID, "git.repository", input.Action, map[string]any{
+			"repositoryPath": input.RepositoryPath, "revision": input.Revision, "paths": input.Paths, "message": input.Message,
+			"remote": input.Remote, "branch": input.Branch, "worktreePath": input.WorktreePath, "idempotencyKey": input.IdempotencyKey,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return genericCapabilityOutput{Result: result}, nil
+
+	case "build_control":
+		input, err := toolInput[buildControlInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		result, err := e.service.CallCapability(ctx, ownerID, input.MachineID, "build.exec", input.Action, map[string]any{
+			"argv": input.Argv, "cwd": input.Cwd, "runtime": input.Runtime,
+			"timeoutSeconds": input.TimeoutSeconds, "idempotencyKey": input.IdempotencyKey,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return genericCapabilityOutput{Result: result}, nil
+
+	case "browser_control":
+		input, err := toolInput[browserControlInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		result, err := e.service.CallCapability(ctx, ownerID, input.MachineID, "browser.automation", input.Action, browserControlParams(input))
+		if err != nil {
+			return nil, err
+		}
+		return genericCapabilityOutput{Result: result}, nil
+
+	case "screenshot_take":
+		input, err := toolInput[screenshotTakeInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		params := map[string]any{"displayIndex": input.DisplayIndex, "windowId": input.WindowID, "format": input.Format, "quality": input.Quality}
+		result, err := e.service.CallCapability(ctx, ownerID, input.MachineID, "screenshot.capture", input.Action, params)
+		if err != nil {
+			return nil, err
+		}
+		return genericCapabilityOutput{Result: result}, nil
+
+	case "thinking_team":
+		input, err := toolInput[thinkingTeamInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		result, err := thinkingTeamResult(input)
+		if err != nil {
+			return nil, err
+		}
+		return genericCapabilityOutput{Result: result}, nil
+
+	case "ai_control":
+		input, err := toolInput[aiControlInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		if input.Action == "session.create" && (len(input.IdempotencyKey) < 12 || len(input.IdempotencyKey) > 128) {
+			return nil, &toolRequestError{message: "idempotencyKey is required for session.create and must be 12 to 128 characters"}
+		}
+		params := map[string]any{
+			"providerId": input.ProviderID, "appType": input.AppType, "sessionId": input.SessionID, "turnId": input.TurnID, "requestId": input.RequestID,
+			"idempotencyKey": input.IdempotencyKey, "mode": input.Mode,
+			"prompt": input.Prompt, "workingDirectory": input.WorkingDirectory, "model": input.Model,
+			"thinking": input.Thinking, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds,
+			"limit": input.Limit, "pageCursor": input.PageCursor, "mcpDetail": input.MCPDetail, "name": input.Name, "forceReload": input.ForceReload,
+			"marketplaceKinds": input.MarketplaceKinds, "pluginName": input.PluginName, "marketplacePath": input.MarketplacePath,
+			"remoteMarketplaceName": input.RemoteMarketplaceName, "remotePluginId": input.RemotePluginID, "skillName": input.SkillName,
+			"numTurns": input.NumTurns, "objective": input.Objective, "goalStatus": input.GoalStatus, "tokenBudget": input.TokenBudget,
+			"skills": input.Skills, "images": input.Images, "localImages": input.LocalImages, "mentions": input.Mentions, "imageDetail": input.ImageDetail,
+			"outputSchema": input.OutputSchema, "decision": input.Decision, "answers": input.Answers, "responseContent": input.ResponseContent,
+			"effort": input.Effort, "permissions": input.Permissions, "personality": input.Personality, "serviceTier": input.ServiceTier, "summary": input.Summary,
+			"reviewType": input.ReviewType, "reviewDelivery": input.ReviewDelivery, "reviewBranch": input.ReviewBranch,
+			"reviewSha": input.ReviewSHA, "reviewTitle": input.ReviewTitle, "reviewInstructions": input.ReviewInstructions,
+		}
+		if len(input.Skills) > 0 {
+			converted := make([]map[string]any, len(input.Skills))
+			for i, item := range input.Skills {
+				converted[i] = map[string]any{"name": item["name"], "path": item["path"]}
+			}
+			params["skills"] = converted
+		}
+		if len(input.Mentions) > 0 {
+			converted := make([]map[string]any, len(input.Mentions))
+			for i, item := range input.Mentions {
+				converted[i] = map[string]any{"name": item["name"], "path": item["path"]}
+			}
+			params["mentions"] = converted
+		}
+		result, err := e.service.CallCapability(ctx, ownerID, input.MachineID, "agent.control", input.Action, params)
+		if err != nil {
+			return nil, err
+		}
+		return genericCapabilityOutput{Result: result}, nil
+
+	case "working_context":
+		input, err := toolInput[workingContextInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		params := map[string]any{
+			"projectPath": input.ProjectPath, "goal": input.Goal,
+			"planId": input.PlanID, "expectedRevision": input.ExpectedRevision, "title": input.Title,
+			"targetVersion": input.TargetVersion, "markdownRoot": input.MarkdownRoot, "initializeMarkdown": input.InitializeMarkdown,
+			"baselineBranch": input.BaselineBranch, "baselineCommit": input.BaselineCommit,
+			"completed": input.Completed, "constraints": input.Constraints, "pending": input.Pending,
+			"keyFiles": input.KeyFiles, "facts": input.Facts,
+			"tasks": input.Tasks, "taskId": input.TaskID, "taskTitle": input.TaskTitle, "taskStatus": input.TaskStatus,
+			"blockedReason": input.BlockedReason, "completion": input.Completion, "evidence": input.Evidence,
+			"markdownPath": input.MarkdownPath, "content": input.Content, "managedBlock": input.ManagedBlock,
+			"expectedFileRevision": input.ExpectedFileRevision, "sinceRevision": input.SinceRevision, "waitSeconds": input.WaitSeconds,
+		}
+		result, err := e.service.CallCapability(ctx, ownerID, input.MachineID, "working.context", input.Action, params)
+		if err != nil {
+			return nil, err
+		}
+		return genericCapabilityOutput{Result: result}, nil
+
+	case "artifact_get":
+		input, err := toolInput[artifactGetInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		switch input.Action {
+		case "uploadFile", "uploadJobLog":
+			params := map[string]any{"path": input.Path, "jobId": input.JobID, "logicalName": input.LogicalName, "contentType": input.ContentType}
+			result, err := e.service.CallCapability(ctx, ownerID, input.MachineID, "artifact.store", input.Action, params)
+			if err != nil {
+				return nil, err
+			}
+			return genericCapabilityOutput{Result: result}, nil
+		case "publishFile":
+			params := map[string]any{"path": input.Path, "logicalName": input.LogicalName, "contentType": input.ContentType}
+			result, err := e.service.CallCapability(ctx, ownerID, input.MachineID, "artifact.store", input.Action, params)
+			if err != nil {
+				return nil, err
+			}
+			return genericCapabilityOutput{Result: result}, nil
+		case "get":
+			artifact, err := e.service.GetArtifact(ctx, ownerID, input.ArtifactID)
+			if err != nil {
+				return nil, err
+			}
+			raw, err := json.Marshal(artifact)
+			if err != nil {
+				return nil, err
+			}
+			var result map[string]any
+			if err := json.Unmarshal(raw, &result); err != nil {
+				return nil, err
+			}
+			result["downloadPath"] = "/api/v1/artifacts/" + artifact.ID + "/content"
+			if content, ok, err := readArtifactInline(ctx, e.service, artifact); err != nil {
+				return nil, err
+			} else if ok {
+				result["content"] = content
+				result["encoding"] = "utf-8"
+			}
+			return genericCapabilityOutput{Result: result}, nil
+		default:
+			return nil, &toolRequestError{message: fmt.Sprintf("unsupported artifact action %q", input.Action)}
+		}
+	default:
+		return nil, fmt.Errorf("unknown tool %q", tool)
+	}
+}

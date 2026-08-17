@@ -6,6 +6,8 @@
 
 Hub data-dir 与 release-dir 分离：数据库/密钥/Artifact 进入备份，Windows Node EXE 和大型组件不进入 Hub 数据备份。Temporary Presentation Relay 使用系统临时目录，不进入数据库或备份，Hub 启动/退出会清理，单个资源 TTL 为 20 分钟、单次上传上限 64 MiB。反向代理应对 Fast Spider 路径允许至少 64 MiB 请求体；Nginx 建议同时设置 `proxy_request_buffering off`，避免大图/临时文件先完整落到代理缓存。
 
+0.4.20 增加独立 Direct API。生产 PublicBaseURL 为 `/fast-spider` 时，对外入口为 `GET /fast-spider/direct/v1/tools` 和 `POST /fast-spider/direct/v1/call`，仅接受后台生成的 `fsp_tmp_` Direct Access Key Bearer。Direct Key 与 OAuth、Connection Token 完全隔离；默认只读，高危 Scope 单独授权，高权限最长 24 小时、只读最长 7 天，可绑定单一 Machine 并设置每分钟限速。MCP 与 Direct API 共用同一 `toolExecutor`，不得维护两套 Capability 参数映射。
+
 ## Windows Node
 
 对外只交付一个 `fast-spider-node.exe`。第一次运行后正式副本位于 `%LOCALAPPDATA%\FastSpider\bin\fast-spider-node.exe`。
@@ -107,6 +109,7 @@ spiderctl staging-prune --dir /tmp --layout server --through <last-completed-ver
 - 本机与公网 livez/readyz 均 200。
 - Node release manifest 的版本/哈希与正式 EXE 一致。
 - ChatGPT OAuth + MCP tools/list 可获取当前工具。
+- Direct API 未认证请求返回 401；临时只读 Key 可读取 `/direct/v1/tools`，高危调用无对应 Scope 返回 403；Machine-bound Key 无法访问其它 Machine；撤销或过期后立即返回 401。
 - 已登录 Web 后台“MCP 调用诊断”除 initialize/tools/list/tools/call 外还显示最近一次通过 OAuth 的 MCP HTTP 请求时间；若 ChatGPT 正报告不可用但该时间不变化，优先判定为会话侧未发请求，而不是 Node/Hub 断线。
 - ChatGPT App 在工具 Schema/描述变化后执行 Refresh；普通长会话中若 FastSpider_FS 命名空间缺失，先以唯一标记 `fsprobe` 过滤发现并只物化 `machine_list`，真实连接成功后再按当前动作加载 `capability_list`、`machine_get` 或业务工具。禁止为了健康检查一次加载全部 17 个 Schema；完整目录、连接入口与单工具分别不得超过 48 KiB、8 KiB、8 KiB。
 
