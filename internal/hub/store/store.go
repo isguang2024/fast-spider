@@ -1194,6 +1194,13 @@ func (s *Store) CleanupExpired(ctx context.Context, now time.Time) error {
 	); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM direct_access_keys WHERE (revoked_at IS NOT NULL AND revoked_at <= ?) OR expires_at <= ?",
+		now.Add(-oauthAuthorizationHistoryRetention).Unix(),
+		now.Add(-oauthAuthorizationHistoryRetention).Unix(),
+	); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM audit_entries WHERE created_at <= ?", now.Add(-auditRetention).Unix()); err != nil {
 		return err
 	}

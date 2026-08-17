@@ -63,7 +63,7 @@ func TestWebSetupLoginAndDashboard(t *testing.T) {
 	if !strings.Contains(string(body), `href="/api/v1/node/releases/windows-amd64/download"`) || !strings.Contains(string(body), "下载最新版 Windows 客户端") {
 		t.Fatalf("dashboard latest Windows Node download entry missing: %s", body)
 	}
-	for _, marker := range []string{`id="mcp-diagnostics"`, `id="mcp-diagnostics-refresh"`, `/app/api/mcp-diagnostics`, "MCP 调用诊断", "最近 MCP 请求", "最近 Initialize", "最近 Tools List", "最近 Tool Call"} {
+	for _, marker := range []string{`id="mcp-diagnostics"`, `id="mcp-diagnostics-refresh"`, `/app/api/mcp-diagnostics`, "MCP 调用诊断", "最近 MCP 请求", "最近 Initialize", "最近 Tools List", "最近 Tool Call", `id="direct-keys"`, "临时直连密钥", "/direct/v1"} {
 		if !strings.Contains(string(body), marker) {
 			t.Fatalf("dashboard MCP diagnostics missing %q: %s", marker, body)
 		}
@@ -158,6 +158,48 @@ func TestWebConnectionTokenIsOneTimeAndCSRFProtected(t *testing.T) {
 	status, _, dashboard = webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app", nil)
 	if status != http.StatusOK || strings.Contains(string(dashboard), secret) {
 		t.Fatalf("dashboard leaked connection token secret: status=%d body=%s", status, dashboard)
+	}
+
+	status, _, body = webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/direct-keys", url.Values{
+		"csrf_token":      {"wrong-csrf"},
+		"label":           {"rejected-direct"},
+		"expires_minutes": {"60"},
+		"machine_id":      {""},
+		"rate_limit":      {"120"},
+		"scope":           {core.DirectScopeFilesWrite},
+	})
+	if status != http.StatusForbidden {
+		t.Fatalf("bad direct key CSRF status=%d body=%s", status, body)
+	}
+	if keys, err := service.ListDirectAccessKeys(ctx, account.OwnerID); err != nil || len(keys) != 0 {
+		t.Fatalf("bad CSRF created direct keys=%+v err=%v", keys, err)
+	}
+
+	status, _, body = webTestRequest(t, client, http.MethodPost, httpServer.URL+"/app/direct-keys", url.Values{
+		"csrf_token":      {session.CSRFToken},
+		"label":           {"http-ai"},
+		"expires_minutes": {"60"},
+		"machine_id":      {""},
+		"rate_limit":      {"120"},
+		"scope":           {core.DirectScopeFilesWrite},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("direct key create status=%d body=%s", status, body)
+	}
+	directSecret := webCreatedDirectKey(t, body)
+	if !strings.HasPrefix(directSecret, "fsp_tmp_") {
+		t.Fatalf("unexpected direct key prefix: %q", directSecret)
+	}
+	if strings.Count(string(body), directSecret) != 1 {
+		t.Fatalf("direct key secret displayed %d times, want once: %s", strings.Count(string(body), directSecret), body)
+	}
+	keys, err := service.ListDirectAccessKeys(ctx, account.OwnerID)
+	if err != nil || len(keys) != 1 || strings.Join(keys[0].Scopes, ",") != core.DirectScopeFilesWrite {
+		t.Fatalf("direct key listing=%+v err=%v", keys, err)
+	}
+	status, _, dashboard = webTestRequest(t, client, http.MethodGet, httpServer.URL+"/app", nil)
+	if status != http.StatusOK || strings.Contains(string(dashboard), directSecret) || !strings.Contains(string(dashboard), "http-ai") {
+		t.Fatalf("dashboard direct key redaction status=%d body=%s", status, dashboard)
 	}
 }
 
@@ -585,6 +627,21 @@ func webCreatedToken(t *testing.T, body []byte) string {
 	end := strings.Index(string(body[start:]), "</textarea>")
 	if end < 0 {
 		t.Fatalf("created token textarea is not closed: %s", body)
+	}
+	return string(body[start : start+end])
+}
+
+func webCreatedDirectKey(t *testing.T, body []byte) string {
+	t.Helper()
+	const prefix = `<textarea id="created-direct-key" rows="4" readonly spellcheck="false">`
+	start := strings.Index(string(body), prefix)
+	if start < 0 {
+		t.Fatalf("created direct key textarea missing: %s", body)
+	}
+	start += len(prefix)
+	end := strings.Index(string(body[start:]), "</textarea>")
+	if end < 0 {
+		t.Fatalf("created direct key textarea is not closed: %s", body)
 	}
 	return string(body[start : start+end])
 }

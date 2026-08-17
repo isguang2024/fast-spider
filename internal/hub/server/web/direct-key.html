@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>临时直连密钥 · Fast Spider</title>
+  <link rel="stylesheet" href="{{.BasePath}}/assets/app.css">
+  <script src="{{.BasePath}}/assets/app.js" defer></script>
+</head>
+<body class="auth-page">
+  <main class="auth-card wide token-card">
+    <div class="brand-mark">FS</div>
+    <p class="eyebrow">Direct Access Key</p>
+    <h1>临时直连密钥已创建</h1>
+    <p class="muted">用于不支持 MCP / OAuth、但可以发送 HTTP 请求的 AI、Agent 或程序。它与 MCP OAuth 和 Node 连接令牌完全独立，明文只显示这一次。</p>
+    <div class="one-time-banner" role="status">
+      <strong>{{.Label}}</strong>
+      <span>有效期至：{{.Expires}}</span>
+      <span>设备：{{.Machine}}</span>
+      <span>权限：{{.Scopes}}</span>
+      <span>限速：{{.RateLimit}} 次/分钟</span>
+    </div>
+    <label for="direct-endpoint">Direct API</label>
+    <div class="copy-field">
+      <input id="direct-endpoint" value="{{.DirectURL}}" readonly spellcheck="false">
+      <button class="secondary" type="button" data-copy-target="direct-endpoint">复制地址</button>
+    </div>
+    <label for="created-direct-key">密钥</label>
+    <div class="copy-field">
+      <textarea id="created-direct-key" rows="4" readonly spellcheck="false">{{.Token}}</textarea>
+      <button class="secondary" type="button" data-copy-target="created-direct-key">复制密钥</button>
+    </div>
+    <div class="command-box direct-example">
+      <span>调用方式</span>
+      <code>Authorization: Bearer &lt;上方密钥&gt;</code>
+      <code>GET {{.DirectURL}}/tools</code>
+      <code>POST {{.DirectURL}}/call</code>
+    </div>
+    <p class="hint">关闭此页面后无法再次查看明文密钥。Hub 数据库只保存密钥哈希；遗失后请撤销并重新创建，不要把密钥放进 URL、日志或公开 Prompt。</p>
+    <a class="primary button-link" href="{{.BasePath}}/app#direct-keys">返回后台</a>
+  </main>
+</body>
+</html>

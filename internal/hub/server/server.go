@@ -31,6 +31,7 @@ type Server struct {
 	oauth              *oauthState
 	oauthRegistrations *oauthRegistrationGuard
 	loginLimiter       *loginFailureLimiter
+	directLimiter      *directRateLimiter
 	presentations      *presentationStore
 	mcpDiagnostics     *mcpDiagnosticsStore
 	http               *http.Server
@@ -51,6 +52,7 @@ func New(service *core.Service, cfg Config) *Server {
 		oauth:              newOAuthState(),
 		oauthRegistrations: newOAuthRegistrationGuard(),
 		loginLimiter:       newLoginFailureLimiter(),
+		directLimiter:      newDirectRateLimiter(),
 		presentations:      newPresentationStore(presentationTempRoot(service.DataDir())),
 		mcpDiagnostics:     newMCPDiagnosticsStore(service.Version(), startedAt),
 	}
@@ -73,6 +75,9 @@ func New(service *core.Service, cfg Config) *Server {
 	mux.HandleFunc("POST /app/tokens", s.webSessionOnly(s.handleAppTokenCreate))
 	mux.HandleFunc("POST /app/tokens/{tokenId}/revoke", s.webSessionOnly(s.handleAppTokenRevoke))
 	mux.HandleFunc("POST /app/tokens/{tokenId}/delete", s.webSessionOnly(s.handleAppTokenDelete))
+	mux.HandleFunc("POST /app/direct-keys", s.webSessionOnly(s.handleAppDirectKeyCreate))
+	mux.HandleFunc("POST /app/direct-keys/{keyId}/revoke", s.webSessionOnly(s.handleAppDirectKeyRevoke))
+	mux.HandleFunc("POST /app/direct-keys/{keyId}/delete", s.webSessionOnly(s.handleAppDirectKeyDelete))
 	mux.HandleFunc("GET /assets/{file}", s.handleWebAsset)
 	mux.HandleFunc("GET /livez", s.handleLive)
 	mux.HandleFunc("GET /readyz", s.handleReady)
@@ -92,6 +97,8 @@ func New(service *core.Service, cfg Config) *Server {
 	mux.HandleFunc("POST /oauth/authorize", s.handleOAuthAuthorize)
 	mux.HandleFunc("POST /oauth/token", oauthPostOnly(s.handleOAuthToken))
 	mux.HandleFunc("POST /oauth/revoke", oauthPostOnly(s.handleOAuthRevoke))
+	mux.HandleFunc("GET /direct/v1/tools", s.directAccessOnly(s.handleDirectTools))
+	mux.HandleFunc("POST /direct/v1/call", s.directAccessOnly(s.handleDirectCall))
 	mux.Handle("/mcp", s.newMCPHandler())
 	mux.HandleFunc("GET /node/v1/connect", s.handleNodeConnect)
 	mux.HandleFunc("POST /node/v1/presentations", s.handlePresentationUpload)

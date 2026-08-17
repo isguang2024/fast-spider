@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -45,6 +46,20 @@ type ConnectionTokenRecord struct {
 	LastUsedAt *time.Time
 	ExpiresAt  *time.Time
 	RevokedAt  *time.Time
+}
+
+type DirectAccessKeyRecord struct {
+	ID                 string
+	OwnerID            string
+	TokenHint          string
+	Label              string
+	Scopes             []string
+	MachineID          string
+	RateLimitPerMinute int
+	CreatedAt          time.Time
+	LastUsedAt         *time.Time
+	ExpiresAt          time.Time
+	RevokedAt          *time.Time
 }
 
 func (s *Store) BootstrapOwnerAccount(
@@ -251,6 +266,143 @@ func (s *Store) DeleteConnectionToken(ctx context.Context, ownerID, tokenID stri
 		WHERE id = ? AND owner_id = ? AND deleted_at IS NULL
 		AND (revoked_at IS NOT NULL OR (expires_at IS NOT NULL AND expires_at <= ?))`,
 		now.Unix(), tokenID, ownerID, now.Unix(),
+	)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected == 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
+func (s *Store) CreateDirectAccessKey(ctx context.Context, rec DirectAccessKeyRecord, tokenHash string) error {
+	scopesJSON, err := json.Marshal(rec.Scopes)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO direct_access_keys(
+		id, owner_id, token_hash, token_hint, label, scopes_json, machine_id,
+		rate_limit_per_minute, created_at, expires_at
+	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		rec.ID, rec.OwnerID, tokenHash, rec.TokenHint, rec.Label, string(scopesJSON), nullString(rec.MachineID),
+		rec.RateLimitPerMinute, rec.CreatedAt.Unix(), rec.ExpiresAt.Unix(),
+	)
+	return err
+}
+
+func (s *Store) ListDirectAccessKeys(ctx context.Context, ownerID string) ([]DirectAccessKeyRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT
+		id, owner_id, token_hint, label, scopes_json, machine_id, rate_limit_per_minute,
+		created_at, last_used_at, expires_at, revoked_at
+	FROM direct_access_keys
+	WHERE owner_id = ? AND deleted_at IS NULL
+	ORDER BY created_at DESC, id`, ownerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var records []DirectAccessKeyRecord
+	for rows.Next() {
+		var rec DirectAccessKeyRecord
+		var scopesJSON string
+		var machineID sql.NullString
+		var created, expires int64
+		var lastUsed, revoked sql.NullInt64
+		if err := rows.Scan(
+			&rec.ID, &rec.OwnerID, &rec.TokenHint, &rec.Label, &scopesJSON, &machineID,
+			&rec.RateLimitPerMinute, &created, &lastUsed, &expires, &revoked,
+		); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(scopesJSON), &rec.Scopes); err != nil {
+			return nil, fmt.Errorf("decode direct access key scopes: %w", err)
+		}
+		rec.MachineID = machineID.String
+		rec.CreatedAt = time.Unix(created, 0).UTC()
+		rec.ExpiresAt = time.Unix(expires, 0).UTC()
+		if lastUsed.Valid {
+			value := time.Unix(lastUsed.Int64, 0).UTC()
+			rec.LastUsedAt = &value
+		}
+		if revoked.Valid {
+			value := time.Unix(revoked.Int64, 0).UTC()
+			rec.RevokedAt = &value
+		}
+		records = append(records, rec)
+	}
+	return records, rows.Err()
+}
+
+func (s *Store) AuthenticateDirectAccessKey(ctx context.Context, tokenHash string, now time.Time) (DirectAccessKeyRecord, error) {
+	var rec DirectAccessKeyRecord
+	var scopesJSON string
+	var machineID sql.NullString
+	var created, expires int64
+	var lastUsed, revoked sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT
+		id, owner_id, token_hint, label, scopes_json, machine_id, rate_limit_per_minute,
+		created_at, last_used_at, expires_at, revoked_at
+	FROM direct_access_keys
+	WHERE token_hash = ? AND deleted_at IS NULL`, tokenHash).Scan(
+		&rec.ID, &rec.OwnerID, &rec.TokenHint, &rec.Label, &scopesJSON, &machineID,
+		&rec.RateLimitPerMinute, &created, &lastUsed, &expires, &revoked,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return DirectAccessKeyRecord{}, ErrUnauthorized
+	}
+	if err != nil {
+		return DirectAccessKeyRecord{}, err
+	}
+	if revoked.Valid {
+		return DirectAccessKeyRecord{}, ErrRevoked
+	}
+	if expires <= now.Unix() {
+		return DirectAccessKeyRecord{}, ErrExpired
+	}
+	if err := json.Unmarshal([]byte(scopesJSON), &rec.Scopes); err != nil {
+		return DirectAccessKeyRecord{}, fmt.Errorf("decode direct access key scopes: %w", err)
+	}
+	rec.MachineID = machineID.String
+	rec.CreatedAt = time.Unix(created, 0).UTC()
+	rec.ExpiresAt = time.Unix(expires, 0).UTC()
+	if lastUsed.Valid {
+		value := time.Unix(lastUsed.Int64, 0).UTC()
+		rec.LastUsedAt = &value
+	}
+	if !lastUsed.Valid || now.Unix()-lastUsed.Int64 >= 60 {
+		_, _ = s.db.ExecContext(ctx,
+			"UPDATE direct_access_keys SET last_used_at = ? WHERE id = ? AND revoked_at IS NULL AND deleted_at IS NULL",
+			now.Unix(), rec.ID,
+		)
+		rec.LastUsedAt = &now
+	}
+	return rec, nil
+}
+
+func (s *Store) RevokeDirectAccessKey(ctx context.Context, ownerID, keyID string, now time.Time) error {
+	result, err := s.db.ExecContext(ctx,
+		"UPDATE direct_access_keys SET revoked_at = ? WHERE id = ? AND owner_id = ? AND revoked_at IS NULL AND deleted_at IS NULL",
+		now.Unix(), keyID, ownerID,
+	)
+	if err != nil {
+		return err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return err
+	} else if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) DeleteDirectAccessKey(ctx context.Context, ownerID, keyID string, now time.Time) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE direct_access_keys SET deleted_at = ?
+		WHERE id = ? AND owner_id = ? AND deleted_at IS NULL
+		AND (revoked_at IS NOT NULL OR expires_at <= ?)`,
+		now.Unix(), keyID, ownerID, now.Unix(),
 	)
 	if err != nil {
 		return err

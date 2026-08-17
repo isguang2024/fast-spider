@@ -22,11 +22,12 @@ const webSessionCookieName = "fast_spider_session"
 var webFiles embed.FS
 
 var webTemplates = map[string]*template.Template{
-	"setup":     template.Must(template.ParseFS(webFiles, "web/setup.html")),
-	"login":     template.Must(template.ParseFS(webFiles, "web/login.html")),
-	"authorize": template.Must(template.ParseFS(webFiles, "web/authorize.html")),
-	"app":       template.Must(template.ParseFS(webFiles, "web/app.html")),
-	"token":     template.Must(template.ParseFS(webFiles, "web/token.html")),
+	"setup":      template.Must(template.ParseFS(webFiles, "web/setup.html")),
+	"login":      template.Must(template.ParseFS(webFiles, "web/login.html")),
+	"authorize":  template.Must(template.ParseFS(webFiles, "web/authorize.html")),
+	"app":        template.Must(template.ParseFS(webFiles, "web/app.html")),
+	"token":      template.Must(template.ParseFS(webFiles, "web/token.html")),
+	"direct-key": template.Must(template.ParseFS(webFiles, "web/direct-key.html")),
 }
 
 type setupPageData struct {
@@ -93,6 +94,19 @@ type apiTokenPageView struct {
 	Status     string
 }
 
+type directKeyPageView struct {
+	ID         string
+	Label      string
+	TokenHint  string
+	Scopes     string
+	Machine    string
+	RateLimit  int
+	CreatedAt  string
+	LastUsedAt string
+	ExpiresAt  string
+	Status     string
+}
+
 type tokenPageData struct {
 	BasePath string
 	Label    string
@@ -100,10 +114,22 @@ type tokenPageData struct {
 	Expires  string
 }
 
+type directKeyPageData struct {
+	BasePath  string
+	DirectURL string
+	Label     string
+	Token     string
+	Expires   string
+	Scopes    string
+	Machine   string
+	RateLimit int
+}
+
 type appPageData struct {
 	BasePath             string
 	BaseURL              string
 	MCPURL               string
+	DirectURL            string
 	Username             string
 	DisplayName          string
 	CSRFToken            string
@@ -116,6 +142,8 @@ type appPageData struct {
 	ActiveAuthorizations int
 	Tokens               []apiTokenPageView
 	ActiveTokens         int
+	DirectKeys           []directKeyPageView
+	ActiveDirectKeys     int
 }
 
 func (s *Server) handleWebRoot(w http.ResponseWriter, r *http.Request) {
@@ -271,6 +299,11 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request, session store
 		http.Error(w, "Failed to load access tokens", http.StatusInternalServerError)
 		return
 	}
+	directKeys, err := s.service.ListDirectAccessKeys(r.Context(), session.OwnerID)
+	if err != nil {
+		http.Error(w, "Failed to load direct access keys", http.StatusInternalServerError)
+		return
+	}
 
 	now := time.Now().UTC()
 	data := appPageData{
@@ -281,6 +314,11 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request, session store
 		CSRFToken:   session.CSRFToken,
 	}
 	data.MCPURL = data.BaseURL + "/mcp"
+	data.DirectURL = data.BaseURL + "/direct/v1"
+	machineLabels := make(map[string]string, len(machines))
+	for _, machine := range machines {
+		machineLabels[machine.MachineID] = machine.DisplayName
+	}
 	for _, machine := range machines {
 		view := machinePageView{MachineView: machine, LastSeen: "从未"}
 		if machine.LastSeenAt != nil {
@@ -331,6 +369,33 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request, session store
 			Status:     status,
 		})
 	}
+	for _, directKey := range directKeys {
+		status := "有效"
+		if directKey.RevokedAt != nil {
+			status = "已撤销"
+		} else if !directKey.ExpiresAt.After(now) {
+			status = "已过期"
+		} else {
+			data.ActiveDirectKeys++
+		}
+		lastUsed := "尚未使用"
+		if directKey.LastUsedAt != nil {
+			lastUsed = formatWebTime(*directKey.LastUsedAt)
+		}
+		machine := "全部设备"
+		if directKey.MachineID != "" {
+			machine = machineLabels[directKey.MachineID]
+			if machine == "" {
+				machine = directKey.MachineID
+			}
+		}
+		data.DirectKeys = append(data.DirectKeys, directKeyPageView{
+			ID: directKey.ID, Label: directKey.Label, TokenHint: directKey.TokenHint,
+			Scopes: directScopeWebLabel(directKey.Scopes), Machine: machine, RateLimit: directKey.RateLimitPerMinute,
+			CreatedAt: formatWebTime(directKey.CreatedAt), LastUsedAt: lastUsed,
+			ExpiresAt: formatWebTime(directKey.ExpiresAt), Status: status,
+		})
+	}
 	for _, authorization := range authorizations {
 		status := "有效"
 		if authorization.RevokedAt != nil {
@@ -371,6 +436,10 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request, session store
 		data.Notice = "连接令牌已撤销。"
 	case "token-deleted":
 		data.Notice = "连接令牌已删除。"
+	case "direct-key-revoked":
+		data.Notice = "临时直连密钥已撤销。"
+	case "direct-key-deleted":
+		data.Notice = "临时直连密钥已删除。"
 	case "password-changed":
 		data.Notice = "密码已更新，其他网页登录会话已退出。"
 	}
@@ -383,6 +452,10 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request, session store
 		data.Error = "连接令牌有效期参数无效，请重新选择。"
 	case "token-create":
 		data.Error = "无法创建连接令牌。请检查名称和有效期，或先撤销不再使用的令牌。"
+	case "direct-key-invalid":
+		data.Error = "临时直连密钥参数无效。高权限密钥最长 24 小时，只读密钥最长 7 天。"
+	case "direct-key-create":
+		data.Error = "无法创建临时直连密钥。请检查名称、设备、权限、有效期和频率限制。"
 	}
 	s.renderWebPage(w, "app", data)
 }
@@ -510,6 +583,84 @@ func (s *Server) handleAppTokenCreate(w http.ResponseWriter, r *http.Request, se
 		Token:    result.Token,
 		Expires:  expires,
 	})
+}
+
+func (s *Server) handleAppDirectKeyCreate(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
+	if !s.verifyCSRF(w, r, session.CSRFToken) {
+		return
+	}
+	minutes, err := strconv.Atoi(strings.TrimSpace(r.PostForm.Get("expires_minutes")))
+	if err != nil || (minutes != 10 && minutes != 60 && minutes != 360 && minutes != 1440 && minutes != 10080) {
+		s.redirectPublic(w, r, "/app?error=direct-key-invalid#direct-keys", http.StatusSeeOther)
+		return
+	}
+	rateLimit, err := strconv.Atoi(strings.TrimSpace(r.PostForm.Get("rate_limit")))
+	if err != nil || rateLimit < 1 || rateLimit > 600 {
+		s.redirectPublic(w, r, "/app?error=direct-key-invalid#direct-keys", http.StatusSeeOther)
+		return
+	}
+	result, err := s.service.CreateDirectAccessKey(
+		r.Context(), session.OwnerID, r.PostForm.Get("label"), r.PostForm.Get("machine_id"),
+		r.PostForm["scope"], time.Duration(minutes)*time.Minute, rateLimit, remoteIP(r),
+	)
+	if err != nil {
+		s.redirectPublic(w, r, "/app?error=direct-key-create#direct-keys", http.StatusSeeOther)
+		return
+	}
+	machine := "全部设备"
+	if result.Record.MachineID != "" {
+		machine = result.Record.MachineID
+		if item, getErr := s.service.GetMachine(r.Context(), session.OwnerID, result.Record.MachineID); getErr == nil {
+			machine = item.DisplayName
+		}
+	}
+	s.renderWebPage(w, "direct-key", directKeyPageData{
+		BasePath: s.publicBasePath(r), DirectURL: strings.TrimRight(s.publicBaseURL(r), "/") + "/direct/v1",
+		Label: result.Record.Label, Token: result.Token, Expires: formatWebTime(result.Record.ExpiresAt),
+		Scopes: directScopeWebLabel(result.Record.Scopes), Machine: machine, RateLimit: result.Record.RateLimitPerMinute,
+	})
+}
+
+func (s *Server) handleAppDirectKeyRevoke(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
+	if !s.verifyCSRF(w, r, session.CSRFToken) {
+		return
+	}
+	if err := s.service.RevokeDirectAccessKey(r.Context(), session.OwnerID, r.PathValue("keyId"), remoteIP(r)); err != nil {
+		http.Error(w, "Unable to revoke direct access key", http.StatusBadRequest)
+		return
+	}
+	s.redirectPublic(w, r, "/app?notice=direct-key-revoked#direct-keys", http.StatusSeeOther)
+}
+
+func (s *Server) handleAppDirectKeyDelete(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {
+	if !s.verifyCSRF(w, r, session.CSRFToken) {
+		return
+	}
+	if err := s.service.DeleteDirectAccessKey(r.Context(), session.OwnerID, r.PathValue("keyId"), remoteIP(r)); err != nil {
+		http.Error(w, "Unable to delete direct access key", http.StatusBadRequest)
+		return
+	}
+	s.redirectPublic(w, r, "/app?notice=direct-key-deleted#direct-keys", http.StatusSeeOther)
+}
+
+func directScopeWebLabel(scopes []string) string {
+	if len(scopes) == 0 {
+		return "只读"
+	}
+	labels := map[string]string{
+		core.DirectScopeFilesWrite: "文件写入", core.DirectScopeShell: "Shell / Build", core.DirectScopeJobs: "任务取消",
+		core.DirectScopeGit: "Git 写入", core.DirectScopeBrowser: "浏览器 / 截图", core.DirectScopeAI: "AI 控制",
+		core.DirectScopeContextWrite: "上下文写入", core.DirectScopeArtifactWrite: "文件上传 / 发布",
+	}
+	items := []string{"只读"}
+	for _, scope := range scopes {
+		label := labels[scope]
+		if label == "" {
+			label = scope
+		}
+		items = append(items, label)
+	}
+	return strings.Join(items, " + ")
 }
 
 func (s *Server) handleAppTokenRevoke(w http.ResponseWriter, r *http.Request, session store.WebSessionRecord) {

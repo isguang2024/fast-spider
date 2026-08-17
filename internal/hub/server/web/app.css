@@ -101,7 +101,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--text-subtle); bo
 .client-card { display: flex; align-items: center; gap: 13px; margin: 22px 0 4px; padding: 15px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-soft); }
 .client-card p { margin: 3px 0 0; color: var(--text-muted); font-family: "SFMono-Regular", Consolas, monospace; font-size: .76rem; overflow-wrap: anywhere; }
 .status-dot { width: 9px; height: 9px; flex: 0 0 auto; display: inline-block; border-radius: 50%; background: #3aa657; box-shadow: 0 0 0 5px rgba(58,166,87,.12); }
-.one-time-banner { display: flex; justify-content: space-between; gap: 16px; margin: 20px 0; padding: 14px 16px; border: 1px solid var(--notice-border); border-radius: 13px; background: var(--notice-bg); color: var(--notice-text); font-size: .84rem; }
+.one-time-banner { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; margin: 20px 0; padding: 14px 16px; border: 1px solid var(--notice-border); border-radius: 13px; background: var(--notice-bg); color: var(--notice-text); font-size: .84rem; }
 .copy-field { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: stretch; }
 .copy-field .secondary { align-self: stretch; }
 
@@ -131,7 +131,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--text-subtle); bo
 .hero-meta .status-dot { box-shadow: none; }
 .hero-meta .meta-label { margin-top: 6px; color: color-mix(in srgb, var(--bg) 65%, transparent); font-size: .68rem; text-transform: uppercase; letter-spacing: .1em; }
 .hero-meta code { color: color-mix(in srgb, var(--bg) 82%, transparent); }
-.summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; margin: 14px 0; }
+.summary-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 13px; margin: 14px 0; }
 .summary-card { display: grid; gap: 5px; min-height: 118px; align-content: center; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
 .summary-card span, .summary-card small { color: var(--text-muted); font-size: .77rem; }
 .summary-card strong { font-size: 1.9rem; letter-spacing: -.045em; font-variant-numeric: tabular-nums; }
@@ -145,6 +145,18 @@ input:focus, select:focus, textarea:focus { border-color: var(--text-subtle); bo
 .token-heading, .account-heading { align-items: end; }
 .token-form { flex: 0 1 560px; display: grid; grid-template-columns: minmax(160px, 1fr) 130px auto; align-items: end; gap: 10px; }
 .token-form .primary { white-space: nowrap; }
+.direct-key-heading { align-items: stretch; }
+.direct-key-heading > div:first-child { flex: 1 1 360px; }
+.direct-key-form { flex: 0 1 700px; display: grid; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-soft); }
+.direct-key-form-row { display: grid; grid-template-columns: minmax(150px, 1fr) repeat(3, minmax(110px, .7fr)); gap: 10px; }
+.scope-fieldset { margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: 11px; }
+.scope-fieldset legend { padding: 0 6px; color: var(--text-muted); font-size: .72rem; font-weight: 750; }
+.scope-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px 12px; }
+.scope-grid label { display: flex; align-items: center; gap: 7px; font-size: .76rem; font-weight: 650; }
+.scope-grid input[type="checkbox"] { width: 16px; min-height: 16px; height: 16px; padding: 0; margin: 0; box-shadow: none; }
+.direct-key-form > .primary { justify-self: end; min-width: 150px; }
+.direct-example { margin-top: 18px; }
+.direct-example code { display: block; }
 .password-form { flex: 0 1 680px; display: grid; grid-template-columns: repeat(3, minmax(130px, 1fr)) auto; align-items: end; gap: 10px; }
 .password-form .primary { white-space: nowrap; }
 .table-wrap { width: 100%; overflow-x: auto; }
@@ -180,8 +192,10 @@ td small { display: block; max-width: 310px; color: var(--text-subtle); font-fam
   .topbar { grid-template-columns: 1fr auto; }
   .topnav { display: none; }
   .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .token-heading, .account-heading { align-items: stretch; flex-direction: column; }
-  .token-form, .password-form { width: 100%; flex-basis: auto; }
+  .token-heading, .account-heading, .direct-key-heading { align-items: stretch; flex-direction: column; }
+  .token-form, .password-form, .direct-key-form { width: 100%; flex-basis: auto; }
+  .direct-key-form-row { grid-template-columns: 1fr 1fr; }
+  .scope-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .password-form { grid-template-columns: 1fr 1fr; }
   .diagnostics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -199,7 +213,9 @@ td small { display: block; max-width: 310px; color: var(--text-subtle); font-fam
   .panel { padding: 17px; }
   .panel-heading { align-items: stretch; flex-direction: column; }
   .command-box { flex-basis: auto; }
-  .token-form, .password-form { grid-template-columns: 1fr; }
+  .token-form, .password-form, .direct-key-form-row { grid-template-columns: 1fr; }
+  .scope-grid { grid-template-columns: 1fr; }
+  .direct-key-form > .primary { width: 100%; justify-self: stretch; }
   .auth-card { padding: 25px 20px; }
   .button-row, .copy-field { grid-template-columns: 1fr; }
   .one-time-banner { flex-direction: column; gap: 4px; }
