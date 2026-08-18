@@ -67,6 +67,9 @@ func main() {
 	if err != nil {
 		fatal(logger, "initialize hub core", err)
 	}
+	if err := service.EnsureAdminAccount(ctx); err != nil {
+		fatal(logger, "initialize admin account", err)
+	}
 	bootstrapToken, err := service.EnsureBootstrap(ctx)
 	if err != nil {
 		fatal(logger, "initialize owner bootstrap", err)

@@ -8,11 +8,11 @@ Hub data-dir 与 release-dir 分离：数据库/密钥/Artifact 进入备份，W
 
 0.4.20 增加独立 Direct API。生产 PublicBaseURL 为 `/fast-spider` 时，对外入口为 `GET /fast-spider/direct/v1/tools` 和 `POST /fast-spider/direct/v1/call`，仅接受后台生成的 `fsp_tmp_` Direct Access Key Bearer。Direct Key 与 OAuth、Connection Token 完全隔离；默认只读，高危 Scope 单独授权，高权限最长 24 小时、只读最长 7 天，可绑定单一 Machine 并设置每分钟限速。MCP 与 Direct API 共用同一 `toolExecutor`，不得维护两套 Capability 参数映射。
 
-## Windows Node
+## Windows/macOS/Linux Node
 
-对外只交付一个 `fast-spider-node.exe`。第一次运行后正式副本位于 `%LOCALAPPDATA%\FastSpider\bin\fast-spider-node.exe`。
+Windows 对外交付 `fast-spider-node.exe`；macOS 交付 `darwin-arm64`（Apple Silicon）和 `darwin-amd64`（Intel）两个单文件客户端。macOS 下载后需要执行 `chmod +x fast-spider-node`。Windows 第一次运行后正式副本位于 `%LOCALAPPDATA%\FastSpider\bin\fast-spider-node.exe`；macOS 使用当前用户配置目录保存 Node 状态。
 
-客户端只有“连接”和“本地配置”等本机运行设置，不需要登记目录。连接后的文件/进程权限就是当前 Windows 用户权限。
+客户端只有“连接”和“本地配置”等本机运行设置，不需要登记目录。连接后的文件/进程权限就是当前 OS 用户权限。
 
 ### AI Runtime
 

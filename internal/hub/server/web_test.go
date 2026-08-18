@@ -60,8 +60,14 @@ func TestWebSetupLoginAndDashboard(t *testing.T) {
 	if status != http.StatusOK || !strings.Contains(string(body), "Fast Spider 控制台") || !strings.Contains(string(body), "后台管理") {
 		t.Fatalf("dashboard status=%d body=%s", status, body)
 	}
-	if !strings.Contains(string(body), `href="/api/v1/node/releases/windows-amd64/download"`) || !strings.Contains(string(body), "下载 Windows 客户端") {
-		t.Fatalf("dashboard Windows Node download entry missing: %s", body)
+	if !strings.Contains(string(body), `href="/api/v1/node/releases/windows-amd64/download"`) || !strings.Contains(string(body), "下载 Windows 客户端") ||
+		!strings.Contains(string(body), `href="/api/v1/node/releases/darwin-arm64/download"`) || !strings.Contains(string(body), "下载 macOS（Apple 芯片）") ||
+		!strings.Contains(string(body), `href="/api/v1/node/releases/darwin-amd64/download"`) || !strings.Contains(string(body), "下载 macOS（Intel）") ||
+		!strings.Contains(string(body), "客户端下载") || !strings.Contains(string(body), "macOS Apple 芯片") {
+		t.Fatalf("dashboard Node download entries missing: %s", body)
+	}
+	if !strings.Contains(string(body), "快速上手教程") {
+		t.Fatalf("dashboard tutorial missing: %s", body)
 	}
 	for _, marker := range []string{"设备管理", "OAuth 授权", "临时直连密钥", "连接令牌", "账户安全", "MCP 服务", "运行状态", "/app/access/direct-keys", "/direct/v1"} {
 		if !strings.Contains(string(body), marker) {
@@ -78,12 +84,12 @@ func TestWebSetupLoginAndDashboard(t *testing.T) {
 		}
 	}
 	pageMarkers := map[string][]string{
-		"/app/machines":           {"设备管理", "生成连接令牌", "还没有设备"},
-		"/app/access/oauth":       {"OAuth 授权", "授权连接", "已授权客户端"},
-		"/app/access/direct-keys": {"创建密钥", "密钥列表", "/app/direct-keys", "列表永远不会再次显示密钥内容"},
-		"/app/access/tokens":      {"生成连接令牌", "令牌列表", "/app/tokens"},
-		"/app/access/security":    {"账户安全", "当前密码", "/app/account/password"},
-		"/app/system":             {"运行状态", "Liveness", "Readiness"},
+		"/app/machines":           {"设备管理", "生成连接令牌", "还没有设备", "设备连接教程"},
+		"/app/access/oauth":       {"OAuth 授权", "授权连接", "已授权客户端", "OAuth / MCP 使用教程"},
+		"/app/access/direct-keys": {"创建密钥", "密钥列表", "/app/direct-keys", "列表永远不会再次显示密钥内容", "直连 Key 使用教程", "inputSchema"},
+		"/app/access/tokens":      {"生成连接令牌", "令牌列表", "/app/tokens", "连接令牌教程"},
+		"/app/access/security":    {"账户安全", "当前密码", "/app/account/password", "账户安全教程"},
+		"/app/system":             {"运行状态", "Liveness", "Readiness", "运行状态教程"},
 	}
 	for page, markers := range pageMarkers {
 		status, _, pageBody := webTestRequest(t, client, http.MethodGet, httpServer.URL+page, nil)

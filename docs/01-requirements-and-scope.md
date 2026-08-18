@@ -118,7 +118,7 @@
 ### 4.3 跨平台
 
 - Hub：Linux 为生产主平台，开发期可运行于 Windows。
-- Node：Windows 10/11、主流 Linux 发行版；macOS 后续。
+- Node：Windows 10/11、主流 Linux 发行版和 macOS（Intel/Apple Silicon）。
 - 路径、大小写、换行、代码页、进程树和 OS 权限差异由 Node 平台层处理。
 
 ## 5. MVP 边界

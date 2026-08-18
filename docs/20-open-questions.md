@@ -19,7 +19,7 @@
 
 ### Q1. 支持的平台与工具链
 
-继续按 Windows 11/10、Ubuntu LTS amd64 为主基线；Linux arm64、其他发行版和 macOS 在实际发布需求出现时加入构建和 E2E 矩阵。Go、Playwright、Codex CLI、Claude Code CLI、CC Switch schema compatibility 和 MCP SDK 必须由 release gate/真实 E2E 持续验证。
+继续按 Windows 11/10、Ubuntu LTS amd64、macOS Intel/Apple Silicon 为主基线；Linux arm64 和其他发行版在实际发布需求出现时加入构建和 E2E 矩阵。Go、Playwright、Codex CLI、Claude Code CLI、CC Switch schema compatibility 和 MCP SDK 必须由 release gate/真实 E2E 持续验证。
 
 ### Q2. 文件编码与换行
 

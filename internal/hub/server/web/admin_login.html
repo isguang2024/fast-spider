@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>管理员登录 · Fast Spider</title>
+  <link rel="stylesheet" href="{{.BasePath}}/assets/app.css">
+</head>
+<body class="auth-page">
+  <main class="auth-card">
+    <div class="brand-mark">FS</div>
+    <p class="eyebrow">Fast Spider Admin</p>
+    <h1>管理员登录</h1>
+    <p class="muted">管理员仅用于创建用户，不参与用户设备和授权管理。</p>
+    {{if .Error}}<div class="alert" role="alert">{{.Error}}</div>{{end}}
+    <form method="post">
+      <label>用户名<input name="username" value="{{.Username}}" maxlength="64" autocomplete="username" required autofocus></label>
+      <label>密码<input name="password" type="password" maxlength="256" autocomplete="current-password" required></label>
+      <button class="primary" type="submit">登录</button>
+    </form>
+  </main>
+</body>
+</html>

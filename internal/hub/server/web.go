@@ -22,12 +22,14 @@ const webSessionCookieName = "fast_spider_session"
 var webFiles embed.FS
 
 var webTemplates = map[string]*template.Template{
-	"setup":      template.Must(template.ParseFS(webFiles, "web/setup.html")),
-	"login":      template.Must(template.ParseFS(webFiles, "web/login.html")),
-	"authorize":  template.Must(template.ParseFS(webFiles, "web/authorize.html")),
-	"app":        template.Must(template.ParseFS(webFiles, "web/admin.html")),
-	"token":      template.Must(template.ParseFS(webFiles, "web/token.html")),
-	"direct-key": template.Must(template.ParseFS(webFiles, "web/direct-key.html")),
+	"setup":       template.Must(template.ParseFS(webFiles, "web/setup.html")),
+	"login":       template.Must(template.ParseFS(webFiles, "web/login.html")),
+	"admin-login": template.Must(template.ParseFS(webFiles, "web/admin_login.html")),
+	"admin":       template.Must(template.ParseFS(webFiles, "web/admin_users.html")),
+	"authorize":   template.Must(template.ParseFS(webFiles, "web/authorize.html")),
+	"app":         template.Must(template.ParseFS(webFiles, "web/admin.html")),
+	"token":       template.Must(template.ParseFS(webFiles, "web/token.html")),
+	"direct-key":  template.Must(template.ParseFS(webFiles, "web/direct-key.html")),
 }
 
 type setupPageData struct {

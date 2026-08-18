@@ -63,7 +63,29 @@
             <h2>Fast Spider 控制台</h2>
             <p>集中查看设备、授权入口和服务状态。需要具体操作时从左侧导航进入对应页面。</p>
           </div>
-          <a class="primary button-link compact" href="{{.BasePath}}/api/v1/node/releases/windows-amd64/download">下载 Windows 客户端</a>
+          <div class="button-row">
+            <a class="primary button-link compact" href="{{.BasePath}}/api/v1/node/releases/windows-amd64/download">下载 Windows 客户端</a>
+            <a class="secondary button-link compact" href="{{.BasePath}}/api/v1/node/releases/darwin-arm64/download">下载 macOS（Apple 芯片）</a>
+            <a class="secondary button-link compact" href="{{.BasePath}}/api/v1/node/releases/darwin-amd64/download">下载 macOS（Intel）</a>
+          </div>
+        </section>
+
+        <section class="panel download-panel" aria-labelledby="client-downloads-title">
+          <div class="panel-heading"><div><p class="eyebrow">Client Downloads</p><h2 id="client-downloads-title">客户端下载</h2><p class="section-copy">按电脑芯片选择客户端。macOS 首次下载后需要赋予执行权限。</p></div></div>
+          <div class="download-grid">
+            <a href="{{.BasePath}}/api/v1/node/releases/windows-amd64/download"><strong>Windows</strong><span>Windows 10/11 · x64</span></a>
+            <a href="{{.BasePath}}/api/v1/node/releases/darwin-arm64/download"><strong>macOS Apple 芯片</strong><span>M1 / M2 / M3 / M4</span></a>
+            <a href="{{.BasePath}}/api/v1/node/releases/darwin-amd64/download"><strong>macOS Intel</strong><span>Intel x64</span></a>
+          </div>
+        </section>
+
+        <section class="tutorial panel" aria-labelledby="overview-tutorial-title">
+          <div class="panel-heading"><div><p class="eyebrow">Getting Started</p><h2 id="overview-tutorial-title">快速上手教程</h2><p class="section-copy">按“账户 → 设备 → 工具”的顺序完成首次配置。</p></div></div>
+          <div class="tutorial-grid">
+            <article class="tutorial-card"><span class="tutorial-step">01</span><h3>创建用户并登录</h3><p>管理员先创建用户；用户登录后只能看到自己的设备、令牌、授权和直连密钥。</p></article>
+            <article class="tutorial-card"><span class="tutorial-step">02</span><h3>连接电脑</h3><p>在“连接令牌”生成一次性令牌，下载对应系统客户端，启动后填写 Hub 地址和令牌。</p></article>
+            <article class="tutorial-card"><span class="tutorial-step">03</span><h3>选择调用方式</h3><p>MCP 客户端使用 OAuth；脚本或 AI Agent 使用“临时直连密钥”，两者都只允许访问当前用户的数据。</p></article>
+          </div>
         </section>
 
         <section class="metric-grid" aria-label="状态摘要">
@@ -114,6 +136,11 @@
           </table></div>
           {{else}}<div class="empty-state"><strong>还没有设备</strong><span>先创建连接令牌，再在 Fast Spider Node 中连接 Hub。</span></div>{{end}}
         </section>
+        <section class="tutorial panel" aria-labelledby="machines-tutorial-title">
+          <div class="panel-heading"><div><p class="eyebrow">Node Setup</p><h2 id="machines-tutorial-title">设备连接教程</h2><p class="section-copy">连接令牌只用于首次登记，登记成功后客户端使用自己的设备凭据。</p></div></div>
+          <ol class="tutorial-steps"><li><strong>生成令牌：</strong>进入“连接令牌”创建并复制明文。</li><li><strong>下载客户端：</strong>Windows 选择 x64；Mac 按 Apple 芯片或 Intel 选择。</li><li><strong>启动并连接：</strong>运行 Node UI，填写 Hub 地址、令牌和设备名称，看到“在线”后即可使用。</li></ol>
+          <div class="tutorial-note">macOS 首次下载后如被系统拦截，请在终端执行 <code>chmod +x fast-spider-node</code>，再运行 <code>./fast-spider-node ui</code>。</div>
+        </section>
         {{end}}
 
         {{if eq .Page "oauth"}}
@@ -125,6 +152,12 @@
         <section class="panel secondary-panel">
           <div class="panel-heading"><div><h2>已授权客户端</h2><p class="section-copy">只展示已经完成授权的 OAuth Client。</p></div></div>
           {{if .Clients}}<div class="table-wrap"><table><thead><tr><th>名称</th><th>权限范围</th><th>授权模式</th><th>回调地址</th><th>登记时间</th><th class="action-col">操作</th></tr></thead><tbody>{{range .Clients}}<tr><td data-label="名称"><strong>{{.ClientName}}</strong><small>{{.ClientID}}</small></td><td data-label="权限范围"><span class="pill neutral">{{.Scope}}</span></td><td data-label="授权模式">{{.GrantTypes}}</td><td data-label="回调地址"><div class="uri-list">{{range .RedirectURIs}}<code>{{.}}</code>{{end}}</div></td><td data-label="登记时间">{{.CreatedAt}}</td><td data-label="操作" class="action-cell"><form method="post" action="{{$.BasePath}}/app/oauth/clients/{{.ClientID}}/delete" data-confirm="确认删除这个 OAuth 客户端？关联授权会一并失效。"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="danger-link action-button" type="submit">删除客户端</button></form></td></tr>{{end}}</tbody></table></div>{{else}}<div class="empty-state compact"><strong>还没有已授权客户端</strong></div>{{end}}
+        </section>
+        <section class="tutorial panel" aria-labelledby="oauth-tutorial-title">
+          <div class="panel-heading"><div><p class="eyebrow">MCP OAuth</p><h2 id="oauth-tutorial-title">OAuth / MCP 使用教程</h2><p class="section-copy">把下面的 MCP 地址填入支持远程 MCP 的客户端，按客户端提示完成授权。</p></div></div>
+          <div class="tutorial-grid tutorial-grid-two"><article class="tutorial-card"><h3>连接步骤</h3><ol class="tutorial-list"><li>填写 MCP 地址：<code>{{.MCPURL}}</code></li><li>点击登录并完成 OAuth 授权。</li><li>客户端连接后先执行 <code>tools/list</code> 获取工具清单。</li></ol></article><article class="tutorial-card"><h3>推荐提示词</h3><pre><code>请通过 Fast Spider 列出我的设备，并告诉我哪台在线。
+先读取工具返回的 inputSchema，再调用工具；不要猜测参数。</code></pre></article></div>
+          <div class="tutorial-note">如果客户端缓存了旧工具列表，请断开后重新连接；此页面的诊断区只记录事件摘要，不记录 Token、Prompt 或工具参数。</div>
         </section>
         {{end}}
 
@@ -154,6 +187,21 @@
           <div class="panel-heading"><div><h2>密钥列表</h2><p class="section-copy">这里只显示管理记录，不显示明文密钥，也不提供再次查看或复制密钥的入口。</p></div></div>
           {{if .DirectKeys}}<div class="table-wrap"><table><thead><tr><th>名称</th><th>设备</th><th>权限</th><th>创建</th><th>最近使用</th><th>到期</th><th>限速</th><th>状态</th><th class="action-col">操作</th></tr></thead><tbody>{{range .DirectKeys}}<tr><td data-label="名称"><strong>{{.Label}}</strong><small>记录 {{.ID}}</small></td><td data-label="设备">{{.Machine}}</td><td data-label="权限"><span class="pill neutral">{{.Scopes}}</span></td><td data-label="创建">{{.CreatedAt}}</td><td data-label="最近使用">{{.LastUsedAt}}</td><td data-label="到期">{{.ExpiresAt}}</td><td data-label="限速">{{.RateLimit}} / 分钟</td><td data-label="状态"><span class="pill {{if eq .Status "有效"}}success{{else if eq .Status "已撤销"}}danger{{end}}">{{.Status}}</span></td><td data-label="操作" class="action-cell">{{if eq .Status "有效"}}<form method="post" action="{{$.BasePath}}/app/direct-keys/{{.ID}}/revoke" data-confirm="确认撤销这个临时直连密钥？"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="danger-link action-button" type="submit">撤销</button></form>{{else}}<form method="post" action="{{$.BasePath}}/app/direct-keys/{{.ID}}/delete" data-confirm="确认删除这条已失效密钥记录？"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="danger-link action-button" type="submit">删除</button></form>{{end}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="empty-state compact"><strong>还没有临时直连密钥</strong><span>创建后请在一次性页面立即保存密钥。</span></div>{{end}}
         </section>
+        <section class="tutorial panel" aria-labelledby="direct-tutorial-title">
+          <div class="panel-heading"><div><p class="eyebrow">Direct API</p><h2 id="direct-tutorial-title">直连 Key 使用教程</h2><p class="section-copy">直连 Key 只在创建成功页显示一次。复制后放到请求头，不要写进公开提示词或代码仓库。</p></div></div>
+          <div class="tutorial-grid tutorial-grid-two"><article class="tutorial-card"><h3>HTTP 调用顺序</h3><pre><code>API Base:
+{{.DirectURL}}
+Authorization:
+Bearer &lt;fsp_tmp_u&gt;
+
+GET {{.DirectURL}}/tools
+POST {{.DirectURL}}/call
+Content-Type: application/json</code></pre></article><article class="tutorial-card"><h3>请求体示例</h3><pre><code>{
+  "tool": "&lt;tool name&gt;",
+  "arguments": { ... }
+}</code></pre><p class="tutorial-copy">先 GET <code>/tools</code>，严格按返回的 <code>inputSchema</code> 填写 arguments；不要猜测工具名或参数。</p></article></div>
+          <div class="tutorial-note"><strong>推荐提示词：</strong>你可以通过 Fast Spider 操作我的电脑。先 GET /tools 获取当前所有工具、参数 Schema 和权限要求，再使用 POST /call；所有调用使用 <code>Content-Type: application/json</code>，不要猜测参数。</div>
+        </section>
         {{end}}
 
         {{if eq .Page "tokens"}}
@@ -166,11 +214,16 @@
           <div class="panel-heading"><div><h2>令牌列表</h2><p class="section-copy">明文同样只在创建成功页显示一次。</p></div></div>
           {{if .Tokens}}<div class="table-wrap"><table><thead><tr><th>名称</th><th>创建时间</th><th>最近使用</th><th>到期</th><th>状态</th><th class="action-col">操作</th></tr></thead><tbody>{{range .Tokens}}<tr><td data-label="名称"><strong>{{.Label}}</strong><small>{{.ID}}</small></td><td data-label="创建时间">{{.CreatedAt}}</td><td data-label="最近使用">{{.LastUsedAt}}</td><td data-label="到期">{{.ExpiresAt}}</td><td data-label="状态"><span class="pill {{if eq .Status "有效"}}success{{else if eq .Status "已撤销"}}danger{{end}}">{{.Status}}</span></td><td data-label="操作" class="action-cell">{{if eq .Status "有效"}}<form method="post" action="{{$.BasePath}}/app/tokens/{{.ID}}/revoke" data-confirm="确认撤销这个连接令牌？"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="danger-link action-button" type="submit">撤销</button></form>{{else}}<form method="post" action="{{$.BasePath}}/app/tokens/{{.ID}}/delete" data-confirm="确认删除这条已失效连接令牌记录？"><input type="hidden" name="csrf_token" value="{{$.CSRFToken}}"><button class="danger-link action-button" type="submit">删除</button></form>{{end}}</td></tr>{{end}}</tbody></table></div>{{else}}<div class="empty-state compact"><strong>还没有连接令牌</strong></div>{{end}}
         </section>
+        <section class="tutorial panel" aria-labelledby="tokens-tutorial-title">
+          <div class="panel-heading"><div><p class="eyebrow">Connection Token</p><h2 id="tokens-tutorial-title">连接令牌教程</h2><p class="section-copy">令牌用于登记新设备，不是 MCP OAuth 凭据，也不是 Direct API Key。</p></div></div>
+          <div class="tutorial-grid"><article class="tutorial-card"><span class="tutorial-step">01</span><h3>创建并复制</h3><p>设置名称和有效期后生成；明文只展示一次，请立即保存到密码管理器。</p></article><article class="tutorial-card"><span class="tutorial-step">02</span><h3>仅在客户端使用</h3><p>把令牌填入 Node UI 的连接表单。不要把连接令牌发给 AI 或写进提示词。</p></article><article class="tutorial-card"><span class="tutorial-step">03</span><h3>用完即撤销</h3><p>设备登记成功后可撤销令牌；撤销不会影响已登记设备的正常运行。</p></article></div>
+        </section>
         {{end}}
 
         {{if eq .Page "security"}}
         <section class="page-heading"><div><p class="eyebrow">Account Security</p><h2>账户安全</h2><p>当前登录账户：<strong>{{.Username}}</strong>。修改密码会保留当前浏览器，并立即退出其他后台会话。</p></div></section>
         <section class="panel"><form class="password-form" method="post" action="{{.BasePath}}/app/account/password"><input type="hidden" name="csrf_token" value="{{.CSRFToken}}"><label>当前密码<input name="current_password" type="password" autocomplete="current-password" maxlength="256" required></label><label>新密码<input name="new_password" type="password" autocomplete="new-password" minlength="10" maxlength="256" required></label><label>确认新密码<input name="password_confirm" type="password" autocomplete="new-password" minlength="10" maxlength="256" required></label><button class="primary" type="submit">更新密码</button></form></section>
+        <section class="tutorial panel" aria-labelledby="security-tutorial-title"><div class="panel-heading"><div><p class="eyebrow">Security</p><h2 id="security-tutorial-title">账户安全教程</h2><p class="section-copy">密码、连接令牌和直连 Key 分开管理，任何一个泄露都应立即撤销或更换。</p></div></div><ul class="tutorial-list"><li>首次登录后立即把默认密码改成唯一的强密码。</li><li>直连 Key 按最小权限、最短有效期创建，使用完立即撤销。</li><li>不要在提示词、截图、日志或 Git 仓库中粘贴真实 Token。</li></ul></section>
         {{end}}
 
         {{if eq .Page "mcp"}}
@@ -180,12 +233,19 @@
           <div class="diagnostics-grid" aria-live="polite"><div><span>Server</span><strong id="mcp-server-version">—</strong></div><div><span>Guide</span><strong id="mcp-guide-version">—</strong></div><div><span>最近 MCP 请求</span><strong id="mcp-last-request">暂无事件</strong></div><div><span>最近 Initialize</span><strong id="mcp-last-initialize">暂无事件</strong></div><div><span>最近 Tools List</span><strong id="mcp-last-tools-list">暂无事件</strong></div><div><span>最近 Tool Call</span><strong id="mcp-last-tool-call">暂无事件</strong></div><div><span>最近工具</span><strong id="mcp-last-tool">—</strong></div><div><span>客户端类型</span><strong id="mcp-client-type">—</strong></div><div><span>结果</span><strong id="mcp-result">—</strong></div></div>
           <div class="diagnostic-explanation"><strong id="mcp-diagnosis-title">尚无 Initialize</strong><span id="mcp-diagnosis-copy">客户端尚未真正连接到 MCP。</span></div>
         </section>
+        <section class="tutorial panel" aria-labelledby="mcp-tutorial-title">
+          <div class="panel-heading"><div><p class="eyebrow">MCP Guide</p><h2 id="mcp-tutorial-title">MCP 使用教程</h2><p class="section-copy">MCP 客户端负责 OAuth 登录和工具发现，Fast Spider 负责按当前用户转发到已授权设备。</p></div></div>
+          <div class="tutorial-grid tutorial-grid-two"><article class="tutorial-card"><h3>客户端配置</h3><ol class="tutorial-list"><li>Server URL：<code>{{.MCPURL}}</code></li><li>选择 OAuth / Remote MCP 登录。</li><li>授权完成后先调用 <code>initialize</code> 和 <code>tools/list</code>。</li></ol></article><article class="tutorial-card"><h3>提示词范例</h3><pre><code>请使用 Fast Spider 完成任务。
+先确认可用工具及其 inputSchema，再执行操作；
+如果工具要求设备，请只选择我账户下在线的设备。</code></pre></article></div>
+        </section>
         {{end}}
 
         {{if eq .Page "system"}}
         <section class="page-heading"><div><p class="eyebrow">System</p><h2>运行状态</h2><p>当前 Hub 的基础运行信息。健康接口由生产反向代理公开，可用于监控。</p></div></section>
         <section class="metric-grid three"><article class="metric-card"><span>Hub 版本</span><strong class="version-value">{{.Version}}</strong><small>当前运行版本</small></article><article class="metric-card"><span>在线设备</span><strong>{{.OnlineMachines}}</strong><small>共 {{len .Machines}} 台</small></article><article class="metric-card"><span>服务状态</span><strong class="status-word">运行中</strong><small>后台页面可正常读取</small></article></section>
         <section class="panel"><div class="panel-heading"><div><h2>健康检查</h2><p class="section-copy">livez 用于进程存活，readyz 用于数据库和关键目录就绪。</p></div></div><div class="endpoint-list"><div><span>Liveness</span><code>{{.BaseURL}}/livez</code></div><div><span>Readiness</span><code>{{.BaseURL}}/readyz</code></div><div><span>Direct API</span><code>{{.DirectURL}}</code></div></div></section>
+        <section class="tutorial panel" aria-labelledby="system-tutorial-title"><div class="panel-heading"><div><p class="eyebrow">Operations</p><h2 id="system-tutorial-title">运行状态教程</h2><p class="section-copy">部署或升级后先检查健康接口，再验证客户端下载和工具入口。</p></div></div><ol class="tutorial-steps"><li>访问 <code>{{.BaseURL}}/livez</code>，确认进程存活。</li><li>访问 <code>{{.BaseURL}}/readyz</code>，确认数据库和目录就绪。</li><li>按系统下载客户端；macOS 选择 Apple 芯片或 Intel 版本，Windows 使用 x64 版本。</li></ol></section>
         {{end}}
       </main>
     </div>
