@@ -35,7 +35,7 @@ Hub 是一个 Go 模块化单体，使用 SQLite WAL 和本地 Artifact 存储�
 
 ### 4.4 适合 AI 协作
 
-MCP 固定 17 个工具；`thinking_team` 为调用侧 ChatGPT/LLM 提供角色、部门、流程和协作资料室协议且不启动本机 AI；`ai_control` 以 Harness 为执行对象，当前支持 Codex + Claude Code，并把 CC Switch 作为只读 Routing SSOT。Harness 模型、客户端 alias 与真实 upstream Provider/model 分层，最终能力按实际 Harness/转换/upstream/policy 派生。长任务、Diff、日志、Artifact 与轻量 `working_context` 继续使用 Fast Spider 自己的可观察事实，Git/文件仍是最终代码事实源。
+MCP 固定 18 个工具；新增的只读 `audit_log` 直接查询 Hub `audit_entries` 并强制当前 Owner 隔离，不要求 Node 在线，也不进入 Direct Access Key 权限面；`thinking_team` 为调用侧 ChatGPT/LLM 提供角色、部门、流程和协作资料室协议且不启动本机 AI；`ai_control` 以 Harness 为执行对象，当前支持 Codex + Claude Code，并把 CC Switch 作为只读 Routing SSOT。Harness 模型、客户端 alias 与真实 upstream Provider/model 分层，最终能力按实际 Harness/转换/upstream/policy 派生。长任务、Diff、日志、Artifact 与轻量 `working_context` 继续使用 Fast Spider 自己的可观察事实，Git/文件仍是最终代码事实源。
 
 ## 5. 产品原则
 

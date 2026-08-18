@@ -100,6 +100,14 @@ var mcpToolGuides = map[string]mcpToolGuideEntry{
 		Returns: []string{"One machine and its negotiated capabilities"}, RecommendedNext: []string{"capability_list with machineId", "a machine-bound tool"}, CommonErrors: []string{"NOT_FOUND"},
 		BoundedExamples: []map[string]any{{"machineId": "<machine-id>"}},
 	},
+	"audit_log": {
+		Description:    "Read recent Hub mutation audit entries for the current MCP owner. This is Hub-local and does not require a Node online; optional filters include machineId, actionPrefix, result, before and limit.",
+		WhenToUse:      []string{"Inspect Fast Spider operations", "Confirm whether a mutation was attempted or rejected", "Review recent owner or machine activity"},
+		RequiredInputs: []string{"none; current MCP owner is always enforced"},
+		SafeSequence:   []string{"Call audit_log with a small limit", "Narrow with machineId/actionPrefix/result when needed", "Use before for older time windows"},
+		Returns:        []string{"Owner-scoped audit IDs, actors, actions, results, metadata and timestamps"}, RecommendedNext: []string{"machine_get when a machine needs inspection"}, CommonErrors: []string{"INVALID_REQUEST", "INTERNAL"},
+		BoundedExamples: []map[string]any{{"limit": 20}, {"machineId": "<machine-id>", "actionPrefix": "git.repository.", "result": "success", "limit": 50}},
+	},
 	"capability_list": {
 		Description:    "FastSpider_FS health check, two-layer capability catalog and on-demand guide entry. machineId is optional; view selects overview, catalog, one low-level capability, one tool, one workflow or one error guide; usually continue with machine_list or the recommended tool.",
 		WhenToUse:      []string{"Check MCP connectivity", "Read the Hub or Machine catalog", "Load one detailed guide only when needed"},
@@ -199,6 +207,7 @@ var mcpToolSummaryDefinitions = []mcpToolSummary{
 	{Name: "machine_list", Category: "connection", Summary: "Discover owned Machines, online state and machine IDs.", Guide: "capability_list(view=tool,name=machine_list)"},
 	{Name: "machine_get", Category: "connection", Summary: "Inspect one known Machine and its negotiated capabilities.", Guide: "capability_list(view=tool,name=machine_get)"},
 	{Name: "capability_list", Category: "connection", Summary: "Read the compact FS map, low-level catalog or one on-demand guide.", Guide: "capability_list(view=tool,name=capability_list)"},
+	{Name: "audit_log", Category: "audit", Summary: "Read recent owner-scoped Hub mutation audit entries without requiring a Node online.", Guide: "capability_list(view=tool,name=audit_log)"},
 	{Name: "code_search", Category: "files", Summary: "Find bounded text or matching files below an absolute directory.", Guide: "capability_list(view=tool,name=code_search)"},
 	{Name: "file_read", Category: "files", Summary: "Read bounded UTF-8 content or file metadata and SHA-256.", Guide: "capability_list(view=tool,name=file_read)"},
 	{Name: "file_edit", Category: "files", Summary: "Preview or apply precise CAS-protected file changes.", Guide: "capability_list(view=tool,name=file_edit)"},
@@ -305,7 +314,7 @@ func newMCPCapabilityGuide(serverVersion string, capabilities []protocolv1.Capab
 }
 
 var mcpWorkflowGuides = map[string]mcpWorkflowGuideEntry{
-	"connection-check": {Summary: "Verify real MCP and Machine connectivity without making changes, including ChatGPT per-conversation connector recovery.", SafeSequence: []string{"If ChatGPT does not expose the FastSpider_FS namespace, use filtered connector discovery for the lightweight machine tools first (api_tool.list_resources(paths=[\"FastSpider_FS\"], query=\"fsprobe\") when available)", "Never materialize the full 17-tool schema just to test connectivity; load later tools only for the current action", "Do not ask for login/reauthorization solely because one conversation lost its namespace", "capability_list(view=overview)", "machine_list", "machine_get only when details are needed"}, Returns: []string{"Lightweight recovered connection tools, Hub guide/catalog and current Machine availability"}, RecommendedNext: []string{"Load only the specific tool required by the next action"}, CommonErrors: []string{"MACHINE_OFFLINE"}},
+	"connection-check": {Summary: "Verify real MCP and Machine connectivity without making changes, including ChatGPT per-conversation connector recovery.", SafeSequence: []string{"If ChatGPT does not expose the FastSpider_FS namespace, use filtered connector discovery for the lightweight machine tools first (api_tool.list_resources(paths=[\"FastSpider_FS\"], query=\"fsprobe\") when available)", "Never materialize the full 18-tool schema just to test connectivity; load later tools only for the current action", "Do not ask for login/reauthorization solely because one conversation lost its namespace", "capability_list(view=overview)", "machine_list", "machine_get only when details are needed"}, Returns: []string{"Lightweight recovered connection tools, Hub guide/catalog and current Machine availability"}, RecommendedNext: []string{"Load only the specific tool required by the next action"}, CommonErrors: []string{"MACHINE_OFFLINE"}},
 	"file-edit":        {Summary: "Locate, preview, CAS-write and verify a file change.", RequiredInputs: []string{"machineId", "absolute project/file path"}, SafeSequence: []string{"code_search", "file_read", "capture fileSha256", "file_edit preview", "file_edit(expectedFileSha256)", "file_read verification"}, Returns: []string{"Verified file change with before/after SHA"}, RecommendedNext: []string{"git-change when the project is versioned"}, CommonErrors: []string{"CONFLICT", "ABSOLUTE_PATH_REQUIRED"}},
 	"shell-job":        {Summary: "Run a command and observe its real terminal result.", SafeSequence: []string{"shell_run", "capture jobId", "job_watch using cursor until completed/failed/canceled"}, Returns: []string{"Terminal state, exit code and bounded events"}, RecommendedNext: []string{"artifact-display for a full terminal log"}, CommonErrors: []string{"JOB_NOT_FOUND", "DEADLINE_EXCEEDED"}},
 	"build-job":        {Summary: "Run a build/test and observe its real terminal result.", SafeSequence: []string{"build_control(action=run)", "capture jobId", "job_watch until completed/failed/canceled"}, Returns: []string{"Terminal build state, exit code and bounded events"}, RecommendedNext: []string{"git-change after a successful validation"}, CommonErrors: []string{"JOB_NOT_FOUND", "RUNTIME_UNAVAILABLE"}},
@@ -355,10 +364,11 @@ func newMCPGuide(serverVersion, view, name string) (*mcpGuide, error) {
 	base := &mcpGuide{GuideVersion: mcpGuideVersion, ServerVersion: serverVersion, View: view, Name: name}
 	switch view {
 	case "overview":
-		base.Summary = "FastSpider_FS exposes one stable 17-tool surface: start with real read-only discovery, then load only the detailed guide needed for the current action."
+		base.Summary = "FastSpider_FS exposes one stable 18-tool surface: start with real read-only discovery, then load only the detailed guide needed for the current action."
 		base.ToolSummaries = mcpToolSummaries()
 		base.Categories = []mcpGuideCategory{
 			{Name: "连接与设备", Summary: "Discover Hub/Machine availability.", Tools: []string{"capability_list", "machine_list", "machine_get"}},
+			{Name: "审计日志", Summary: "Read owner-scoped Hub mutation history without a Node connection.", Tools: []string{"audit_log"}},
 			{Name: "文件与代码", Summary: "Search, read and CAS-edit local files.", Tools: []string{"code_search", "file_read", "file_edit"}},
 			{Name: "命令、构建与任务", Summary: "Start bounded work and observe terminal state.", Tools: []string{"shell_run", "build_control", "job_watch", "job_cancel"}},
 			{Name: "Git", Summary: "Use allowlisted repository actions.", Tools: []string{"git_control"}},
@@ -370,7 +380,7 @@ func newMCPGuide(serverVersion, view, name string) (*mcpGuide, error) {
 		}
 		base.GoldenRules = []string{
 			"When @FastSpider_FS is selected or mentioned, try a real read-only tool before judging availability from UI text.",
-			"On ChatGPT, an absent direct namespace is not proof of disconnection: first use filtered connector discovery for only the lightweight machine tools, then machine_list; never load all 17 schemas just to test connectivity and do not ask for login/reauthorization unless filtered discovery plus a real connection check fail.",
+			"On ChatGPT, an absent direct namespace is not proof of disconnection: first use filtered connector discovery for only the lightweight machine tools, then machine_list; never load all 18 schemas just to test connectivity and do not ask for login/reauthorization unless filtered discovery plus a real connection check fail.",
 			"If machineId is unknown, call machine_list first; connection checks use capability_list plus machine_list.",
 			"Use the compact toolSummaries to choose a tool, then call capability_list(view=tool,name=...) only when its detail is needed; never load every detailed guide.",
 			"The low-level catalog reports capabilityId/version/actions plus capabilitySummaries; do not infer behavior from an opaque ID alone.",

@@ -14,17 +14,17 @@
 | `git_control` | absolute `repositoryPath` |
 | `ai_control session.create` | absolute `workingDirectory` |
 
-公网 MCP 当前固定 17 个工具：
+公网 MCP 当前固定 18 个工具：
 
 ```text
-machine_list, machine_get, capability_list,
+machine_list, machine_get, capability_list, audit_log,
 file_read, code_search, file_edit,
 shell_run, job_watch, job_cancel,
 git_control, build_control, browser_control,
 screenshot_take, thinking_team, ai_control, working_context, artifact_get
 ```
 
-不包含已移除的目录列表工具，也不按 Machine、Provider、模型或 Session 动态生成工具。`thinking_team` 是调用侧静态角色协作配置，不启动本机 AI Provider。
+不包含已移除的目录列表工具，也不按 Machine、Provider、模型或 Session 动态生成工具。`audit_log` 是 Hub 本地 Owner 隔离的只读审计查询，不需要 Node 在线且不开放到 Direct Access Key；`thinking_team` 是调用侧静态角色协作配置，不启动本机 AI Provider。
 
 ## 2. 已完成阶段
 
@@ -93,7 +93,7 @@ screenshot_take, thinking_team, ai_control, working_context, artifact_get
 
 1. 完善 Windows/Linux OS 用户权限、路径格式、进程树和图形会话差异测试。
 2. 加固 Machine 吊销、Device Key 轮换、OAuth 撤销和断线对账。
-3. 保持 17 个 MCP 工具 Schema、错误码、Job/Event、Artifact、Thinking Team 与 Working Context 语义一致。
+3. 保持 18 个 MCP 工具 Schema、错误码、Job/Event、Artifact、Audit Log、Thinking Team 与 Working Context 语义一致。
 4. 完善 Browser 私网访问、下载清理、截图兼容和 Sidecar 版本矩阵。
 5. 持续验证 Codex app-server 协议、Claude Code CLI/stream-json/session-resume，以及 CC Switch schema/model mapping/route correlation；新增 Harness 必须复用统一 Routing/EffectiveCapabilities 层，不复制 Provider 解析逻辑。Automations 仅在 Codex 公开协议出现后再评估映射。
 

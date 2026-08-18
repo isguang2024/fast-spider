@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/isguang2024/fast-spider/internal/hub/core"
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
@@ -75,6 +76,34 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 			return nil, err
 		}
 		return machineGetOutput{Machine: toMCPMachine(machine)}, nil
+
+	case "audit_log":
+		input, err := toolInput[auditLogInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		var before time.Time
+		if strings.TrimSpace(input.Before) != "" {
+			before, err = time.Parse(time.RFC3339, input.Before)
+			if err != nil {
+				return nil, &toolRequestError{message: "before must be an RFC3339 timestamp"}
+			}
+		}
+		entries, err := e.service.ListAuditLog(ctx, ownerID, core.AuditLogQuery{
+			MachineID: input.MachineID, ActionPrefix: input.ActionPrefix, Result: input.Result, Before: before, Limit: input.Limit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		out := auditLogOutput{Entries: make([]auditLogEntry, 0, len(entries))}
+		for _, entry := range entries {
+			out.Entries = append(out.Entries, auditLogEntry{
+				ID: entry.ID, MachineID: entry.MachineID, ActorType: entry.ActorType, ActorID: entry.ActorID,
+				Action: entry.Action, Result: entry.Result, RemoteAddr: entry.RemoteAddr, Detail: entry.Detail,
+				CreatedAt: entry.CreatedAt.UTC().Format(time.RFC3339),
+			})
+		}
+		return out, nil
 
 	case "capability_list":
 		input, err := toolInput[capabilityListInput](tool, rawInput)

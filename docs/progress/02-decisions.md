@@ -4,7 +4,7 @@
 ## Active Decisions
 
 1. **双轨任务系统**：Working Context 保存结构化摘要；项目内 Markdown Task Workspace 保存完整设计、决策和验收证据。Git、文件、测试和运行状态始终是最终事实源。
-2. **MCP 工具演进**：0.4.2 的 Task Workspace 继续扩展 `working_context / working.context` actions 而不拆工具；0.4.12 因“调用侧角色协作”具有独立语义正式增加只读 `thinking_team`，当前固定 17 个工具，仍不按 Machine、Provider、模型或 Session 动态生成工具。
+2. **MCP 工具演进**：0.4.2 的 Task Workspace 继续扩展 `working_context / working.context` actions 而不拆工具；0.4.12 因“调用侧角色协作”具有独立语义正式增加只读 `thinking_team`；当前固定 18 个工具，新增 `audit_log` 作为 Hub 本地、Owner 隔离的只读审计查询入口，并明确不扩展 Direct Access Key 权限面；仍不按 Machine、Provider、模型或 Session 动态生成工具。
 3. **计划隔离键**：`machineId + projectPath + planId`；Markdown 必须位于 projectPath 内且为普通 `.md` 文件，防 symlink/junction 逃逸。
 4. **Markdown 同步**：受管区块以 `<!-- fast-spider:managed:<name>:start/end -->` 标记；自动同步只替换受管区块，不覆盖人工内容。写入使用 revision/CAS、临时文件、fsync 和原子替换。
 5. **任务上限**：Markdown 文件最多 64；单文件 512 KiB；目录 4 MiB；单计划最多 500 个任务；每任务最多 32 条验收证据。

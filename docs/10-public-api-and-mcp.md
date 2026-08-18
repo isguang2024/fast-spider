@@ -2,12 +2,13 @@
 
 ## 公网 MCP
 
-Fast Spider MCP 通过 `/mcp` 提供 Streamable HTTP，使用标准 OAuth Authorization Code + PKCE。当前固定 17 个工具：
+Fast Spider MCP 通过 `/mcp` 提供 Streamable HTTP，使用标准 OAuth Authorization Code + PKCE。当前固定 18 个工具：
 
 ```text
 machine_list
 machine_get
 capability_list
+audit_log
 file_read
 code_search
 file_edit
@@ -24,7 +25,7 @@ artifact_get
 working_context
 ```
 
-Current 不提供目录列表工具；`thinking_team` 是调用侧只读角色协作工具，`working_context` 继续提供项目 Plan/Task + Markdown Task Workspace。
+Current 不提供目录列表工具；`audit_log` 只读查询 Hub 本地 `audit_entries`，始终按当前 MCP Owner 隔离，不依赖 Node 在线，也不开放给 Direct Access Key；`thinking_team` 是调用侧只读角色协作工具，`working_context` 继续提供项目 Plan/Task + Markdown Task Workspace。
 
 `thinking_team` 不需要 `machineId`，只返回 9 个部门、17 个角色、角色指令、协作流程和 `working_context` 资料室协议；`providerInvocation=false`，不会创建本机 AI Session。
 
@@ -34,14 +35,14 @@ Codex 保留 Provider/Model、Skills/Hooks/Permission Profiles/Plugins/MCP disco
 
 ## ChatGPT 调用与工具发现
 
-Hub 的 MCP `initialize` 会返回不超过 2 KiB 的常驻能力地图，并把 Server Title 固定为 `FastSpider_FS`。能力地图只说明九类能力、第一步和固定安全链路，不复制完整 Schema、参数示例或错误表。当 ChatGPT 已选择该 App 或用户显式 `@FastSpider_FS` 时，调用侧应先尝试工具而不是仅依据界面文本判断“插件未加载”：连接测试使用只读 `capability_list(view=overview)` + `machine_list`；需要本机操作但尚无 `machineId` 时先调用 `machine_list`。
+Hub 的 MCP `initialize` 会返回不超过 2 KiB 的常驻能力地图，并把 Server Title 固定为 `FastSpider_FS`。能力地图只说明十类能力、第一步和固定安全链路，不复制完整 Schema、参数示例或错误表。当 ChatGPT 已选择该 App 或用户显式 `@FastSpider_FS` 时，调用侧应先尝试工具而不是仅依据界面文本判断“插件未加载”：连接测试使用只读 `capability_list(view=overview)` + `machine_list`；需要本机操作但尚无 `machineId` 时先调用 `machine_list`。
 
-`capability_list` 是唯一按需指南入口，没有新增第 18 个 guide/help 工具：
+`capability_list` 是唯一按需指南入口，没有新增第 19 个 guide/help 工具：
 
 - 省略 `machineId` 和 `view`：兼容返回 Hub Capability Catalog，并附带精简 overview。
 - 提供 `machineId`、省略 `view`：保持旧行为，只返回该 Machine 的能力目录。
 - `view=catalog`：显式返回 Hub 或指定 Machine 的能力目录。
-- `view=overview`：返回能力分类、17 个 MCP 工具的一句话 `toolSummaries`、黄金规则和推荐下一步；摘要足够选择入口，但不复制完整 Schema。
+- `view=overview`：返回能力分类、18 个 MCP 工具的一句话 `toolSummaries`、黄金规则和推荐下一步；摘要足够选择入口，但不复制完整 Schema。
 - `capabilitySummaries`：在 overview/catalog 的结果中，按 `capabilityId/version` 返回底层 Node capability 的一句话语义；原始 `capabilities` 仍保留完整 actions。
 - `view=capability`：必须提供底层 `capabilityId`（例如 `shell.exec`），返回该 capability 的 actions、语义和对应 MCP 工具。
 - `view=tool|workflow|error`：必须提供 `name`，一次只返回一个工具、流程或真实稳定错误码的有界指南；未知 view/name 明确拒绝。

@@ -22,6 +22,14 @@ type machineGetInput struct {
 	MachineID string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
 }
 
+type auditLogInput struct {
+	MachineID    string `json:"machineId,omitempty" jsonschema:"optional machine filter; entries remain scoped to the current MCP owner"`
+	ActionPrefix string `json:"actionPrefix,omitempty" jsonschema:"optional literal action prefix such as git.repository. or agent.control."`
+	Result       string `json:"result,omitempty" jsonschema:"optional exact result filter such as success or rejected"`
+	Before       string `json:"before,omitempty" jsonschema:"optional RFC3339 timestamp; return entries created strictly before it"`
+	Limit        int    `json:"limit,omitempty" jsonschema:"maximum entries, default 50 and maximum 200"`
+}
+
 type capabilityListInput struct {
 	MachineID string `json:"machineId,omitempty" jsonschema:"optional machine ID; omit for the Hub capability catalog"`
 	View      string `json:"view,omitempty" jsonschema:"overview returns the compact FS map, catalog returns low-level capabilities, capability reads one low-level capability, tool/workflow/error reads one detailed guide; omitted preserves the legacy catalog behavior"`
@@ -312,6 +320,22 @@ type machineGetOutput struct {
 	Machine mcpMachine `json:"machine"`
 }
 
+type auditLogEntry struct {
+	ID         string `json:"id"`
+	MachineID  string `json:"machineId,omitempty"`
+	ActorType  string `json:"actorType"`
+	ActorID    string `json:"actorId,omitempty"`
+	Action     string `json:"action"`
+	Result     string `json:"result"`
+	RemoteAddr string `json:"remoteAddr,omitempty"`
+	Detail     any    `json:"detail,omitempty"`
+	CreatedAt  string `json:"createdAt"`
+}
+
+type auditLogOutput struct {
+	Entries []auditLogEntry `json:"entries"`
+}
+
 type capabilityListOutput struct {
 	Capabilities        []protocolv1.CapabilityDescriptor `json:"capabilities"`
 	CapabilitySummaries []mcpCapabilitySummary            `json:"capabilitySummaries,omitempty"`
@@ -472,9 +496,9 @@ func (s *Server) newMCPHandler() http.Handler {
 
 const mcpServerInstructions = `FastSpider_FS is the user's remote development control plane. When selected or mentioned as @FastSpider_FS, try a real read-only tool before judging availability from UI text.
 
-ChatGPT recovery: tools may be lazily loaded or evicted in long chats. If the FastSpider_FS namespace is absent, do not report disconnect or request login. Use filtered connector discovery for only the connection tools first, e.g. api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Never load all 17 schemas for a health check; load later tools only when needed. Report unmounted only if discovery itself fails.
+ChatGPT recovery: tools may be lazily loaded or evicted in long chats. If the FastSpider_FS namespace is absent, do not report disconnect or request login. Use filtered connector discovery for only the connection tools first, e.g. api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Never load all 18 schemas for a health check; load later tools only when needed. Report unmounted only if discovery itself fails.
 
-Capability map: connection = capability_list, machine_list, machine_get; files = code_search, file_read, file_edit; jobs = shell_run, build_control, job_watch, job_cancel; Git = git_control; browser = browser_control, screenshot_take; AI = ai_control; context = working_context; roles = thinking_team; artifacts = artifact_get. shell_run is the host/WSL process entry point; on Windows use explicit argv such as ["powershell.exe","-NoProfile","-NonInteractive","-Command","Get-Date; tzutil /g"] or ["cmd.exe","/d","/s","/c","tzutil /g"], not a separate PowerShell tool.
+Capability map: connection = capability_list, machine_list, machine_get; audit = audit_log; files = code_search, file_read, file_edit; jobs = shell_run, build_control, job_watch, job_cancel; Git = git_control; browser = browser_control, screenshot_take; AI = ai_control; context = working_context; roles = thinking_team; artifacts = artifact_get. shell_run is the host/WSL process entry point; on Windows use explicit argv such as ["powershell.exe","-NoProfile","-NonInteractive","-Command","Get-Date; tzutil /g"] or ["cmd.exe","/d","/s","/c","tzutil /g"], not a separate PowerShell tool.
 
 Rules: unknown machineId -> machine_list. Connection check = capability_list(view=overview) + machine_list. If a low-level capability ID is unclear, read capability_list(view=capability,name=<capabilityId>); then use its mcpTools mapping. Load detailed guidance only with view=tool|workflow|error for the current need. Codex history starts at ai_control(action=session.list), then get/watch/result. Every shell/build jobId must reach a terminal state via job_watch. File edits use search/read -> SHA -> preview -> CAS write -> read. Browser flow is readiness -> launch -> open -> snapshot refs -> actions -> close.`
 
@@ -492,6 +516,11 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, mcpToolDefinition("machine_get", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input machineGetInput) (*mcp.CallToolResult, machineGetOutput, error) {
 		out, err := executeTypedTool[machineGetOutput](s.toolExecutor, ctx, ownerID, "machine_get", input)
+		return nil, out, err
+	})
+
+	mcp.AddTool(server, mcpToolDefinition("audit_log", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input auditLogInput) (*mcp.CallToolResult, auditLogOutput, error) {
+		out, err := executeTypedTool[auditLogOutput](s.toolExecutor, ctx, ownerID, "audit_log", input)
 		return nil, out, err
 	})
 

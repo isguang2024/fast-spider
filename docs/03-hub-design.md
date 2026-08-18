@@ -32,7 +32,7 @@ MVP 只有一个 Hub 进程，模块边界通过 Go package 和接口体现，�
 | `jobs` | Job/Event、幂等、游标和结果 | jobs, job_events |
 | `artifacts` | 上传会话、哈希、元数据、清理 | artifacts, artifact_uploads + 文件系统 |
 | `audit` | 必要的安全审计 | audit_entries |
-| `tools` | MCP 与 Direct API 共用的 17 个固定工具执行器；transport 只做认证/权限/回显适配 | 无独立业务状态 |
+| `tools` | MCP 提供 18 个固定工具；Direct API 保持 17 工具子集。两种 transport 对共有工具复用同一 `toolExecutor`；`audit_log` 仅在 MCP 注册，避免扩大 Direct Access Key 审计可见性 | 无独立业务状态 |
 | `console` | Web 后台、设备/令牌/OAuth 管理 | 复用上述表 |
 
 Adapter 不得直接访问路由内部连接或数据库表，必须经过应用服务。
