@@ -12,7 +12,7 @@ import (
 
 func TestMCPGuideCatalogMatchesRegisteredToolsAndDocumentation(t *testing.T) {
 	guideNames := mcpRegisteredGuideNames()
-	if len(guideNames) != 18 {
+	if len(guideNames) != 19 {
 		t.Fatalf("guide tool count=%d names=%v", len(guideNames), guideNames)
 	}
 	var discoveryMarkers []string
@@ -70,7 +70,7 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		}
 		if name == "connection-check" {
 			sequence := strings.Join(guide.SafeSequence, "\n")
-			for _, needle := range []string{"api_tool.list_resources", `query="fsprobe"`, "Never materialize the full 18-tool schema", "login/reauthorization", "machine_list"} {
+			for _, needle := range []string{"api_tool.list_resources", `query="fsprobe"`, "Never materialize the full 19-tool schema", "login/reauthorization", "machine_list"} {
 				if !strings.Contains(sequence, needle) {
 					t.Fatalf("connection recovery workflow missing %q: %+v", needle, guide)
 				}
@@ -202,10 +202,10 @@ func TestMCPServerInstructionsStayBoundedAndCoverCapabilityMap(t *testing.T) {
 		t.Fatalf("instructions size=%d", len([]byte(mcpServerInstructions)))
 	}
 	for _, needle := range []string{
-		"@FastSpider_FS", "capability_list", "machine_list", "machine_get", "audit_log", "file_read", "file_edit", "code_search",
+		"@FastSpider_FS", "capability_list", "machine_list", "machine_get", "audit_log", "operation_log", "file_read", "file_edit", "code_search",
 		"shell_run", "build_control", "job_watch", "job_cancel", "git_control", "browser_control", "screenshot_take",
 		"ai_control", "working_context", "thinking_team", "artifact_get", "session.list", "view=tool|workflow|error", "view=capability",
-		`query="fsprobe"`, "Never load all 18 schemas", "powershell.exe", "tzutil /g", "not a separate PowerShell tool",
+		`query="fsprobe"`, "Never load all 19 schemas", "powershell.exe", "tzutil /g", "not a separate PowerShell tool",
 	} {
 		if !strings.Contains(mcpServerInstructions, needle) {
 			t.Fatalf("instructions missing %q", needle)
@@ -226,7 +226,7 @@ func assertMCPGuideSize(t *testing.T, guide *mcpGuide, limit int) {
 
 func documentedMCPToolNames(t *testing.T, document string) []string {
 	t.Helper()
-	anchor := strings.Index(document, "当前固定 18 个工具")
+	anchor := strings.Index(document, "当前固定 19 个工具")
 	if anchor < 0 {
 		t.Fatal("MCP tool-list anchor missing from documentation")
 	}

@@ -20,6 +20,7 @@ func NewLocalCapabilityClient(cfg Config) *Client {
 		requestSem:    make(chan struct{}, 8),
 		screenshotSem: make(chan struct{}, 1),
 		agent:         cfg.Agent,
+		operationLog:  cfg.OperationLog,
 	}
 	client.browser = NewBrowserManager(cfg.DataDir, cfg.BrowserSidecarDir, cfg.Logger)
 	return client

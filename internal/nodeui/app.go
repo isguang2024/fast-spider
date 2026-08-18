@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/isguang2024/fast-spider/internal/node"
 	"github.com/isguang2024/fast-spider/internal/nodeinstance"
 	"github.com/isguang2024/fast-spider/internal/nodeupdate"
+	"github.com/isguang2024/fast-spider/internal/operationlog"
 	"github.com/isguang2024/fast-spider/internal/security"
 )
 
@@ -62,6 +64,7 @@ type App struct {
 	openFolder          func(string) error
 	agentController     node.AgentController
 	componentEnsure     componentEnsureFunc
+	operationLog        *operationlog.Store
 }
 
 type statusResponse struct {
@@ -133,6 +136,10 @@ func New(opts Options) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	opLog, err := operationlog.NewStore(opts.DataDir, opts.Logger)
+	if err != nil {
+		opts.Logger.Warn("operation log store unavailable", "error", err)
+	}
 	return &App{
 		opts:            opts,
 		config:          cfg,
@@ -141,6 +148,7 @@ func New(opts Options) (*App, error) {
 		openFolder:      openLocalFolder,
 		agentController: agent.New(opts.DataDir, opts.Logger),
 		componentEnsure: componentmgr.Ensure,
+		operationLog:    opLog,
 	}, nil
 }
 
@@ -254,6 +262,7 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}
 	go a.autoUpdateLoop(runCtx)
+	go a.operationLogCleanupLoop(runCtx)
 
 	select {
 	case <-runCtx.Done():
@@ -296,11 +305,19 @@ func (a *App) handler() http.Handler {
 	mux.HandleFunc("GET /api/ai-routing", a.apiOnly(a.handleAIRouting))
 	mux.HandleFunc("GET /api/diagnostics", a.apiOnly(a.handleDiagnostics))
 	mux.HandleFunc("POST /api/exit", a.apiOnly(a.handleExit))
+	mux.HandleFunc("GET /api/operation-logs", a.apiOnly(a.handleOperationLogs))
+	mux.HandleFunc("POST /api/operation-logs", a.apiOnly(methodNotAllowed))
+	mux.HandleFunc("POST /api/operation-logs/cleanup", a.apiOnly(a.handleOperationLogsCleanup))
+	mux.HandleFunc("GET /api/operation-logs/cleanup", a.apiOnly(methodNotAllowed))
+	mux.HandleFunc("GET /api/operation-logs/stats", a.apiOnly(a.handleOperationLogsStats))
+	mux.HandleFunc("POST /api/operation-logs/stats", a.apiOnly(methodNotAllowed))
+	var handler http.Handler = mux
+	handler = a.logOperation(handler)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Cache-Control", "no-store")
-		mux.ServeHTTP(w, r)
+		handler.ServeHTTP(w, r)
 	})
 }
 
@@ -549,6 +566,7 @@ func (a *App) startRuntime() {
 			Agent:             a.agentController,
 			AgentCallerOwned:  true,
 			Logger:            a.opts.Logger,
+			OperationLog:      a.operationLog,
 			ConnectionStatus:  a.setConnectionStatus,
 			ReleaseNotice:     a.handleReleaseNotice,
 		})
@@ -707,6 +725,139 @@ func openExistingUI(ctx context.Context, uiURL string) error {
 		}
 	}
 	return nodeinstance.ErrAlreadyRunning
+}
+
+// logOperation 记录 HTTP 请求操作日志
+func (a *App) logOperation(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 跳过健康检查和静态资源的日志记录
+		switch r.URL.Path {
+		case "/healthz", "/":
+			next.ServeHTTP(w, r)
+			return
+		}
+		start := time.Now()
+		rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rw, r)
+		if a.operationLog == nil {
+			return
+		}
+		duration := time.Since(start).Milliseconds()
+		category := "http"
+		action := "request"
+		level := operationlog.LevelInfo
+		if rw.status >= 500 {
+			level = operationlog.LevelError
+		} else if rw.status >= 400 {
+			level = operationlog.LevelWarning
+		}
+		// 根据路径细化分类
+		if strings.HasPrefix(r.URL.Path, "/api/browser") {
+			category = "browser"
+		} else if strings.HasPrefix(r.URL.Path, "/api/helper") {
+			category = "hub"
+		} else if strings.HasPrefix(r.URL.Path, "/api/working") {
+			category = "working"
+		} else if strings.HasPrefix(r.URL.Path, "/api/update") {
+			category = "update"
+		} else if strings.HasPrefix(r.URL.Path, "/api/ai-routing") {
+			category = "agent"
+		} else if strings.HasPrefix(r.URL.Path, "/api/components") {
+			category = "component"
+		} else if strings.HasPrefix(r.URL.Path, "/api/operation-logs") {
+			category = "operationlog"
+		}
+		entry := operationlog.NewEntry(level, category, action, r.Method+" "+r.URL.Path).
+			WithHTTP(r.Method, r.URL.Path, rw.status, duration, clientIPFromRequest(r))
+		a.operationLog.Append(entry)
+	})
+}
+
+// statusRecorder 用于捕获 HTTP 响应状态码
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (rw *statusRecorder) WriteHeader(status int) {
+	rw.status = status
+	rw.ResponseWriter.WriteHeader(status)
+}
+
+func clientIPFromRequest(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if fwd := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); fwd != "" {
+		if i := strings.Index(fwd, ","); i > 0 {
+			return strings.TrimSpace(fwd[:i])
+		}
+		return fwd
+	}
+	if r.RemoteAddr != "" {
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err == nil {
+			return host
+		}
+		return r.RemoteAddr
+	}
+	return ""
+}
+
+func (a *App) handleOperationLogs(w http.ResponseWriter, r *http.Request) {
+	if a.operationLog == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"entries": []operationlog.Entry{}, "total": 0, "categories": []string{}, "retention_days": operationlog.RetentionDays})
+		return
+	}
+	q := r.URL.Query()
+	level := operationlog.Level(strings.TrimSpace(q.Get("level")))
+	category := strings.TrimSpace(q.Get("category"))
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	entries, total := a.operationLog.Query(level, category, limit, offset)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"entries":        entries,
+		"total":          total,
+		"categories":     a.operationLog.Categories(),
+		"retention_days": operationlog.RetentionDays,
+	})
+}
+
+func (a *App) handleOperationLogsCleanup(w http.ResponseWriter, r *http.Request) {
+	if a.operationLog == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"removed": 0})
+		return
+	}
+	removed := a.operationLog.PurgeExpired()
+	writeJSON(w, http.StatusOK, map[string]any{"removed": removed, "retention_days": operationlog.RetentionDays})
+}
+
+func (a *App) handleOperationLogsStats(w http.ResponseWriter, r *http.Request) {
+	if a.operationLog == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"total": 0, "retention_days": operationlog.RetentionDays})
+		return
+	}
+	writeJSON(w, http.StatusOK, a.operationLog.Stats())
+}
+
+// operationLogCleanupLoop 定期清理过期操作日志（每24小时一次）
+func (a *App) operationLogCleanupLoop(ctx context.Context) {
+	if a.operationLog == nil {
+		return
+	}
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			removed := a.operationLog.PurgeExpired()
+			if removed > 0 {
+				a.opts.Logger.Info("operation log: purged expired entries", "removed", removed, "retention_days", operationlog.RetentionDays)
+			}
+		}
+	}
 }
 
 func existingUIHealthy() bool {

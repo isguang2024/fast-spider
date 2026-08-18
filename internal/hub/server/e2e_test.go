@@ -21,6 +21,7 @@ import (
 	"github.com/isguang2024/fast-spider/internal/hub/server"
 	"github.com/isguang2024/fast-spider/internal/hub/store"
 	"github.com/isguang2024/fast-spider/internal/node"
+	"github.com/isguang2024/fast-spider/internal/operationlog"
 	"github.com/isguang2024/fast-spider/internal/security"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -55,6 +56,10 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	}
 
 	nodeDataDir := t.TempDir()
+	operationLog, err := operationlog.NewStore(nodeDataDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	root := t.TempDir()
 	filePath := filepath.Join(root, "hello.txt")
 	if err := os.WriteFile(filePath, []byte("alpha\nneedle value\nomega\n"), 0o600); err != nil {
@@ -70,7 +75,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	runE2EGit(t, root, "add", "hello.txt")
 	runE2EGit(t, root, "commit", "-m", "initial")
 
-	nodeClient, err := node.New(node.Config{DataDir: nodeDataDir, Version: "test", AllowInsecure: true})
+	nodeClient, err := node.New(node.Config{DataDir: nodeDataDir, Version: "test", AllowInsecure: true, OperationLog: operationLog})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +188,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		t.Fatalf("MCP tool %s grew beyond 8 KiB individual budget: %d", largestToolName, largestToolBytes)
 	}
 	sort.Strings(names)
-	want := []string{"ai_control", "artifact_get", "audit_log", "browser_control", "build_control", "capability_list", "code_search", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "screenshot_take", "shell_run", "thinking_team", "working_context"}
+	want := []string{"ai_control", "artifact_get", "audit_log", "browser_control", "build_control", "capability_list", "code_search", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "operation_log", "screenshot_take", "shell_run", "thinking_team", "working_context"}
 	if stringJSON(names) != stringJSON(want) {
 		t.Fatalf("tools=%v want=%v", names, want)
 	}
@@ -225,7 +230,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(defaultGuideRaw, &defaultGuidePayload); err != nil {
 		t.Fatal(err)
 	}
-	if defaultGuide.IsError || !strings.Contains(string(defaultGuideRaw), `"capabilities"`) || !strings.Contains(string(defaultGuideRaw), `"view":"overview"`) || len(defaultGuidePayload.Guide.ToolSummaries) != 18 || len(defaultGuidePayload.CapabilitySummaries) == 0 {
+	if defaultGuide.IsError || !strings.Contains(string(defaultGuideRaw), `"capabilities"`) || !strings.Contains(string(defaultGuideRaw), `"view":"overview"`) || len(defaultGuidePayload.Guide.ToolSummaries) != 19 || len(defaultGuidePayload.CapabilitySummaries) == 0 {
 		t.Fatalf("default capability_list=%s", defaultGuideRaw)
 	}
 	for _, guideCall := range []struct {
@@ -316,6 +321,11 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	}
 	if err := json.Unmarshal(raw, &read); err != nil || read.FileSHA256 == "" || !strings.Contains(read.Content, "needle value") {
 		t.Fatalf("file_read err=%v raw=%s", err, raw)
+	}
+	operationLogResult := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "operation_log", map[string]any{"machineId": state.MachineID, "limit": 10})
+	operationLogRaw, _ := json.Marshal(operationLogResult.StructuredContent)
+	if operationLogResult.IsError || !strings.Contains(string(operationLogRaw), `"entries"`) || !strings.Contains(string(operationLogRaw), `"action":"file.read.read"`) || strings.Contains(string(operationLogRaw), filePath) {
+		t.Fatalf("operation_log=%s", operationLogRaw)
 	}
 	lineResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "file_read", Arguments: map[string]any{
 		"machineId": state.MachineID, "path": filePath, "headLines": 1, "includeLineNumbers": true,

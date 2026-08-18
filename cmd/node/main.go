@@ -18,6 +18,7 @@ import (
 	"github.com/isguang2024/fast-spider/internal/nodeinstance"
 	"github.com/isguang2024/fast-spider/internal/nodeui"
 	"github.com/isguang2024/fast-spider/internal/nodeupdate"
+	"github.com/isguang2024/fast-spider/internal/operationlog"
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 	"github.com/isguang2024/fast-spider/internal/version"
 )
@@ -139,7 +140,11 @@ func runNode(logger *slog.Logger, args []string) {
 
 func runNodeLocked(logger *slog.Logger, opts nodeRunOptions) {
 	agentController := agent.New(opts.dataDir, logger)
-	client, err := node.New(node.Config{DataDir: opts.dataDir, Version: version.Version, AllowInsecure: opts.allowInsecure, BrowserSidecarDir: opts.browserSidecarDir, Agent: agentController, Logger: logger})
+	operationLog, logErr := operationlog.NewStore(opts.dataDir, logger)
+	if logErr != nil {
+		logger.Warn("operation log store unavailable", "error", logErr)
+	}
+	client, err := node.New(node.Config{DataDir: opts.dataDir, Version: version.Version, AllowInsecure: opts.allowInsecure, BrowserSidecarDir: opts.browserSidecarDir, Agent: agentController, Logger: logger, OperationLog: operationLog})
 	fatalIf(err)
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

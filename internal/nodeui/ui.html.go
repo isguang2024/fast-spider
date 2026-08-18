@@ -32,6 +32,7 @@ const localUIHTML = `<!doctype html>
 		<button data-tab="ai">AI 与路由</button>
 		<button data-tab="diagnostics">诊断</button>
 		<button data-tab="components">组件</button>
+		<button data-tab="operation-logs">操作日志</button>
         <button data-tab="config">本地配置</button>
       </nav>
       <main class="content">
@@ -208,6 +209,32 @@ const localUIHTML = `<!doctype html>
           </div>
         </section>
 
+		<section id="tab-operation-logs" class="section">
+		  <div class="panel">
+			<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap"><div><h2>操作日志</h2><p class="copy">记录本机客户端的 API 调用、浏览器操作、Hub 连接等事件。日志仅保存在本地，自动保留最近 7 天。</p></div><div style="display:flex;gap:8px"><button id="oplog-refresh" class="secondary" type="button">刷新日志</button><button id="oplog-cleanup" class="secondary" type="button">清理过期</button></div></div>
+			<div class="facts" style="margin-top:0">
+			  <div class="fact"><span>总条数</span><strong id="oplog-total">—</strong></div>
+			  <div class="fact"><span>保留天数</span><strong id="oplog-retention">7 天</strong></div>
+			  <div class="fact"><span>最早记录</span><strong id="oplog-oldest">—</strong></div>
+			  <div class="fact"><span>最新记录</span><strong id="oplog-newest">—</strong></div>
+			  <div class="fact"><span>Info / Warn / Error</span><strong id="oplog-levels">—</strong></div>
+			  <div class="fact"><span>分类</span><strong id="oplog-cats">—</strong></div>
+			</div>
+		  </div>
+		  <div class="panel">
+			<div class="grid" style="margin-bottom:14px">
+			  <label class="field"><span>级别过滤</span><select id="oplog-level"><option value="">全部</option><option value="info">Info</option><option value="warning">Warning</option><option value="error">Error</option></select></label>
+			  <label class="field"><span>分类过滤</span><select id="oplog-category"><option value="">全部</option></select></label>
+			  <label class="field"><span>每页条数</span><select id="oplog-limit"><option value="50">50</option><option value="100" selected>100</option><option value="200">200</option><option value="500">500</option></select></label>
+			</div>
+			<div id="oplog-list" class="data-list" style="max-height:520px;overflow:auto;padding-right:6px"><span class="empty">切换到本页后加载日志…</span></div>
+			<div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;gap:10px;flex-wrap:wrap">
+			  <span id="oplog-page-info" class="hint">—</span>
+			  <div style="display:flex;gap:8px"><button id="oplog-prev" class="secondary" type="button" disabled>上一页</button><button id="oplog-next" class="secondary" type="button" disabled>下一页</button></div>
+			</div>
+		  </div>
+		</section>
+
       </main>
     </div>
   </div>
@@ -226,6 +253,9 @@ const localUIHTML = `<!doctype html>
 	let diagnosticsBusy = false;
 	let componentsBusy = false;
 	let selfTestBusy = false;
+	let oplogBusy = false;
+	let oplogOffset = 0;
+	let oplogTotal = 0;
 
   async function api(path, options = {}) {
     const headers = Object.assign({'X-Fast-Spider-UI-Token': token}, options.headers || {});
@@ -317,6 +347,9 @@ const localUIHTML = `<!doctype html>
 
   function escapeText(value) {
     const span=document.createElement('span'); span.textContent=value || ''; return span.innerHTML;
+  }
+  function escapeAttr(value) {
+    return escapeText(value).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
 	function boolText(value) { return value === true ? '是' : value === false ? '否' : '—'; }
@@ -554,6 +587,93 @@ const localUIHTML = `<!doctype html>
     if (!confirm(prompt)) return;
     try { await api('/api/exit',{method:'POST',body:'{}'}); document.body.textContent=ownsRuntime ? 'Fast Spider Node 已退出，可以关闭此窗口。' : '本地界面已关闭；旧的无界面 Node 仍在运行。'; } catch(e) { message(e.message,true); }
   });
+
+  function formatLocalTime(ts) {
+    if (!ts) return '\u2014';
+    const d = new Date(ts);
+    const pad = (n) => String(n).padStart(2, '0');
+    return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+  }
+  function levelBadgeClass(level) {
+    return level === 'error' ? 'bad' : level === 'warning' ? 'warn' : 'ok';
+  }
+  function renderOperationLogs(data) {
+    oplogTotal = data.total || 0;
+    const entries = data.entries || [];
+    const categories = data.categories || [];
+    const catSelect = $('oplog-category');
+    const currentCat = catSelect.value;
+    catSelect.innerHTML = '<option value="">\u5168\u90e8</option>' + categories.map(c => '<option value="' + escapeAttr(c) + '"' + (c === currentCat ? ' selected' : '') + '>' + escapeText(c) + '</option>').join('');
+    const list = $('oplog-list');
+    if (!entries.length) {
+      list.innerHTML = '<span class="empty">\u6682\u65e0\u64cd\u4f5c\u65e5\u5fd7</span>';
+    } else {
+      list.innerHTML = entries.map(entry => {
+        const time = formatLocalTime(entry.timestamp);
+        const levelCls = levelBadgeClass(entry.level);
+        const extra = entry.status ? (' \u00b7 ' + entry.status + (entry.duration_ms ? ' \u00b7 ' + entry.duration_ms + 'ms' : '')) : '';
+        const client = entry.client_ip ? (' \u00b7 ' + escapeText(entry.client_ip)) : '';
+        const method = entry.method ? (entry.method + ' ') : '';
+        return '<div class="task-row"><strong><span class="dot ' + levelCls + '" style="display:inline-block;vertical-align:middle;margin-right:6px"></span>' + escapeText(entry.category) + ' \u00b7 ' + escapeText(entry.action) + '</strong><small>' + escapeText(time) + client + '</small><div style="margin-top:4px;font-size:13px;color:var(--muted);word-break:break-word">' + escapeText(method + entry.message + extra) + '</div></div>';
+      }).join('');
+    }
+    const limit = parseInt($('oplog-limit').value) || 100;
+    const pageStart = oplogTotal ? oplogOffset + 1 : 0;
+    const pageEnd = Math.min(oplogOffset + limit, oplogTotal);
+    $('oplog-page-info').textContent = oplogTotal ? ('\u7b2c ' + pageStart + '\u2013' + pageEnd + ' \u6761 / \u5171 ' + oplogTotal + ' \u6761') : '\u5171 0 \u6761';
+    $('oplog-prev').disabled = oplogOffset <= 0;
+    $('oplog-next').disabled = oplogOffset + limit >= oplogTotal;
+  }
+  function renderOplogStats(stats) {
+    $('oplog-total').textContent = stats.total || 0;
+    $('oplog-retention').textContent = (stats.retention_days || 7) + ' \u5929';
+    $('oplog-oldest').textContent = stats.oldest ? formatLocalTime(new Date(stats.oldest).getTime()) : '\u2014';
+    $('oplog-newest').textContent = stats.newest ? formatLocalTime(new Date(stats.newest).getTime()) : '\u2014';
+    const byLevel = stats.by_level || {};
+    $('oplog-levels').textContent = (byLevel.info || 0) + ' / ' + (byLevel.warning || 0) + ' / ' + (byLevel.error || 0);
+    const byCat = stats.by_category || {};
+    $('oplog-cats').textContent = Object.keys(byCat).length ? Object.keys(byCat).sort().map(c => c + ':' + byCat[c]).join(', ') : '\u2014';
+  }
+  async function refreshOperationLogs() {
+    if (oplogBusy) return; oplogBusy = true;
+    try {
+      const level = $('oplog-level').value;
+      const category = $('oplog-category').value;
+      const limit = parseInt($('oplog-limit').value) || 100;
+      const params = new URLSearchParams({limit: String(limit), offset: String(oplogOffset)});
+      if (level) params.set('level', level);
+      if (category) params.set('category', category);
+      const [data, stats] = await Promise.all([api('/api/operation-logs?' + params.toString()), api('/api/operation-logs/stats')]);
+      renderOperationLogs(data);
+      renderOplogStats(stats);
+    } catch(e) { message(e.message, true); }
+    finally { oplogBusy = false; }
+  }
+  async function cleanupOperationLogs() {
+    if (oplogBusy) return;
+    if (!confirm('\u7acb\u5373\u6e05\u7406\u8d85\u8fc7 7 \u5929\u7684\u64cd\u4f5c\u65e5\u5fd7\uff1f')) return;
+    oplogBusy = true;
+    try {
+      const data = await api('/api/operation-logs/cleanup', {method: 'POST', body: '{}'});
+      oplogOffset = 0;
+      oplogBusy = false;
+      await refreshOperationLogs();
+      message('\u5df2\u6e05\u7406 ' + (data.removed || 0) + ' \u6761\u8fc7\u671f\u65e5\u5fd7\u3002');
+    } catch(e) { message(e.message, true); }
+    finally { oplogBusy = false; }
+  }
+  document.querySelectorAll('.nav button').forEach(button => {
+    if (button.dataset.tab === 'operation-logs') {
+      button.addEventListener('click', () => { setTimeout(refreshOperationLogs, 50); });
+    }
+  });
+  $('oplog-refresh').addEventListener('click', refreshOperationLogs);
+  $('oplog-cleanup').addEventListener('click', cleanupOperationLogs);
+  $('oplog-level').addEventListener('change', () => { oplogOffset = 0; refreshOperationLogs(); });
+  $('oplog-category').addEventListener('change', () => { oplogOffset = 0; refreshOperationLogs(); });
+  $('oplog-limit').addEventListener('change', () => { oplogOffset = 0; refreshOperationLogs(); });
+  $('oplog-prev').addEventListener('click', () => { const limit = parseInt($('oplog-limit').value) || 100; oplogOffset = Math.max(0, oplogOffset - limit); refreshOperationLogs(); });
+  $('oplog-next').addEventListener('click', () => { const limit = parseInt($('oplog-limit').value) || 100; oplogOffset = Math.min(oplogTotal, oplogOffset + limit); refreshOperationLogs(); });
 
   refresh(); setInterval(refresh, 10000);
 })();

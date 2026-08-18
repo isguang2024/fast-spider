@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/isguang2024/fast-spider/internal/operationlog"
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 	"github.com/isguang2024/fast-spider/internal/security"
 )
@@ -41,6 +42,7 @@ type Config struct {
 	// When false, Client.Run closes Agent before it returns.
 	AgentCallerOwned bool
 	Logger           *slog.Logger
+	OperationLog     *operationlog.Store
 	ConnectionStatus func(ConnectionStatus)
 	ReleaseNotice    func(*Client, string, string)
 }
@@ -60,6 +62,7 @@ type Client struct {
 	agent          AgentController
 	requestSem     chan struct{}
 	screenshotSem  chan struct{}
+	operationLog   *operationlog.Store
 }
 
 type machineRegistrationResponse struct {
@@ -107,6 +110,7 @@ func New(cfg Config) (*Client, error) {
 		requestSem:     make(chan struct{}, 8),
 		screenshotSem:  make(chan struct{}, 1),
 		agent:          cfg.Agent,
+		operationLog:   cfg.OperationLog,
 	}
 	client.browser = NewBrowserManager(cfg.DataDir, cfg.BrowserSidecarDir, cfg.Logger)
 	return client, nil

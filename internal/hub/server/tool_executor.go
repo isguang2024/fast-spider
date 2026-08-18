@@ -105,6 +105,32 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 		}
 		return out, nil
 
+	case "operation_log":
+		input, err := toolInput[operationLogInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(input.MachineID) == "" {
+			return nil, &toolRequestError{message: "machineId is required"}
+		}
+		if input.Limit < 0 || input.Limit > 200 {
+			return nil, &toolRequestError{message: "limit must be between 0 and 200"}
+		}
+		if len(input.Before) > 256 {
+			return nil, &toolRequestError{message: "before cursor is too long"}
+		}
+		result, err := e.service.CallCapability(ctx, ownerID, input.MachineID, "operation.log", "query", map[string]any{
+			"level": input.Level, "category": input.Category, "limit": input.Limit, "before": input.Before,
+		})
+		if err != nil {
+			return nil, err
+		}
+		var out operationLogOutput
+		if err := decodeCapabilityResult(result, &out); err != nil {
+			return nil, err
+		}
+		return out, nil
+
 	case "capability_list":
 		input, err := toolInput[capabilityListInput](tool, rawInput)
 		if err != nil {

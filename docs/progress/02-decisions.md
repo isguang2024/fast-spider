@@ -4,7 +4,7 @@
 ## Active Decisions
 
 1. **双轨任务系统**：Working Context 保存结构化摘要；项目内 Markdown Task Workspace 保存完整设计、决策和验收证据。Git、文件、测试和运行状态始终是最终事实源。
-2. **MCP 工具演进**：0.4.2 的 Task Workspace 继续扩展 `working_context / working.context` actions 而不拆工具；0.4.12 因“调用侧角色协作”具有独立语义正式增加只读 `thinking_team`；当前固定 18 个工具，新增 `audit_log` 作为 Hub 本地、Owner 隔离的只读审计查询入口，并明确不扩展 Direct Access Key 权限面；仍不按 Machine、Provider、模型或 Session 动态生成工具。
+2. **MCP 工具演进**：0.4.2 的 Task Workspace 继续扩展 `working_context / working.context` actions 而不拆工具；0.4.12 因“调用侧角色协作”具有独立语义正式增加只读 `thinking_team`；当前固定 19 个工具，新增 `audit_log` 作为 Hub 本地、Owner 隔离的只读审计查询入口，并明确不扩展 Direct Access Key 权限面；仍不按 Machine、Provider、模型或 Session 动态生成工具。
 3. **计划隔离键**：`machineId + projectPath + planId`；Markdown 必须位于 projectPath 内且为普通 `.md` 文件，防 symlink/junction 逃逸。
 4. **Markdown 同步**：受管区块以 `<!-- fast-spider:managed:<name>:start/end -->` 标记；自动同步只替换受管区块，不覆盖人工内容。写入使用 revision/CAS、临时文件、fsync 和原子替换。
 5. **任务上限**：Markdown 文件最多 64；单文件 512 KiB；目录 4 MiB；单计划最多 500 个任务；每任务最多 32 条验收证据。
@@ -35,7 +35,7 @@
 30. **不可变发布**：已发布 Node artifact 不做同版本覆盖；0.4.9 自举发现静态 include 根遍历后提升为 0.4.10，重新完成 build/deploy/self-update，并保留 0.4.9 rollback。
 31. **Thinking Team 执行边界**：`thinking_team.executionTarget=calling_chat_model`、`providerInvocation=false`；角色/部门/流程只指导当前调用侧 ChatGPT/LLM 的多视角分析，绝不因该工具启动 Codex、Claude Code 或其它本机 AI Session。
 32. **Thinking Team 资料室复用**：复杂协作直接使用 `working_context` 标准六文件与 `initializeMarkdown=true`；共享简报和 Read Evidence 写入 `00-current-state.md`，其它阶段事实映射到既有 roadmap/decisions/acceptance/open-issues/change-log。所有写入必须先 read 取得 fileRevision，再用 expectedFileRevision CAS append，不建立第二套 Workspace 存储或初始化器。
-33. **Node 发布推送**：发布完成后由 `spiderctl node-update-push` 在 release-dir 当前 Node artifact/version.txt 上生成原子 `push.json`；Hub 只借现有 heartbeat ACK 发送 release notice，不新增消息队列、推送 daemon 或第 18 个 MCP 工具。Node 仍通过签名 manifest + SHA 获取真实更新。
+33. **Node 发布推送**：发布完成后由 `spiderctl node-update-push` 在 release-dir 当前 Node artifact/version.txt 上生成原子 `push.json`；Hub 只借现有 heartbeat ACK 发送 release notice，不新增消息队列、推送 daemon 或第 19 个 MCP 工具。Node 仍通过签名 manifest + SHA 获取真实更新。
 34. **更新不得中断任务**：推送允许在任务期间预下载，但 Shell/Build Job、Browser Session、AI 活跃 Turn、in-flight Capability 任一存在时不得重启。全部结束并连续空闲 15 秒后才能进入 release drain；drain 不取消旧任务，只拒绝新任务并返回可重试 `NODE_UPDATING`，随后复用既有 Ready/StartApply/.previous/restart 链。
 35. **0.4.16 分层能力指南**：initialize instructions 只承载九类能力地图和安全黄金规则；17 个工具的用途、必需输入、安全顺序、返回、下一步、真实错误与短示例由 `capability_list` 的 overview/catalog/tool/workflow/error 视图按需展开。指南和工具 description 使用同一代码内事实源，不新增独立 Manifest，也不改变既有 `machineId` 查询兼容行为。
 36. **MCP 调用诊断边界**：只在 Hub 进程内按 owner 保存最近 64 条 initialize/tools/list/tools/call 归一化事件与当前快照；不持久化、不记录参数、正文、Token、路径或完整错误。Web API 复用现有 session 登录，仅在页面首次加载和人工刷新时读取，不轮询。

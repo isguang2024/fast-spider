@@ -103,6 +103,9 @@ type codeSearchResult struct {
 func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.CapabilityRequest) protocolv1.CapabilityResponse {
 	started := time.Now()
 	response := protocolv1.CapabilityResponse{MessageType: protocolv1.MessageCapabilityResponse, RequestId: req.RequestId, TraceId: req.TraceId, Timestamp: protocolv1.Timestamp(nowUTC())}
+	if c.operationLog != nil && req.Capability != "" && req.Action != "" {
+		defer func() { c.appendOperationLog(req.Capability, req.Action, response.Error, started) }()
+	}
 	if req.RequestId == "" || req.Capability == "" || req.Action == "" {
 		response.Error = protocolError("INVALID_REQUEST", "invalid capability request", false)
 		return response
@@ -155,6 +158,8 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 		result, err = c.artifactUploadJobLog(ctx, req.Params)
 	case "artifact.store/publishFile":
 		result, err = c.presentationPublishFile(ctx, req.Params)
+	case "operation.log/query":
+		result, err = c.operationLogQuery(ctx, req.Params)
 	case "working.context/get", "working.context/set", "working.context/clear",
 		"working.context/plan.init", "working.context/plan.get", "working.context/plan.list", "working.context/plan.sync",
 		"working.context/task.update", "working.context/markdown.list", "working.context/markdown.read", "working.context/markdown.append", "working.context/progress.watch":
@@ -295,6 +300,13 @@ func capabilityError(err error) *protocolv1.ProtocolError {
 	var agentErr AgentCapabilityError
 	if errors.As(err, &agentErr) {
 		code, message, retryable := agentErr.CapabilityError()
+		return protocolError(code, message, retryable)
+	}
+	var operationLogErr interface {
+		CapabilityError() (string, string, bool)
+	}
+	if errors.As(err, &operationLogErr) {
+		code, message, retryable := operationLogErr.CapabilityError()
 		return protocolError(code, message, retryable)
 	}
 	switch {
