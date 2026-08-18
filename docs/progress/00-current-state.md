@@ -5,19 +5,19 @@
 <!-- fast-spider:managed:current-state:start -->
 ## Managed Current State
 
-- planId: `fs-0.4.21-release`
-- targetVersion: `0.4.21`
+- planId: `fs-0.4.22-url-only-attachments`
+- targetVersion: `0.4.22`
 - branch: `main`
-- sourceReleaseCommit: `13ed5db765112d25f8b106e211dcac116ee10a6d`
-- phase: `0.4.21 PRODUCTION DEPLOYED / HEALTHY`
-- finalReleaseGate: `core PASS / go vet PASS / go test 27 packages / Linux amd64 Hub+spiderctl build PASS / WSL、Browser、CC Switch、Claude、MCP gates PASS；最后 Local Bridge→Codex product E2E 因本机会话返回 AGENT_EXECUTION_FAILED 未通过`
-- productionHub: `0.4.21 / SHA256 dc68ebff7620b0218046e81615b742e9fe5b39d61a6c1d20fe1c9a39f584f560 / PID 3748947 / systemd active / local+public livez+readyz 200`
-- productionSpiderctl: `0.4.21 / SHA256 1588c1bbcb46adf5ed21096add05e352c5b29b992e019337f1c47768c9ce9a7e`
-- productionNode: `PCa / 0.4.21 / windows-amd64 / generation=120 / operation.log capability registered / push marker SHA256 66d3ea1ee61a0312dc542484a749714a81aba61891fe32c11721874f46f0005e`
-- hubRollback: `0.4.20 rollback copies / Hub SHA256 f3abb08ee0f836cec3b46dd4e75aaf5a66032c4d888e327d6ef574957ef85b64 / spiderctl SHA256 52309b9dd632e52e9c5ca8d84b34a21e73990d9615ba372bb4d4f0d3986f1e81`
-- verifiedBackups: `pre-0.4.21-13ed5db765112d25f8b106e211dcac116ee10a6d.zip / SHA256 26655df2757a02fbd99f85ef9f7f36a5c506a55986476f16da02249935bc8a13 / size=10445294 / valid=true / manifest source version=0.4.20`
-- workingContext11: `fs-0.4.21-release completion=100%；Hub/spiderctl/Node 发布与健康检查 done`
-- schemaStatus: `0.4.21 Hub MCP 与 operation_log 工具已上线；公网 OAuth discovery=200、MCP 未认证路由=401、livez/readyz=200；认证 tools/list/operation_log 冷调用待 OAuth 入口补验`
+- sourceReleaseCommit: `2ff08335361269faa9b56265235ccf43c74df492`
+- phase: `0.4.22 PRODUCTION DEPLOYED / HEALTHY`
+- finalReleaseGate: `worktree/index secret scan PASS；内置 history scan PASS；go test ./...、go vet、diff-check、跨平台 build、post-history 专项、fuzz、race、Windows Browser、CC Switch、Claude、MCP 与 multi-provider discovery PASS；本机额外 private-marker overlay 仅命中既有 Git history 并使原始 --full 提前停止；Local Bridge→Codex product E2E 300 秒外部 Agent 等待超时，未伪装为 PASS`
+- productionHub: `0.4.22 / SHA256 6792a5747a418d07e938fbc3e0a23aa1f68229392d4eea617d0281b140f62e25 / PID 3989323 / systemd active / local+public livez+readyz 200`
+- productionSpiderctl: `0.4.22 / SHA256 4b5a174660465722ee4cfe19a3718c45c216a22f1d699d186015337b2da45941`
+- productionNode: `PCa / 0.4.22 / windows-amd64 / generation=123 / online+ready / release SHA256 e5fd6f820001022c4ed554d3df038fd6482d4f1153fa24984de59ecdb3d2696e`
+- hubRollback: `0.4.21 rollback copies / Hub SHA256 dc68ebff7620b0218046e81615b742e9fe5b39d61a6c1d20fe1c9a39f584f560 / spiderctl SHA256 1588c1bbcb46adf5ed21096add05e352c5b29b992e019337f1c47768c9ce9a7e / Windows Node SHA256 66d3ea1ee61a0312dc542484a749714a81aba61891fe32c11721874f46f0005e`
+- verifiedBackups: `pre-0.4.22-2ff08335361269faa9b56265235ccf43c74df492.zip / SHA256 d89163794add000e45d1ad5bf4e212190f61b0a5add9ae50f1229a71ec0b2a64 / size=14714987 / valid=true / manifest source version=0.4.21`
+- workingContext11: `0.4.22 源码、Hub/spiderctl、三平台 Node release、Windows PCa 自更新、48h URL-only attachment 生产 smoke 与公网健康检查 done`
+- schemaStatus: `0.4.22 URL-only attachment 行为已上线；live artifact_get.publishFile 只返回 url/fileName/contentType/sizeBytes/expiresAt，公网临时 URL=200 image/png，约 48h expiry；当前长会话工具描述可能仍受 ChatGPT schema cache 影响，但运行时行为已切换`
 - completed041: `FS-041-001..015 PASS / no 0.4.1 release`
 - completed042: `FS-042-001..017 PASS / 0.4.2 formally released and deployed`
 - completed043: `0.4.3 formally released and deployed`
@@ -31,6 +31,7 @@
 - completed0417: `根因证据、过滤式按需发现、Schema 体积预算、请求到达诊断、full gate、commit/push、备份、Hub/spiderctl 生产发布及 Refresh 后同会话恢复均 PASS`
 - completed0419: `两层 MCP 能力地图、17 工具摘要、底层 capability 映射、Windows PowerShell/cmd 指引、Hub/spiderctl 0.4.19 生产部署与公网健康检查 PASS；认证 MCP 冷调用待补验`
 - completed0421: `Node operation.log/query、MCP operation_log、敏感字段投影、19 工具目录、Hub/Node 0.4.21 发布与健康检查 PASS`
+- completed0422: `publishFile/Browser/OS screenshot URL-only attachment、48h TTL/自动清理、三平台 Node release、Hub/spiderctl 0.4.22 与 PCa 自更新完成；公网 attachment smoke PASS`
 - currentTask: `none`
 - nextGate: `进入稳定使用阶段；仅在新的真实故障、可复现性能瓶颈或明确新需求出现时开启下一计划`
 
