@@ -6,7 +6,7 @@
 
 Hub data-dir 与 release-dir 分离：数据库/密钥/Artifact 进入备份，Windows Node EXE 和大型组件不进入 Hub 数据备份。Temporary Presentation Relay 使用系统临时目录，不进入数据库或备份，Hub 启动/退出会清理，单个资源 TTL 为 20 分钟、单次上传上限 64 MiB。反向代理应对 Fast Spider 路径允许至少 64 MiB 请求体；Nginx 建议同时设置 `proxy_request_buffering off`，避免大图/临时文件先完整落到代理缓存。
 
-0.4.20 增加独立 Direct API。生产 PublicBaseURL 为 `/fast-spider` 时，对外入口为 `GET /fast-spider/direct/v1/tools` 和 `POST /fast-spider/direct/v1/call`，仅接受后台生成的 `fsp_tmp_` Direct Access Key Bearer。Direct Key 与 OAuth、Connection Token 完全隔离；默认只读，高危 Scope 单独授权，高权限最长 24 小时、只读最长 7 天，可绑定单一 Machine 并设置每分钟限速。MCP 与 Direct API 共用同一 `toolExecutor`，不得维护两套 Capability 参数映射。
+0.4.20 增加独立 Direct API。生产 PublicBaseURL 为 `/fast-spider` 时，对外入口为 `GET /fast-spider/direct/v1/tools` 和 `POST /fast-spider/direct/v1/call`，仅接受后台生成的 `fsp_tmp_` Direct Access Key Bearer。Direct Key 与 OAuth、Connection Token 完全隔离；默认只读，高危 Scope 单独授权，高权限最长 24 小时、只读最长 7 天，可绑定单一 Machine 并设置每分钟限速。MCP 与 Direct API 对共有工具复用同一 `toolExecutor`，不得维护两套 Capability 参数映射；MCP-only `audit_log` 不进入 Direct Access Key 工具目录。
 
 ## Windows Node
 
@@ -111,6 +111,6 @@ spiderctl staging-prune --dir /tmp --layout server --through <last-completed-ver
 - ChatGPT OAuth + MCP tools/list 可获取当前工具。
 - Direct API 未认证请求返回 401；临时只读 Key 可读取 `/direct/v1/tools`，高危调用无对应 Scope 返回 403；Machine-bound Key 无法访问其它 Machine；撤销或过期后立即返回 401。
 - 已登录 Web 后台“MCP 调用诊断”除 initialize/tools/list/tools/call 外还显示最近一次通过 OAuth 的 MCP HTTP 请求时间；若 ChatGPT 正报告不可用但该时间不变化，优先判定为会话侧未发请求，而不是 Node/Hub 断线。
-- ChatGPT App 在工具 Schema/描述变化后执行 Refresh；普通长会话中若 FastSpider_FS 命名空间缺失，先以唯一标记 `fsprobe` 过滤发现并只物化 `machine_list`，真实连接成功后再按当前动作加载 `capability_list`、`machine_get` 或业务工具。禁止为了健康检查一次加载全部 17 个 Schema；完整目录、连接入口与单工具分别不得超过 48 KiB、8 KiB、8 KiB。
+- ChatGPT App 在工具 Schema/描述变化后执行 Refresh；普通长会话中若 FastSpider_FS 命名空间缺失，先以唯一标记 `fsprobe` 过滤发现并只物化 `machine_list`，真实连接成功后再按当前动作加载 `capability_list`、`machine_get` 或业务工具。禁止为了健康检查一次加载全部 18 个 Schema；完整目录、连接入口与单工具分别不得超过 48 KiB、8 KiB、8 KiB。
 
 0.3.x 完成权限模型收敛；0.4.2 正式交付 Task Workspace、多 AI Harness/CC Switch 只读 Routing、Managed ripgrep 与文件能力 2.0；0.4.3-0.4.6 收敛更新、backup 与 staging 生命周期；0.4.7/0.4.8 收敛 Browser 与 Codex runtime；0.4.9 交付 file_edit 响应瘦身、搜索稳定码/统计、host/WSL runtime、Agent/Browser readiness、持久 Session create 幂等与轻量 timing；0.4.10 收敛大型仓库静态 include 前缀下推；0.4.11 收敛 Artifact/MCP 原生回显与临时分享边界；0.4.12 引入调用侧 Thinking Team；0.4.13 将其协作资料室收敛到 Working Context 标准六文件与 CAS 写入协议；0.4.14 新增任务空闲保护的 Node 发布推送与真实 ready/busy heartbeat；0.4.15 补充 MCP 调用路由提示；0.4.16 将其收敛为 initialize 常驻能力地图、`capability_list` 按需指南和每 Owner 有界 MCP 诊断；0.4.17 针对 ChatGPT 长会话偶发丢失工具物化状态增加过滤式恢复协议与认证请求到达性诊断；0.4.18 补齐 OAuth 历史保留、Presentation/Artifact 可恢复清理、Release manifest 取消传播、staging 原子隔离、Node/Agent 代际生命周期和秘密发布门禁；0.4.19 在不改变 Node/WSS 协议与 17 个顶层工具的前提下，补齐完整工具摘要、底层 capability 映射、按 capability 读取细节和 Windows PowerShell/cmd 调用说明。0.4.20 增加直接访问密钥能力，并完善 Windows Node 隐藏启动、开机自启动、桌面快捷方式、托盘驻留和默认窗口尺寸。
