@@ -1166,6 +1166,7 @@ func (s *Store) CleanupExpired(ctx context.Context, now time.Time) error {
 		"DELETE FROM oauth_access_tokens WHERE expires_at <= ?",
 		"DELETE FROM oauth_refresh_tokens WHERE expires_at <= ?",
 		"DELETE FROM web_sessions WHERE expires_at <= ? OR revoked_at IS NOT NULL",
+		"DELETE FROM admin_sessions WHERE expires_at <= ? OR revoked_at IS NOT NULL",
 	} {
 		if _, err := tx.ExecContext(ctx, stmt, now.Unix()); err != nil {
 			return err

@@ -138,6 +138,24 @@ body.admin-body {
 .page-heading h2 { margin: 0; font-size: 1.42rem; letter-spacing: -.03em; }
 .page-heading p:not(.eyebrow) { max-width: 760px; margin: 7px 0 0; color: var(--text-muted); font-size: .83rem; line-height: 1.6; }
 .button-link.compact { min-height: 38px; margin: 0; padding: 8px 14px; font-size: .76rem; white-space: nowrap; }
+.download-panel { margin-bottom: 12px; }
+.download-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.download-grid a { display: grid; gap: 5px; padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-soft); }
+.download-grid a:hover { border-color: var(--primary); background: var(--surface); }
+.download-grid strong { font-size: .82rem; }
+.download-grid span { color: var(--text-muted); font-size: .72rem; }
+
+.tutorial { border-left: 3px solid #d7e5ff; }
+.tutorial-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.tutorial-grid-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.tutorial-card { min-width: 0; padding: 14px; border: 1px solid var(--border-soft); border-radius: 11px; background: var(--surface-soft); }
+.tutorial-card h3 { margin: 0 0 7px; font-size: .82rem; }
+.tutorial-card p, .tutorial-copy { margin: 0; color: var(--text-muted); font-size: .73rem; line-height: 1.6; }
+.tutorial-step { display: inline-grid; place-items: center; width: 25px; height: 25px; margin-bottom: 9px; border-radius: 8px; background: #eaf2ff; color: #2563c7; font-size: .65rem; font-weight: 800; }
+.tutorial pre { margin: 0; padding: 10px; overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; background: #fff; color: #344054; font-size: .69rem; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
+.tutorial-list, .tutorial-steps { margin: 0; padding-left: 20px; color: var(--text-muted); font-size: .74rem; line-height: 1.75; }
+.tutorial-list code, .tutorial-steps code, .tutorial-note code { color: #344054; }
+.tutorial-note { margin-top: 12px; padding: 10px 12px; border: 1px solid #dce7f8; border-radius: 9px; background: #f4f8ff; color: #526b91; font-size: .72rem; line-height: 1.6; }
 
 .metric-grid {
   display: grid;
@@ -255,6 +273,8 @@ body.admin-body {
   .sidebar { padding-inline: 10px; }
   .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .overview-grid { grid-template-columns: 1fr; }
+  .download-grid { grid-template-columns: 1fr; }
+  .tutorial-grid, .tutorial-grid-two { grid-template-columns: 1fr; }
   .admin-content .direct-key-form-row { grid-template-columns: 1fr 1fr; }
   .admin-content .scope-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .admin-content .password-form { grid-template-columns: 1fr 1fr; }

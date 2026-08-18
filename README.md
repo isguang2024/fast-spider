@@ -30,7 +30,7 @@ Fast Spider 不是远程桌面，也不是通用内网穿透软件：不提供�
 
 ## 核心能力
 
-- 多台 Windows/Linux Node 的登记、在线状态、能力发现和撤销。
+- 多台 Windows/Linux/macOS Node 的登记、在线状态、能力发现和撤销。
 - 绝对路径文件读取、精确编辑、代码搜索和 Diff。
 - 使用绝对 cwd 的 Shell、构建、测试、日志流、取消和进程树终止。
 - 使用绝对 `repositoryPath` 的 Git 状态、Diff、提交及受控远程操作。
@@ -50,7 +50,7 @@ Fast Spider 不是远程桌面，也不是通用内网穿透软件：不提供�
 | Node 通道 | WSS 443 承载 JSON 控制消息；大文件走 Artifact/Presentation HTTP 数据面 |
 | Hub 数据库 | SQLite WAL |
 | Artifact | Hub 本地内容寻址文件存储 |
-| Node 本地 UI | 同一 Node 进程提供 loopback 管理页和 Windows 托盘 |
+| Node 本地 UI | 同一 Node 进程提供 loopback 管理页；Windows 提供托盘，macOS 支持 LaunchAgent 开机启动 |
 | Local Bridge | Windows/Linux AF_UNIX/UDS，不使用本地 HTTP/MCP |
 | 浏览器 | 隔离 Profile，Playwright Adapter |
 
@@ -68,8 +68,18 @@ go run ./cmd/spiderctl setup-url \
   --allow-insecure \
   --bootstrap-token-file ./data/bootstrap-token
 
+# 管理员后台（创建用户、查看用户列表）
+# 地址：http://127.0.0.1:8787/admin/login
+# 用户名：admin，默认密码：AA@@123456
+
 # Windows 双击 fast-spider-node.exe，或源码运行本地 UI
 go run ./cmd/node ui
+
+# macOS：下载与 CPU 对应的客户端后赋予执行权限
+# Apple 芯片：/fast-spider/api/v1/node/releases/darwin-arm64/download
+# Intel：/fast-spider/api/v1/node/releases/darwin-amd64/download
+chmod +x ./fast-spider-node
+./fast-spider-node ui
 
 # 在“连接”页填写 Hub 地址、后台创建的连接令牌和设备名称；
 # 登记后 Node 只保存设备身份，不保存连接令牌。

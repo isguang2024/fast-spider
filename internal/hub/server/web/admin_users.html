@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>管理员后台 · Fast Spider</title>
+  <link rel="stylesheet" href="{{.BasePath}}/assets/app.css">
+</head>
+<body class="auth-page">
+  <main class="auth-card">
+    <div class="brand-mark">FS</div>
+    <p class="eyebrow">Fast Spider Admin</p>
+    <h1>创建用户</h1>
+    <p class="muted">当前管理员：{{.Username}}。这里只负责创建用户账户。</p>
+    {{if .Notice}}<div class="notice" role="status">{{.Notice}}</div>{{end}}
+    {{if .Error}}<div class="alert" role="alert">{{.Error}}</div>{{end}}
+    <form method="post" action="{{.BasePath}}/admin/users" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <label>用户名<input name="username" minlength="3" maxlength="64" pattern="[a-z0-9][a-z0-9._-]{2,63}" required autofocus></label>
+      <label>显示名称<input name="display_name" maxlength="128" placeholder="用户名称"></label>
+      <label>密码<input name="password" type="password" minlength="10" maxlength="256" autocomplete="new-password" required></label>
+      <label>确认密码<input name="password_confirm" type="password" minlength="10" maxlength="256" autocomplete="new-password" required></label>
+      <button class="primary" type="submit">创建用户</button>
+    </form>
+    <section class="panel" aria-labelledby="user-list-title">
+      <h2 id="user-list-title">用户列表</h2>
+      {{if .Users}}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>用户</th><th>显示名称</th><th>创建时间</th></tr></thead>
+          <tbody>{{range .Users}}
+            <tr>
+              <td><strong>{{if .Username}}{{.Username}}{{else}}未设置用户名{{end}}</strong><small>{{.OwnerID}}</small></td>
+              <td>{{.DisplayName}}</td>
+              <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+            </tr>
+          {{end}}</tbody>
+        </table>
+      </div>
+      {{else}}
+      <p class="muted">暂时还没有用户。</p>
+      {{end}}
+    </section>
+    <form method="post" action="{{.BasePath}}/admin/logout" style="margin-top:1rem">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <button class="secondary" type="submit">退出管理员后台</button>
+    </form>
+  </main>
+</body>
+</html>

@@ -8,8 +8,11 @@
 | MCP Client | OAuth clientId | OAuth Access/Refresh Token |
 | Machine | machineId | Device Key / 设备证明 |
 | 首次 Node 登记 | Owner 归属 | Connection Token |
+| Admin | 独立管理员会话 | Admin Session Cookie |
 
 Connection Token 只用于首次登记，不保存到 Node。MCP OAuth 不参与 Node 登记。
+
+Admin 后台位于 `/admin/login`，当前只提供创建 Owner 用户的能力，不提供角色控制，也不复用 Owner 的 Web Session。默认管理员为 `admin`，初始密码为 `AA@@123456`；数据库只保存密码哈希。
 
 ## 本地权限
 
