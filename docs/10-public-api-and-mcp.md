@@ -70,7 +70,7 @@ ChatGPT 对已发布 MCP App 的工具/输入定义可能使用经批准的快�
 
 `code_search` 2.1 同一工具支持 content/files、glob/context，并返回 Managed ripgrep/native fallback 的稳定原因、扫描统计与分段耗时。`file_read` 2.0 同一工具支持 byte/line/head/tail/around/stat selectors；`file_edit` 2.1 的 mutation 仅返回固定元数据，preview 才返回 bounded diff。preview 不写盘并可安全重试；其余文件写 action 使用 CAS/原子替换且不自动重放。`shell_run/build_control` 可选 `runtime.kind=host|wsl`。
 
-Job 后续操作只用 machineId + jobId。Artifact 获取只用 artifactId；Node 上传本机文件时使用 machineId + absolute path。`artifact_get.uploadFile/uploadJobLog/get` 优先回显有界原生 MCP 内容：PNG/JPEG 使用 `ImageContent`，小型 UTF-8 文本使用 `EmbeddedResource.text`，其余不超过 8 MiB 的内容使用 `EmbeddedResource.blob`；空内容只返回结构化元数据，不生成 malformed resource。`artifact_get.publishFile` 使用同样的绝对路径，但文件由 Node 直接上传 Hub Temporary Presentation Relay；Relay 不创建 Artifact/数据库记录，仅在调用方显式要求临时分享时生成 20 分钟短期 `ResourceLink`。browser/screenshot 的原生图片回显不附带 `publicUrl` 或 `ResourceLink`。
+Job 后续操作只用 machineId + jobId。Artifact 获取只用 artifactId；Node 上传本机文件时使用 machineId + absolute path。`artifact_get.uploadFile/uploadJobLog/get` 优先回显有界原生 MCP 内容：PNG/JPEG 使用 `ImageContent`，小型 UTF-8 文本使用 `EmbeddedResource.text`，其余不超过 8 MiB 的内容使用 `EmbeddedResource.blob`；空内容只返回结构化元数据，不生成 malformed resource。`artifact_get.publishFile` 使用同样的绝对路径，把文件直接上传 Hub Temporary Presentation Relay 并切换到 `attachment` 资源类型；Browser screenshot 与 `screenshot_take` 也统一走 attachment。MCP 与 Direct 对这些临时附件只返回 `url/fileName/contentType/sizeBytes/expiresAt`，不返回原生图片/blob 或 `ResourceLink`，最长 48 小时后由 Hub 自动删除。旧 Node 未发送 resource kind 时 Hub 继续按 20 分钟 presentation 兼容处理。
 
 ## OAuth
 

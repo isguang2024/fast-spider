@@ -17,7 +17,7 @@ MVP 使用 Node 管理的隔离 Browser Profile，通过 Go Browser Manager 和 
 
 ## 截图与生命周期
 
-页面截图、桌面截图、显示器截图和窗口截图通过 Hub Temporary Presentation Relay 返回 AI 展示资源，不创建普通 Artifact 记录；MCP 可同时返回原生 `ImageContent` 与短期 `ResourceLink`。窗口先由 `listWindows` 取得短期 `windowId`。取消时先中断动作，再清理 Context、Browser、Sidecar 和临时文件；清理不完整不得报告成功。
+页面截图、桌面截图、显示器截图和窗口截图通过 Hub Temporary Presentation Relay 的 attachment 模式返回 URL-only 临时附件，不创建普通 Artifact 记录；MCP/Direct 只返回 `url/fileName/contentType/sizeBytes/expiresAt`，不返回原生 `ImageContent` 或 `ResourceLink`。新 Node 的截图附件最长保留 48 小时并自动删除。窗口先由 `listWindows` 取得短期 `windowId`。取消时先中断动作，再清理 Context、Browser、Sidecar 和临时文件；清理不完整不得报告成功。
 
 ## 后续
 

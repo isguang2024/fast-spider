@@ -453,7 +453,9 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 		if err != nil {
 			return nil, err
 		}
-		s.presentationToolResult(ctx, ownerID, out.Result, true)
+		if err := s.decoratePublishedAttachmentResult(ownerID, out.Result); err != nil {
+			return nil, err
+		}
 		return out, nil
 
 	case "screenshot_take":
@@ -471,7 +473,9 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 		if err != nil {
 			return nil, err
 		}
-		s.presentationToolResult(ctx, ownerID, out.Result, true)
+		if err := s.decoratePublishedAttachmentResult(ownerID, out.Result); err != nil {
+			return nil, err
+		}
 		return out, nil
 
 	case "thinking_team":
@@ -544,7 +548,9 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 			return nil, err
 		}
 		if input.Action == "publishFile" {
-			s.presentationToolResult(ctx, ownerID, out.Result, true)
+			if err := s.decoratePublishedAttachmentResult(ownerID, out.Result); err != nil {
+				return nil, err
+			}
 		}
 		return out, nil
 

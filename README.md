@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 ## Current 当前事实
 
-- 当前源码版本为 `0.4.21`。MCP 顶层固定 19 个工具，新增只读 `operation_log` 查询指定 Node 的近期操作记录，并继续使用 `fsprobe` 按需恢复长会话工具物化；Direct API 仍保持原 17 工具权限面，不开放审计读取。本版在 0.4.20 的能力地图、发布安全和直接访问密钥基础上，补齐 Node 操作日志与 MCP 查询能力。OAuth/PKCE 与 Node/WSS 协议保持兼容。
+- 当前源码版本为 `0.4.22`。MCP 顶层固定 19 个工具；`artifact_get.publishFile`、Browser 页面截图和 OS 截图统一改为 URL-only 临时附件输出，新 Node 上传的附件最长保留 48 小时并由 Hub 自动清理，不再向聊天结果嵌入 `ImageContent`/`ResourceLink`。旧 Node 未携带 resource kind 时仍按 20 分钟 presentation 兼容语义处理。OAuth/PKCE、Node/WSS 和 Direct API 权限边界保持兼容。
 - Machine 是唯一远程资源边界。Fast Spider 不再维护旧目录对象、目录列表工具、目录授权、目录白名单或路径注册表。
 - Node 以启动它的当前 OS 用户运行，直接使用该用户对整台电脑的操作系统权限；Fast Spider 不把文件系统再切成一层目录权限。
 - 同一 OS 用户只允许运行一个 Fast Spider Node 主实例；重复双击、开机自启动与手动启动、不同 EXE 位置或不同 `--data-dir` 都不能建立第二条 Node 连接。重复启动只打开现有本地界面后退出。
@@ -12,7 +12,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 - `file_read`、`file_edit`、`code_search` 使用绝对 `path`；`shell_run` 和 `build_control` 使用绝对 `cwd`；`git_control` 使用绝对 `repositoryPath`；`ai_control.session.create` 使用绝对 `workingDirectory`。Git 子目录和 linked worktree 会自动归到主工作树对应的 Codex Desktop 项目，实际执行目录保持不变；非 Git 临时目录不会自动注册成项目。
 - 浏览器在 Node 可访问的公网、localhost 和私网中运行，不需要 Fast Spider Origin/DNS/IP 白名单，也不对页面子资源执行逐请求 DNS 审查；Agent 优先使用 snapshot 返回的短期 ref，并可用 batch 一次完成多步交互。显式 `page.open/page.navigate` 仍拒绝非 HTTP(S) 危险 scheme。
 - Windows Node 的 `shell_run/build_control` 接受 `runtime={kind:"host"|"wsl",distribution?}`；WSL cwd 仍由调用方提供 Windows 绝对路径，Node 使用目标发行版的 `wslpath` 安全映射。每个发行版至多一个轻量 keepalive、全局最多 8 个，Node 退出只结束自己创建的 keepalive，不执行 `wsl --shutdown`。
-- MCP 当前固定提供 17 个工具，包含 `thinking_team` 与 `working_context`，不包含旧目录列表能力。`thinking_team.providerInvocation=false`，只返回调用侧角色协作配置。
+- MCP 当前固定提供 19 个工具，包含 `operation_log`、`thinking_team` 与 `working_context`，不包含旧目录列表能力。`thinking_team.providerInvocation=false`，只返回调用侧角色协作配置。
 - `working_context` 已扩展为同一套 Plan/Task + Markdown Task Workspace：保留 `get/set/clear` 默认 plan 兼容入口，并提供 `plan.init/plan.get/plan.list/plan.sync/task.update/markdown.list/markdown.read/markdown.append/progress.watch`；状态按 Machine 路由、`projectPath + planId` 隔离。
 - `code_search` 2.1 支持 content/files、include/exclude glob 与 bounded context；优先使用 data-dir 中已验证的 Managed `search-ripgrep`，缺失或真实失败时才回退 Go native，返回扫描/匹配/跳过/不完整与分段耗时事实。默认遵守 VCS ignore 并跳过通用生成目录，显式 include 优先。
 - `file_read` 2.0 保留 byte range，并支持 line/head/tail/around/statOnly/line numbers；校验、原文件 SHA 和选择在一次流式扫描内完成。`file_edit` 2.1 在同一工具内提供 legacy edit、create、replace、editMany、preview，现有文件写入使用 SHA CAS 与原子替换；mutation 不回显正文/diff，preview 仅返回 bounded hunk。

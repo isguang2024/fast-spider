@@ -86,6 +86,74 @@ func TestPresentationToolResultNonImageReturnsLinkOnly(t *testing.T) {
 	}
 }
 
+func TestDecoratePublishedAttachmentResultReturnsURLOnlyMetadata(t *testing.T) {
+	now := time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
+	data := []byte("attachment")
+	relay := newPresentationStore(t.TempDir())
+	sum := sha256.Sum256(data)
+	record, err := relay.putInternal(
+		context.Background(),
+		store.DeviceSession{OwnerID: "owner-1", MachineID: "machine-1"},
+		"attachment.png", "image/png", "sha256:"+hex.EncodeToString(sum[:]), int64(len(data)), bytes.NewReader(data), now, publishedAttachmentTTL,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := &Server{config: Config{PublicBaseURL: "https://hub.example/fast-spider"}, presentations: relay}
+	structured := map[string]any{"presentationId": record.ID, "sha256": record.SHA256, "ignored": "value"}
+	if err := hub.decoratePublishedAttachmentResult("owner-1", structured); err != nil {
+		t.Fatal(err)
+	}
+	wantURL := "https://hub.example/fast-spider/api/v1/presentations/" + record.ID
+	if got, _ := structured["url"].(string); got != wantURL {
+		t.Fatalf("attachment url=%q want=%q", got, wantURL)
+	}
+	if len(structured) != 5 {
+		t.Fatalf("attachment result keys=%v", structured)
+	}
+	if _, ok := structured["presentationId"]; ok {
+		t.Fatalf("attachment result leaked presentationId=%v", structured["presentationId"])
+	}
+	if got, _ := structured["fileName"].(string); got != "attachment.png" {
+		t.Fatalf("attachment fileName=%q", got)
+	}
+	if expiresAt, ok := structured["expiresAt"].(time.Time); !ok || !expiresAt.Equal(now.Add(publishedAttachmentTTL)) {
+		t.Fatalf("attachment expiresAt=%v", structured["expiresAt"])
+	}
+}
+
+func TestDecoratePublishedAttachmentResultSanitizesOrdinaryResult(t *testing.T) {
+	hub := &Server{config: Config{PublicBaseURL: "https://hub.example"}, presentations: newPresentationStore(t.TempDir())}
+	structured := map[string]any{"status": "ok", "publicUrl": "https://stale.example/resource"}
+	if err := hub.decoratePublishedAttachmentResult("owner-1", structured); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := structured["publicUrl"]; ok {
+		t.Fatalf("ordinary capability result leaked publicUrl=%v", structured["publicUrl"])
+	}
+	if structured["status"] != "ok" {
+		t.Fatalf("ordinary capability result changed=%v", structured)
+	}
+}
+
+func TestDecoratePublishedAttachmentResultFailsClosedWithoutPublicURL(t *testing.T) {
+	now := time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
+	data := []byte("attachment")
+	sum := sha256.Sum256(data)
+	relay := newPresentationStore(t.TempDir())
+	record, err := relay.putInternal(
+		context.Background(), store.DeviceSession{OwnerID: "owner-1", MachineID: "machine-1"},
+		"attachment.png", "image/png", "sha256:"+hex.EncodeToString(sum[:]), int64(len(data)), bytes.NewReader(data), now, publishedAttachmentTTL,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := &Server{presentations: relay}
+	if err := hub.decoratePublishedAttachmentResult("owner-1", map[string]any{"presentationId": record.ID}); err == nil {
+		t.Fatal("missing public base URL unexpectedly accepted")
+	}
+}
+
 func TestPresentationStoreExpiresAndDeletesTemporaryFile(t *testing.T) {
 	now := time.Date(2026, 8, 10, 8, 0, 0, 0, time.UTC)
 	relay := newPresentationStore(t.TempDir())
@@ -96,6 +164,31 @@ func TestPresentationStoreExpiresAndDeletesTemporaryFile(t *testing.T) {
 	relay.cleanupExpired(now.Add(presentationTTL + time.Second))
 	if _, err := relay.get(record.ID, now.Add(presentationTTL+time.Second)); err == nil {
 		t.Fatal("expired presentation remained readable")
+	}
+}
+
+func TestPresentationStoreSupports48HourAttachmentTTL(t *testing.T) {
+	now := time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
+	data := []byte("attachment")
+	sum := sha256.Sum256(data)
+	relay := newPresentationStore(t.TempDir())
+	record, err := relay.putInternal(
+		context.Background(),
+		store.DeviceSession{OwnerID: "owner-1", MachineID: "machine-1"},
+		"attachment.bin", "application/octet-stream", "sha256:"+hex.EncodeToString(sum[:]), int64(len(data)), bytes.NewReader(data), now, publishedAttachmentTTL,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.ExpiresAt.Equal(now.Add(48 * time.Hour)) {
+		t.Fatalf("attachment expiry=%s want=%s", record.ExpiresAt, now.Add(48*time.Hour))
+	}
+	if _, err := relay.get(record.ID, now.Add(48*time.Hour-time.Second)); err != nil {
+		t.Fatalf("attachment expired too early: %v", err)
+	}
+	relay.cleanupExpired(now.Add(48*time.Hour + time.Second))
+	if _, err := relay.get(record.ID, now.Add(48*time.Hour+time.Second)); !errors.Is(err, errPresentationNotFound) {
+		t.Fatalf("expired attachment remained readable: %v", err)
 	}
 }
 

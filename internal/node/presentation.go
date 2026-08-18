@@ -18,7 +18,11 @@ import (
 	"time"
 )
 
-const maxPresentationUploadSize int64 = 64 << 20
+const (
+	maxPresentationUploadSize int64 = 64 << 20
+	presentationResourceKind        = "presentation"
+	attachmentResourceKind          = "attachment"
+)
 
 var ErrPresentationUpload = errors.New("presentation upload failed")
 
@@ -32,7 +36,7 @@ type presentationUploadResponse struct {
 }
 
 func (c *Client) publishPresentationFile(ctx context.Context, filePath, logicalName, contentType string) (map[string]any, error) {
-	result, err := c.uploadPresentationFile(ctx, filePath, logicalName, contentType)
+	result, err := c.uploadPresentationFile(ctx, filePath, logicalName, contentType, attachmentResourceKind)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrPresentationUpload, err)
 	}
@@ -88,10 +92,21 @@ func (c *Client) presentationPublishFile(ctx context.Context, params map[string]
 			contentType = "application/octet-stream"
 		}
 	}
-	return c.publishPresentationFile(ctx, filePath, name, contentType)
+	result, err := c.uploadPresentationFile(ctx, filePath, name, contentType, attachmentResourceKind)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrPresentationUpload, err)
+	}
+	return map[string]any{
+		"presentationId": result.PresentationID,
+		"fileName":       result.FileName,
+		"contentType":    result.ContentType,
+		"sizeBytes":      result.SizeBytes,
+		"sha256":         result.SHA256,
+		"expiresAt":      result.ExpiresAt,
+	}, nil
 }
 
-func (c *Client) uploadPresentationFile(ctx context.Context, filePath, logicalName, contentType string) (presentationUploadResponse, error) {
+func (c *Client) uploadPresentationFile(ctx context.Context, filePath, logicalName, contentType, resourceKind string) (presentationUploadResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return presentationUploadResponse{}, err
 	}
@@ -109,6 +124,10 @@ func (c *Client) uploadPresentationFile(ctx context.Context, filePath, logicalNa
 	contentType = strings.TrimSpace(contentType)
 	if contentType == "" || len(contentType) > 256 {
 		return presentationUploadResponse{}, fmt.Errorf("presentation content type is invalid")
+	}
+	resourceKind = strings.ToLower(strings.TrimSpace(resourceKind))
+	if resourceKind != presentationResourceKind && resourceKind != attachmentResourceKind {
+		return presentationUploadResponse{}, fmt.Errorf("presentation resource kind is invalid")
 	}
 	sha, err := hashPresentationFile(filePath)
 	if err != nil {
@@ -143,6 +162,7 @@ func (c *Client) uploadPresentationFile(ctx context.Context, filePath, logicalNa
 	req.Header.Set("User-Agent", "fast-spider-node/"+c.cfg.Version)
 	req.Header.Set("X-Fast-Spider-File-Name", base64.RawURLEncoding.EncodeToString([]byte(logicalName)))
 	req.Header.Set("X-Fast-Spider-SHA256", sha)
+	req.Header.Set("X-Fast-Spider-Resource-Kind", resourceKind)
 	req.ContentLength = info.Size()
 
 	client := &http.Client{Timeout: 10 * time.Minute}

@@ -27,7 +27,8 @@
 | Node update staging | Ready/apply 完成或显式 staging prune | Node 启动；`spiderctl staging-prune` | future、失败现场、`.previous` 和未知目录保留 |
 | Artifact upload | 30 分钟 | Hub 每 30 秒维护 | 同 upload 串行，不同 upload 可并发；慢磁盘删除不持有全局上传锁；完成后遗留 `.part` 由持久删除队列兜底 |
 | 完整 Artifact | 30 天 | Hub 每 30 秒维护 | 每批最多 128 条；内容寻址 Blob 仅在无引用时删除，失败进入持久队列并指数退避重试 |
-| Presentation 临时资源 | 20 分钟 | Hub 生命周期维护 | 不进入 Hub 数据库或备份 |
+| 截图 / `publishFile` 临时附件 | 最长 48 小时 | Hub 每分钟生命周期维护 | MCP/Direct 仅返回 URL 元数据；到期自动删除；不进入 Hub 数据库或备份；Hub 重启可提前清理 |
+| Legacy presentation（旧 Node） | 20 分钟 | Hub 生命周期维护 | 未携带 resource kind 的滚动升级兼容路径 |
 | Release manifest | 发布文件未变化期间，最多 64 项 | manifest 请求 | stamp 纳入 version 内容和平台文件 identity（Windows file index/change time，Linux dev/inode/ctime）；同尺寸、同 mtime 原子替换也会失效；并发 miss 只做一次 hash/sign，等待者可独立取消，生成中变化 fail-closed |
 | Release backup | 运维保留数量 | `backup-prune` | 默认只输出计划，`--apply` 才删除；同进程创建与清理按目录串行，Windows/Linux 删除前用已冻结的文件身份逐项复核；其它平台存在候选时 fail-closed |
 | Release staging | 已完成版本上界 | `staging-prune` | 默认只输出计划；apply 先同盘原子隔离再复核和删除，失败恢复原名，崩溃 quarantine 保留待人工对账 |

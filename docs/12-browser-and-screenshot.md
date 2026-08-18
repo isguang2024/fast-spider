@@ -18,7 +18,7 @@ Fast Spider 的浏览器能力用于开发页面验证、自动化测试、结�
 - Node 可访问的公网、localhost 和私网 HTTP/HTTPS/WS/WSS 目标均可访问；是否可达由 Node 的 OS、网络和浏览器运行时决定。
 - `browser.automation` 1.2 固定动作：`readiness/launch/close/page.open/page.navigate/page.close/pages.list/click/type/press/wait/batch/snapshot/screenshot/events`。
 - 不公开任意 JavaScript、`evaluate`、CDP、Playwright 原始 API、Trace/HAR/视频。
-- 页面截图和 OS 截图由 Node 直接上传到 Hub Temporary Presentation Relay；Relay 不写数据库，系统临时目录最多保留 20 分钟，MCP 直接返回图片内容与短期下载资源。
+- 页面截图和 OS 截图由 Node 直接上传到 Hub Temporary Presentation Relay 的 attachment 模式；Relay 不写数据库，MCP/Direct 只返回临时 URL 元数据，不再把图片内容或 ResourceLink 展开到聊天界面。新 Node 的截图附件最长保留 48 小时，由 Hub 生命周期维护自动删除。
 - Node 始终宣告 `browser.automation`，使缺失运行时也能调用 `readiness` 得到 `not_configured/node_runtime_missing/sidecar_files_missing/protocol_mismatch/chromium_missing/probe_timeout/sidecar_start_failed` 等稳定原因。正缓存 30 秒、负缓存 5 秒，不重复探测/下载。
 
 ## 3. 浏览器控制模式
@@ -35,10 +35,10 @@ MVP 选择 Node 管理的隔离 Profile：专用数据目录、无用户 Cookie/
 | Action Executor | 固定动作与参数校验 |
 | Network Policy | 主动导航 scheme、下载和 OS 网络条件；不做逐请求 DNS/pinned-IP 审查 |
 | Event Collector | console、network error、page crash、download |
-| Presentation Relay | screenshot 等 AI 展示资源由 Node 直传 Hub 临时目录，MCP 返回 `ImageContent` 与短期 `ResourceLink` |
+| Presentation Relay | screenshot 等临时资源由 Node 直传 Hub 临时目录，MCP/Direct 只返回最长 48 小时的 URL 元数据 |
 | Cleanup/Reaper | 崩溃进程、过期 Profile、临时下载清理 |
 
-对外只使用 `browserSessionId`、`browserContextId`、`pageId`、`downloadId`、`windowId`、`displayId` 等 opaque 标识；截图结果返回 `presentationId`、短期 `publicUrl`、MIME、文件名、大小等展示元数据，不返回调试端口、OS 句柄、Profile 绝对路径或 CDP URL。
+对外只使用 `browserSessionId`、`browserContextId`、`pageId`、`downloadId`、`windowId`、`displayId` 等 opaque 标识；截图完成后 Hub 会把内部 `presentationId` 收敛为 `url/fileName/contentType/sizeBytes/expiresAt`，不向 MCP/Direct 暴露内部 relay ID、调试端口、OS 句柄、Profile 绝对路径或 CDP URL。
 
 ## 5. 生命周期与固定动作
 
@@ -104,7 +104,7 @@ Session 状态为 `created → launching → ready → running_action → closin
 }
 ```
 
-桌面截图支持当前桌面、指定显示器、指定窗口和浏览器页面；窗口通过 `listWindows` 返回短期 `windowId` 选择，不暴露 OS 句柄。截图使用 PNG/JPEG、像素/编码大小和单 Node 并发上限。用于 AI 展示的截图在上传前自动优化：不超过 1 MiB、宽度不超过 2560 且总像素不超过 400 万时保持原图；超过任一阈值时按比例缩放到宽度最多 2560/总像素最多约 400 万并以 JPEG quality 82 编码。若只因文件大小触发且 JPEG 没有变小则保留原图；因尺寸触发时始终使用缩放后的 JPEG。该保护可覆盖显式请求的 PNG，因为它约束的是 AI Presentation 结果而不是原始截图文件。Node 只负责把最终展示图以设备凭据直接上传 Hub Presentation Relay；Hub 校验大小和 SHA-256，保留不超过 20 分钟，并在 MCP 调用中直接读取图片字节生成 `ImageContent`。
+桌面截图支持当前桌面、指定显示器、指定窗口和浏览器页面；窗口通过 `listWindows` 返回短期 `windowId` 选择，不暴露 OS 句柄。截图使用 PNG/JPEG、像素/编码大小和单 Node 并发上限。用于 AI 分享的截图在上传前自动优化：不超过 1 MiB、宽度不超过 2560 且总像素不超过 400 万时保持原图；超过任一阈值时按比例缩放到宽度最多 2560/总像素最多约 400 万并以 JPEG quality 82 编码。若只因文件大小触发且 JPEG 没有变小则保留原图；因尺寸触发时始终使用缩放后的 JPEG。该保护可覆盖显式请求的 PNG，因为它约束的是临时附件结果而不是原始截图文件。Node 只负责把最终图片以设备凭据直接上传 Hub Presentation Relay；Hub 校验大小和 SHA-256，并以 attachment 语义返回 `url/fileName/contentType/sizeBytes/expiresAt`，最长 48 小时后删除。
 
 ## 8. 取消与清理
 
@@ -115,6 +115,6 @@ Session 状态为 `created → launching → ready → running_action → closin
 - Windows 处理用户会话、锁屏、UAC 安全桌面、最小化窗口、多显示器、缩放和 HDR。
 - Linux 处理 X11、Wayland Portal、无图形会话和锁屏；不通过 root 绕过 OS 安全模型。
 - 隔离 Profile 无法读取用户日常浏览器 Cookie。
-- 可打开 Node 网络可达的公网、localhost 和私网页面并返回摘要；截图通过 Hub Temporary Presentation Relay 返回 `ImageContent`，并提供 20 分钟短期 `ResourceLink` 用于打开或下载。
+- 可打开 Node 网络可达的公网、localhost 和私网页面并返回摘要；截图通过 Hub Temporary Presentation Relay 返回最长 48 小时的 URL-only 临时附件，不返回 `ImageContent` 或 `ResourceLink`。
 - 危险 scheme、任意脚本、原始 CDP、端口转发和通用远控不可用。
 - 无桌面或 OS 权限不足时返回结构化错误，不尝试提权。

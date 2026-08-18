@@ -33,6 +33,7 @@ const (
 	maxConcurrentPresentationMachineUploads       = 2
 	maxPresentationUploadDuration                 = 5 * time.Minute
 	presentationTTL                               = 20 * time.Minute
+	publishedAttachmentTTL                        = 48 * time.Hour
 )
 
 var (
@@ -147,21 +148,28 @@ func newPresentationStoreWithFileOps(
 }
 
 func (s *presentationStore) put(session store.DeviceSession, fileName, contentType, expectedSHA string, sizeBytes int64, body io.Reader, now time.Time) (presentationRecord, error) {
-	return s.putInternal(context.Background(), session, fileName, contentType, expectedSHA, sizeBytes, body, now)
+	return s.putInternal(context.Background(), session, fileName, contentType, expectedSHA, sizeBytes, body, now, presentationTTL)
 }
 
 func (s *presentationStore) putContext(ctx context.Context, session store.DeviceSession, fileName, contentType, expectedSHA string, sizeBytes int64, body io.ReadCloser, now time.Time) (presentationRecord, error) {
-	stopClose := context.AfterFunc(ctx, func() { _ = body.Close() })
-	defer stopClose()
-	return s.putInternal(ctx, session, fileName, contentType, expectedSHA, sizeBytes, body, now)
+	return s.putContextWithTTL(ctx, session, fileName, contentType, expectedSHA, sizeBytes, body, now, presentationTTL)
 }
 
-func (s *presentationStore) putInternal(ctx context.Context, session store.DeviceSession, fileName, contentType, expectedSHA string, sizeBytes int64, body io.Reader, now time.Time) (presentationRecord, error) {
+func (s *presentationStore) putContextWithTTL(ctx context.Context, session store.DeviceSession, fileName, contentType, expectedSHA string, sizeBytes int64, body io.ReadCloser, now time.Time, ttl time.Duration) (presentationRecord, error) {
+	stopClose := context.AfterFunc(ctx, func() { _ = body.Close() })
+	defer stopClose()
+	return s.putInternal(ctx, session, fileName, contentType, expectedSHA, sizeBytes, body, now, ttl)
+}
+
+func (s *presentationStore) putInternal(ctx context.Context, session store.DeviceSession, fileName, contentType, expectedSHA string, sizeBytes int64, body io.Reader, now time.Time, ttl time.Duration) (presentationRecord, error) {
 	if s == nil || strings.TrimSpace(s.root) == "" {
 		return presentationRecord{}, errPresentationUnavailable
 	}
 	if sizeBytes <= 0 || sizeBytes > maxPresentationUploadBytes {
 		return presentationRecord{}, errors.New("presentation size is outside the allowed range")
+	}
+	if ttl <= 0 || ttl > publishedAttachmentTTL {
+		return presentationRecord{}, errors.New("presentation TTL is outside the allowed range")
 	}
 	fileName = safePresentationDownloadName(fileName)
 	contentType = strings.TrimSpace(contentType)
@@ -224,7 +232,7 @@ func (s *presentationStore) putInternal(ctx context.Context, session store.Devic
 	record := presentationRecord{
 		ID: id, OwnerID: session.OwnerID, MachineID: session.MachineID,
 		FileName: fileName, ContentType: contentType, SizeBytes: sizeBytes,
-		SHA256: actualSHA, Path: finalPath, ExpiresAt: now.UTC().Add(presentationTTL),
+		SHA256: actualSHA, Path: finalPath, ExpiresAt: now.UTC().Add(ttl),
 	}
 	reservation.commit(record, now.UTC())
 	return record, nil
@@ -445,12 +453,23 @@ func (s *Server) handlePresentationUpload(w http.ResponseWriter, r *http.Request
 		writeArtifactError(w, http.StatusBadRequest, "PRESENTATION_NAME_INVALID", "presentation file name is invalid", false)
 		return
 	}
+	resourceKind := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Fast-Spider-Resource-Kind")))
+	resourceTTL := presentationTTL
+	switch resourceKind {
+	case "", "presentation":
+		resourceKind = "presentation"
+	case "attachment":
+		resourceTTL = publishedAttachmentTTL
+	default:
+		writeArtifactError(w, http.StatusBadRequest, "PRESENTATION_KIND_INVALID", "presentation resource kind is invalid", false)
+		return
+	}
 	uploadCtx, cancel := context.WithTimeout(r.Context(), maxPresentationUploadDuration)
 	defer cancel()
 	controller := http.NewResponseController(w)
 	_ = controller.SetReadDeadline(time.Now().Add(maxPresentationUploadDuration))
 	defer controller.SetReadDeadline(time.Time{})
-	record, err := s.presentations.putContext(
+	record, err := s.presentations.putContextWithTTL(
 		uploadCtx,
 		session,
 		string(fileNameRaw),
@@ -459,6 +478,7 @@ func (s *Server) handlePresentationUpload(w http.ResponseWriter, r *http.Request
 		r.ContentLength,
 		r.Body,
 		time.Now().UTC(),
+		resourceTTL,
 	)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
@@ -479,6 +499,7 @@ func (s *Server) handlePresentationUpload(w http.ResponseWriter, r *http.Request
 		"sizeBytes":      record.SizeBytes,
 		"sha256":         record.SHA256,
 		"expiresAt":      record.ExpiresAt,
+		"resourceKind":   resourceKind,
 	})
 }
 

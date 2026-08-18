@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -148,7 +149,7 @@ type buildControlInput struct {
 }
 
 type artifactGetInput struct {
-	Action      string `json:"action" jsonschema:"get, uploadFile, uploadJobLog, or publishFile. Prefer uploadFile/uploadJobLog + get for native MCP content; use publishFile only when an explicit temporary share URL is needed"`
+	Action      string `json:"action" jsonschema:"get, uploadFile, uploadJobLog, or publishFile. Prefer uploadFile/uploadJobLog + get for native MCP content; publishFile creates a 48-hour temporary attachment URL and never embeds the file in the chat result"`
 	ArtifactID  string `json:"artifactId,omitempty" jsonschema:"artifact ID for get"`
 	MachineID   string `json:"machineId,omitempty" jsonschema:"machine ID for upload/publish actions"`
 	Path        string `json:"path,omitempty" jsonschema:"absolute Node file path for uploadFile or publishFile"`
@@ -525,7 +526,7 @@ ChatGPT recovery: tools may be lazily loaded or evicted in long chats. If the Fa
 
 Capability map: connection = capability_list, machine_list, machine_get; audit = audit_log, operation_log; files = code_search, file_read, file_edit; jobs = shell_run, build_control, job_watch, job_cancel; Git = git_control; browser = browser_control, screenshot_take; AI = ai_control; context = working_context; roles = thinking_team; artifacts = artifact_get. operation_log reads recent bounded events from one owned Node and omits local paths, messages and IPs. shell_run is the host/WSL process entry point; on Windows use explicit argv such as ["powershell.exe","-NoProfile","-NonInteractive","-Command","Get-Date; tzutil /g"] or ["cmd.exe","/d","/s","/c","tzutil /g"], not a separate PowerShell tool.
 
-Rules: unknown machineId -> machine_list. Connection check = capability_list(view=overview) + machine_list. If a low-level capability ID is unclear, read capability_list(view=capability,name=<capabilityId>); then use its mcpTools mapping. Load detailed guidance only with view=tool|workflow|error for the current need. Codex history starts at ai_control(action=session.list), then get/watch/result. Every shell/build jobId must reach a terminal state via job_watch. File edits use search/read -> SHA -> preview -> CAS write -> read. Browser flow is readiness -> launch -> open -> snapshot refs -> actions -> close.`
+Rules: unknown machineId -> machine_list. Connection check = capability_list(view=overview) + machine_list. If a low-level capability ID is unclear, read capability_list(view=capability,name=<capabilityId>); then use its mcpTools mapping. Load detailed guidance only with view=tool|workflow|error for the current need. Codex history starts at ai_control(action=session.list), then get/watch/result. Every shell/build jobId must reach a terminal state via job_watch. File edits use search/read -> SHA -> preview -> CAS write -> read. Browser flow is readiness -> launch -> open -> snapshot refs -> actions -> close. Screenshots and publishFile return URL-only attachments, max 48h, no native chat content.`
 
 func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	server := mcp.NewServer(
@@ -604,7 +605,10 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
-		return s.presentationToolResult(ctx, ownerID, out.Result, false), out, nil
+		if err := s.decoratePublishedAttachmentResult(ownerID, out.Result); err != nil {
+			return nil, genericCapabilityOutput{}, err
+		}
+		return nil, out, nil
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("screenshot_take", toolAnnotations(false, false, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input screenshotTakeInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
@@ -612,7 +616,10 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
-		return s.presentationToolResult(ctx, ownerID, out.Result, false), out, nil
+		if err := s.decoratePublishedAttachmentResult(ownerID, out.Result); err != nil {
+			return nil, genericCapabilityOutput{}, err
+		}
+		return nil, out, nil
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("thinking_team", toolAnnotations(true, false, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input thinkingTeamInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
@@ -643,7 +650,10 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 				}
 			}
 		case "publishFile":
-			return s.presentationToolResult(ctx, ownerID, out.Result, true), out, nil
+			if err := s.decoratePublishedAttachmentResult(ownerID, out.Result); err != nil {
+				return nil, genericCapabilityOutput{}, err
+			}
+			return nil, out, nil
 		case "get":
 			artifact, getErr := s.service.GetArtifact(ctx, ownerID, input.ArtifactID)
 			if getErr != nil {
@@ -741,6 +751,35 @@ func (s *Server) artifactNativeToolResult(ctx context.Context, artifact store.Ar
 		resource.Blob = raw
 	}
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.EmbeddedResource{Resource: resource}}}
+}
+
+func (s *Server) decoratePublishedAttachmentResult(ownerID string, result map[string]any) error {
+	delete(result, "publicUrl")
+	presentationID, _ := result["presentationId"].(string)
+	presentationID = strings.TrimSpace(presentationID)
+	if presentationID == "" {
+		return nil
+	}
+	if s == nil || s.presentations == nil {
+		return errors.New("temporary attachment relay is unavailable")
+	}
+	record, err := s.presentations.getForOwner(ownerID, presentationID, time.Now().UTC())
+	if err != nil {
+		return errors.New("temporary attachment is unavailable")
+	}
+	publicURL := s.presentationPublicURL(record.ID)
+	if publicURL == "" {
+		return errors.New("temporary attachment public URL is unavailable")
+	}
+	for key := range result {
+		delete(result, key)
+	}
+	result["url"] = publicURL
+	result["fileName"] = record.FileName
+	result["contentType"] = record.ContentType
+	result["sizeBytes"] = record.SizeBytes
+	result["expiresAt"] = record.ExpiresAt
+	return nil
 }
 
 func (s *Server) presentationToolResult(ctx context.Context, ownerID string, result map[string]any, includeResourceLink bool) *mcp.CallToolResult {

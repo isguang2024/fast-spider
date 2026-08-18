@@ -166,3 +166,9 @@
 - 源提交 `13ed5db765112d25f8b106e211dcac116ee10a6d` 已推送 `main`；core gate、全仓测试、vet、Linux amd64 构建、WSL/Browser/CC Switch/Claude/MCP 专项均通过；full gate 最后 Local Bridge→Codex product E2E 因本机会话返回 `AGENT_EXECUTION_FAILED` 未通过，未伪装为通过。
 - 生产升级前备份 `/srv/backups/pre-0.4.21-13ed5db765112d25f8b106e211dcac116ee10a6d.zip` Verify PASS，SHA-256 `26655df2757a02fbd99f85ef9f7f36a5c506a55986476f16da02249935bc8a13`。生产 Hub 0.4.21 SHA-256 `dc68ebff7620b0218046e81615b742e9fe5b39d61a6c1d20fe1c9a39f584f560`，spiderctl SHA-256 `1588c1bbcb46adf5ed21096add05e352c5b29b992e019337f1c47768c9ce9a7e`，systemd active，本机与公网 livez/readyz 均 200。
 - PCa Node 已从 0.4.20 自更新至 0.4.21 / windows-amd64 / generation=120，Hub 已登记 `operation.log/query`；Windows Node push marker SHA-256 `66d3ea1ee61a0312dc542484a749714a81aba61891fe32c11721874f46f0005e`。
+
+### 2026-08-19 — 0.4.22 URL-only 临时附件中转
+
+- `artifact_get.publishFile`、Browser 页面截图与 `screenshot_take` 统一改为 attachment 中转：Node 直传 Hub Temporary Presentation Relay，MCP/Direct 仅返回 `url/fileName/contentType/sizeBytes/expiresAt`，不再生成聊天内 `ImageContent`、`EmbeddedResource` 或 `ResourceLink`。
+- 新 Node 为临时附件显式发送 `X-Fast-Spider-Resource-Kind: attachment`，最长保留 48 小时；Hub 每分钟按 `expiresAt` 自动清理。旧 Node 未携带 resource kind 时保留 20 分钟 legacy presentation 兼容路径；Hub 重启仍可提前清理系统临时根。
+- 新增 URL-only 结果收敛、48 小时 TTL/到期删除、截图/`publishFile` attachment kind 与 fail-closed 公网 URL 测试；worktree/index secret scan、内置 history scan、全仓 test/vet/build、post-history 全套专项、fuzz/race、Windows Browser、CC Switch、Claude 与 multi-provider discovery 均 PASS。本机额外 private-marker overlay 仅在既有 Git 历史中命中 80 项并使原始 `--full` 脚本提前停止，当前工作树/索引无命中；Local Bridge→Codex product E2E 在 300 秒外部 Agent 等待后超时并关闭 bridge socket，保持未通过事实，不伪装为 PASS。
