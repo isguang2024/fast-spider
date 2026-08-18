@@ -158,3 +158,8 @@
 - 源提交 `3fc82f85038ce71e3c8d90a783e795d617e87b30` 已推送 `main`；干净 worktree `release-gate.sh --full` 最终 PASS，Linux amd64 `go test -race ./...` PASS，另有全仓 `go test ./... -count=1`、targeted tests、`go vet` 与 `git diff --check` PASS。
 - 生产升级前备份 `/srv/backups/pre-0.4.20-3fc82f85038ce71e3c8d90a783e795d617e87b30.zip` Verify PASS，SHA-256 `cbef63897976548b3c5922ca772aa3bed08901f082bd30036ded9bb1da88efbb`。生产 Hub SHA-256 `180bd1ecda9a0c891d7aaa55534bdf54be2ab9738f7a58ecfeb417d27f8384e0`，spiderctl SHA-256 `5ee6863de1bd196a23161e23cdaa99729799fe33d47f9095d95757f6f6611362`，均为 0.4.20；systemd active，本机与公网 livez/readyz 均 200，公网未认证 Direct tools 返回预期 401。首轮部署因版本核验命令兼容性触发安全回滚，随后重新部署和完整验收成功，当前生产运行新 SHA。Node release 未因本次 Hub 补丁改动。
 - Web 后台在 0.4.20 内继续收敛为轻量导航式管理台：概览、设备、OAuth、临时直连密钥、连接令牌、账户安全、MCP 诊断与运行状态拆分为独立登录保护页面；原有管理动作与 CSRF 边界保持不变。临时直连密钥列表不再渲染任何 TokenHint，明文只在创建成功页显示一次；服务层同时将历史较长 hint 统一缩短为 `fsp_tmp_…末4位`，避免旧记录通过其它内部列表视图暴露过多提示信息。
+
+### 2026-08-18 — 0.4.21 Node 操作日志与 MCP 查询
+
+- Node 通过共享持久化 `operationlog.Store` 记录能力调用和本地 UI 操作，并新增 `operation.log/query` 能力；MCP 新增只读 `operation_log` 工具，按 `machineId`、级别、分类和游标查询近期记录。
+- MCP 输出只保留时间、级别、分类、动作、状态和耗时，省略本地路径、消息、客户端 IP 与额外字段；查询沿用 Owner/Machine 授权和在线 Node 边界。
