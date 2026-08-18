@@ -163,3 +163,6 @@
 
 - Node 通过共享持久化 `operationlog.Store` 记录能力调用和本地 UI 操作，并新增 `operation.log/query` 能力；MCP 新增只读 `operation_log` 工具，按 `machineId`、级别、分类和游标查询近期记录。
 - MCP 输出只保留时间、级别、分类、动作、状态和耗时，省略本地路径、消息、客户端 IP 与额外字段；查询沿用 Owner/Machine 授权和在线 Node 边界。
+- 源提交 `13ed5db765112d25f8b106e211dcac116ee10a6d` 已推送 `main`；core gate、全仓测试、vet、Linux amd64 构建、WSL/Browser/CC Switch/Claude/MCP 专项均通过；full gate 最后 Local Bridge→Codex product E2E 因本机会话返回 `AGENT_EXECUTION_FAILED` 未通过，未伪装为通过。
+- 生产升级前备份 `/srv/backups/pre-0.4.21-13ed5db765112d25f8b106e211dcac116ee10a6d.zip` Verify PASS，SHA-256 `26655df2757a02fbd99f85ef9f7f36a5c506a55986476f16da02249935bc8a13`。生产 Hub 0.4.21 SHA-256 `dc68ebff7620b0218046e81615b742e9fe5b39d61a6c1d20fe1c9a39f584f560`，spiderctl SHA-256 `1588c1bbcb46adf5ed21096add05e352c5b29b992e019337f1c47768c9ce9a7e`，systemd active，本机与公网 livez/readyz 均 200。
+- PCa Node 已从 0.4.20 自更新至 0.4.21 / windows-amd64 / generation=120，Hub 已登记 `operation.log/query`；Windows Node push marker SHA-256 `66d3ea1ee61a0312dc542484a749714a81aba61891fe32c11721874f46f0005e`。
