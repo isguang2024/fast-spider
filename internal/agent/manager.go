@@ -24,6 +24,10 @@ type agentControlParams struct {
 	TurnID                string              `json:"turnId,omitempty"`
 	RequestID             string              `json:"requestId,omitempty"`
 	IdempotencyKey        string              `json:"idempotencyKey,omitempty"`
+	Visibility            string              `json:"visibility,omitempty"`
+	Backend               string              `json:"backend,omitempty"`
+	VisibilityTarget      string              `json:"visibilityTarget,omitempty"`
+	Ephemeral             *bool               `json:"ephemeral,omitempty"`
 	Mode                  string              `json:"mode,omitempty"`
 	Prompt                string              `json:"prompt,omitempty"`
 	WorkingDirectory      string              `json:"workingDirectory,omitempty"`
@@ -78,13 +82,14 @@ type agentMentionInput struct {
 }
 
 type AgentManager struct {
-	codex          *CodexAdapter
-	claude         *ClaudeCodeAdapter
-	ccswitch       *CCSwitchInspector
-	logger         *slog.Logger
-	codexStatePath string
-	registry       providerRegistry
-	createStore    *sessionCreateStore
+	codex           *CodexAdapter
+	claude          *ClaudeCodeAdapter
+	ccswitch        *CCSwitchInspector
+	logger          *slog.Logger
+	codexStatePath  string
+	registry        providerRegistry
+	createStore     *sessionCreateStore
+	visibilityStore *sessionVisibilityStore
 }
 
 func New(dataDir string, logger *slog.Logger) *AgentManager {
@@ -93,13 +98,14 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 	}
 	ccswitch := NewCCSwitchInspector(logger)
 	return &AgentManager{
-		codex:          NewCodexAdapter(logger),
-		claude:         NewClaudeCodeAdapter(dataDir, ccswitch, logger),
-		ccswitch:       ccswitch,
-		logger:         logger,
-		codexStatePath: defaultCodexDesktopStatePath(),
-		registry:       staticProviderRegistry(),
-		createStore:    newSessionCreateStore(dataDir),
+		codex:           NewCodexAdapter(logger),
+		claude:          NewClaudeCodeAdapter(dataDir, ccswitch, logger),
+		ccswitch:        ccswitch,
+		logger:          logger,
+		codexStatePath:  defaultCodexDesktopStatePath(),
+		registry:        staticProviderRegistry(),
+		createStore:     newSessionCreateStore(dataDir),
+		visibilityStore: newSessionVisibilityStore(dataDir),
 	}
 }
 
@@ -142,6 +148,9 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 	providerID := strings.TrimSpace(input.ProviderID)
 	if providerID == "" {
 		providerID = "codex"
+	}
+	if providerID == sessionBackendChatGPTCloud && action == "session.create" {
+		return nil, unsupportedSessionVisibility("providerId=chatgpt_cloud is not supported: Fast Spider has no stable official ChatGPT cloud conversation creation API and does not use private browser endpoints")
 	}
 	if _, ok := m.registry.get(providerID); !ok {
 		return nil, fmt.Errorf("unsupported providerId %q", providerID)
@@ -213,7 +222,13 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{"session": m.normalizeThread(ctx, thread, nil), "pendingRequests": m.codex.PendingRequests(input.SessionID)}, nil
+		session := m.normalizeThread(ctx, thread, nil)
+		snapshot, err := m.visibilitySnapshot()
+		if err != nil {
+			return nil, err
+		}
+		_, _ = decorateSessionWithVisibility(session, "codex", snapshot)
+		return map[string]any{"session": session, "pendingRequests": m.codex.PendingRequests(input.SessionID)}, nil
 	case "session.create":
 		return m.sessionCreate(ctx, input)
 	case "session.send":
@@ -441,7 +456,12 @@ func (m *AgentManager) controlClaude(ctx context.Context, action string, input a
 	case "models.list":
 		return m.claude.Models(ctx)
 	case "provider.capabilities":
-		return m.claude.Capabilities(ctx)
+		result, err := m.claude.Capabilities(ctx)
+		if err != nil {
+			return nil, err
+		}
+		result["sessionVisibility"] = sessionVisibilityCapabilityMatrix()
+		return result, nil
 	case "projects.list":
 		return map[string]any{
 			"providerId":   "claude_code",
@@ -453,13 +473,27 @@ func (m *AgentManager) controlClaude(ctx context.Context, action string, input a
 		if err != nil {
 			return nil, err
 		}
-		return m.claude.List(root, input.Limit), nil
+		return m.claudeSessionList(root, input.Limit)
 	case "session.get":
 		if strings.TrimSpace(input.SessionID) == "" {
 			return nil, fmt.Errorf("sessionId is required")
 		}
-		return m.claude.Get(input.SessionID)
+		result, err := m.claude.Get(input.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		snapshot, err := m.visibilitySnapshot()
+		if err != nil {
+			return nil, err
+		}
+		if session, ok := result["session"].(map[string]any); ok {
+			_, _ = decorateSessionWithVisibility(session, "claude_code", snapshot)
+		}
+		return result, nil
 	case "session.create":
+		if _, err := resolveSessionVisibility("claude_code", input); err != nil {
+			return nil, err
+		}
 		root, err := requiredAgentDirectory(input.WorkingDirectory)
 		if err != nil {
 			return nil, err
@@ -565,6 +599,9 @@ func (m *AgentManager) deleteCodexSession(ctx context.Context, rawSessionID stri
 	if err := m.createStore.finalizeSessionDelete(sessionID); err != nil {
 		return nil, err
 	}
+	if err := m.forgetSessionVisibility("codex", sessionID); err != nil {
+		return nil, err
+	}
 	if err := removeCodexDesktopThreadAssignment(m.codexStatePath, sessionID); err != nil {
 		m.logger.Warn("remove deleted Codex Desktop thread assignment", "sessionId", sessionID, "error", err)
 	}
@@ -591,6 +628,9 @@ func (m *AgentManager) deleteClaudeSession(rawSessionID string) (map[string]any,
 	if err := m.createStore.finalizeSessionDelete(sessionID); err != nil {
 		return nil, err
 	}
+	if err := m.forgetSessionVisibility("claude_code", sessionID); err != nil {
+		return nil, err
+	}
 	result["alreadyDeleted"] = alreadyDeleted
 	return result, nil
 }
@@ -612,22 +652,43 @@ func isAgentSessionNotFound(err error) bool {
 }
 
 func (m *AgentManager) claudeSessionCreate(ctx context.Context, root string, input agentControlParams) (map[string]any, error) {
+	spec, err := resolveSessionVisibility("claude_code", input)
+	if err != nil {
+		return nil, err
+	}
 	idempotencyKey := strings.TrimSpace(input.IdempotencyKey)
 	if idempotencyKey != "" && (len(idempotencyKey) < 12 || len(idempotencyKey) > 128 || strings.ContainsAny(idempotencyKey, "\x00\r\n")) {
 		return nil, fmt.Errorf("idempotencyKey must be 12 to 128 safe characters")
 	}
-	specHash := sessionCreateSpecHash(map[string]any{
+	specValue := map[string]any{
 		"providerId": "claude_code", "workingDirectory": root, "prompt": input.Prompt,
 		"model": input.Model, "thinking": firstNonEmptyString(input.Thinking, input.Effort),
 		"name": input.Name, "outputSchema": input.OutputSchema,
-	})
+	}
+	legacySpecHash := sessionCreateSpecHash(specValue)
+	for key, value := range spec.hashFields() {
+		specValue[key] = value
+	}
+	specHash := sessionCreateSpecHash(specValue)
 	storeKey := "claude_code:" + idempotencyKey
 	if idempotencyKey != "" {
-		replayed, ok, err := m.createStore.begin(storeKey, specHash)
+		legacyHashes := []string(nil)
+		if sessionVisibilityUsesLegacyDefaults(input) {
+			legacyHashes = []string{legacySpecHash}
+		}
+		replayed, ok, err := m.createStore.begin(storeKey, specHash, legacyHashes...)
 		if err != nil {
 			return nil, err
 		}
 		if ok {
+			sessionID := mapString(replayed, "sessionId")
+			if sessionID == "" {
+				return nil, &createIdempotencyError{code: "AGENT_CREATE_IN_DOUBT", message: "replayed session.create result has no session ID; inspect session.list before retrying"}
+			}
+			spec.applyToResult(replayed, sessionID)
+			if err := m.persistSessionVisibility(spec.record("claude_code", sessionID, time.Now().UTC())); err != nil {
+				return nil, err
+			}
 			replayed["idempotencyProtected"] = true
 			replayed["idempotencyStatus"] = "replayed"
 			return replayed, nil
@@ -642,6 +703,19 @@ func (m *AgentManager) claudeSessionCreate(ctx context.Context, root string, inp
 		}
 		return nil, err
 	}
+	sessionID := mapString(result, "sessionId")
+	if sessionID == "" {
+		return nil, fmt.Errorf("Claude Code did not return a session ID")
+	}
+	if err := m.persistSessionVisibility(spec.record("claude_code", sessionID, time.Now().UTC())); err != nil {
+		if idempotencyKey != "" {
+			if persistenceErr := m.createStore.update(storeKey, "in_doubt", map[string]any{"sessionId": sessionID}); persistenceErr != nil {
+				err = errors.Join(err, fmt.Errorf("persist ambiguous Claude visibility metadata: %w", persistenceErr))
+			}
+		}
+		return nil, err
+	}
+	spec.applyToResult(result, sessionID)
 	result["idempotencyProtected"] = idempotencyKey != ""
 	if idempotencyKey != "" {
 		result["idempotencyStatus"] = "created"
@@ -756,6 +830,7 @@ func (m *AgentManager) codexCapabilities(ctx context.Context) (map[string]any, e
 		"source":              "codex_app_server+cc_switch_db",
 		"authoritativeInputs": true,
 		"derived":             true,
+		"sessionVisibility":   sessionVisibilityCapabilityMatrix(),
 	}
 	if route != nil {
 		out["route"] = route
@@ -904,8 +979,12 @@ func (m *AgentManager) sessionList(ctx context.Context, root string, limit int) 
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
+	visibilitySnapshot, err := m.visibilitySnapshot()
+	if err != nil {
+		return nil, err
+	}
 	listRoot := root
-	listLimit := limit
+	listLimit := 100
 	var requestedProject agentProjectContext
 	if root != "" {
 		requestedProject = resolveAgentProjectContext(ctx, root)
@@ -932,6 +1011,10 @@ func (m *AgentManager) sessionList(ctx context.Context, root string, limit int) 
 		if root != "" && !sameAgentPath(mapAnyString(session, "projectDirectory"), requestedProject.ProjectDirectory) {
 			continue
 		}
+		record, _ := decorateSessionWithVisibility(session, "codex", visibilitySnapshot)
+		if record.Visibility == sessionVisibilityInternal {
+			continue
+		}
 		sessions = append(sessions, session)
 		if len(sessions) >= limit {
 			break
@@ -941,6 +1024,10 @@ func (m *AgentManager) sessionList(ctx context.Context, root string, limit int) 
 }
 
 func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlParams) (map[string]any, error) {
+	spec, err := resolveSessionVisibility("codex", input)
+	if err != nil {
+		return nil, err
+	}
 	workingDirectory, err := requiredAgentDirectory(input.WorkingDirectory)
 	if err != nil {
 		return nil, err
@@ -961,26 +1048,43 @@ func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlPara
 	if err != nil {
 		return nil, err
 	}
-	specHash := sessionCreateSpecHash(map[string]any{
+	specValue := map[string]any{
 		"providerId": "codex", "workingDirectory": workingDirectory, "model": selectedModel, "thinking": input.Thinking,
 		"prompt": input.Prompt, "skills": input.Skills, "images": input.Images, "localImages": input.LocalImages,
 		"mentions": input.Mentions, "imageDetail": input.ImageDetail, "outputSchema": input.OutputSchema,
 		"summary": input.Summary, "personality": input.Personality, "serviceTier": input.ServiceTier,
-	})
+	}
+	legacySpecHash := sessionCreateSpecHash(specValue)
+	for key, value := range spec.hashFields() {
+		specValue[key] = value
+	}
+	specHash := sessionCreateSpecHash(specValue)
 	storeKey := "codex:" + idempotencyKey
 	if idempotencyKey != "" {
-		replayed, ok, err := m.createStore.begin(storeKey, specHash)
+		legacyHashes := []string(nil)
+		if sessionVisibilityUsesLegacyDefaults(input) {
+			legacyHashes = []string{legacySpecHash}
+		}
+		replayed, ok, err := m.createStore.begin(storeKey, specHash, legacyHashes...)
 		if err != nil {
 			return nil, err
 		}
 		if ok {
+			sessionID := mapString(replayed, "sessionId")
+			if sessionID == "" {
+				return nil, &createIdempotencyError{code: "AGENT_CREATE_IN_DOUBT", message: "replayed session.create result has no session ID; inspect session.list before retrying"}
+			}
+			spec.applyToResult(replayed, sessionID)
+			if err := m.persistSessionVisibility(spec.record("codex", sessionID, time.Now().UTC())); err != nil {
+				return nil, err
+			}
 			replayed["idempotencyProtected"] = true
 			replayed["idempotencyStatus"] = "replayed"
 			return replayed, nil
 		}
 	}
 	project := resolveAgentProjectContext(ctx, workingDirectory)
-	threadResult, err := m.codex.StartThread(ctx, workingDirectory, project.ProjectDirectory, selectedModel, input.Thinking)
+	threadResult, err := m.codex.StartThreadWithOptions(ctx, workingDirectory, project.ProjectDirectory, selectedModel, input.Thinking, spec.Ephemeral)
 	if err != nil {
 		if idempotencyKey != "" {
 			if isDefinitiveCodexRPCRejection(err) {
@@ -1005,15 +1109,30 @@ func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlPara
 		}
 		return nil, missingSessionErr
 	}
+	if err := m.persistSessionVisibility(spec.record("codex", sessionID, time.Now().UTC())); err != nil {
+		if idempotencyKey != "" {
+			if persistenceErr := m.createStore.update(storeKey, "in_doubt", map[string]any{"sessionId": sessionID}); persistenceErr != nil {
+				err = errors.Join(err, fmt.Errorf("persist ambiguous Codex visibility metadata: %w", persistenceErr))
+			}
+		}
+		_ = m.codex.ArchiveThread(context.Background(), sessionID)
+		return nil, err
+	}
 	if idempotencyKey != "" {
 		if err := m.createStore.update(storeKey, "thread_created", map[string]any{"sessionId": sessionID}); err != nil {
 			_ = m.codex.ArchiveThread(context.Background(), sessionID)
+			_ = m.forgetSessionVisibility("codex", sessionID)
 			return nil, err
 		}
 	}
-	projectID, projectSynced, syncErr := syncCodexDesktopProject(m.codexStatePath, sessionID, project, time.Now())
-	if syncErr != nil {
-		m.logger.Warn("sync Codex Desktop project metadata", "sessionId", sessionID, "error", syncErr)
+	var projectID string
+	var projectSynced bool
+	var syncErr error
+	if spec.Visibility == sessionVisibilityVisible && spec.VisibilityTarget == sessionBackendCodexLocal {
+		projectID, projectSynced, syncErr = syncCodexDesktopProject(m.codexStatePath, sessionID, project, time.Now())
+		if syncErr != nil && m.logger != nil {
+			m.logger.Warn("sync Codex Desktop project metadata", "sessionId", sessionID, "error", syncErr)
+		}
 	}
 	out := map[string]any{
 		"workingDirectory":     workingDirectory,
@@ -1026,10 +1145,11 @@ func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlPara
 		"realtimeChannel":      "session.watch",
 		"idempotencyProtected": idempotencyKey != "",
 	}
+	spec.applyToResult(out, sessionID)
 	if idempotencyKey != "" {
 		out["idempotencyStatus"] = "created"
 	}
-	if project.IsGitRepository {
+	if project.IsGitRepository && spec.Visibility == sessionVisibilityVisible && spec.VisibilityTarget == sessionBackendCodexLocal {
 		if projectID == "" {
 			projectID = project.ProjectID
 		}
@@ -1072,6 +1192,22 @@ func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlPara
 		return nil, err
 	}
 	turnID := mapNestedString(turnResult, "turn", "id")
+	if turnID == "" {
+		missingTurnErr := fmt.Errorf("Codex did not return a turn ID")
+		if idempotencyKey != "" {
+			if persistenceErr := m.createStore.update(storeKey, "in_doubt", map[string]any{"sessionId": sessionID}); persistenceErr != nil {
+				missingTurnErr = errors.Join(missingTurnErr, fmt.Errorf("persist ambiguous Codex initial turn: %w", persistenceErr))
+			}
+		}
+		_ = m.codex.ArchiveThread(context.Background(), sessionID)
+		if cleanupErr := m.forgetSessionVisibility("codex", sessionID); cleanupErr != nil {
+			missingTurnErr = errors.Join(missingTurnErr, cleanupErr)
+		}
+		if cleanupErr := removeCodexDesktopThreadAssignment(m.codexStatePath, sessionID); cleanupErr != nil && m.logger != nil {
+			m.logger.Warn("remove Codex Desktop assignment after missing turn ID", "sessionId", sessionID, "error", cleanupErr)
+		}
+		return nil, missingTurnErr
+	}
 	out["turnId"] = turnID
 	out["phase"] = "running"
 	if idempotencyKey != "" {
@@ -1097,6 +1233,9 @@ func (m *AgentManager) cleanupRejectedInitialTurn(sessionID string, idempotencyP
 		if err := m.createStore.finalizeSessionDelete(sessionID); err != nil {
 			return fmt.Errorf("release rejected Codex session reservation: %w", err)
 		}
+	}
+	if err := m.forgetSessionVisibility("codex", sessionID); err != nil {
+		return fmt.Errorf("release rejected Codex session visibility metadata: %w", err)
 	}
 	if err := removeCodexDesktopThreadAssignment(m.codexStatePath, sessionID); err != nil {
 		m.logger.Warn("remove rejected Codex Desktop thread assignment", "sessionId", sessionID, "error", err)

@@ -192,10 +192,10 @@ var mcpToolGuides = map[string]mcpToolGuideEntry{
 		Returns: []string{"roles, departments, workflows or workspace protocol"}, RecommendedNext: []string{"working_context", "continue reasoning in the caller"}, CommonErrors: []string{"INVALID_REQUEST"}, BoundedExamples: []map[string]any{{"action": "overview"}},
 	},
 	"ai_control": {
-		Description: "Use to discover/control local Codex or Claude Code and read CC Switch route facts. Requires machineId and action; returns provider/session facts; Codex history starts with action=session.list, then session.get/watch/result.",
+		Description: "Use to discover/control local Codex or Claude Code and read CC Switch route facts. Requires machineId and action; session.create supports visible/internal visibility with independent backend/visibilityTarget; ChatGPT cloud creation is explicitly unsupported. Returns provider/session facts; Codex history starts with action=session.list, then session.get/watch/result.",
 		WhenToUse:   []string{"Discover AI runtimes", "List or control Codex/Claude Code sessions"}, RequiredInputs: []string{"machineId", "action", "providerId when not codex", "workingDirectory for scoped list/create"},
-		SafeSequence: []string{"machine_list", "session.list with workingDirectory", "session.get", "session.watch while active", "session.result at terminal state"}, Returns: []string{"bounded provider, route or session results"},
-		RecommendedNext: []string{"session.get", "session.watch", "session.result"}, CommonErrors: []string{"RUNTIME_UNAVAILABLE", "INVALID_REQUEST", "DEADLINE_EXCEEDED"}, BoundedExamples: []map[string]any{{"machineId": "<machine-id>", "action": "session.list", "workingDirectory": "<absolute-project>"}},
+		SafeSequence: []string{"machine_list", "session.list with workingDirectory", "session.get", "session.watch while active", "session.result at terminal state"}, Returns: []string{"bounded provider, route or session results", "session.create visibility metadata and provider-native external ID"},
+		RecommendedNext: []string{"session.get", "session.watch", "session.result"}, CommonErrors: []string{"RUNTIME_UNAVAILABLE", "INVALID_REQUEST", "AGENT_SESSION_VISIBILITY_UNSUPPORTED", "DEADLINE_EXCEEDED"}, BoundedExamples: []map[string]any{{"machineId": "<machine-id>", "action": "session.list", "workingDirectory": "<absolute-project>"}},
 	},
 	"working_context": {
 		Description: "Use for durable project Plan/Task state, acceptance evidence and bounded Markdown workspace facts. Requires machineId, absolute projectPath and action; returns revisioned state; mutations use expectedRevision/fileRevision CAS.",

@@ -111,13 +111,21 @@ Model Mapping 目前识别 Claude 的 `ANTHROPIC_MODEL` / Sonnet / Opus / Haiku 
 
 ### `session.create`
 
-公网 MCP 必需：绝对 `workingDirectory` 与 12-128 字符 `idempotencyKey`。可选：`model`、`thinking`，以及首个 Turn 的输入。Node 对 Codex 与 Claude Code 均持久保存 key/spec hash/小型结果；同 key 同 spec 在进程重启后仍重放同一 Session，同 key 不同 spec 返回冲突，中间态不确定时不重复创建。索引采用严格全量校验，任何损坏或语义不完整记录均 fail-closed；记录不按时间自动过期。已知 Session 经 `session.delete` 明确删除后回收；无已知 Session 的 `in_doubt` 记录须先检查 `session.list`，确认没有创建后调用 `session.delete`，省略 `sessionId` 并传原 `idempotencyKey` 与 `decision=confirm_not_created` 显式释放。Claude 原生 history 仍由 Claude 自身保存。
+公网 MCP 必需：绝对 `workingDirectory` 与 12-128 字符 `idempotencyKey`。可选：`model`、`thinking`，以及首个 Turn 的输入。Node 对 Codex 与 Claude Code 均持久保存 key/spec hash/小型结果；同 key 同 spec 在进程重启后仍重放同一 Session，同 key 不同 spec（包括可见性语义）返回冲突，中间态不确定时不重复创建。索引采用严格全量校验，任何损坏或语义不完整记录均 fail-closed；记录不按时间自动过期。已知 Session 经 `session.delete` 明确删除后回收；无已知 Session 的 `in_doubt` 记录须先检查 `session.list`，确认没有创建后调用 `session.delete`，省略 `sessionId` 并传原 `idempotencyKey` 与 `decision=confirm_not_created` 显式释放。Claude 原生 history 仍由 Claude 自身保存。
 
 `session.delete` 使用持久 delete intent：先把与 Session 关联的 create 记录标为 deleting，再删除 Provider Session，最后回收记录。若 Provider 已删除但最终落盘失败，重试同一删除会把 Provider not-found 视为已完成并续做回收，不会留下无法清理的容量占用。
 
 如果没有任何 Turn input，只创建 Codex Thread 并返回 `phase=ready`。如果存在 text/Skill/Image/Mention 任一输入，则创建 Thread 后立即启动 Turn，返回 `sessionId + turnId + phase=running`。
 
 Git 子目录和 linked worktree 会解析到主工作树对应的 Codex Desktop 项目展示上下文，但真正执行 cwd 保留为调用方传入的绝对 `workingDirectory`。跨主 Git 项目继续工作时必须新建 Session。
+
+### 会话可见性双模式
+
+`session.create` 将 `visibility`、`backend` 与 `visibilityTarget` 分开表达：`visibility` 取 `visible|internal`；本地后端取 `codex_local|claude_local`，`visibilityTarget` 取匹配的本地目标或内部专用的 `none`。省略时兼容旧调用：`visibility=visible`，backend/target 从 `providerId` 推导；Codex `internal` 且未指定 `ephemeral` 时默认请求 `thread/start.ephemeral=true`，显式 `ephemeral=false` 才创建持久内部 Thread。`visible` 会返回并保存 provider-native `externalId`、`externalIdType` 及对应的 `externalThreadId`/`externalSessionId`。
+
+`internal` 不进入 Fast Spider 的普通 `session.list`，也不会同步 Codex Desktop 项目状态；这不是跨客户端 ACL。Codex 持久内部 Thread 仍可能被其他 Codex 客户端的本地 `thread/list` 列出，因此返回 `visibilityGuarantee=not_guaranteed` 和限制说明；ephemeral 只报告 `best_effort`，并提示可能不跨 app-server 重启存活，不虚报为绝对不可见。现有会话没有 sidecar 元数据时按 `visible/unmanaged_existing` 返回，并明确没有更强的 UI 保证。
+
+`backend=chatgpt_cloud` 或 `visibilityTarget=chatgpt_cloud` 当前由 `AGENT_SESSION_VISIBILITY_UNSUPPORTED` 明确拒绝。插件源码中的 `/f/conversation*` 是浏览器登录态私有路径，不是 Fast Spider 已验证的官方创建能力；本实现不修改插件 ZIP，也不调用该私有接口。
 
 ### `session.send`
 

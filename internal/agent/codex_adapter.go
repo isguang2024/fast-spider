@@ -987,7 +987,11 @@ func isCodexThreadNotMaterialized(err error) bool {
 }
 
 func (a *CodexAdapter) StartThread(ctx context.Context, workingDirectory, projectDirectory, model, thinking string) (map[string]any, error) {
-	params := codexThreadStartParams(workingDirectory, projectDirectory, model, thinking)
+	return a.StartThreadWithOptions(ctx, workingDirectory, projectDirectory, model, thinking, false)
+}
+
+func (a *CodexAdapter) StartThreadWithOptions(ctx context.Context, workingDirectory, projectDirectory, model, thinking string, ephemeral bool) (map[string]any, error) {
+	params := codexThreadStartParamsWithEphemeral(workingDirectory, projectDirectory, model, thinking, ephemeral)
 	result, err := a.request(ctx, "thread/start", params)
 	if err != nil {
 		return nil, err
@@ -1033,6 +1037,10 @@ func (a *CodexAdapter) ensureThreadLoaded(ctx context.Context, sessionID string)
 }
 
 func codexThreadStartParams(workingDirectory, projectDirectory, model, thinking string) map[string]any {
+	return codexThreadStartParamsWithEphemeral(workingDirectory, projectDirectory, model, thinking, false)
+}
+
+func codexThreadStartParamsWithEphemeral(workingDirectory, projectDirectory, model, thinking string, ephemeral bool) map[string]any {
 	roots := make([]string, 0, 2)
 	if strings.TrimSpace(projectDirectory) != "" {
 		roots = append(roots, projectDirectory)
@@ -1045,7 +1053,7 @@ func codexThreadStartParams(workingDirectory, projectDirectory, model, thinking 
 		"runtimeWorkspaceRoots": roots,
 		"approvalPolicy":        "never",
 		"sandbox":               "workspace-write",
-		"ephemeral":             false,
+		"ephemeral":             ephemeral,
 		"historyMode":           "legacy",
 		"threadSource":          "user",
 		"serviceName":           "fast_spider",

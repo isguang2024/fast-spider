@@ -137,6 +137,7 @@ func readinessResult(providerID, mode string, layers map[string]readinessLayer, 
 		"routeAvailable": layers["routing"].State == "ready", "providerAvailable": layers["provider"].State == "ready",
 		"harnessAvailable": layers["harness"].State == "ready", "sessionBackendAvailable": layers["sessionBackend"].State == "ready",
 		"readyForSessionCreate": state == "ready",
+		"sessionVisibility":     sessionVisibilityCapabilityMatrix(),
 		"executionHealth":       "unknown_until_turn", "checkedAt": time.Now().UTC().Format(time.RFC3339Nano),
 		"elapsedMs": time.Since(started).Milliseconds(), "layers": layers,
 	}

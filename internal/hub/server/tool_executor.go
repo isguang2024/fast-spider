@@ -362,6 +362,7 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 		params := map[string]any{
 			"providerId": input.ProviderID, "appType": input.AppType, "sessionId": input.SessionID, "turnId": input.TurnID, "requestId": input.RequestID,
 			"idempotencyKey": input.IdempotencyKey, "mode": input.Mode,
+			"visibility": input.Visibility, "backend": input.Backend, "visibilityTarget": input.VisibilityTarget, "ephemeral": input.Ephemeral,
 			"prompt": input.Prompt, "workingDirectory": input.WorkingDirectory, "model": input.Model,
 			"thinking": input.Thinking, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds,
 			"limit": input.Limit, "pageCursor": input.PageCursor, "mcpDetail": input.MCPDetail, "name": input.Name, "forceReload": input.ForceReload,

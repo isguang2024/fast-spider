@@ -170,11 +170,12 @@ const localUIHTML = `<!doctype html>
 			<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap"><div><h2>本地组件中心</h2><p class="copy">只管理 Fast Spider 已知并经过校验的 Browser 与 ripgrep 组件；安装和更新始终需要手动触发。</p></div><button id="components-refresh" class="secondary" type="button">刷新状态</button></div>
 			<div class="notice">组件状态不会显示安装路径、Hub 地址或凭据，也不会在页面加载时自动下载。</div>
 		  </div>
-		  <div class="provider-grid">
-			<div class="panel"><h2>Browser</h2><p class="copy">受管浏览器运行时与 Sidecar。安装成功后沿用现有本地配置刷新行为。</p><div id="component-browser-data" class="data-list"><span class="empty">切换到本页后读取</span></div><div class="actions"><button id="browser-install" class="primary" type="button">安装 / 更新 Browser</button><span id="browser-status" class="hint">仅在点击后联网安装。</span></div></div>
-			<div class="panel"><h2>ripgrep 搜索引擎</h2><p class="copy">code.search 优先使用已校验的受管 ripgrep；缺失时安全回退至 Go native。</p><div id="component-ripgrep-data" class="data-list"><span class="empty">切换到本页后读取</span></div><div class="actions"><button id="ripgrep-install" class="primary" type="button">安装 / 更新 ripgrep</button><span id="ripgrep-status" class="hint">安装后下次搜索自动生效。</span></div></div>
-		  </div>
-		  <div class="panel">
+			  <div class="provider-grid">
+				<div class="panel"><h2>Browser</h2><p class="copy">受管浏览器运行时与 Sidecar。安装成功后沿用现有本地配置刷新行为。</p><div id="component-browser-data" class="data-list"><span class="empty">切换到本页后读取</span></div><div class="actions"><button id="browser-install" class="primary" type="button">安装 / 更新 Browser</button><span id="browser-status" class="hint">仅在点击后联网安装。</span></div></div>
+				<div class="panel"><h2>ripgrep 搜索引擎</h2><p class="copy">code.search 优先使用已校验的受管 ripgrep；缺失时安全回退至 Go native。</p><div id="component-ripgrep-data" class="data-list"><span class="empty">切换到本页后读取</span></div><div class="actions"><button id="ripgrep-install" class="primary" type="button">安装 / 更新 ripgrep</button><span id="ripgrep-status" class="hint">安装后下次搜索自动生效。</span></div></div>
+			  </div>
+			  <div class="panel"><h2>浏览器插件（本地导入）</h2><p class="copy">把已下载的 Chrome 插件 ZIP 导入受管浏览器。插件代码会在本机执行；安装只由当前 Node UI 手动触发，不通过 Hub 或 AI 远程下载。</p><label class="field full"><span>插件 ZIP 绝对路径</span><input id="browser-extension-path" maxlength="4096" placeholder="V:\\repos\\...\\ChatGPT-...zip"><small class="hint">ZIP 内需要有 manifest.json；安装后下次以 headed 模式启动浏览器时加载。</small></label><div class="actions"><button id="browser-extension-install" class="primary" type="button">导入并安装插件</button><span id="browser-extension-status" class="hint">当前会话不会热加载，需关闭后重新 launch。</span></div><div id="browser-extensions-data" class="data-list" style="margin-top:14px"><span class="empty">切换到本页后读取</span></div></div>
+			  <div class="panel">
 			<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap"><div><h2>搜索与文件能力</h2><p class="copy">展示搜索引擎就绪状态，以及 file_read / file_edit 2.0 的本地能力摘要。</p></div><button id="search-file-self-test" class="secondary" type="button">运行本地自检</button></div>
 			<div id="search-file-status" class="data-list" style="margin-top:16px"><span class="empty">切换到本页后读取</span></div>
 			<div class="notice">自检只在 NodeUI 数据目录内创建并清理隔离临时文件；不会读取项目文件、下载组件或执行 AI。</div>
@@ -416,15 +417,23 @@ const localUIHTML = `<!doctype html>
 		['file_read',(read.version || 'unknown')+' · '+(read.actions || []).join(', ')],['file_edit',(edit.version || 'unknown')+' · '+(edit.actions || []).join(', ')],
 	  ]);
 	}
-	async function refreshComponents() {
-	  if(componentsBusy)return; componentsBusy=true; $('components-refresh').disabled=true;
-	  try {
-		const [components,capabilities]=await Promise.all([api('/api/components'),api('/api/search-file/status')]);
-		const byId={}; (components.components || []).forEach(item=>{byId[item.id]=item;});
-		renderData('component-browser-data',componentRows(byId.browser || {})); renderData('component-ripgrep-data',componentRows(byId['search-ripgrep'] || {})); renderSearchFileStatus(capabilities);
-	  } catch(e) { message(e.message,true); }
-	  finally { componentsBusy=false; $('components-refresh').disabled=false; }
-	}
+		async function refreshComponents() {
+		  if(componentsBusy)return; componentsBusy=true; $('components-refresh').disabled=true;
+		  try {
+			const [components,capabilities,extensions]=await Promise.all([api('/api/components'),api('/api/search-file/status'),api('/api/browser/extensions')]);
+			const byId={}; (components.components || []).forEach(item=>{byId[item.id]=item;});
+			renderData('component-browser-data',componentRows(byId.browser || {})); renderData('component-ripgrep-data',componentRows(byId['search-ripgrep'] || {})); renderSearchFileStatus(capabilities); renderData('browser-extensions-data',(extensions.extensions || []).map(item=>[item.name+' · '+item.version,'ID '+item.id+' · MV'+item.manifestVersion]));
+		  } catch(e) { message(e.message,true); }
+		  finally { componentsBusy=false; $('components-refresh').disabled=false; }
+		}
+		async function installBrowserExtension() {
+		  const archivePath=$('browser-extension-path').value.trim();
+		  if(!archivePath){message('请填写插件 ZIP 的绝对路径。',true);return;}
+		  if(componentsBusy)return; componentsBusy=true; $('browser-extension-install').disabled=true; $('browser-extension-status').textContent='正在校验并导入插件…';
+		  try { const data=await api('/api/browser/extensions/install',{method:'POST',body:JSON.stringify({archivePath})}); const extension=data.extension || {}; $('browser-extension-status').textContent=(extension.name || '插件')+' '+(extension.version || '')+' 已安装；请用 headed 模式重新启动浏览器。'; message('浏览器插件安装完成。'); }
+		  catch(e) { $('browser-extension-status').textContent='安装失败'; message(e.message,true); }
+		  finally { componentsBusy=false; $('browser-extension-install').disabled=false; await refreshComponents(); }
+		}
 	async function ensureComponent(componentId,buttonId,statusId) {
 	  if(componentsBusy)return; componentsBusy=true; $(buttonId).disabled=true; $(statusId).textContent='正在下载并校验组件…';
 	  try { const data=await api('/api/components/ensure',{method:'POST',body:JSON.stringify({componentId})}); $(statusId).textContent=(data.component && data.component.version ? data.component.version : '组件')+' 已安装'; message('组件安装完成。'); }
@@ -508,7 +517,8 @@ const localUIHTML = `<!doctype html>
   }));
 	$('ai-refresh').addEventListener('click',refreshAI);
 	$('diagnostics-refresh').addEventListener('click',refreshDiagnostics);
-	$('components-refresh').addEventListener('click',refreshComponents);
+		$('components-refresh').addEventListener('click',refreshComponents);
+		$('browser-extension-install').addEventListener('click',installBrowserExtension);
 	$('search-file-self-test').addEventListener('click',runSearchFileSelfTest);
 
   $('working-project').addEventListener('input',()=>{workingDirty=true;});

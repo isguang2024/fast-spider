@@ -24,9 +24,9 @@ Hub 只负责身份、路由、deadline、审计、Job/Artifact 元数据和连�
 | `build.exec` 1.1 | `run` | 固定 argv 的 host/WSL 构建/测试 Job |
 | `artifact.store` | `uploadFile`, `uploadJobLog`, `publishFile` | Hub Artifact/临时 Presentation 数据面 |
 | `working.context` 1.1 | `get`, `set`, `clear`, `plan.init`, `plan.get`, `plan.list`, `plan.sync`, `task.update`, `markdown.list`, `markdown.read`, `markdown.append`, `progress.watch` | Plan/Task + Markdown Task Workspace；旧入口映射默认 plan |
-| `browser.automation` 1.2 | `readiness`, `launch`, `close`, `page.open`, `page.navigate`, `page.close`, `pages.list`, `click`, `type`, `press`, `wait`, `batch`, `snapshot`, `screenshot`, `events` | 隔离 Chromium；缓存 readiness + 分段 timing + snapshot refs |
+| `browser.automation` 1.3 | `readiness`, `extensions.list`, `launch`, `close`, `page.open`, `page.navigate`, `page.close`, `pages.list`, `click`, `type`, `press`, `wait`, `batch`, `snapshot`, `screenshot`, `events` | 隔离 Chromium；插件显式本地导入，headed 模式加载 |
 | `screenshot.capture` | `listDisplays`, `desktop`, `display`, `listWindows`, `window` | 一次性桌面/显示器/窗口截图 |
-| `agent.control` 1.1 | 分层 readiness、AI Harness/Route discovery 与受控 Session/Turn 生命周期 | 当前 Harness 为本机 Codex + Claude Code |
+| `agent.control` 1.2 | 分层 readiness、AI Harness/Route discovery、会话可见性双模式与受控 Session/Turn 生命周期 | 当前 Harness 为本机 Codex + Claude Code |
 
 当前**没有** `mkdir`、`move`、`copy`、`delete`、`purge`、`readChunks`、任意 shell 字符串执行或远程 `node.update` capability。`file.write/create` 只能创建显式目标文件且要求父目录已存在，不是通用文件管理接口。
 
@@ -168,6 +168,8 @@ session.review
 Agent Manager 已按 manager/provider/session/routing 边界拆分；静态 Provider Registry 只注册 `codex` 与 `claude_code`，不提供动态反射插件系统。`providers.list` 为每个 Harness 返回自己的 `supportedActions`。`routing.status` 是全局只读 action：读取 CC Switch SQLite SSOT，区分 `direct|cc_switch`、current Provider、model mapping、Takeover/health 与 EffectiveCapabilities；raw provider settings/meta/credential 永不离开 Node。
 
 `provider.readiness` 以 passive/safe 两种模式分别报告 `routeAvailable/providerAvailable/harnessAvailable/sessionBackendAvailable/readyForSessionCreate`，并为每层返回稳定 reasonCode 与耗时；safe 只启动/复用 app-server 并调用只读 thread/list，不创建 Session、不发送 Prompt。`session.create` 的公网 MCP 入口必须携带 12-128 字符幂等键；Node 将 spec hash 与小型结果持久化到 data-dir，重启后仍能重放同结果，key/spec 冲突或中间态不确定时拒绝重复创建。Provider 已明确拒绝且确认没有副作用的 create 会立即释放 reservation；真正不确定且没有已知 Session 的记录，须先用 `session.list` 对账，再以 `session.delete + idempotencyKey + decision=confirm_not_created` 显式释放。
+
+Session 可见性契约由 `visibility`、`backend`、`visibilityTarget` 独立组成。`visible` 默认映射到 provider 的本地 backend，并返回 `externalId/externalIdType`；`internal` 默认不发布目标，Codex 默认请求 ephemeral Thread，并从 Fast Spider 的普通 `session.list` 过滤。持久 internal Thread 仍可能被其他 Codex 客户端列出，API 返回 `visibilityGuarantee=not_guaranteed` 而不是宣称绝对不可见。`chatgpt_cloud` 只在能力矩阵中声明 unsupported，创建返回 `AGENT_SESSION_VISIBILITY_UNSUPPORTED`，不会调用插件私有 cloud conversation endpoint。
 
 CC Switch 使用 `PRAGMA table_info` 对唯一支持 schema 计算 fingerprint 并 fail-closed；不支持时返回 `available=false/reason=unsupported_schema`，不猜旧 schema。进程内 bounded TTL 为 route 约 1.5 秒、CLI version/auth 45 秒、models 20 秒；Codex/Claude/CC Switch 独立 discovery 并行且只读，不触发模型生成。
 

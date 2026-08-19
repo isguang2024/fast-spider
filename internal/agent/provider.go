@@ -66,6 +66,7 @@ func discoverProviders(ctx context.Context, registry providerRegistry, discovery
 			"credentialLocation": definition.CredentialSource,
 			"supportedActions":   append([]string(nil), definition.SupportedActions...),
 		}
+		provider["sessionVisibility"] = sessionVisibilityCapabilityMatrix()
 		switch definition.ID {
 		case "codex":
 			provider["available"] = result.codexErr == nil

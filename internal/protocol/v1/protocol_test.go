@@ -34,6 +34,9 @@ func TestAgentCapabilityAdvertisesCurrentActionContract(t *testing.T) {
 	if !reflect.DeepEqual(AgentCapability.Actions, want) {
 		t.Fatalf("agent.control actions=%v want=%v", AgentCapability.Actions, want)
 	}
+	if AgentCapability.Version != "1.2" {
+		t.Fatalf("agent.control version=%q want 1.2", AgentCapability.Version)
+	}
 }
 
 func TestWorkingContextCapabilityAdvertisesPlanAndMarkdownActions(t *testing.T) {

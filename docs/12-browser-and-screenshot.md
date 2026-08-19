@@ -16,8 +16,8 @@ Fast Spider 的浏览器能力用于开发页面验证、自动化测试、结�
 - 每个 Node 最多一个受管 Browser Session、最多 8 个页面；Session 空闲 10 分钟自动关闭。
 - Browser 的远程边界是 Machine；不叠加目录授权或 Origin 白名单。
 - Node 可访问的公网、localhost 和私网 HTTP/HTTPS/WS/WSS 目标均可访问；是否可达由 Node 的 OS、网络和浏览器运行时决定。
-- `browser.automation` 1.2 固定动作：`readiness/launch/close/page.open/page.navigate/page.close/pages.list/click/type/press/wait/batch/snapshot/screenshot/events`。
-- 不公开任意 JavaScript、`evaluate`、CDP、Playwright 原始 API、Trace/HAR/视频。
+- `browser.automation` 1.3 固定动作：`readiness/extensions.list/launch/close/page.open/page.navigate/page.close/pages.list/click/type/press/wait/batch/snapshot/screenshot/events`。
+- 不公开任意 JavaScript、`evaluate`、CDP、Playwright 原始 API、Trace/HAR/视频；浏览器插件只允许通过本地 Node UI 显式导入。
 - 页面截图和 OS 截图由 Node 直接上传到 Hub Temporary Presentation Relay 的 attachment 模式；Relay 不写数据库，MCP/Direct 只返回临时 URL 元数据，不再把图片内容或 ResourceLink 展开到聊天界面。新 Node 的截图附件最长保留 48 小时，由 Hub 生命周期维护自动删除。
 - Node 始终宣告 `browser.automation`，使缺失运行时也能调用 `readiness` 得到 `not_configured/node_runtime_missing/sidecar_files_missing/protocol_mismatch/chromium_missing/probe_timeout/sidecar_start_failed` 等稳定原因。正缓存 30 秒、负缓存 5 秒，不重复探测/下载。
 
@@ -52,10 +52,19 @@ Session 状态为 `created → launching → ready → running_action → closin
 - 批量：`batch` 在 Node 内连续执行 1-32 个 `click/type/press/wait`，可用 `snapshotAfter=true` 一次返回新快照，减少 MCP 往返。
 - 诊断：`events`，返回有界 console/network/download 摘要。
 - 预检：`readiness` 不创建 Browser Session，返回 ready/state/reasonCode/cacheHit/checkedAt/totalMs。
+- 插件：`extensions.list` 只读已导入插件元数据；插件安装不走 Hub/AI 远程能力。
 
 `snapshot` 同时返回完整 `ariaSnapshot`、面向 Agent 的 `agentSnapshot` 和结构化 `refs`。每次新 snapshot 会轮换当前页面 ref；页面导航或元素脱离 DOM 后旧 ref 立即返回 `BROWSER_REF_STALE`，不等待普通 Locator 超时。Client 不传可执行回调；当没有可用 ref 时，Locator 仍可使用 role、label、text、testId 和受限纯 CSS，不支持 XPath。
 
 所有真实 Browser 动作返回 `timing={startupMs,operationMs,coldStart,queueMs,totalMs}`；sidecar 内已有 locator/action/wait 等细分计时会原样保留。计时只在响应中出现，不建立长期高频 trace。
+
+## Chrome 插件导入与加载
+
+本地 Node UI 提供 `POST /api/browser/extensions/install`，请求体为 `{"archivePath":"<ZIP 的绝对路径>"}`。导入器只接受有界 ZIP，拒绝路径穿越、重复文件、符号链接和不受支持的 Manifest；支持 ZIP 根目录为 `manifest.json` 或单一顶层目录（用户提供的 `ChatGPT/...` ZIP 属于后者）。插件安装在 Node 数据目录的受管扩展目录中，API 只返回插件 ID、名称和版本，不返回绝对路径。
+
+安装后，先用 `browser_control(action=extensions.list)` 获取插件 ID，再在需要的 `launch` 请求中显式传 `extensionIds`；省略该字段不会改变普通浏览器启动行为。Chrome 插件必须使用 `headed=true`，Sidecar 会使用 Node 数据目录下跨 Browser Session 持久的隔离 Profile 和 Playwright 的 `launchPersistentContext`；当前 Browser Session 不热加载，需关闭后重新 launch。插件所需的 ChatGPT 登录态必须在这个受管 Profile 内单独完成，不会读取用户日常 Chrome Profile 的 Cookie；该受管 Profile 会保存插件登录态，使用者应按本机敏感数据处理。
+
+插件具备页面、网络和扩展后台代码权限，是显式的本机高风险导入；Fast Spider 不把它伪装成官方 ChatGPT 云端会话 API，也不因此保证会话能在 ChatGPT Web/移动端列表出现。
 
 ## 6. 网络策略
 

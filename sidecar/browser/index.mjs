@@ -16,6 +16,7 @@ const MAX_SCREENSHOT_PIXELS = 20_000_000;
 const MAX_ACTION_TIMEOUT_MS = 30_000;
 const MAX_ELEMENT_REFS = 512;
 const MAX_BATCH_STEPS = 32;
+const MAX_EXTENSIONS = 4;
 
 const sessions = new Map();
 
@@ -167,6 +168,29 @@ function getPage(session, params) {
   return { pageId, page };
 }
 
+async function extensionPaths(params) {
+  const raw = params?.extensionPaths;
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw) || raw.length > MAX_EXTENSIONS) {
+    throw new SidecarError('INVALID_REQUEST', `extensionPaths must contain 0-${MAX_EXTENSIONS} directories`);
+  }
+  const paths = [];
+  for (const value of raw) {
+    const extensionPath = requireString(value, 'extensionPath', 4096);
+    if (!path.isAbsolute(extensionPath)) throw new SidecarError('INVALID_REQUEST', 'extension paths must be absolute');
+    const info = await fs.lstat(extensionPath).catch(() => null);
+    if (!info || !info.isDirectory() || info.isSymbolicLink()) {
+      throw new SidecarError('BROWSER_EXTENSION_NOT_FOUND', 'managed browser extension directory was not found');
+    }
+    const manifest = await fs.lstat(path.join(extensionPath, 'manifest.json')).catch(() => null);
+    if (!manifest || !manifest.isFile() || manifest.isSymbolicLink()) {
+      throw new SidecarError('BROWSER_EXTENSION_INVALID', 'managed browser extension manifest was not found');
+    }
+    paths.push(extensionPath);
+  }
+  return paths;
+}
+
 function staleRef(ref) {
   return new SidecarError('BROWSER_REF_STALE', `element ref ${ref} is stale; take a new snapshot`);
 }
@@ -303,28 +327,55 @@ async function launch(params) {
   }
   const screenshotDir = path.resolve(requireString(params?.screenshotDir, 'screenshotDir', 2048));
   await fs.mkdir(screenshotDir, { recursive: true });
-  const browser = await chromium.launch({
-    headless: params?.headless !== false,
-    args: ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],
-  });
-  const context = await browser.newContext({
-    viewport: { width, height },
-    acceptDownloads: false,
-    serviceWorkers: 'block',
-  });
-  context.setDefaultTimeout(10_000);
-  context.setDefaultNavigationTimeout(15_000);
-  await context.addInitScript(() => {
-    for (const name of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'WebTransport']) {
-      try {
-        Object.defineProperty(globalThis, name, { value: undefined, configurable: false, writable: false });
-      } catch {}
+  const loadedExtensions = await extensionPaths(params);
+  const headless = params?.headless !== false;
+  if (loadedExtensions.length > 0 && headless) {
+    throw new SidecarError('BROWSER_EXTENSION_REQUIRES_HEADED', 'browser extensions require a headed managed browser');
+  }
+  let browser = null;
+  let context = null;
+  try {
+    const browserArgs = ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp'];
+    if (loadedExtensions.length > 0) {
+      const userDataDir = requireString(params?.userDataDir, 'userDataDir', 4096);
+      if (!path.isAbsolute(userDataDir)) throw new SidecarError('INVALID_REQUEST', 'userDataDir must be absolute');
+      await fs.mkdir(userDataDir, { recursive: true });
+      const commaSeparatedPaths = loadedExtensions.join(',');
+      browserArgs.push(`--disable-extensions-except=${commaSeparatedPaths}`, `--load-extension=${commaSeparatedPaths}`);
+      context = await chromium.launchPersistentContext(userDataDir, {
+        headless: false,
+        viewport: { width, height },
+        acceptDownloads: false,
+        serviceWorkers: 'allow',
+        args: browserArgs,
+      });
+    } else {
+      browser = await chromium.launch({ headless, args: browserArgs });
+      context = await browser.newContext({
+        viewport: { width, height },
+        acceptDownloads: false,
+        serviceWorkers: 'block',
+      });
     }
-  });
+    context.setDefaultTimeout(10_000);
+    context.setDefaultNavigationTimeout(15_000);
+    await context.addInitScript(() => {
+      for (const name of ['RTCPeerConnection', 'webkitRTCPeerConnection', 'WebTransport']) {
+        try {
+          Object.defineProperty(globalThis, name, { value: undefined, configurable: false, writable: false });
+        } catch {}
+      }
+    });
+  } catch (error) {
+    await context?.close().catch(() => {});
+    await browser?.close().catch(() => {});
+    throw error;
+  }
   const session = {
     id: browserSessionId,
     browser,
     context,
+    loadedExtensions,
     pages: new Map(),
     refs: new Map(),
     refSequence: 0,
@@ -339,7 +390,7 @@ async function launch(params) {
     return { browserSessionId, engine: 'chromium', state: 'ready', viewport: { width, height } };
   } catch (error) {
     await context.close().catch(() => {});
-    await browser.close().catch(() => {});
+    await browser?.close().catch(() => {});
     throw error;
   }
 }
@@ -348,7 +399,7 @@ async function closeSession(params) {
   const session = getSession(params);
   sessions.delete(session.id);
   await session.context.close().catch(() => {});
-  await session.browser.close().catch(() => {});
+  await session.browser?.close().catch(() => {});
   await fs.rm(session.screenshotDir, { recursive: true, force: true }).catch(() => {});
   return { browserSessionId: session.id, state: 'closed' };
 }
@@ -611,7 +662,7 @@ async function closeAll() {
   sessions.clear();
   for (const session of current) {
     await session.context.close().catch(() => {});
-    await session.browser.close().catch(() => {});
+    await session.browser?.close().catch(() => {});
     await fs.rm(session.screenshotDir, { recursive: true, force: true }).catch(() => {});
   }
 }

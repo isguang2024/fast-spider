@@ -179,7 +179,7 @@ func (s *sessionCreateStore) releaseUnresolved(key string) (bool, error) {
 	return true, nil
 }
 
-func (s *sessionCreateStore) begin(key, specHash string) (map[string]any, bool, error) {
+func (s *sessionCreateStore) begin(key, specHash string, legacySpecHashes ...string) (map[string]any, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.loadErr != nil {
@@ -190,7 +190,26 @@ func (s *sessionCreateStore) begin(key, specHash string) (map[string]any, bool, 
 	}
 	if current, ok := s.records[key]; ok {
 		if current.SpecHash != specHash {
-			return nil, false, &createIdempotencyError{code: "IDEMPOTENCY_CONFLICT", message: "idempotencyKey was reused with different session.create parameters"}
+			legacy := false
+			for _, legacyHash := range legacySpecHashes {
+				if legacyHash != "" && current.SpecHash == legacyHash {
+					legacy = true
+					break
+				}
+			}
+			if !legacy {
+				return nil, false, &createIdempotencyError{code: "IDEMPOTENCY_CONFLICT", message: "idempotencyKey was reused with different session.create parameters"}
+			}
+			previous := current
+			current.SpecHash = specHash
+			current.UpdatedAt = time.Now().UTC()
+			s.records[key] = current
+			if committed, err := s.saveLocked(); err != nil {
+				if !committed {
+					s.records[key] = previous
+				}
+				return nil, false, err
+			}
 		}
 		switch current.State {
 		case "succeeded":
