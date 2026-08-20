@@ -13,7 +13,7 @@
 - finalReleaseGate: `core release gate PASS；go build ./...、go vet ./...、go test ./... -count=1、跨平台 build、Hub restore E2E、Local Bridge E2E 与 ChatGPT Cloud live E2E PASS；精确 scripts/release-gate.sh --full 在 Git history secretscan 发现 325 个既有历史命中后按设计停止，未绕过或伪装为 full PASS；其余 post-history full stages（全部专项、WSL、Browser、CC Switch、Claude、multi-provider、Local Bridge→Codex product）已单独 PASS；windows/386 按设计 skip fuzz/race`
 - productionHub: `0.4.23 / SHA256 534eccaac8f921d625c7b4da48dbe8fb426940d0967e4b006e37a9db1edaec1 / PID 666081 / systemd active / local+public livez+readyz 200`
 - productionSpiderctl: `0.4.23 / SHA256 62f2003f7da6cd1c19e36ec99dbc486a18ac8f8e4c1a6747bf982ee5fac0abd7`
-- productionNode: `PCa / 0.4.23 / windows-amd64 / generation=131 / last_seen=2026-08-20T03:33:27Z / active / release SHA256 d4d6cb1b3e09de4d35cfbdd6af10822bc57219ff6566df8f4aacda7c1d92ace8`
+- productionNode: `PCa / 0.4.23 / windows-amd64 / generation=131 / last_seen=2026-08-20T03:44:25Z / online=true / runtimeStatus=ready / release SHA256 d4d6cb1b3e09de4d35cfbdd6af10822bc57219ff6566df8f4aacda7c1d92ace8`
 - hubRollback: `rollback/pre-0.4.23-c724945 保留 0.4.22 / Hub SHA256 6792a5747a418d07e938fbc3e0a23aa1f68229392d4eea617d0281b140f62e25 / spiderctl SHA256 4b5a174660465722ee4cfe19a3718c45c216a22f1d699d186015337b2da45941；三平台 0.4.22 release 目录仍保留`
 - verifiedBackups: `pre-0.4.23-c724945406f1072086c905a2a8f9b4de200e629b.zip / SHA256 e66c96aec67b5bcd40f47052c79e8f3d622ae241834003cac63da66900a17ece / size=21111872 / valid=true / manifest source version=0.4.22`
 - workingContext11: `0.4.23 ChatGPT cloud session.steer、MCP tools/list/guide 明确 ChatGPT CHAT session.create、Hub/spiderctl、三平台 Node release、Windows PCa idle-safe 自更新与公网健康检查 done`
