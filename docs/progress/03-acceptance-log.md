@@ -242,8 +242,8 @@
 - Git 事实：`c724945406f1072086c905a2a8f9b4de200e629b` 已推送 `origin/main` 与 `origin/codex/release-0.4.23`，tag `v0.4.23` 已推送；五个显式目标构建均记录 `vcs.modified=false`。
 - 生产升级前备份 `pre-0.4.23-c724945406f1072086c905a2a8f9b4de200e629b.zip` Verify `valid=true`、86 files、manifest source version=0.4.22、SHA256=`e66c96aec67b5bcd40f47052c79e8f3d622ae241834003cac63da66900a17ece`、size=`21111872`。Hub/spiderctl 0.4.23 与三平台 Node release 已部署；本机/公网 livez/readyz=200，未认证 MCP=401，OAuth 两个 metadata endpoint=200。
 - 生产 Hub SHA256=`534eccaac8f921d625c7b4da48dbe8fb426940d0967e4b006e37a9db1edaec1`、spiderctl SHA256=`62f2003f7da6cd1c19e36ec99dbc486a18ac8f8e4c1a6747bf982ee5fac0abd7`、PID=`666081`；rollback/pre-0.4.23-c724945 保留旧 0.4.22 Hub/spiderctl。Node push marker SHA256 分别为 Windows=`d4d6cb1b3e09de4d35cfbdd6af10822bc57219ff6566df8f4aacda7c1d92ace8`、darwin-amd64=`9d68a650837b24cb0685f2e838ed67a15586451b8ef5788fdcc7a50623ffe843`、darwin-arm64=`f51726b5b8745d81c700aed3652fbba7696441449414dae9e1b674a73e43d4fb`。
-- PCa 已完成 idle-safe 自更新到 0.4.23 / windows-amd64 / generation=131，Hub DB 最近心跳 `2026-08-20T03:33:27Z`；ChatGPT App 的已缓存工具定义仍需用户执行 Refresh，认证生产 `tools/list` 冷调用未使用/读取生产凭据，故不伪装为已完成该外部宿主动作。
-- **部署验收：PASS / PRODUCTION HEALTHY；MCP 代码/本地 tools-list 合约：PASS；ChatGPT App Refresh 与认证生产冷调用：待外部宿主动作。**
+- PCa 已完成 idle-safe 自更新到 0.4.23 / windows-amd64 / generation=131，Hub DB 最近心跳 `2026-08-20T03:33:27Z`；当前认证 MCP 已真实调用 `machine_list`（online=true、runtimeStatus=ready）及 `capability_list(view=overview/view=tool,name=ai_control)`，返回 ServerVersion=`0.4.23`、GuideVersion=`1.3` 并包含 ChatGPT CHAT 创建要求。ChatGPT App 的已缓存顶层工具定义仍需用户执行 Refresh；认证生产原始 `tools/list` 冷调用未读取生产凭据，故不伪装为已完成该外部宿主动作。
+- **部署验收：PASS / PRODUCTION HEALTHY；MCP 运行时 capability discovery：PASS；ChatGPT App Refresh 与原始 tools/list 冷调用：待外部宿主动作。**
 <!-- fast-spider:managed:acceptance:end -->
 
 ## Manual Acceptance Notes

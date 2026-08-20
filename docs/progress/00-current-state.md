@@ -17,7 +17,7 @@
 - hubRollback: `rollback/pre-0.4.23-c724945 保留 0.4.22 / Hub SHA256 6792a5747a418d07e938fbc3e0a23aa1f68229392d4eea617d0281b140f62e25 / spiderctl SHA256 4b5a174660465722ee4cfe19a3718c45c216a22f1d699d186015337b2da45941；三平台 0.4.22 release 目录仍保留`
 - verifiedBackups: `pre-0.4.23-c724945406f1072086c905a2a8f9b4de200e629b.zip / SHA256 e66c96aec67b5bcd40f47052c79e8f3d622ae241834003cac63da66900a17ece / size=21111872 / valid=true / manifest source version=0.4.22`
 - workingContext11: `0.4.23 ChatGPT cloud session.steer、MCP tools/list/guide 明确 ChatGPT CHAT session.create、Hub/spiderctl、三平台 Node release、Windows PCa idle-safe 自更新与公网健康检查 done`
-- schemaStatus: `MCP ai_control 的 tools/list description/schema、initialize 能力地图与 capability_list(view=tool,name=ai_control) 已明确 providerId=codex + backend=chatgpt_cloud + visibility=visible 的 ChatGPT CHAT 创建要求；生产未认证 /mcp=401、OAuth metadata=200；ChatGPT App 需 Refresh 后取得新 Schema`
+- schemaStatus: `MCP ai_control 的 tools/list description/schema、initialize 能力地图与 capability_list(view=tool,name=ai_control) 已明确 providerId=codex + backend=chatgpt_cloud + visibility=visible 的 ChatGPT CHAT 创建要求；当前认证 MCP capability guide/overview 已返回 serverVersion=0.4.23、guideVersion=1.3，machine_list 返回 PCa online=true/runtimeStatus=ready/generation=131；生产未认证 /mcp=401、OAuth metadata=200；ChatGPT App 需 Refresh 后取得新 Schema`
 - completed041: `FS-041-001..015 PASS / no 0.4.1 release`
 - completed042: `FS-042-001..017 PASS / 0.4.2 formally released and deployed`
 - completed043: `0.4.3 formally released and deployed`
