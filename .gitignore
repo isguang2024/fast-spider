@@ -58,6 +58,7 @@ test-results/
 # Local development
 .local/
 .learnings/
+/work/
 
 # Browser extension scratch (removed capability)
 ChatGPT-*.zip

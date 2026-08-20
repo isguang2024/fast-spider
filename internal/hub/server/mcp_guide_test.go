@@ -62,6 +62,17 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 			t.Fatalf("tool guide %s incomplete: %+v", name, guide)
 		}
 		assertMCPGuideSize(t, guide, 12<<10)
+		if name == "ai_control" {
+			guideText := strings.Join(append(append(append(guide.WhenToUse, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
+			for _, needle := range []string{"session.create", "providerId=codex", "backend=chatgpt_cloud", "CHAT", "externalIdType=chatgpt_conversation"} {
+				if !strings.Contains(guideText, needle) {
+					t.Fatalf("ai_control guide missing %q: %+v", needle, guide)
+				}
+			}
+			if strings.Contains(guide.Summary, "explicitly unsupported") {
+				t.Fatalf("ai_control guide still advertises ChatGPT cloud as unsupported: %s", guide.Summary)
+			}
+		}
 	}
 	for _, name := range []string{"connection-check", "file-edit", "shell-job", "build-job", "git-change", "browser", "codex-session", "long-task", "artifact-display"} {
 		guide, err := newMCPGuide("0.4.17", "workflow", name)
@@ -205,7 +216,7 @@ func TestMCPServerInstructionsStayBoundedAndCoverCapabilityMap(t *testing.T) {
 		"@FastSpider_FS", "capability_list", "machine_list", "machine_get", "audit_log", "operation_log", "file_read", "file_edit", "code_search",
 		"shell_run", "build_control", "job_watch", "job_cancel", "git_control", "browser_control", "screenshot_take",
 		"ai_control", "working_context", "thinking_team", "artifact_get", "session.list", "view=tool|workflow|error", "view=capability",
-		`query="fsprobe"`, "Never load all 19 schemas", "powershell.exe", "tzutil /g", "not a separate PowerShell tool",
+		`query="fsprobe"`, "Never load all 19 schemas", "powershell.exe", "tzutil /g", "not a separate PowerShell tool", "backend=chatgpt_cloud", "ChatGPT CHAT",
 	} {
 		if !strings.Contains(mcpServerInstructions, needle) {
 			t.Fatalf("instructions missing %q", needle)

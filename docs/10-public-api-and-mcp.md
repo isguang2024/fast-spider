@@ -50,7 +50,7 @@ Hub 的 MCP `initialize` 会返回不超过 2 KiB 的常驻能力地图，并把
 
 工具指南固定包含 `whenToUse/requiredInputs/safeSequence/returns/recommendedNext/commonErrors/boundedExamples`；`view=capability` 额外返回底层 capability 的 actions、summary 和 `mcpTools` 映射。overview 不超过 8 KiB，单项指南不超过 12 KiB；示例有界且不含凭据、Prompt、Cookie、环境变量或本机事实。注册工具名、指南目录、overview 摘要和本文工具列表由自动测试对账。
 
-Codex/Claude Code 的会话能力不是独立顶层工具；统一位于 `ai_control`。查询 Codex 会话列表使用 `action=session.list`，后续读取使用 `session.get/session.watch/session.result`。因此 ChatGPT App 工具页只显示 `Ai control` 属于正常设计。
+Codex/Claude Code 的会话能力不是独立顶层工具；统一位于 `ai_control`。查询 Codex 会话列表使用 `action=session.list`，后续读取使用 `session.get/session.watch/session.result`。`ai_control` 的 `session.create` 已支持 Codex 的 visible ChatGPT cloud CHAT 会话：传 `providerId=codex`、`backend=chatgpt_cloud`、`visibility=visible`、首条 `prompt`、绝对 `workingDirectory` 和 `idempotencyKey`，要求本机 Codex app-server 已登录 ChatGPT。因此 ChatGPT App 工具页只显示 `Ai control` 属于正常设计。
 
 ChatGPT 对已发布 MCP App 的工具/输入定义可能使用经批准的快照；当 FS 修改工具名、Schema 或工具描述后，需要在 ChatGPT App/Action 管理中执行 Refresh/重新批准才能取得新的定义。纯服务可用性仍以真实 MCP initialize/tools/list 和只读调用结果为准。仓库没有独立 ChatGPT App manifest 或第二套 Plugin metadata，第一层事实源继续是 MCP initialize、工具描述和 `capability_list`。
 

@@ -9,7 +9,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const mcpGuideVersion = "1.2"
+const mcpGuideVersion = "1.3"
 
 type mcpGuideCategory struct {
 	Name    string   `json:"name"`
@@ -192,10 +192,10 @@ var mcpToolGuides = map[string]mcpToolGuideEntry{
 		Returns: []string{"roles, departments, workflows or workspace protocol"}, RecommendedNext: []string{"working_context", "continue reasoning in the caller"}, CommonErrors: []string{"INVALID_REQUEST"}, BoundedExamples: []map[string]any{{"action": "overview"}},
 	},
 	"ai_control": {
-		Description: "Use to discover/control local Codex or Claude Code and read CC Switch route facts. Requires machineId and action; session.create supports visible/internal visibility with independent backend/visibilityTarget; ChatGPT cloud creation is explicitly unsupported. Returns provider/session facts; Codex history starts with action=session.list, then session.get/watch/result.",
-		WhenToUse:   []string{"Discover AI runtimes", "List or control Codex/Claude Code sessions"}, RequiredInputs: []string{"machineId", "action", "providerId when not codex", "workingDirectory for scoped list/create"},
-		SafeSequence: []string{"machine_list", "session.list with workingDirectory", "session.get", "session.watch while active", "session.result at terminal state"}, Returns: []string{"bounded provider, route or session results", "session.create visibility metadata and provider-native external ID"},
-		RecommendedNext: []string{"session.get", "session.watch", "session.result"}, CommonErrors: []string{"RUNTIME_UNAVAILABLE", "INVALID_REQUEST", "AGENT_SESSION_VISIBILITY_UNSUPPORTED", "DEADLINE_EXCEEDED"}, BoundedExamples: []map[string]any{{"machineId": "<machine-id>", "action": "session.list", "workingDirectory": "<absolute-project>"}},
+		Description: "Use to discover/control Codex or Claude Code and read CC Switch route facts. Codex session.create can create visible ChatGPT cloud CHAT: providerId=codex, backend=chatgpt_cloud, visibility=visible, absolute workingDirectory, prompt and 12-128 character idempotencyKey; requires logged-in Codex app-server. Returns facts incl. externalIdType=chatgpt_conversation; history starts at session.list, then session.get/watch/result.",
+		WhenToUse:   []string{"Discover AI runtimes", "List or control Codex/Claude Code sessions", "Create or exchange messages with a visible ChatGPT cloud CHAT conversation through Codex"}, RequiredInputs: []string{"machineId", "action", "providerId when not codex", "workingDirectory for scoped list/create", "ChatGPT cloud create: providerId=codex, backend=chatgpt_cloud, visibility=visible, prompt, absolute workingDirectory and idempotencyKey"},
+		SafeSequence: []string{"machine_list", "provider.readiness(providerId=codex, backend=chatgpt_cloud, mode=safe) for cloud create", "session.create with backend=chatgpt_cloud", "session.send/watch/result", "session.steer only for an active cloud turn with asyncTaskId"}, Returns: []string{"bounded provider, route or session results", "session.create visibility metadata and provider-native external ID", "cloud sessionId plus externalIdType=chatgpt_conversation"},
+		RecommendedNext: []string{"session.get", "session.watch", "session.result"}, CommonErrors: []string{"RUNTIME_UNAVAILABLE", "INVALID_REQUEST", "AGENT_SESSION_VISIBILITY_UNSUPPORTED", "CHATGPT_CLOUD_NOT_AUTHENTICATED", "CHATGPT_CLOUD_UNAVAILABLE", "DEADLINE_EXCEEDED"}, BoundedExamples: []map[string]any{{"machineId": "<machine-id>", "action": "session.list", "workingDirectory": "<absolute-project>"}, {"machineId": "<machine-id>", "action": "session.create", "providerId": "codex", "backend": "chatgpt_cloud", "visibility": "visible", "prompt": "<first-chat-message>", "workingDirectory": "<absolute-project>", "idempotencyKey": "chatgpt-cloud-001"}},
 	},
 	"working_context": {
 		Description: "Use for durable project Plan/Task state, acceptance evidence and bounded Markdown workspace facts. Requires machineId, absolute projectPath and action; returns revisioned state; mutations use expectedRevision/fileRevision CAS.",
@@ -227,7 +227,7 @@ var mcpToolSummaryDefinitions = []mcpToolSummary{
 	{Name: "git_control", Category: "git", Summary: "Run allowlisted Git inspection, mutation and network actions.", Guide: "capability_list(view=tool,name=git_control)"},
 	{Name: "browser_control", Category: "browser", Summary: "Operate isolated Chromium through accessibility snapshots and refs.", Guide: "capability_list(view=tool,name=browser_control)"},
 	{Name: "screenshot_take", Category: "browser", Summary: "Capture one-time desktop, display or window visual evidence.", Guide: "capability_list(view=tool,name=screenshot_take)"},
-	{Name: "ai_control", Category: "ai", Summary: "Discover and control local Codex or Claude Code sessions.", Guide: "capability_list(view=tool,name=ai_control)"},
+	{Name: "ai_control", Category: "ai", Summary: "Discover/control Codex or Claude Code and create visible ChatGPT cloud CHAT sessions.", Guide: "capability_list(view=tool,name=ai_control)"},
 	{Name: "working_context", Category: "context", Summary: "Persist bounded Plan, Task, evidence and Markdown project state.", Guide: "capability_list(view=tool,name=working_context)"},
 	{Name: "thinking_team", Category: "guidance", Summary: "Return calling-side role, department and workflow guidance.", Guide: "capability_list(view=tool,name=thinking_team)"},
 	{Name: "artifact_get", Category: "artifacts", Summary: "Upload/retrieve native MCP content or create a 48-hour URL-only temporary attachment.", Guide: "capability_list(view=tool,name=artifact_get)"},

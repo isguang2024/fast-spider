@@ -4,7 +4,7 @@ Fast Spider 是一个自托管、跨平台、多节点的远程开发与自动�
 
 ## Current 当前事实
 
-- 当前源码版本为 `0.4.22`。MCP 顶层固定 19 个工具；`artifact_get.publishFile`、Browser 页面截图和 OS 截图统一改为 URL-only 临时附件输出，新 Node 上传的附件最长保留 48 小时并由 Hub 自动清理，不再向聊天结果嵌入 `ImageContent`/`ResourceLink`。旧 Node 未携带 resource kind 时仍按 20 分钟 presentation 兼容语义处理。OAuth/PKCE、Node/WSS 和 Direct API 权限边界保持兼容。
+- 当前源码版本为 `0.4.23`。MCP 顶层固定 19 个工具；`ai_control` 已在工具描述与指南中明确支持通过 Codex 创建 visible ChatGPT cloud CHAT 会话（`providerId=codex` + `backend=chatgpt_cloud`），并继续支持 `artifact_get.publishFile`、Browser 页面截图和 OS 截图的 URL-only 临时附件输出。新 Node 上传的附件最长保留 48 小时并由 Hub 自动清理，不再向聊天结果嵌入 `ImageContent`/`ResourceLink`。旧 Node 未携带 resource kind 时仍按 20 分钟 presentation 兼容语义处理。OAuth/PKCE、Node/WSS 和 Direct API 权限边界保持兼容。
 - Machine 是唯一远程资源边界。Fast Spider 不再维护旧目录对象、目录列表工具、目录授权、目录白名单或路径注册表。
 - Node 以启动它的当前 OS 用户运行，直接使用该用户对整台电脑的操作系统权限；Fast Spider 不把文件系统再切成一层目录权限。
 - 同一 OS 用户只允许运行一个 Fast Spider Node 主实例；重复双击、开机自启动与手动启动、不同 EXE 位置或不同 `--data-dir` 都不能建立第二条 Node 连接。重复启动只打开现有本地界面后退出。
@@ -112,12 +112,14 @@ Node 不需要添加目录、配置目录权限或维护浏览器私网白名单
 
 ## MCP 工具
 
-Current 固定提供 17 个工具：
+Current 固定提供 19 个工具：
 
 ```text
 machine_list
 machine_get
 capability_list
+audit_log
+operation_log
 file_read
 file_edit
 code_search

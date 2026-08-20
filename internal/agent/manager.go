@@ -22,6 +22,7 @@ type agentControlParams struct {
 	AppType               string              `json:"appType,omitempty"`
 	SessionID             string              `json:"sessionId,omitempty"`
 	TurnID                string              `json:"turnId,omitempty"`
+	AsyncTaskID           string              `json:"asyncTaskId,omitempty"`
 	RequestID             string              `json:"requestId,omitempty"`
 	IdempotencyKey        string              `json:"idempotencyKey,omitempty"`
 	Visibility            string              `json:"visibility,omitempty"`

@@ -42,7 +42,7 @@ func (m *AgentManager) controlChatGPTCloud(ctx context.Context, action string, i
 	case "session.watch":
 		return m.chatgptCloudWatch(ctx, input)
 	case "session.steer":
-		return nil, fmt.Errorf("action %q is not yet supported for backend=chatgpt_cloud", action)
+		return m.chatgptCloudSteer(ctx, input)
 	default:
 		return nil, fmt.Errorf("action %q is not supported for backend=chatgpt_cloud", action)
 	}
@@ -90,11 +90,39 @@ func (m *AgentManager) chatgptCloudSend(ctx context.Context, input agentControlP
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
+	out := map[string]any{
 		"sessionId": result.ConversationID,
 		"phase":     "running",
 		"model":     input.Model,
-	}, nil
+	}
+	if result.AsyncTaskID != "" {
+		out["asyncTaskId"] = result.AsyncTaskID
+	}
+	return out, nil
+}
+
+func (m *AgentManager) chatgptCloudSteer(ctx context.Context, input agentControlParams) (map[string]any, error) {
+	if strings.TrimSpace(input.SessionID) == "" {
+		return nil, fmt.Errorf("sessionId is required")
+	}
+	if strings.TrimSpace(input.Prompt) == "" {
+		return nil, fmt.Errorf("prompt is required")
+	}
+	if len(input.Skills) > 0 || len(input.Images) > 0 || len(input.LocalImages) > 0 || len(input.Mentions) > 0 || strings.TrimSpace(input.ImageDetail) != "" {
+		return nil, fmt.Errorf("backend=chatgpt_cloud session.steer currently accepts prompt text only")
+	}
+	result, err := m.chatgptCloud.Steer(ctx, input.SessionID, input.AsyncTaskID, input.Prompt)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]any{
+		"sessionId":   input.SessionID,
+		"asyncTaskId": result.AsyncTaskID,
+		"steered":     true,
+		"phase":       "running",
+		"result":      result,
+	}
+	return out, nil
 }
 
 func (m *AgentManager) chatgptCloudGet(ctx context.Context, input agentControlParams) (map[string]any, error) {

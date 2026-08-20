@@ -20,7 +20,7 @@ Provider Token、Codex/ChatGPT 本地认证和其他 Provider secret 只保留�
 
 ## 2. 多 AI Harness 与 CC Switch Routing
 
-0.4.2 当前内置两个 AI Harness：
+当前内置两个 AI Harness：
 
 ```text
 providerId=codex        -> Codex app-server --stdio
@@ -145,7 +145,7 @@ Fast Spider 用 Codex app-server 的 ChatGPT 登录态（`getAuthStatus`）配�
 | `session.delete` | `DELETE /conversation/id/{id}` |
 | `session.cancel` | `POST /stop_conversation`（无活动轮时幂等返回） |
 | `session.watch` | `/celsius/ws/user` pubsub 订阅 `conversations` + `conversation-{uuid}`；`conversation-turn-complete` 等事件 → `session.watch` 事件（提示 refetch `session.get` 取内容） |
-| `session.steer` | 暂不支持（`/f/steer_turn` 需活动 TPP 轮与 turn_exchange 机制，后续接） |
+| `session.steer` | 活动兼容 TPP 轮：`POST /f/steer_turn`（`asyncTaskId` 映射为 `async_task_id`；普通已完成聊天无可 steer 的活动轮时明确报错） |
 
 实时同步基于 `/backend-api/celsius/ws/user` 的 pubsub（订阅 `conversations` + `conversation-{uuid}`，
 `conversation-turn-complete` 触发 refetch）——已实测：另一客户端写入后 `session.watch` 收到事件。
@@ -159,6 +159,8 @@ Fast Spider 用 Codex app-server 的 ChatGPT 登录态（`getAuthStatus`）配�
 ### `session.steer`
 
 `session.steer` 映射 Codex `turn/steer`。调用方必须提供当前 active `turnId` 作为 `expectedTurnId`，Codex 会在 Turn 已切换时拒绝请求，从而避免把纠偏指令误发给下一 Turn。steer 只接受 text/skill/image/localImage/mention 与 `imageDetail`，不改变 model、cwd、outputSchema 或 Thread settings。
+
+对于 `backend=chatgpt_cloud`，调用方使用 `asyncTaskId` 标识活动且兼容的 TPP 轮；适配器会读取会话详情中可用的异步任务元数据，并将请求发送到 `/backend-api/f/steer_turn`。普通 `/f/conversation` 聊天完成后没有可 steer 的活动 task，调用会返回 `no active steerable turn`，不会把 Codex 的 `turnId` 当作云端 `async_task_id`。
 
 ### `session.respond`
 

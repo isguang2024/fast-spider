@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,7 @@ const (
 	chatgptConversationPrepare = "/backend-api/f/conversation/prepare"
 	chatgptConversationDetail  = "/backend-api/conversation/{id}"
 	chatgptConversationsList   = "/backend-api/conversations"
+	chatgptSteerTurnPath       = "/backend-api/f/steer_turn"
 	chatgptStopPath            = "/backend-api/stop_conversation"
 	chatgptStreamTimeout       = 120 * time.Second
 )
@@ -45,6 +47,10 @@ type ChatGPTCloudAdapter struct {
 type chatgptCloudTurnResult struct {
 	ConversationID string
 	Messages       []chatgptCloudMessage
+	AsyncTaskID    string
+	TurnExchangeID string
+	ChimeVersion   any
+	AsyncStatus    any
 }
 
 type chatgptCloudMessage struct {
@@ -181,6 +187,10 @@ func chatgptConversationBody(prompt, model, conversationID, parentMessageID, pre
 
 // sendTurn runs one full /f turn: solve sentinel, prepare (conduit), stream.
 func (a *ChatGPTCloudAdapter) sendTurn(ctx context.Context, body map[string]any) (chatgptCloudTurnResult, error) {
+	return a.sendTurnTo(ctx, chatgptConversationPath, body)
+}
+
+func (a *ChatGPTCloudAdapter) sendTurnTo(ctx context.Context, path string, body map[string]any) (chatgptCloudTurnResult, error) {
 	token, err := a.token(ctx)
 	if err != nil {
 		return chatgptCloudTurnResult{}, err
@@ -193,7 +203,7 @@ func (a *ChatGPTCloudAdapter) sendTurn(ctx context.Context, body map[string]any)
 	if err != nil {
 		return chatgptCloudTurnResult{}, err
 	}
-	result, err := a.stream(ctx, token, conduit, body, sentinel)
+	result, err := a.streamPath(ctx, path, token, conduit, body, sentinel)
 	if err != nil {
 		return chatgptCloudTurnResult{}, err
 	}
@@ -231,11 +241,15 @@ func (a *ChatGPTCloudAdapter) prepare(ctx context.Context, token string, body ma
 }
 
 func (a *ChatGPTCloudAdapter) stream(ctx context.Context, token, conduit string, body map[string]any, sentinel map[string]string) (chatgptCloudTurnResult, error) {
+	return a.streamPath(ctx, chatgptConversationPath, token, conduit, body, sentinel)
+}
+
+func (a *ChatGPTCloudAdapter) streamPath(ctx context.Context, path, token, conduit string, body map[string]any, sentinel map[string]string) (chatgptCloudTurnResult, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return chatgptCloudTurnResult{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+chatgptConversationPath, strings.NewReader(string(raw)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.baseURL+path, strings.NewReader(string(raw)))
 	if err != nil {
 		return chatgptCloudTurnResult{}, err
 	}
@@ -257,7 +271,11 @@ func (a *ChatGPTCloudAdapter) stream(ctx context.Context, token, conduit string,
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return chatgptCloudTurnResult{}, fmt.Errorf("conversation stream returned %s: %s", resp.Status, strings.TrimSpace(string(rawBody)))
+		label := "conversation stream"
+		if path == chatgptSteerTurnPath {
+			label = "steer turn"
+		}
+		return chatgptCloudTurnResult{}, fmt.Errorf("%s returned %s: %s", label, resp.Status, strings.TrimSpace(string(rawBody)))
 	}
 	return chatgptParseStream(resp.Body, 20000)
 }
@@ -281,11 +299,19 @@ func chatgptParseStream(reader io.Reader, maxEvents int) (chatgptCloudTurnResult
 			if cid, _ := data["conversation_id"].(string); cid != "" && result.ConversationID == "" {
 				result.ConversationID = cid
 			}
+			if status, ok := chatgptCloudFirstMapValue(data, "conversation_async_status", "async_status"); ok {
+				result.AsyncStatus = status
+			}
+			if taskID := chatgptCloudAsyncTaskIDInValue(data); taskID != "" {
+				result.AsyncTaskID = taskID
+			}
 			if msg, ok := data["message"].(map[string]any); ok {
 				result.Messages = append(result.Messages, chatgptCloudMessageFromMap(msg))
+				chatgptCloudCaptureTurnMetadata(&result, msg)
 			}
 			if input, ok := data["input_message"].(map[string]any); ok {
 				result.Messages = append(result.Messages, chatgptCloudMessageFromMap(input))
+				chatgptCloudCaptureTurnMetadata(&result, input)
 			}
 			if data["type"] == "message_stream_complete" || data["type"] == "complete" {
 				return true // complete: stop
@@ -363,6 +389,56 @@ func (a *ChatGPTCloudAdapter) Send(ctx context.Context, conversationID, parentMe
 		return chatgptCloudTurnResult{}, fmt.Errorf("could not resolve a parent message for the conversation")
 	}
 	return a.sendTurn(ctx, chatgptFollowUpBody(conversationID, parentMessageID, prompt, model))
+}
+
+// Steer appends a correction to an active compatible TPP turn through
+// /backend-api/f/steer_turn. Ordinary completed ChatGPT conversations do not
+// have an async_task_id and are rejected with a precise error instead of
+// silently treating a Codex turnId as a cloud task identifier.
+func (a *ChatGPTCloudAdapter) Steer(ctx context.Context, conversationID, asyncTaskID, prompt string) (chatgptCloudTurnResult, error) {
+	conversationID = strings.TrimSpace(conversationID)
+	asyncTaskID = strings.TrimSpace(asyncTaskID)
+	prompt = strings.TrimSpace(prompt)
+	if conversationID == "" {
+		return chatgptCloudTurnResult{}, fmt.Errorf("conversationId is required")
+	}
+	if prompt == "" {
+		return chatgptCloudTurnResult{}, fmt.Errorf("message text is required")
+	}
+
+	detail, err := a.Read(ctx, conversationID)
+	if err != nil {
+		return chatgptCloudTurnResult{}, fmt.Errorf("resolve steer state: %w", err)
+	}
+	if asyncTaskID == "" {
+		asyncTaskID = chatgptCloudSteerTaskID(detail)
+	}
+	if asyncTaskID == "" {
+		return chatgptCloudTurnResult{}, fmt.Errorf("no active steerable turn: asyncTaskId is unavailable for this conversation")
+	}
+
+	parentMessageID := chatgptCloudLastAssistantID(detail)
+	if parentMessageID == "" {
+		parentMessageID = chatgptCloudLastMessageID(detail)
+	}
+	if parentMessageID == "" {
+		return chatgptCloudTurnResult{}, fmt.Errorf("could not resolve a parent message for the steerable conversation")
+	}
+	model := mapString(detail, "model")
+	body := chatgptFollowUpBody(conversationID, parentMessageID, prompt, model)
+	body["async_task_id"] = asyncTaskID
+	chatgptCloudApplySteerMetadata(body, detail)
+	result, err := a.sendTurnTo(ctx, chatgptSteerTurnPath, body)
+	if err != nil {
+		return chatgptCloudTurnResult{}, err
+	}
+	if result.ConversationID == "" {
+		result.ConversationID = conversationID
+	}
+	if result.AsyncTaskID == "" {
+		result.AsyncTaskID = asyncTaskID
+	}
+	return result, nil
 }
 
 // Read fetches the conversation detail and normalizes it into a thread-like map.
@@ -617,38 +693,242 @@ func chatgptNormalizeDetail(detail map[string]any) map[string]any {
 	if detail["update_time"] != nil {
 		out["updateTime"] = detail["update_time"]
 	}
+	if status, ok := chatgptCloudFirstMapValue(detail, "async_status", "conversation_async_status"); ok {
+		out["asyncStatus"] = status
+	}
+	if taskID := chatgptCloudSteerTaskID(detail); taskID != "" {
+		out["asyncTaskId"] = taskID
+	}
+	if exchangeID := chatgptCloudDetailString(detail, "turn_exchange_id", "turnExchangeId"); exchangeID != "" {
+		out["turnExchangeId"] = exchangeID
+	}
+	if chimeVersion := chatgptCloudDetailValue(detail, "chime_version", "chimeVersion"); chimeVersion != nil {
+		out["chimeVersion"] = chimeVersion
+	}
 	return out
 }
 
 // chatgptCloudLastAssistantID returns the id of the newest assistant message node.
 func chatgptCloudLastAssistantID(detail map[string]any) string {
 	mapping, _ := detail["mapping"].(map[string]any)
-	var lastAssistant string
-	for _, raw := range mapping {
-		node, _ := raw.(map[string]any)
-		msg, _ := node["message"].(map[string]any)
-		if msg == nil {
-			continue
-		}
-		author, _ := msg["author"].(map[string]any)
-		if role, _ := author["role"].(string); role == "assistant" {
-			if id, _ := msg["id"].(string); id != "" {
-				lastAssistant = id
+	if current := chatgptCloudCurrentNodeID(detail); current != "" {
+		seen := map[string]bool{}
+		for current != "" && !seen[current] {
+			seen[current] = true
+			node, _ := mapping[current].(map[string]any)
+			if msg, _ := node["message"].(map[string]any); chatgptCloudMessageRole(msg) == "assistant" {
+				if id := mapString(msg, "id"); id != "" {
+					return id
+				}
 			}
+			current = mapString(node, "parent")
 		}
 	}
-	return lastAssistant
+
+	return chatgptCloudLatestNodeID(mapping, "assistant")
 }
 
 // chatgptCloudLastMessageID returns the current node id, falling back to any node.
 func chatgptCloudLastMessageID(detail map[string]any) string {
-	current, _ := detail["currentNode"].(string)
-	if current != "" {
+	if current := chatgptCloudCurrentNodeID(detail); current != "" {
 		return current
 	}
 	mapping, _ := detail["mapping"].(map[string]any)
-	for id := range mapping {
-		return id
+	return chatgptCloudLatestNodeID(mapping, "")
+}
+
+func chatgptCloudCurrentNodeID(detail map[string]any) string {
+	return firstNonEmptyString(mapString(detail, "currentNode"), mapString(detail, "current_node"))
+}
+
+func chatgptCloudMessageRole(message map[string]any) string {
+	author, _ := message["author"].(map[string]any)
+	return mapString(author, "role")
+}
+
+func chatgptCloudLatestNodeID(mapping map[string]any, role string) string {
+	type candidate struct {
+		id      string
+		created float64
+	}
+	candidates := make([]candidate, 0, len(mapping))
+	for id, raw := range mapping {
+		node, _ := raw.(map[string]any)
+		message, _ := node["message"].(map[string]any)
+		if message == nil || (role != "" && chatgptCloudMessageRole(message) != role) {
+			continue
+		}
+		created, _ := message["create_time"].(float64)
+		candidateID := firstNonEmptyString(mapString(message, "id"), id)
+		if candidateID != "" {
+			candidates = append(candidates, candidate{id: candidateID, created: created})
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].created == candidates[j].created {
+			return candidates[i].id > candidates[j].id
+		}
+		return candidates[i].created > candidates[j].created
+	})
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0].id
+}
+
+func chatgptCloudFirstMapValue(values map[string]any, keys ...string) (any, bool) {
+	for _, key := range keys {
+		if value, ok := values[key]; ok && value != nil {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
+func chatgptCloudDetailString(detail map[string]any, keys ...string) string {
+	if value, ok := chatgptCloudFirstMapValue(detail, keys...); ok {
+		if text, ok := value.(string); ok {
+			return strings.TrimSpace(text)
+		}
+	}
+	if mapping, _ := detail["mapping"].(map[string]any); mapping != nil {
+		if current := chatgptCloudCurrentNodeID(detail); current != "" {
+			if node, _ := mapping[current].(map[string]any); node != nil {
+				if message, _ := node["message"].(map[string]any); message != nil {
+					if metadata, _ := message["metadata"].(map[string]any); metadata != nil {
+						if value, ok := chatgptCloudFirstMapValue(metadata, keys...); ok {
+							if text, ok := value.(string); ok {
+								return strings.TrimSpace(text)
+							}
+						}
+					}
+				}
+			}
+		}
+		for id := range mapping {
+			if node, _ := mapping[id].(map[string]any); node != nil {
+				if message, _ := node["message"].(map[string]any); message != nil {
+					if metadata, _ := message["metadata"].(map[string]any); metadata != nil {
+						if value, ok := chatgptCloudFirstMapValue(metadata, keys...); ok {
+							if text, ok := value.(string); ok {
+								return strings.TrimSpace(text)
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 	return ""
+}
+
+func chatgptCloudDetailValue(detail map[string]any, keys ...string) any {
+	if value, ok := chatgptCloudFirstMapValue(detail, keys...); ok {
+		return value
+	}
+	if mapping, _ := detail["mapping"].(map[string]any); mapping != nil {
+		ids := []string{}
+		if current := chatgptCloudCurrentNodeID(detail); current != "" {
+			ids = append(ids, current)
+		}
+		if assistant := chatgptCloudLastAssistantID(detail); assistant != "" {
+			ids = append(ids, assistant)
+		}
+		for _, id := range ids {
+			node, _ := mapping[id].(map[string]any)
+			message, _ := node["message"].(map[string]any)
+			metadata, _ := message["metadata"].(map[string]any)
+			if value, ok := chatgptCloudFirstMapValue(metadata, keys...); ok {
+				return value
+			}
+		}
+	}
+	return nil
+}
+
+func chatgptCloudAsyncTaskIDInValue(value any) string {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"async_task_id", "asyncTaskId"} {
+			if taskID, ok := typed[key].(string); ok && strings.TrimSpace(taskID) != "" {
+				return strings.TrimSpace(taskID)
+			}
+		}
+		for _, child := range typed {
+			if taskID := chatgptCloudAsyncTaskIDInValue(child); taskID != "" {
+				return taskID
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if taskID := chatgptCloudAsyncTaskIDInValue(child); taskID != "" {
+				return taskID
+			}
+		}
+	}
+	return ""
+}
+
+func chatgptCloudSteerTaskID(detail map[string]any) string {
+	for _, key := range []string{"async_task_id", "asyncTaskId"} {
+		if taskID, ok := detail[key].(string); ok && strings.TrimSpace(taskID) != "" {
+			return strings.TrimSpace(taskID)
+		}
+	}
+	for _, key := range []string{"async_status", "asyncStatus", "conversation_async_status", "conversationAsyncStatus"} {
+		status, ok := detail[key]
+		if !ok || status == nil {
+			continue
+		}
+		if taskID := chatgptCloudAsyncTaskIDInValue(status); taskID != "" {
+			return taskID
+		}
+		// Historical completed image-generation messages can retain an
+		// async_task_id even when the conversation itself is idle. Only use
+		// message metadata as a fallback when the async status is structured,
+		// which is the shape used by an active TPP status event.
+		if _, structured := status.(map[string]any); !structured {
+			continue
+		}
+		mapping, _ := detail["mapping"].(map[string]any)
+		if taskID := chatgptCloudAsyncTaskIDInValue(mapping); taskID != "" {
+			return taskID
+		}
+	}
+	return ""
+}
+
+func chatgptCloudCaptureTurnMetadata(result *chatgptCloudTurnResult, message map[string]any) {
+	if result == nil {
+		return
+	}
+	metadata, _ := message["metadata"].(map[string]any)
+	if result.AsyncTaskID == "" {
+		result.AsyncTaskID = chatgptCloudAsyncTaskIDInValue(metadata)
+	}
+	if result.TurnExchangeID == "" {
+		result.TurnExchangeID = chatgptCloudDetailString(metadata, "turn_exchange_id", "turnExchangeId", "working_turn_id")
+	}
+	if result.ChimeVersion == nil {
+		result.ChimeVersion = chatgptCloudDetailValue(metadata, "chime_version", "chimeVersion")
+	}
+}
+
+func chatgptCloudApplySteerMetadata(body, detail map[string]any) {
+	messages, _ := body["messages"].([]any)
+	if len(messages) == 0 {
+		return
+	}
+	message, _ := messages[0].(map[string]any)
+	metadata, _ := message["metadata"].(map[string]any)
+	if metadata == nil {
+		metadata = map[string]any{}
+		message["metadata"] = metadata
+	}
+	if exchangeID := chatgptCloudDetailString(detail, "turn_exchange_id", "turnExchangeId", "working_turn_id"); exchangeID != "" {
+		metadata["turn_exchange_id"] = exchangeID
+	}
+	if chimeVersion := chatgptCloudDetailValue(detail, "chime_version", "chimeVersion"); chimeVersion != nil {
+		metadata["chime_version"] = chimeVersion
+	}
 }

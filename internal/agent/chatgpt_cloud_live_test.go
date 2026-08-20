@@ -190,6 +190,29 @@ func TestChatGPTCloudManagerRealE2E(t *testing.T) {
 		t.Fatalf("session.send: %v", err)
 	}
 
+	// A normal completed cloud chat has no active TPP turn. If a caller has an
+	// active compatible task from a separate TPP flow, it can be supplied through
+	// FAST_SPIDER_CHATGPT_STEER_TASK_ID to exercise the real steer endpoint.
+	steerTaskID := strings.TrimSpace(os.Getenv("FAST_SPIDER_CHATGPT_STEER_TASK_ID"))
+	steerParams := map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
+		"sessionId": sid, "prompt": "请把当前活动任务改为只回复：收到 steer。",
+	}
+	if steerTaskID != "" {
+		steerParams["asyncTaskId"] = steerTaskID
+	}
+	steerResult, steerErr := m.Control(ctx, "session.steer", steerParams)
+	if steerTaskID == "" {
+		if steerErr == nil || !strings.Contains(steerErr.Error(), "no active steerable turn") {
+			t.Fatalf("session.steer without active task error=%v result=%#v", steerErr, steerResult)
+		}
+		t.Logf("session.steer correctly rejected completed ordinary chat: %v", steerErr)
+	} else if steerErr != nil {
+		t.Fatalf("session.steer: %v", steerErr)
+	} else if steered, _ := steerResult["steered"].(bool); !steered {
+		t.Fatalf("session.steer result=%#v", steerResult)
+	}
+
 	got, err := m.Control(ctx, "session.get", map[string]any{
 		"providerId": "codex",
 		"backend":    sessionBackendChatGPTCloud,

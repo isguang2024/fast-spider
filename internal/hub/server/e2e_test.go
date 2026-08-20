@@ -139,6 +139,8 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	var fileEditSchema []byte
 	var workingContextSchema []byte
 	var capabilityListSchema []byte
+	var aiControlSchema []byte
+	aiControlDescription := ""
 	shellToolDescription := ""
 	toolCatalogBytes := 0
 	connectionToolBytes := 0
@@ -172,6 +174,10 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		}
 		if tool.Name == "capability_list" {
 			capabilityListSchema, _ = json.Marshal(tool.InputSchema)
+		}
+		if tool.Name == "ai_control" {
+			aiControlSchema, _ = json.Marshal(tool.InputSchema)
+			aiControlDescription = tool.Description
 		}
 		if tool.Name == "shell_run" {
 			shellToolDescription = tool.Description
@@ -217,6 +223,14 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(shellToolDescription), "powershell.exe") || !strings.Contains(shellToolDescription, "not a separate FS tool") {
 		t.Fatalf("shell_run description does not explain Windows PowerShell discovery: %q", shellToolDescription)
+	}
+	for _, needle := range []string{"chatgpt_cloud", "providerId=codex", "visibility=visible", "session.create"} {
+		if !bytes.Contains(aiControlSchema, []byte(needle)) && !strings.Contains(aiControlDescription, needle) {
+			t.Fatalf("ai_control tools/list metadata missing %q: schema=%s description=%q", needle, aiControlSchema, aiControlDescription)
+		}
+	}
+	if !strings.Contains(aiControlDescription, "ChatGPT cloud CHAT") {
+		t.Fatalf("ai_control description does not advertise ChatGPT CHAT creation: %q", aiControlDescription)
 	}
 
 	defaultGuide := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "capability_list", map[string]any{})
