@@ -84,6 +84,7 @@ type agentMentionInput struct {
 type AgentManager struct {
 	codex           *CodexAdapter
 	claude          *ClaudeCodeAdapter
+	chatgptCloud    *ChatGPTCloudAdapter
 	ccswitch        *CCSwitchInspector
 	logger          *slog.Logger
 	codexStatePath  string
@@ -97,7 +98,7 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 		logger = slog.Default()
 	}
 	ccswitch := NewCCSwitchInspector(logger)
-	return &AgentManager{
+	manager := &AgentManager{
 		codex:           NewCodexAdapter(logger),
 		claude:          NewClaudeCodeAdapter(dataDir, ccswitch, logger),
 		ccswitch:        ccswitch,
@@ -107,6 +108,10 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 		createStore:     newSessionCreateStore(dataDir),
 		visibilityStore: newSessionVisibilityStore(dataDir),
 	}
+	manager.chatgptCloud = NewChatGPTCloudAdapter(logger, func(ctx context.Context) (string, error) {
+		return manager.codex.AuthToken(ctx)
+	})
+	return manager
 }
 
 func (m *AgentManager) Close(ctx context.Context) error {
@@ -149,11 +154,14 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 	if providerID == "" {
 		providerID = "codex"
 	}
-	if providerID == sessionBackendChatGPTCloud && action == "session.create" {
-		return nil, unsupportedSessionVisibility("providerId=chatgpt_cloud is not supported: Fast Spider has no stable official ChatGPT cloud conversation creation API and does not use private browser endpoints")
-	}
 	if _, ok := m.registry.get(providerID); !ok {
 		return nil, fmt.Errorf("unsupported providerId %q", providerID)
+	}
+	// chatgpt_cloud is a codex backend: cloud conversations created through the
+	// Codex app-server ChatGPT token + the official /f conversation flow.
+	if strings.EqualFold(strings.TrimSpace(input.Backend), sessionBackendChatGPTCloud) ||
+		strings.EqualFold(strings.TrimSpace(input.VisibilityTarget), sessionBackendChatGPTCloud) {
+		return m.controlChatGPTCloud(ctx, action, input)
 	}
 	if providerID == "claude_code" {
 		if m.claude == nil {

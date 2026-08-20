@@ -33,12 +33,8 @@ func sanitizeBrowserParams(action string, params map[string]any) (map[string]any
 	case "readiness":
 		// Readiness is a process-local, read-only probe and accepts no session
 		// identifiers or browser action parameters.
-	case "extensions.list":
-		// Extension discovery is local and read-only. Installation is exposed
-		// only through the authenticated Node UI because it executes third-party
-		// extension code in the managed browser profile.
 	case "launch":
-		add("engine", "headless", "viewport", "extensionIds")
+		add("engine", "headless", "viewport")
 	case "close", "pages.list":
 		add("browserSessionId")
 	case "page.open":

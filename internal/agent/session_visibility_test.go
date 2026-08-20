@@ -68,16 +68,38 @@ func TestResolveSessionVisibilityMatrix(t *testing.T) {
 			},
 		},
 		{
-			name:     "cloud backend is rejected",
+			name:     "cloud backend is supported for codex",
 			provider: "codex",
 			input:    agentControlParams{Backend: sessionBackendChatGPTCloud},
-			wantCode: "AGENT_SESSION_VISIBILITY_UNSUPPORTED",
+			want: sessionVisibilitySpec{
+				Visibility:       sessionVisibilityVisible,
+				Backend:          sessionBackendChatGPTCloud,
+				VisibilityTarget: sessionBackendChatGPTCloud,
+				ExternalIDType:   "chatgpt_conversation",
+			},
 		},
 		{
-			name:     "cloud target is rejected",
+			name:     "cloud target is supported for codex",
 			provider: "codex",
-			input:    agentControlParams{VisibilityTarget: sessionBackendChatGPTCloud},
-			wantCode: "AGENT_SESSION_VISIBILITY_UNSUPPORTED",
+			input:    agentControlParams{Backend: sessionBackendChatGPTCloud, VisibilityTarget: sessionBackendChatGPTCloud},
+			want: sessionVisibilitySpec{
+				Visibility:       sessionVisibilityVisible,
+				Backend:          sessionBackendChatGPTCloud,
+				VisibilityTarget: sessionBackendChatGPTCloud,
+				ExternalIDType:   "chatgpt_conversation",
+			},
+		},
+		{
+			name:     "cloud requires non-codex provider is rejected",
+			provider: "claude_code",
+			input:    agentControlParams{Backend: sessionBackendChatGPTCloud},
+			wantCode: "AGENT_SESSION_VISIBILITY_INVALID",
+		},
+		{
+			name:     "cloud internal is rejected",
+			provider: "codex",
+			input:    agentControlParams{Visibility: sessionVisibilityInternal, Backend: sessionBackendChatGPTCloud},
+			wantCode: "AGENT_SESSION_VISIBILITY_INVALID",
 		},
 		{
 			name:     "internal cannot publish local target",

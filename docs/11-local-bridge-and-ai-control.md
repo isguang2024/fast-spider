@@ -125,7 +125,30 @@ Git 子目录和 linked worktree 会解析到主工作树对应的 Codex Desktop
 
 `internal` 不进入 Fast Spider 的普通 `session.list`，也不会同步 Codex Desktop 项目状态；这不是跨客户端 ACL。Codex 持久内部 Thread 仍可能被其他 Codex 客户端的本地 `thread/list` 列出，因此返回 `visibilityGuarantee=not_guaranteed` 和限制说明；ephemeral 只报告 `best_effort`，并提示可能不跨 app-server 重启存活，不虚报为绝对不可见。现有会话没有 sidecar 元数据时按 `visible/unmanaged_existing` 返回，并明确没有更强的 UI 保证。
 
-`backend=chatgpt_cloud` 或 `visibilityTarget=chatgpt_cloud` 当前由 `AGENT_SESSION_VISIBILITY_UNSUPPORTED` 明确拒绝。插件源码中的 `/f/conversation*` 是浏览器登录态私有路径，不是 Fast Spider 已验证的官方创建能力；本实现不修改插件 ZIP，也不调用该私有接口。
+`backend=chatgpt_cloud`（或 `visibilityTarget=chatgpt_cloud`）在 `providerId=codex` 下创建 ChatGPT 云端会话：
+Fast Spider 用 Codex app-server 的 ChatGPT 登录态（`getAuthStatus`）配合自解 Sentinel（PoW + turnstile token）走官方
+`/backend-api/f/conversation` 流创建会话，`externalIdType=chatgpt_conversation`，会话出现在账号的 ChatGPT 聊天列表。
+`chatgpt_cloud` 必须 `visibility=visible`（云端会话天然对外可见），`ephemeral=true` 不支持；首次消息必须随
+`session.create` 提供（ChatGPT 无空会话创建接口）。依赖本机 Codex app-server 已登录 ChatGPT，否则返回明确错误。
+
+`chatgpt_cloud` 的操作映射（`providerId=codex` + `backend=chatgpt_cloud`）：
+
+| `ai_control` | chatgpt_cloud 后端 |
+|---|---|
+| `models.list` | `GET /backend-api/models`（Chat 云端模型：gpt-5-6/gpt-5-5/instant/thinking 等，与 Codex/工作模型分开） |
+| `session.create` | `POST /backend-api/f/conversation`（首条消息即建会话）→ 返回 `sessionId`=云端 conversation UUID |
+| `session.send` | follow-up（`conversation_id` + `parent_message_id`=最后 assistant 消息，自动解析） |
+| `session.get` | `GET /backend-api/conversation/{id}`（mapping 全量消息） |
+| `session.result` | 同上，返回最新 `finalAgentMessage` |
+| `session.list` | `GET /backend-api/conversations` |
+| `session.rename` | `POST /conversation/id/{id}/rename` |
+| `session.delete` | `DELETE /conversation/id/{id}` |
+| `session.cancel` | `POST /stop_conversation`（无活动轮时幂等返回） |
+| `session.watch` | `/celsius/ws/user` pubsub 订阅 `conversations` + `conversation-{uuid}`；`conversation-turn-complete` 等事件 → `session.watch` 事件（提示 refetch `session.get` 取内容） |
+| `session.steer` | 暂不支持（`/f/steer_turn` 需活动 TPP 轮与 turn_exchange 机制，后续接） |
+
+实时同步基于 `/backend-api/celsius/ws/user` 的 pubsub（订阅 `conversations` + `conversation-{uuid}`，
+`conversation-turn-complete` 触发 refetch）——已实测：另一客户端写入后 `session.watch` 收到事件。
 
 ### `session.send`
 

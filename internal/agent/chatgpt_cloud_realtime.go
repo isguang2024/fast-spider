@@ -1,0 +1,303 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/coder/websocket"
+)
+
+// chatgptCloudEvent is a normalized realtime event delivered to session.watch for
+// a chatgpt_cloud conversation. It mirrors the pubsub conversation-turn-complete /
+// conversation-created / conversation-update(s) signals (which tell a client to
+// refetch the conversation for new content).
+type chatgptCloudEvent struct {
+	Sequence       int64
+	Type           string // normalized: conversation.turn.complete / conversation.created / conversation.updated
+	ConversationID string
+	EventType      string // raw pubsub payload type
+	Timestamp      time.Time
+}
+
+type chatgptCloudRealtime struct {
+	logger      *slog.Logger
+	baseURL     string
+	http        *http.Client
+	tokenSource func(ctx context.Context) (string, error)
+
+	mu        sync.Mutex
+	events    []chatgptCloudEvent
+	nextEvent int64
+	notify    chan struct{}
+	watching  map[string]*realtimeSubscription
+	closed    bool
+}
+
+type realtimeSubscription struct {
+	conversationID string
+	cancel         context.CancelFunc
+	done           chan struct{}
+}
+
+func newChatGPTCloudRealtime(logger *slog.Logger, baseURL string, httpClient *http.Client, tokenSource func(ctx context.Context) (string, error)) *chatgptCloudRealtime {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &chatgptCloudRealtime{
+		logger:      logger,
+		baseURL:     baseURL,
+		http:        httpClient,
+		tokenSource: tokenSource,
+		notify:      make(chan struct{}),
+		watching:    map[string]*realtimeSubscription{},
+	}
+}
+
+func (r *chatgptCloudRealtime) emit(conversationID, eventType string) {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	r.nextEvent++
+	event := chatgptCloudEvent{
+		Sequence:       r.nextEvent,
+		ConversationID: conversationID,
+		EventType:      eventType,
+		Timestamp:      time.Now().UTC(),
+	}
+	switch eventType {
+	case "conversation-turn-complete", "conversation-turn-completed":
+		event.Type = "conversation.turn.complete"
+	case "conversation-created":
+		event.Type = "conversation.created"
+	default:
+		event.Type = "conversation.updated"
+	}
+	r.events = append(r.events, event)
+	if len(r.events) > 256 {
+		r.events = append([]chatgptCloudEvent(nil), r.events[len(r.events)-256:]...)
+	}
+	close(r.notify)
+	r.notify = make(chan struct{})
+	r.mu.Unlock()
+}
+
+// ensureWatching starts a pubsub subscription for a conversation if not active.
+func (r *chatgptCloudRealtime) ensureWatching(ctx context.Context, conversationID string) {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	if _, active := r.watching[conversationID]; active {
+		r.mu.Unlock()
+		return
+	}
+	subCtx, cancel := context.WithCancel(context.Background())
+	sub := &realtimeSubscription{conversationID: conversationID, cancel: cancel, done: make(chan struct{})}
+	r.watching[conversationID] = sub
+	r.mu.Unlock()
+	go r.runSubscription(subCtx, sub)
+}
+
+func (r *chatgptCloudRealtime) stopWatching(conversationID string) {
+	r.mu.Lock()
+	sub := r.watching[conversationID]
+	delete(r.watching, conversationID)
+	r.mu.Unlock()
+	if sub != nil {
+		sub.cancel()
+	}
+}
+
+func (r *chatgptCloudRealtime) runSubscription(ctx context.Context, sub *realtimeSubscription) {
+	defer close(sub.done)
+	defer func() {
+		r.mu.Lock()
+		if current := r.watching[sub.conversationID]; current == sub {
+			delete(r.watching, sub.conversationID)
+		}
+		r.mu.Unlock()
+	}()
+	for {
+		if err := r.runOnce(ctx, sub.conversationID); err != nil {
+			r.logger.Debug("chatgpt_cloud pubsub subscription ended", "conversationId", sub.conversationID, "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+			// reconnect
+		}
+	}
+}
+
+func (r *chatgptCloudRealtime) runOnce(ctx context.Context, conversationID string) error {
+	if r.tokenSource == nil {
+		return fmt.Errorf("chatgpt_cloud realtime token source is unavailable")
+	}
+	token, err := r.tokenSource(ctx)
+	if err != nil {
+		return err
+	}
+	wsURL, err := r.conversationWebSocketURL(ctx, token)
+	if err != nil {
+		return err
+	}
+	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: chatgptCloudHeadersFromToken(token)})
+	if err != nil {
+		return err
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "done")
+
+	// connect + subscribe (batch, like the official client)
+	connect := []map[string]any{{"id": 1, "command": map[string]any{"type": "connect", "presence": map[string]any{"type": "presence", "state": "background"}}}}
+	if err := writeWSFrame(ctx, conn, connect); err != nil {
+		return err
+	}
+	subscribe := []map[string]any{
+		{"id": 2, "command": map[string]any{"type": "subscribe", "topic_id": "conversations"}},
+		{"id": 3, "command": map[string]any{"type": "subscribe", "topic_id": "conversation-" + conversationID}},
+	}
+	if err := writeWSFrame(ctx, conn, subscribe); err != nil {
+		return err
+	}
+
+	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			return err
+		}
+		chatgptHandleWSFrames(data, func(topic, payloadType, cid string) {
+			if cid != "" && (topic == "conversations" || topic == "conversation-"+conversationID) {
+				r.emit(cid, payloadType)
+			}
+		})
+	}
+}
+
+func writeWSFrame(ctx context.Context, conn *websocket.Conn, value any) error {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return conn.Write(ctx, websocket.MessageText, raw)
+}
+
+func chatgptHandleWSFrames(data []byte, onMessage func(topic, payloadType, conversationID string)) {
+	var frames []map[string]any
+	if err := json.Unmarshal(data, &frames); err != nil {
+		var single map[string]any
+		if err2 := json.Unmarshal(data, &single); err2 != nil {
+			return
+		}
+		frames = []map[string]any{single}
+	}
+	for _, frame := range frames {
+		kind, _ := frame["type"].(string)
+		if kind != "message" {
+			continue
+		}
+		topic, _ := frame["topic_id"].(string)
+		payload, _ := frame["payload"].(map[string]any)
+		if payload == nil {
+			continue
+		}
+		// payload may be {type, payload:{conversation_id}} or {type, conversation_id}
+		payloadType, _ := payload["type"].(string)
+		cid, _ := payload["conversation_id"].(string)
+		if cid == "" {
+			if inner, ok := payload["payload"].(map[string]any); ok {
+				cid, _ = inner["conversation_id"].(string)
+			}
+		}
+		onMessage(topic, payloadType, cid)
+	}
+}
+
+func (r *chatgptCloudRealtime) conversationWebSocketURL(ctx context.Context, token string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.baseURL+"/backend-api/celsius/ws/user", nil)
+	if err != nil {
+		return "", err
+	}
+	chatgptApplyCloudHeaders(req, token)
+	resp, err := r.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("celsius ws/user returned %s", resp.Status)
+	}
+	var out struct {
+		WebsocketURL string `json:"websocket_url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if out.WebsocketURL == "" {
+		return "", fmt.Errorf("celsius ws/user returned no websocket url")
+	}
+	return out.WebsocketURL, nil
+}
+
+// watch returns realtime events for a conversation after the given cursor,
+// long-polling up to wait. Returns (events, nextCursor, error).
+func (r *chatgptCloudRealtime) watch(ctx context.Context, conversationID string, cursor int64, wait time.Duration) ([]chatgptCloudEvent, int64, error) {
+	if wait < 0 || wait > 15*time.Second {
+		return nil, cursor, fmt.Errorf("wait is outside the allowed range")
+	}
+	r.ensureWatching(ctx, conversationID)
+	deadline := time.Now().Add(wait)
+	for {
+		r.mu.Lock()
+		var events []chatgptCloudEvent
+		for _, event := range r.events {
+			if event.Sequence > cursor && event.ConversationID == conversationID {
+				events = append(events, event)
+				if len(events) >= 100 {
+					break
+				}
+			}
+		}
+		next := cursor
+		if len(events) > 0 {
+			next = events[len(events)-1].Sequence
+		}
+		notify := r.notify
+		r.mu.Unlock()
+		if len(events) > 0 || wait == 0 || !time.Now().Before(deadline) {
+			return events, next, nil
+		}
+		timer := time.NewTimer(time.Until(deadline))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, cursor, ctx.Err()
+		case <-notify:
+			timer.Stop()
+		case <-timer.C:
+			return nil, cursor, nil
+		}
+	}
+}
+
+// chatgptCloudHeadersFromToken returns a plain header map for the websocket dial.
+func chatgptCloudHeadersFromToken(token string) http.Header {
+	headers := http.Header{}
+	headers.Set("User-Agent", chatgptCloudUA)
+	headers.Set("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+	headers.Set("OAI-Language", "en")
+	headers.Set("oai-did", chatgptCloudDeviceID())
+	headers.Set("Origin", "https://chatgpt.com")
+	if token != "" {
+		headers.Set("Authorization", "Bearer "+token)
+	}
+	return headers
+}

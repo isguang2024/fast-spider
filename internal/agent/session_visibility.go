@@ -82,11 +82,15 @@ func resolveSessionVisibility(providerID string, input agentControlParams) (sess
 			return sessionVisibilitySpec{}, invalidSessionVisibility("backend cannot be inferred for the selected provider")
 		}
 	}
-	if backend == sessionBackendChatGPTCloud {
-		return sessionVisibilitySpec{}, unsupportedSessionVisibility("backend=chatgpt_cloud is not supported: Fast Spider has no stable official ChatGPT cloud conversation creation API and does not use private browser endpoints")
-	}
 	expectedBackend := map[string]string{"codex": sessionBackendCodexLocal, "claude_code": sessionBackendClaudeLocal}[providerID]
-	if backend != expectedBackend {
+	if backend == sessionBackendChatGPTCloud {
+		if providerID != "codex" {
+			return sessionVisibilitySpec{}, invalidSessionVisibility("backend=chatgpt_cloud requires providerId=codex")
+		}
+		if visibility == sessionVisibilityInternal {
+			return sessionVisibilitySpec{}, invalidSessionVisibility("chatgpt_cloud conversations are externally visible by nature; use visibility=visible")
+		}
+	} else if backend != expectedBackend {
 		return sessionVisibilitySpec{}, invalidSessionVisibility(fmt.Sprintf("backend=%s is not compatible with providerId=%s", backend, providerID))
 	}
 
@@ -97,9 +101,6 @@ func resolveSessionVisibility(providerID string, input agentControlParams) (sess
 		} else {
 			target = backend
 		}
-	}
-	if target == sessionBackendChatGPTCloud {
-		return sessionVisibilitySpec{}, unsupportedSessionVisibility("visibilityTarget=chatgpt_cloud is not supported: Fast Spider cannot create or attach a ChatGPT cloud conversation without a stable official API")
 	}
 	if visibility == sessionVisibilityInternal {
 		if target != sessionVisibilityTargetNone {
@@ -124,6 +125,9 @@ func resolveSessionVisibility(providerID string, input agentControlParams) (sess
 	if backend == sessionBackendClaudeLocal && ephemeral {
 		return sessionVisibilitySpec{}, unsupportedSessionVisibility("ephemeral=true is not supported by the Claude Code local session backend")
 	}
+	if backend == sessionBackendChatGPTCloud && ephemeral {
+		return sessionVisibilitySpec{}, unsupportedSessionVisibility("ephemeral=true is not supported by the ChatGPT cloud conversation backend")
+	}
 	if visibility == sessionVisibilityInternal && backend == sessionBackendCodexLocal && input.Ephemeral == nil {
 		// Codex app-server supports an ephemeral thread/start mode. Use it for
 		// short internal work unless the caller explicitly asks for persistence.
@@ -136,15 +140,20 @@ func resolveSessionVisibility(providerID string, input agentControlParams) (sess
 		VisibilityTarget: target,
 		Ephemeral:        ephemeral,
 	}
-	if backend == sessionBackendCodexLocal {
+	switch backend {
+	case sessionBackendCodexLocal:
 		spec.ExternalIDType = "codex_thread"
-	} else {
+	case sessionBackendClaudeLocal:
 		spec.ExternalIDType = "claude_session"
+	case sessionBackendChatGPTCloud:
+		spec.ExternalIDType = "chatgpt_conversation"
 	}
 	if visibility == sessionVisibilityVisible {
 		spec.VisibilityState = "external_id_returned"
 		spec.Guarantee = "external_id"
-		if backend == sessionBackendCodexLocal {
+		if backend == sessionBackendChatGPTCloud {
+			spec.Note = "The ChatGPT cloud conversation id is returned and the conversation appears in the account's ChatGPT chat list."
+		} else if backend == sessionBackendCodexLocal {
 			spec.Note = "The Codex provider-native Thread identifier is returned. Codex Desktop/UI presentation is not independently guaranteed."
 		} else {
 			spec.Note = "The Claude Code provider-native session identifier is returned. Native history remains provider-owned and is not a ChatGPT cloud conversation."
@@ -199,6 +208,8 @@ func (s sessionVisibilitySpec) applyToResult(out map[string]any, sessionID strin
 		out["externalThreadId"] = sessionID
 	} else if s.Backend == sessionBackendClaudeLocal {
 		out["externalSessionId"] = sessionID
+	} else if s.Backend == sessionBackendChatGPTCloud {
+		out["externalConversationId"] = sessionID
 	}
 	out["external"] = map[string]any{"id": sessionID, "type": s.ExternalIDType}
 }
@@ -254,6 +265,8 @@ func (r sessionVisibilityRecord) applyToResult(out map[string]any) {
 		out["externalThreadId"] = r.ExternalID
 	} else if r.ExternalIDType == "claude_session" {
 		out["externalSessionId"] = r.ExternalID
+	} else if r.ExternalIDType == "chatgpt_conversation" {
+		out["externalConversationId"] = r.ExternalID
 	}
 	out["external"] = map[string]any{"id": r.ExternalID, "type": r.ExternalIDType}
 }
@@ -343,7 +356,7 @@ func validateSessionVisibilityRecord(record sessionVisibilityRecord) error {
 	if record.Visibility != sessionVisibilityVisible && record.Visibility != sessionVisibilityInternal {
 		return fmt.Errorf("invalid visibility")
 	}
-	if record.Backend != sessionBackendCodexLocal && record.Backend != sessionBackendClaudeLocal {
+	if record.Backend != sessionBackendCodexLocal && record.Backend != sessionBackendClaudeLocal && record.Backend != sessionBackendChatGPTCloud {
 		return fmt.Errorf("invalid backend")
 	}
 	if record.VisibilityTarget != sessionVisibilityTargetNone && record.VisibilityTarget != record.Backend {
@@ -355,7 +368,7 @@ func validateSessionVisibilityRecord(record sessionVisibilityRecord) error {
 	if record.Visibility == sessionVisibilityInternal && record.VisibilityTarget != sessionVisibilityTargetNone {
 		return fmt.Errorf("internal record has an external target")
 	}
-	if record.ProviderID == "codex" && record.Backend != sessionBackendCodexLocal {
+	if record.ProviderID == "codex" && record.Backend != sessionBackendCodexLocal && record.Backend != sessionBackendChatGPTCloud {
 		return fmt.Errorf("Codex record has an incompatible backend")
 	}
 	if record.ProviderID == "claude_code" && record.Backend != sessionBackendClaudeLocal {
@@ -364,9 +377,15 @@ func validateSessionVisibilityRecord(record sessionVisibilityRecord) error {
 	if record.ProviderID == "claude_code" && record.Ephemeral {
 		return fmt.Errorf("Claude record cannot be ephemeral")
 	}
+	if record.Backend == sessionBackendChatGPTCloud && record.Ephemeral {
+		return fmt.Errorf("chatgpt_cloud record cannot be ephemeral")
+	}
 	expectedExternalType := "codex_thread"
-	if record.Backend == sessionBackendClaudeLocal {
+	switch record.Backend {
+	case sessionBackendClaudeLocal:
 		expectedExternalType = "claude_session"
+	case sessionBackendChatGPTCloud:
+		expectedExternalType = "chatgpt_conversation"
 	}
 	if record.ExternalIDType != expectedExternalType {
 		return fmt.Errorf("invalid external ID type")
@@ -514,10 +533,11 @@ func sessionVisibilityCapabilityMatrix() map[string]any {
 			"claude_code": map[string]any{"visibility": sessionVisibilityVisible, "backend": sessionBackendClaudeLocal, "visibilityTarget": sessionBackendClaudeLocal, "ephemeral": false},
 		},
 		"chatgptCloud": map[string]any{
-			"state":      "unsupported",
-			"create":     false,
-			"reasonCode": "CHATGPT_CLOUD_CREATE_UNSUPPORTED",
-			"reason":     "Fast Spider does not have a stable official ChatGPT cloud conversation creation API and will not call private browser endpoints",
+			"state":      "supported",
+			"create":     true,
+			"requires":   "codex app-server authenticated with ChatGPT (getAuthStatus) + self-solved Sentinel",
+			"reasonCode": "",
+			"reason":     "Fast Spider creates cloud conversations through the same /backend-api/f/conversation flow the official client uses, authenticating with the Codex app-server ChatGPT token",
 		},
 		"targets": map[string]any{
 			"none": map[string]any{
@@ -532,8 +552,8 @@ func sessionVisibilityCapabilityMatrix() map[string]any {
 				"internal": map[string]any{"state": "best_effort", "ephemeralSupported": false, "persistentVisibility": "fast_spider_filtered_only"},
 			},
 			"chatgpt_cloud": map[string]any{
-				"visible":  map[string]any{"state": "unsupported", "reasonCode": "CHATGPT_CLOUD_CREATE_UNSUPPORTED"},
-				"internal": map[string]any{"state": "unsupported", "reasonCode": "CHATGPT_CLOUD_CREATE_UNSUPPORTED"},
+				"visible":  map[string]any{"state": "supported", "externalIdType": "chatgpt_conversation"},
+				"internal": map[string]any{"state": "unsupported", "reasonCode": "CHATGPT_CLOUD_INTERNAL_UNSUPPORTED", "reason": "chatgpt_cloud conversations are externally visible by nature; use visibility=visible"},
 			},
 		},
 	}

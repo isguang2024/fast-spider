@@ -213,7 +213,7 @@ type browserBatchStepInput struct {
 
 type browserControlInput struct {
 	MachineID        string                  `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	Action           string                  `json:"action" jsonschema:"readiness,extensions.list,launch,close,page.open,page.navigate,page.close,pages.list,click,type,press,wait,batch,snapshot,screenshot,events"`
+	Action           string                  `json:"action" jsonschema:"readiness,launch,close,page.open,page.navigate,page.close,pages.list,click,type,press,wait,batch,snapshot,screenshot,events"`
 	BrowserSessionID string                  `json:"browserSessionId,omitempty" jsonschema:"opaque managed browser session ID"`
 	PageID           string                  `json:"pageId,omitempty" jsonschema:"opaque managed page ID"`
 	Engine           string                  `json:"engine,omitempty" jsonschema:"managed chromium"`
@@ -234,7 +234,6 @@ type browserControlInput struct {
 	Format           string                  `json:"format,omitempty" jsonschema:"png or jpeg"`
 	Quality          int                     `json:"quality,omitempty" jsonschema:"jpeg quality 20-95"`
 	Cursor           int64                   `json:"cursor,omitempty" jsonschema:"last browser event cursor for events"`
-	ExtensionIDs     []string                `json:"extensionIds,omitempty" jsonschema:"installed extension IDs to load for this launch; omit to load none"`
 }
 
 type screenshotTakeInput struct {
@@ -256,7 +255,7 @@ type aiControlInput struct {
 	RequestID             string              `json:"requestId,omitempty" jsonschema:"pending Codex server request ID required for session.respond"`
 	IdempotencyKey        string              `json:"idempotencyKey,omitempty" jsonschema:"12-128 character key required for session.create; with session.delete and no sessionId, identifies an unresolved create reservation to release"`
 	Visibility            string              `json:"visibility,omitempty" jsonschema:"session.create: visible or internal; default visible"`
-	Backend               string              `json:"backend,omitempty" jsonschema:"session.create: codex_local,claude_local,chatgpt_cloud; cloud unsupported"`
+	Backend               string              `json:"backend,omitempty" jsonschema:"session.create: codex_local,claude_local,chatgpt_cloud; chatgpt_cloud requires providerId=codex + a ChatGPT-authenticated Codex app-server"`
 	VisibilityTarget      string              `json:"visibilityTarget,omitempty" jsonschema:"session.create: codex_local,claude_local,chatgpt_cloud,none; default backend or none"`
 	Ephemeral             *bool               `json:"ephemeral,omitempty" jsonschema:"session.create: internal Codex default true; persistent internal=false"`
 	Mode                  string              `json:"mode,omitempty" jsonschema:"provider.readiness mode: passive or safe"`
@@ -878,7 +877,7 @@ func browserControlParams(input browserControlInput) map[string]any {
 	}
 
 	params := map[string]any{}
-	if input.Action != "launch" && input.Action != "readiness" && input.Action != "extensions.list" {
+	if input.Action != "launch" && input.Action != "readiness" {
 		params["browserSessionId"] = input.BrowserSessionID
 	}
 	if input.PageID != "" {
@@ -891,9 +890,6 @@ func browserControlParams(input browserControlInput) map[string]any {
 	case "launch":
 		params["engine"] = input.Engine
 		params["headless"] = !input.Headed
-		if input.ExtensionIDs != nil {
-			params["extensionIds"] = input.ExtensionIDs
-		}
 		if input.ViewportWidth > 0 || input.ViewportHeight > 0 {
 			width, height := input.ViewportWidth, input.ViewportHeight
 			if width == 0 {

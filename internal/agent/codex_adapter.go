@@ -291,6 +291,21 @@ func (a *CodexAdapter) IsStarted() bool {
 	return !a.closed && a.cmd != nil && a.cmd.Process != nil && a.cmd.ProcessState == nil && a.stdin != nil && a.configErr == nil
 }
 
+// AuthToken returns the ChatGPT access token the Codex app-server is logged in
+// with, or an error if the app-server is not authenticated. The token is the
+// source for the chatgpt_cloud backend (desktop-initiated cloud conversations).
+func (a *CodexAdapter) AuthToken(ctx context.Context) (string, error) {
+	result, err := a.request(ctx, "getAuthStatus", map[string]any{"includeToken": true, "refreshToken": false})
+	if err != nil {
+		return "", err
+	}
+	token, _ := result["authToken"].(string)
+	if token == "" {
+		return "", fmt.Errorf("Codex app-server is not authenticated with ChatGPT (getAuthStatus returned no token)")
+	}
+	return token, nil
+}
+
 func (a *CodexAdapter) Close(ctx context.Context) error {
 	a.mu.Lock()
 	a.closed = true

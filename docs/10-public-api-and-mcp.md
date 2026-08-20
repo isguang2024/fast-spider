@@ -66,7 +66,7 @@ ChatGPT 对已发布 MCP App 的工具/输入定义可能使用经批准的快�
 - ai_control routing.status: 可选 `appType=claude|codex|claude-desktop`，只读 CC Switch 路由事实
 - working_context: `projectPath`
 
-`session.create` 的 `visible` 默认目标是本地 provider backend；`internal` 默认目标为 `none`，Codex 默认 ephemeral。ChatGPT cloud conversation 创建目前不支持，能力响应会列出该限制，调用不会转入浏览器插件的私有 `/f/conversation*` 路径。
+`session.create` 的 `visible` 默认目标是本地 provider backend；`internal` 默认目标为 `none`，Codex 默认 ephemeral。`providerId=codex` + `backend=chatgpt_cloud` 用 Codex app-server 的 ChatGPT 登录态 + 自解 Sentinel 走官方 `/backend-api/f/conversation` 创建云端会话（`externalIdType=chatgpt_conversation`，会话出现在账号的 ChatGPT 聊天列表）；必须 `visibility=visible`，依赖本机 Codex app-server 已登录。
 
 `working_context` 保留 `get/set/clear` 默认 plan 兼容入口，并在同一工具中提供 `plan.init/plan.get/plan.list/plan.sync/task.update/markdown.list/markdown.read/markdown.append/progress.watch`。Plan 状态在 Node data-dir 中按 `projectPath + planId` 隔离；Markdown workspace 只操作项目内受绑定普通 `.md` 与受管区块，不保存聊天原文或凭据。
 

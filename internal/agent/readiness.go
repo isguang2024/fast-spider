@@ -83,11 +83,27 @@ func (m *AgentManager) providerReadiness(ctx context.Context, input agentControl
 		}
 		return "ready", "OK"
 	})
+	if strings.EqualFold(strings.TrimSpace(input.Backend), sessionBackendChatGPTCloud) {
+		layers["chatgptCloud"] = measuredReadiness(func() (string, string) {
+			if m.chatgptCloud == nil {
+				return "blocked", "CHATGPT_CLOUD_UNAVAILABLE"
+			}
+			checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			if _, err := m.chatgptCloud.token(checkCtx); err != nil {
+				return "blocked", "CHATGPT_CLOUD_NOT_AUTHENTICATED"
+			}
+			return "ready", "OK"
+		})
+	}
 	layers["readyCreate"] = measuredReadiness(func() (string, string) {
 		for _, name := range []string{"routing", "provider", "harness", "sessionBackend"} {
 			if layers[name].State != "ready" {
 				return "blocked", "NOT_CHECKED"
 			}
+		}
+		if cloud, present := layers["chatgptCloud"]; present && cloud.State != "ready" {
+			return "blocked", cloud.ReasonCode
 		}
 		return "ready", "READY"
 	})
@@ -132,7 +148,7 @@ func classifyRouteReadiness(route map[string]any) (string, string) {
 func readinessResult(providerID, mode string, layers map[string]readinessLayer, started time.Time) map[string]any {
 	state := layers["readyCreate"].State
 	reason := layers["readyCreate"].ReasonCode
-	return map[string]any{
+	result := map[string]any{
 		"providerId": providerID, "mode": mode, "state": state, "ready": state == "ready", "reasonCode": reason,
 		"routeAvailable": layers["routing"].State == "ready", "providerAvailable": layers["provider"].State == "ready",
 		"harnessAvailable": layers["harness"].State == "ready", "sessionBackendAvailable": layers["sessionBackend"].State == "ready",
@@ -141,4 +157,8 @@ func readinessResult(providerID, mode string, layers map[string]readinessLayer, 
 		"executionHealth":       "unknown_until_turn", "checkedAt": time.Now().UTC().Format(time.RFC3339Nano),
 		"elapsedMs": time.Since(started).Milliseconds(), "layers": layers,
 	}
+	if cloud, present := layers["chatgptCloud"]; present {
+		result["chatgptCloudAvailable"] = cloud.State == "ready"
+	}
+	return result
 }

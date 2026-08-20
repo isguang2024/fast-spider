@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/isguang2024/fast-spider/internal/browserext"
 	"github.com/isguang2024/fast-spider/internal/security"
 )
 
@@ -21,7 +20,6 @@ const (
 	maxBrowserSessionScan       = 256
 	maxBrowserSessionCleanup    = 32
 	browserOpaqueIDEncodedBytes = 32
-	maxBrowserExtensions        = 4
 )
 
 type BrowserActionError struct {
@@ -101,9 +99,6 @@ func (m *BrowserManager) executeLocked(ctx context.Context, action string, param
 	if action == "launch" {
 		return m.launch(ctx, params)
 	}
-	if action == "extensions.list" {
-		return m.listExtensions()
-	}
 	switch action {
 	case "close", "page.open", "page.navigate", "page.close", "pages.list", "click", "type", "press", "wait", "batch", "snapshot", "screenshot", "events":
 		return m.executeSessionAction(ctx, action, params)
@@ -144,32 +139,11 @@ func (m *BrowserManager) launch(ctx context.Context, params map[string]any) (map
 		launchParams["viewport"] = viewport
 	}
 	launchParams["screenshotDir"] = screenshotDir
-	extensionPaths, extensionIDs, err := m.extensionPaths(params)
-	if err != nil {
-		_ = os.RemoveAll(sessionDir)
-		return nil, err
-	}
-	if len(extensionPaths) > 0 {
-		if boolParam(params, "headless", true) {
-			_ = os.RemoveAll(sessionDir)
-			return nil, &BrowserActionError{Code: "BROWSER_EXTENSION_REQUIRES_HEADED", Message: "browser extensions require a headed managed browser; set headed=true", Retryable: false}
-		}
-		userDataDir, profileErr := m.browserExtensionProfileDir()
-		if profileErr != nil {
-			_ = os.RemoveAll(sessionDir)
-			return nil, profileErr
-		}
-		launchParams["extensionPaths"] = extensionPaths
-		launchParams["userDataDir"] = userDataDir
-	}
 
 	result, sidecarTiming, err := m.sidecar.CallWithTiming(ctx, "launch", launchParams)
 	if err != nil {
 		_ = os.RemoveAll(sessionDir)
 		return nil, err
-	}
-	if len(extensionIDs) > 0 {
-		result["extensionIds"] = extensionIDs
 	}
 	now := time.Now().UTC()
 	m.mu.Lock()
@@ -183,86 +157,6 @@ func (m *BrowserManager) launch(ctx context.Context, params map[string]any) (map
 	m.mu.Unlock()
 	attachBrowserSidecarTiming(result, sidecarTiming)
 	return result, nil
-}
-
-func (m *BrowserManager) listExtensions() (map[string]any, error) {
-	installed, err := browserext.List(m.dataDir)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]any{"extensions": installed}, nil
-}
-
-func (m *BrowserManager) extensionPaths(params map[string]any) ([]string, []string, error) {
-	raw, present := params["extensionIds"]
-	if !present || raw == nil {
-		// Installing an extension must not silently change ordinary headless
-		// browser launches. Loading is an explicit per-session opt-in through
-		// extensionIds.
-		return nil, nil, nil
-	}
-
-	ids, err := browserExtensionIDs(raw)
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(ids) > maxBrowserExtensions {
-		return nil, nil, &BrowserActionError{Code: "BROWSER_EXTENSION_LIMIT", Message: "at most four browser extensions may be loaded", Retryable: false}
-	}
-	paths := make([]string, 0, len(ids))
-	for _, id := range ids {
-		extension, resolveErr := browserext.Resolve(m.dataDir, id)
-		if resolveErr != nil {
-			return nil, nil, &BrowserActionError{Code: "BROWSER_EXTENSION_NOT_FOUND", Message: "requested browser extension is not installed", Retryable: false}
-		}
-		paths = append(paths, extension.Path)
-	}
-	return paths, ids, nil
-}
-
-func (m *BrowserManager) browserExtensionProfileDir() (string, error) {
-	profileDir, err := filepath.Abs(filepath.Join(m.dataDir, "browser", "extension-profile"))
-	if err != nil {
-		return "", &BrowserActionError{Code: "BROWSER_EXTENSION_PROFILE_INVALID", Message: "managed browser extension profile path is invalid", Retryable: false}
-	}
-	if err := os.MkdirAll(profileDir, 0o700); err != nil {
-		return "", &BrowserActionError{Code: "BROWSER_EXTENSION_PROFILE_INVALID", Message: "managed browser extension profile is unavailable", Retryable: false}
-	}
-	info, err := os.Lstat(profileDir)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return "", &BrowserActionError{Code: "BROWSER_EXTENSION_PROFILE_INVALID", Message: "managed browser extension profile is invalid", Retryable: false}
-	}
-	return profileDir, nil
-}
-
-func browserExtensionIDs(value any) ([]string, error) {
-	var raw []any
-	switch typed := value.(type) {
-	case []any:
-		raw = typed
-	case []string:
-		raw = make([]any, 0, len(typed))
-		for _, item := range typed {
-			raw = append(raw, item)
-		}
-	default:
-		return nil, &BrowserActionError{Code: "INVALID_REQUEST", Message: "extensionIds must be an array", Retryable: false}
-	}
-	ids := make([]string, 0, len(raw))
-	seen := make(map[string]struct{}, len(raw))
-	for _, item := range raw {
-		id, ok := item.(string)
-		id = strings.TrimSpace(id)
-		if !ok || id == "" {
-			return nil, &BrowserActionError{Code: "INVALID_REQUEST", Message: "extensionIds must contain non-empty strings", Retryable: false}
-		}
-		if _, exists := seen[id]; exists {
-			return nil, &BrowserActionError{Code: "INVALID_REQUEST", Message: "extensionIds must not contain duplicates", Retryable: false}
-		}
-		seen[id] = struct{}{}
-		ids = append(ids, id)
-	}
-	return ids, nil
 }
 
 func (m *BrowserManager) executeSessionAction(ctx context.Context, action string, params map[string]any) (map[string]any, error) {
