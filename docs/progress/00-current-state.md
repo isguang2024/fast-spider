@@ -5,19 +5,19 @@
 <!-- fast-spider:managed:current-state:start -->
 ## Managed Current State
 
-- planId: `fs-0.4.22-url-only-attachments`
-- targetVersion: `0.4.22`
+- planId: `fs-0.4.23-chatgpt-cloud-mcp`
+- targetVersion: `0.4.23`
 - branch: `main`
-- sourceReleaseCommit: `2ff08335361269faa9b56265235ccf43c74df492`
-- phase: `0.4.22 PRODUCTION DEPLOYED / HEALTHY`
-- finalReleaseGate: `worktree/index secret scan PASS；内置 history scan PASS；go test ./...、go vet、diff-check、跨平台 build、post-history 专项、fuzz、race、Windows Browser、CC Switch、Claude、MCP 与 multi-provider discovery PASS；本机额外 private-marker overlay 仅命中既有 Git history 并使原始 --full 提前停止；Local Bridge→Codex product E2E 300 秒外部 Agent 等待超时，未伪装为 PASS`
-- productionHub: `0.4.22 / SHA256 6792a5747a418d07e938fbc3e0a23aa1f68229392d4eea617d0281b140f62e25 / PID 3989323 / systemd active / local+public livez+readyz 200`
-- productionSpiderctl: `0.4.22 / SHA256 4b5a174660465722ee4cfe19a3718c45c216a22f1d699d186015337b2da45941`
-- productionNode: `PCa / 0.4.22 / windows-amd64 / generation=123 / online+ready / release SHA256 e5fd6f820001022c4ed554d3df038fd6482d4f1153fa24984de59ecdb3d2696e`
-- hubRollback: `0.4.21 rollback copies / Hub SHA256 dc68ebff7620b0218046e81615b742e9fe5b39d61a6c1d20fe1c9a39f584f560 / spiderctl SHA256 1588c1bbcb46adf5ed21096add05e352c5b29b992e019337f1c47768c9ce9a7e / Windows Node SHA256 66d3ea1ee61a0312dc542484a749714a81aba61891fe32c11721874f46f0005e`
-- verifiedBackups: `pre-0.4.22-2ff08335361269faa9b56265235ccf43c74df492.zip / SHA256 d89163794add000e45d1ad5bf4e212190f61b0a5add9ae50f1229a71ec0b2a64 / size=14714987 / valid=true / manifest source version=0.4.21`
-- workingContext11: `0.4.22 源码、Hub/spiderctl、三平台 Node release、Windows PCa 自更新、48h URL-only attachment 生产 smoke 与公网健康检查 done`
-- schemaStatus: `0.4.22 URL-only attachment 行为已上线；live artifact_get.publishFile 只返回 url/fileName/contentType/sizeBytes/expiresAt，公网临时 URL=200 image/png，约 48h expiry；当前长会话工具描述可能仍受 ChatGPT schema cache 影响，但运行时行为已切换`
+- sourceReleaseCommit: `c724945406f1072086c905a2a8f9b4de200e629b`
+- phase: `0.4.23 PRODUCTION DEPLOYED / HEALTHY`
+- finalReleaseGate: `core release gate PASS；go build ./...、go vet ./...、go test ./... -count=1、跨平台 build、Hub restore E2E、Local Bridge E2E 与 ChatGPT Cloud live E2E PASS；精确 scripts/release-gate.sh --full 在 Git history secretscan 发现 325 个既有历史命中后按设计停止，未绕过或伪装为 full PASS；post-history 专项未宣称通过`
+- productionHub: `0.4.23 / SHA256 534eccaac8f921d625c7b4da48dbe8fb426940d0967e4b006e37a9db1edaec1 / PID 666081 / systemd active / local+public livez+readyz 200`
+- productionSpiderctl: `0.4.23 / SHA256 62f2003f7da6cd1c19e36ec99dbc486a18ac8f8e4c1a6747bf982ee5fac0abd7`
+- productionNode: `PCa / 0.4.23 / windows-amd64 / generation=131 / last_seen=2026-08-20T03:33:27Z / active / release SHA256 d4d6cb1b3e09de4d35cfbdd6af10822bc57219ff6566df8f4aacda7c1d92ace8`
+- hubRollback: `rollback/pre-0.4.23-c724945 保留 0.4.22 / Hub SHA256 6792a5747a418d07e938fbc3e0a23aa1f68229392d4eea617d0281b140f62e25 / spiderctl SHA256 4b5a174660465722ee4cfe19a3718c45c216a22f1d699d186015337b2da45941；三平台 0.4.22 release 目录仍保留`
+- verifiedBackups: `pre-0.4.23-c724945406f1072086c905a2a8f9b4de200e629b.zip / SHA256 e66c96aec67b5bcd40f47052c79e8f3d622ae241834003cac63da66900a17ece / size=21111872 / valid=true / manifest source version=0.4.22`
+- workingContext11: `0.4.23 ChatGPT cloud session.steer、MCP tools/list/guide 明确 ChatGPT CHAT session.create、Hub/spiderctl、三平台 Node release、Windows PCa idle-safe 自更新与公网健康检查 done`
+- schemaStatus: `MCP ai_control 的 tools/list description/schema、initialize 能力地图与 capability_list(view=tool,name=ai_control) 已明确 providerId=codex + backend=chatgpt_cloud + visibility=visible 的 ChatGPT CHAT 创建要求；生产未认证 /mcp=401、OAuth metadata=200；ChatGPT App 需 Refresh 后取得新 Schema`
 - completed041: `FS-041-001..015 PASS / no 0.4.1 release`
 - completed042: `FS-042-001..017 PASS / 0.4.2 formally released and deployed`
 - completed043: `0.4.3 formally released and deployed`
@@ -32,6 +32,7 @@
 - completed0419: `两层 MCP 能力地图、17 工具摘要、底层 capability 映射、Windows PowerShell/cmd 指引、Hub/spiderctl 0.4.19 生产部署与公网健康检查 PASS；认证 MCP 冷调用待补验`
 - completed0421: `Node operation.log/query、MCP operation_log、敏感字段投影、19 工具目录、Hub/Node 0.4.21 发布与健康检查 PASS`
 - completed0422: `publishFile/Browser/OS screenshot URL-only attachment、48h TTL/自动清理、三平台 Node release、Hub/spiderctl 0.4.22 与 PCa 自更新完成；公网 attachment smoke PASS`
+- completed0423: `chatgpt_cloud session.steer 接入 /f/steer_turn；MCP ai_control 明确 visible ChatGPT CHAT session.create；0.4.23 Hub/spiderctl/三平台 Node 发布、PCa generation=131 自更新与公网健康检查完成`
 - currentTask: `none`
 - nextGate: `进入稳定使用阶段；仅在新的真实故障、可复现性能瓶颈或明确新需求出现时开启下一计划`
 

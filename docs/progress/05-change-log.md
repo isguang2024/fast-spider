@@ -175,3 +175,11 @@
 - release commit `2ff08335361269faa9b56265235ccf43c74df492` 已推送 `origin/main`。生产升级前备份 `pre-0.4.22-2ff08335361269faa9b56265235ccf43c74df492.zip` Verify PASS，SHA-256 `d89163794add000e45d1ad5bf4e212190f61b0a5add9ae50f1229a71ec0b2a64`，size `14714987`，manifest source version=0.4.21。
 - 生产 Hub/spiderctl 已原子升级到 0.4.22：Hub SHA-256 `6792a5747a418d07e938fbc3e0a23aa1f68229392d4eea617d0281b140f62e25`、spiderctl SHA-256 `4b5a174660465722ee4cfe19a3718c45c216a22f1d699d186015337b2da45941`，systemd active，PID 3989323，本机与公网 livez/readyz PASS；0.4.21 Hub/spiderctl/Windows Node 回滚副本均已保留。
 - Windows amd64、darwin amd64、darwin arm64 Node release 均已发布并生成 0.4.22 push marker；PCa 已完成 idle-safe 自更新到 0.4.22 / generation=123 / online+ready。生产 `artifact_get.publishFile` smoke 仅返回 URL 元数据，公网临时地址 HTTP 200、Content-Type image/png、expiresAt 约 48 小时，确认新行为真实上线。备份轮换已完成安全 dry-run：14 个标准候选、保留 3、计划删除 11、实际删除 0；自动删除未作为发布必要条件。
+
+### 2026-08-20 — 0.4.23 ChatGPT Cloud CHAT 会话与 MCP 发现
+
+- `chatgpt_cloud` `session.steer` 已真实接入 `/backend-api/f/steer_turn`；MCP `ai_control` 的 tools/list、initialize instructions 与 capability guide 明确支持通过 Codex 创建 visible ChatGPT CHAT 会话，不再保留“ChatGPT cloud creation is explicitly unsupported”的过时描述。
+- 源提交 `c724945406f1072086c905a2a8f9b4de200e629b` 已推送 `origin/main`，分支 `codex/release-0.4.23` 与 tag `v0.4.23` 已推送；源码版本为 0.4.23，五个显式构建目标均 `vcs.modified=false`。
+- core release gate、全仓 test/vet/build 与真实 `TestChatGPTCloud` live E2E PASS；精确 `--full` gate 在 Git history secretscan 的 325 个既有历史命中处按设计停止，未绕过历史安全门禁。
+- 生产备份 `pre-0.4.23-c724945406f1072086c905a2a8f9b4de200e629b.zip` Verify PASS；Hub/spiderctl 已原子升级到 0.4.23，三平台 Node release 与 push marker 已发布，PCa idle-safe 自更新到 0.4.23 / generation=131；本机/公网 livez/readyz=200，未认证 MCP=401，OAuth metadata=200。
+- ChatGPT App/客户端如果缓存旧工具 Schema，需 Refresh；本次未读取生产 OAuth 凭据执行认证冷 `tools/list`，以本地 MCP E2E 与公开未认证边界作为服务端证据。

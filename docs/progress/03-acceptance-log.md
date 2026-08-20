@@ -233,6 +233,17 @@
 - 升级前备份 `pre-0.4.19-8efbdfc624bdfdfbc6eece527a55b8f022cdeacf.zip` SHA256=`c33ce40aefa9e15971bf4add6ee6655d0148fd624a668fa0028b5cf95f24a5ae`，Verify `valid=true`；旧 0.4.18 Hub/spiderctl 版本化回滚副本均保留；`backup-prune --keep 3` 仅 plan-only，无删除。
 - PCa Node 未构建、未修改、未推送更新；认证后的 MCP `tools/list`、`capability_list(view=overview)` 和 `view=capability` 冷调用需在具备 FS/OAuth 连接器的会话中补验。
 - **部署验收：PASS / PRODUCTION HEALTHY；认证 MCP 冷调用：待补验**。
+
+## 2026-08-20 — 0.4.23 ChatGPT Cloud CHAT MCP Discovery / Production Deployment
+
+- `session.steer` 已接入 `chatgpt_cloud`：通过 `asyncTaskId` 复用 Sentinel/prepare/conduit，发送 `POST /backend-api/f/steer_turn`；普通已完成 ChatGPT 聊天无活动 task 时明确返回 `no active steerable turn`，不会把 Codex `turnId` 误当云端 task。
+- MCP `ai_control` 的 tools/list 描述、JSON Schema、`initialize` instructions、`capability_list(view=tool,name=ai_control)` 指南与 README/公共 API 文档均明确：Codex 可用 `providerId=codex` + `backend=chatgpt_cloud` + `visibility=visible` + 首条 `prompt` + 绝对 `workingDirectory` + `idempotencyKey` 创建 visible ChatGPT CHAT 会话，并返回 `externalIdType=chatgpt_conversation`。本地 `TestMachineBoundaryEndToEnd` 已对 tools/list 元数据做回归断言。
+- 验证：`go build ./...`、`go vet ./...`、`go test ./internal/agent/`、`go test ./... -count=1`、core release gate 与精确 `FAST_SPIDER_CHATGPT_E2E=1 go test -tags codexe2e -run TestChatGPTCloud -v ./internal/agent/` 均 PASS；live E2E 覆盖真实 create/send/get/list/watch/cancel 与 steer inactive 边界。精确 `scripts/release-gate.sh --full` 在 Git history secretscan 发现 325 个既有历史命中后按设计停止，未将其伪装为 PASS。
+- Git 事实：`c724945406f1072086c905a2a8f9b4de200e629b` 已推送 `origin/main` 与 `origin/codex/release-0.4.23`，tag `v0.4.23` 已推送；五个显式目标构建均记录 `vcs.modified=false`。
+- 生产升级前备份 `pre-0.4.23-c724945406f1072086c905a2a8f9b4de200e629b.zip` Verify `valid=true`、86 files、manifest source version=0.4.22、SHA256=`e66c96aec67b5bcd40f47052c79e8f3d622ae241834003cac63da66900a17ece`、size=`21111872`。Hub/spiderctl 0.4.23 与三平台 Node release 已部署；本机/公网 livez/readyz=200，未认证 MCP=401，OAuth 两个 metadata endpoint=200。
+- 生产 Hub SHA256=`534eccaac8f921d625c7b4da48dbe8fb426940d0967e4b006e37a9db1edaec1`、spiderctl SHA256=`62f2003f7da6cd1c19e36ec99dbc486a18ac8f8e4c1a6747bf982ee5fac0abd7`、PID=`666081`；rollback/pre-0.4.23-c724945 保留旧 0.4.22 Hub/spiderctl。Node push marker SHA256 分别为 Windows=`d4d6cb1b3e09de4d35cfbdd6af10822bc57219ff6566df8f4aacda7c1d92ace8`、darwin-amd64=`9d68a650837b24cb0685f2e838ed67a15586451b8ef5788fdcc7a50623ffe843`、darwin-arm64=`f51726b5b8745d81c700aed3652fbba7696441449414dae9e1b674a73e43d4fb`。
+- PCa 已完成 idle-safe 自更新到 0.4.23 / windows-amd64 / generation=131，Hub DB 最近心跳 `2026-08-20T03:33:27Z`；ChatGPT App 的已缓存工具定义仍需用户执行 Refresh，认证生产 `tools/list` 冷调用未使用/读取生产凭据，故不伪装为已完成该外部宿主动作。
+- **部署验收：PASS / PRODUCTION HEALTHY；MCP 代码/本地 tools-list 合约：PASS；ChatGPT App Refresh 与认证生产冷调用：待外部宿主动作。**
 <!-- fast-spider:managed:acceptance:end -->
 
 ## Manual Acceptance Notes
