@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -39,6 +40,47 @@ func TestCodexDeleteThreadClearsLoadedState(t *testing.T) {
 			adapter.mu.Unlock()
 			if loaded != test.wantLoaded {
 				t.Fatalf("loaded=%v want=%v", loaded, test.wantLoaded)
+			}
+		})
+	}
+}
+
+func TestCodexArchiveLifecycleLoadsThreadBeforeChangingArchiveState(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		archive bool
+		method  string
+	}{
+		{name: "archive", archive: true, method: "thread/archive"},
+		{name: "unarchive", archive: false, method: "thread/unarchive"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			adapter := NewCodexAdapter(nil)
+			var methods []string
+			adapter.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
+				if params["threadId"] != "thread-1" {
+					t.Fatalf("unexpected params=%#v", params)
+				}
+				methods = append(methods, method)
+				switch method {
+				case "thread/resume", test.method:
+					return map[string]any{}, nil
+				default:
+					return nil, errors.New("unexpected method " + method)
+				}
+			}
+
+			var err error
+			if test.archive {
+				err = adapter.ArchiveThread(context.Background(), "thread-1")
+			} else {
+				err = adapter.UnarchiveThread(context.Background(), "thread-1")
+			}
+			if err != nil {
+				t.Fatalf("archive lifecycle error: %v", err)
+			}
+			if got, want := strings.Join(methods, ","), "thread/resume,"+test.method; got != want {
+				t.Fatalf("methods=%q want=%q", got, want)
 			}
 		})
 	}

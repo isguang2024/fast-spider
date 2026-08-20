@@ -20,6 +20,8 @@ Fast Spider 不捆绑用户的 AI 账号或 Provider：
 
 - Codex Harness 要求本机已有可执行的 Codex CLI/app-server。
 - Windows 上若 Codex Desktop 提供 `%LOCALAPPDATA%/OpenAI/Codex/bin/<runtime>/codex.exe`，Node 优先使用最近更新且可正常执行的 Desktop runtime，以保证它与 Desktop 写入的 `CODEX_HOME` 配置格式一致；否则回退到 `PATH`。可用绝对路径环境变量 `FAST_SPIDER_CODEX_EXECUTABLE` 明确覆盖该选择。
+- 共享 app-server owner 的实验入口（仅测试分支/显式配置）：设置绝对路径环境变量 `FAST_SPIDER_CODEX_APP_SERVER_SOCKET` 后，Node 不再启动独立 `app-server --stdio`，而是通过 `codex app-server proxy --sock <path>` 转发 WebSocket RPC；Node 不写入 Codex SQLite/rollout，也不负责停止 socket owner。该 socket owner 需由外部先以 `codex app-server --listen unix://<path>` 启动。
+- 该入口不等于自动接管当前 Codex Desktop。在 Windows 本机，Desktop 当前启动的 app-server 是由 Desktop 父进程管理的 stdio 子进程，没有公开给 FS 的 socket 地址；未获得可连接的 Desktop endpoint 前，不能宣称 FS 会话已经具备 Desktop 原生归档语义。
 - Claude Code Harness 要求本机已有 `claude` CLI；Fast Spider 只探测版本/安全的 auth 配置并运行原生 Session。
 - CC Switch 若安装，则 `~/.cc-switch/cc-switch.db` 作为只读 Routing SSOT；Fast Spider 不创建、迁移或修改该数据库，也不负责启动/更新 CC Switch。
 - Node data-dir 中的 `agent/claude-code-sessions.json` 只是 Fast Spider 本地控制索引；Claude 原生会话、CC Switch 数据和 Provider 凭据仍由各自产品管理。

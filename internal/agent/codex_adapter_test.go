@@ -92,6 +92,33 @@ func TestCodexExecutableCandidatesIgnoreMissingOrRelativeLocalAppData(t *testing
 	}
 }
 
+func TestCodexAppServerCommandArgsSelectExternalProxy(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "app-server.sock")
+	if got := codexAppServerCommandArgs(socketPath); !reflect.DeepEqual(got, []string{"app-server", "proxy", "--sock", socketPath}) {
+		t.Fatalf("external app-server args=%#v", got)
+	}
+	if got := codexAppServerCommandArgs(""); !reflect.DeepEqual(got, []string{"app-server", "--stdio"}) {
+		t.Fatalf("managed app-server args=%#v", got)
+	}
+}
+
+func TestCodexAppServerSocketPathRequiresAbsolutePath(t *testing.T) {
+	t.Setenv(codexAppServerSocketEnv, "")
+	if got, err := codexAppServerSocketPath(); err != nil || got != "" {
+		t.Fatalf("empty app-server socket=(%q, %v)", got, err)
+	}
+	t.Setenv(codexAppServerSocketEnv, "relative.sock")
+	if _, err := codexAppServerSocketPath(); err == nil {
+		t.Fatal("relative app-server socket was accepted")
+	}
+	socketPath := filepath.Join(t.TempDir(), "app-server.sock")
+	t.Setenv(codexAppServerSocketEnv, socketPath)
+	got, err := codexAppServerSocketPath()
+	if err != nil || got != socketPath {
+		t.Fatalf("absolute app-server socket=(%q, %v)", got, err)
+	}
+}
+
 func TestCodexConfigWarningBecomesSanitizedCapabilityError(t *testing.T) {
 	adapter := NewCodexAdapter(nil)
 	adapter.handleNotification("configWarning", json.RawMessage(`{"message":"Invalid configuration; using defaults","details":"config.toml token=secret-value"}`))

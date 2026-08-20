@@ -245,7 +245,7 @@ Plugin 是 Codex 的能力包，可包含 Skills、Apps、MCP servers、Hooks �
 
 `session.rollback` 的参数是 `numTurns`（1–1000），表示从 Thread 末尾删除 N 个 Codex turns。**它只修改 Codex 对话历史，不回滚本地工作树文件，也不等价于 Git reset/revert。**因此 rollback 之后仍应以 Git/文件系统事实判断代码状态。
 
-Codex app-server 是可重启的本机子进程。Fast Spider 记录当前进程内已加载 Thread；若 app-server 崩溃或被重启，下一次 Turn/Review 前自动调用官方 `thread/resume(threadId)` 重新加载持久 Thread，再继续操作。调用方无需维护第二个 resume 状态机，也不需要新增公开 `session.resume`。
+Codex app-server 默认是由 Fast Spider 管理的本机子进程。Fast Spider 记录当前进程内已加载 Thread；若 app-server 崩溃或被重启，下一次 Turn/Review 前自动调用官方 `thread/resume(threadId)` 重新加载持久 Thread，再继续操作。调用方无需维护第二个 resume 状态机，也不需要新增公开 `session.resume`。实验性共享 owner 模式可通过绝对 `FAST_SPIDER_CODEX_APP_SERVER_SOCKET` 接入外部 `codex app-server --listen unix://...`，此时 Fast Spider 只管理 proxy 客户端，不直接修改 Codex 状态文件；该模式仍要求外部 owner 真正存在，不能把普通 Desktop stdio 子进程自动当成可连接 endpoint。
 
 ## 10. Goal
 

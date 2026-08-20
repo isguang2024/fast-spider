@@ -133,6 +133,10 @@ func (m *AgentManager) Close(ctx context.Context) error {
 	return firstErr
 }
 
+func (m *AgentManager) ownsCodexDesktopMetadata() bool {
+	return m == nil || m.codex == nil || !m.codex.usesExternalAppServer()
+}
+
 func (m *AgentManager) Control(ctx context.Context, action string, params map[string]any) (map[string]any, error) {
 	if m == nil {
 		return nil, node.ErrAgentProviderUnavailable
@@ -611,8 +615,10 @@ func (m *AgentManager) deleteCodexSession(ctx context.Context, rawSessionID stri
 	if err := m.forgetSessionVisibility("codex", sessionID); err != nil {
 		return nil, err
 	}
-	if err := removeCodexDesktopThreadAssignment(m.codexStatePath, sessionID); err != nil {
-		m.logger.Warn("remove deleted Codex Desktop thread assignment", "sessionId", sessionID, "error", err)
+	if m.ownsCodexDesktopMetadata() {
+		if err := removeCodexDesktopThreadAssignment(m.codexStatePath, sessionID); err != nil {
+			m.logger.Warn("remove deleted Codex Desktop thread assignment", "sessionId", sessionID, "error", err)
+		}
 	}
 	return map[string]any{"sessionId": sessionID, "deleted": true, "alreadyDeleted": alreadyDeleted}, nil
 }
@@ -1137,19 +1143,20 @@ func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlPara
 	var projectID string
 	var projectSynced bool
 	var syncErr error
-	if spec.Visibility == sessionVisibilityVisible && spec.VisibilityTarget == sessionBackendCodexLocal {
+	if m.ownsCodexDesktopMetadata() && spec.Visibility == sessionVisibilityVisible && spec.VisibilityTarget == sessionBackendCodexLocal {
 		projectID, projectSynced, syncErr = syncCodexDesktopProject(m.codexStatePath, sessionID, project, time.Now())
 		if syncErr != nil && m.logger != nil {
 			m.logger.Warn("sync Codex Desktop project metadata", "sessionId", sessionID, "error", syncErr)
 		}
 	}
+	executionMode, owner := m.codex.executionMetadata()
 	out := map[string]any{
 		"workingDirectory":     workingDirectory,
 		"projectDirectory":     project.ProjectDirectory,
 		"sessionId":            sessionID,
-		"executionMode":        "bridge_owned",
+		"executionMode":        executionMode,
 		"model":                selectedModel,
-		"owner":                "node_agent_bridge",
+		"owner":                owner,
 		"phase":                "ready",
 		"realtimeChannel":      "session.watch",
 		"idempotencyProtected": idempotencyKey != "",
@@ -1194,8 +1201,10 @@ func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlPara
 				}
 			}
 			_ = m.codex.ArchiveThread(context.Background(), sessionID)
-			if cleanupErr := removeCodexDesktopThreadAssignment(m.codexStatePath, sessionID); cleanupErr != nil {
-				m.logger.Warn("remove failed Codex Desktop thread assignment", "sessionId", sessionID, "error", cleanupErr)
+			if m.ownsCodexDesktopMetadata() {
+				if cleanupErr := removeCodexDesktopThreadAssignment(m.codexStatePath, sessionID); cleanupErr != nil {
+					m.logger.Warn("remove failed Codex Desktop thread assignment", "sessionId", sessionID, "error", cleanupErr)
+				}
 			}
 		}
 		return nil, err
@@ -1212,8 +1221,10 @@ func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlPara
 		if cleanupErr := m.forgetSessionVisibility("codex", sessionID); cleanupErr != nil {
 			missingTurnErr = errors.Join(missingTurnErr, cleanupErr)
 		}
-		if cleanupErr := removeCodexDesktopThreadAssignment(m.codexStatePath, sessionID); cleanupErr != nil && m.logger != nil {
-			m.logger.Warn("remove Codex Desktop assignment after missing turn ID", "sessionId", sessionID, "error", cleanupErr)
+		if m.ownsCodexDesktopMetadata() {
+			if cleanupErr := removeCodexDesktopThreadAssignment(m.codexStatePath, sessionID); cleanupErr != nil && m.logger != nil {
+				m.logger.Warn("remove Codex Desktop assignment after missing turn ID", "sessionId", sessionID, "error", cleanupErr)
+			}
 		}
 		return nil, missingTurnErr
 	}
@@ -1246,8 +1257,10 @@ func (m *AgentManager) cleanupRejectedInitialTurn(sessionID string, idempotencyP
 	if err := m.forgetSessionVisibility("codex", sessionID); err != nil {
 		return fmt.Errorf("release rejected Codex session visibility metadata: %w", err)
 	}
-	if err := removeCodexDesktopThreadAssignment(m.codexStatePath, sessionID); err != nil {
-		m.logger.Warn("remove rejected Codex Desktop thread assignment", "sessionId", sessionID, "error", err)
+	if m.ownsCodexDesktopMetadata() {
+		if err := removeCodexDesktopThreadAssignment(m.codexStatePath, sessionID); err != nil {
+			m.logger.Warn("remove rejected Codex Desktop thread assignment", "sessionId", sessionID, "error", err)
+		}
 	}
 	return nil
 }
@@ -1279,7 +1292,7 @@ func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams
 	if assignment.ProjectDirectory != "" && (!project.IsGitRepository || !sameAgentPath(assignment.ProjectDirectory, project.ProjectDirectory)) {
 		return nil, fmt.Errorf("workingDirectory belongs to a different project; create a new session instead")
 	}
-	if project.IsGitRepository {
+	if m.ownsCodexDesktopMetadata() && project.IsGitRepository {
 		if _, _, syncErr := syncCodexDesktopProject(m.codexStatePath, input.SessionID, project, time.Now()); syncErr != nil {
 			m.logger.Warn("sync Codex Desktop project metadata", "sessionId", input.SessionID, "error", syncErr)
 		}
@@ -1307,12 +1320,13 @@ func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams
 		return nil, err
 	}
 	turnID := mapNestedString(turnResult, "turn", "id")
+	executionMode, owner := m.codex.executionMetadata()
 	return map[string]any{
 		"sessionId":     input.SessionID,
 		"turnId":        turnID,
 		"model":         selectedModel,
-		"executionMode": "bridge_owned",
-		"owner":         "node_agent_bridge",
+		"executionMode": executionMode,
+		"owner":         owner,
 		"phase":         "running",
 	}, nil
 }

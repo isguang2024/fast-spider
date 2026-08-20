@@ -18,12 +18,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/isguang2024/fast-spider/internal/node"
 )
 
 const (
-	codexRPCLineLimit = 8 << 20
-	codexEventLimit   = 1000
+	codexRPCLineLimit       = 8 << 20
+	codexEventLimit         = 1000
+	codexAppServerSocketEnv = "FAST_SPIDER_CODEX_APP_SERVER_SOCKET"
 )
 
 type codexRPCError struct {
@@ -80,6 +82,7 @@ type CodexAdapter struct {
 	rpcWriteMu  sync.Mutex
 	cmd         *exec.Cmd
 	stdin       io.WriteCloser
+	wsConn      *websocket.Conn
 	pending     map[int64]codexPending
 	nextID      int64
 	closed      bool
@@ -219,6 +222,10 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 		}
 	}
 
+	socketPath, err := codexAppServerSocketPath()
+	if err != nil {
+		return err
+	}
 	if _, err := a.Availability(ctx); err != nil {
 		return err
 	}
@@ -228,7 +235,7 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 	if path == "" {
 		return fmt.Errorf("%w: compatible Codex executable was not resolved", node.ErrAgentProviderUnavailable)
 	}
-	cmd := exec.Command(path, "app-server", "--stdio")
+	cmd := exec.Command(path, codexAppServerCommandArgs(socketPath)...)
 	if home, homeErr := os.UserHomeDir(); homeErr == nil && home != "" {
 		cmd.Dir = home
 	}
@@ -256,12 +263,25 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 	done := make(chan struct{})
 	a.cmd = cmd
 	a.stdin = stdin
+	a.wsConn = nil
 	a.processDone = done
 	a.configErr = nil
 	a.mu.Unlock()
-	go a.readLoop(stdout)
 	go a.stderrLoop(stderr)
 	go a.waitLoop(cmd, generation, done)
+	if socketPath != "" {
+		wsConn, dialErr := dialCodexAppServerProxy(ctx, stdin, stdout)
+		if dialErr != nil {
+			_ = a.stopProcess(context.Background(), cmd)
+			return fmt.Errorf("connect Codex app-server proxy: %w", dialErr)
+		}
+		a.mu.Lock()
+		a.wsConn = wsConn
+		a.mu.Unlock()
+		go a.readWebSocketLoop(wsConn)
+	} else {
+		go a.readLoop(stdout)
+	}
 
 	initCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -320,8 +340,12 @@ func (a *CodexAdapter) Close(ctx context.Context) error {
 func (a *CodexAdapter) stopProcess(ctx context.Context, cmd *exec.Cmd) error {
 	a.mu.Lock()
 	stdin := a.stdin
+	wsConn := a.wsConn
 	done := a.processDone
 	a.mu.Unlock()
+	if wsConn != nil {
+		_ = wsConn.Close(websocket.StatusNormalClosure, "Fast Spider stopping")
+	}
 	if stdin != nil {
 		_ = stdin.Close()
 	}
@@ -366,13 +390,14 @@ func (a *CodexAdapter) request(ctx context.Context, method string, params map[st
 	pending := codexPending{ch: make(chan codexRPCMessage, 1), generation: a.generation}
 	a.pending[id] = pending
 	stdin := a.stdin
+	wsConn := a.wsConn
 	a.mu.Unlock()
 
 	message := map[string]any{"id": id, "method": method}
 	if params != nil {
 		message["params"] = params
 	}
-	if err := a.writeLine(stdin, message); err != nil {
+	if err := a.writeMessage(ctx, wsConn, stdin, message); err != nil {
 		a.removePending(id)
 		return nil, err
 	}
@@ -405,15 +430,35 @@ func (a *CodexAdapter) request(ctx context.Context, method string, params map[st
 func (a *CodexAdapter) notify(method string, params map[string]any) error {
 	a.mu.Lock()
 	stdin := a.stdin
+	wsConn := a.wsConn
 	a.mu.Unlock()
-	if stdin == nil {
+	if stdin == nil && wsConn == nil {
 		return node.ErrAgentProviderUnavailable
 	}
 	message := map[string]any{"method": method}
 	if params != nil {
 		message["params"] = params
 	}
-	return a.writeLine(stdin, message)
+	return a.writeMessage(context.Background(), wsConn, stdin, message)
+}
+
+func (a *CodexAdapter) writeMessage(ctx context.Context, wsConn *websocket.Conn, stdin io.Writer, value any) error {
+	a.rpcWriteMu.Lock()
+	defer a.rpcWriteMu.Unlock()
+	if wsConn != nil {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return err
+		}
+		if len(raw) > codexRPCLineLimit {
+			return fmt.Errorf("Codex RPC request exceeds limit")
+		}
+		return wsConn.Write(ctx, websocket.MessageText, raw)
+	}
+	if stdin == nil {
+		return node.ErrAgentProviderUnavailable
+	}
+	return writeCodexJSONLine(stdin, value)
 }
 
 func (a *CodexAdapter) writeLine(writer io.Writer, value any) error {
@@ -445,37 +490,65 @@ func (a *CodexAdapter) readLoop(reader io.Reader) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), codexRPCLineLimit)
 	for scanner.Scan() {
-		var message codexRPCMessage
-		if err := json.Unmarshal(scanner.Bytes(), &message); err != nil {
-			a.logger.Debug("invalid Codex app-server message", "error", err)
-			continue
-		}
-		if len(message.ID) > 0 && (len(message.Result) > 0 || message.Error != nil) {
-			id, err := codexResponseID(message.ID)
-			if err != nil {
-				continue
-			}
-			a.mu.Lock()
-			pending, ok := a.pending[id]
-			if ok {
-				delete(a.pending, id)
-			}
-			a.mu.Unlock()
-			if ok {
-				pending.ch <- message
-			}
-			continue
-		}
-		if len(message.ID) > 0 && message.Method != "" {
-			a.handleServerRequest(message.ID, message.Method, message.Params)
-			continue
-		}
-		if message.Method != "" {
-			a.handleNotification(message.Method, message.Params)
-		}
+		a.handleRPCMessage(scanner.Bytes())
 	}
 	if err := scanner.Err(); err != nil {
 		a.logger.Debug("Codex app-server stdout ended", "error", err)
+	}
+}
+
+func (a *CodexAdapter) readWebSocketLoop(conn *websocket.Conn) {
+	for {
+		messageType, reader, err := conn.Reader(context.Background())
+		if err != nil {
+			a.logger.Debug("Codex app-server websocket ended", "error", err)
+			return
+		}
+		if messageType != websocket.MessageText && messageType != websocket.MessageBinary {
+			a.logger.Debug("invalid Codex app-server websocket message type", "messageType", messageType)
+			continue
+		}
+		raw, err := io.ReadAll(io.LimitReader(reader, codexRPCLineLimit+1))
+		if err != nil {
+			a.logger.Debug("read Codex app-server websocket message", "error", err)
+			return
+		}
+		if len(raw) > codexRPCLineLimit {
+			a.logger.Debug("Codex app-server websocket message exceeds limit")
+			return
+		}
+		a.handleRPCMessage(raw)
+	}
+}
+
+func (a *CodexAdapter) handleRPCMessage(raw []byte) {
+	var message codexRPCMessage
+	if err := json.Unmarshal(raw, &message); err != nil {
+		a.logger.Debug("invalid Codex app-server message", "error", err)
+		return
+	}
+	if len(message.ID) > 0 && (len(message.Result) > 0 || message.Error != nil) {
+		id, err := codexResponseID(message.ID)
+		if err != nil {
+			return
+		}
+		a.mu.Lock()
+		pending, ok := a.pending[id]
+		if ok {
+			delete(a.pending, id)
+		}
+		a.mu.Unlock()
+		if ok {
+			pending.ch <- message
+		}
+		return
+	}
+	if len(message.ID) > 0 && message.Method != "" {
+		a.handleServerRequest(message.ID, message.Method, message.Params)
+		return
+	}
+	if message.Method != "" {
+		a.handleNotification(message.Method, message.Params)
 	}
 }
 
@@ -647,15 +720,16 @@ func boundedAgentMap(value map[string]any, maxBytes int) map[string]any {
 func (a *CodexAdapter) replyServerRequestError(id json.RawMessage, code int, message string) {
 	a.mu.Lock()
 	stdin := a.stdin
+	wsConn := a.wsConn
 	a.mu.Unlock()
-	if stdin == nil {
+	if stdin == nil && wsConn == nil {
 		return
 	}
 	var rawID any
 	if err := json.Unmarshal(id, &rawID); err != nil {
 		return
 	}
-	_ = a.writeLine(stdin, map[string]any{
+	_ = a.writeMessage(context.Background(), wsConn, stdin, map[string]any{
 		"id": rawID,
 		"error": map[string]any{
 			"code":    code,
@@ -685,6 +759,7 @@ func (a *CodexAdapter) finishProcess(cmd *exec.Cmd, generation uint64, done chan
 	if isCurrent {
 		a.cmd = nil
 		a.stdin = nil
+		a.wsConn = nil
 		a.processDone = nil
 		a.configErr = nil
 	}
@@ -1253,15 +1328,16 @@ func (a *CodexAdapter) RespondPendingRequest(ctx context.Context, sessionID, req
 	}
 	a.mu.Lock()
 	stdin := a.stdin
+	wsConn := a.wsConn
 	a.mu.Unlock()
-	if stdin == nil {
+	if stdin == nil && wsConn == nil {
 		return nil, node.ErrAgentProviderUnavailable
 	}
 	var rawID any
 	if err := json.Unmarshal(pending.RawID, &rawID); err != nil {
 		return nil, fmt.Errorf("decode pending Codex request id: %w", err)
 	}
-	if err := a.writeLine(stdin, map[string]any{"id": rawID, "result": result}); err != nil {
+	if err := a.writeMessage(ctx, wsConn, stdin, map[string]any{"id": rawID, "result": result}); err != nil {
 		return nil, err
 	}
 	a.serverMu.Lock()
@@ -1498,11 +1574,17 @@ func (a *CodexAdapter) RenameThread(ctx context.Context, sessionID, name string)
 }
 
 func (a *CodexAdapter) ArchiveThread(ctx context.Context, sessionID string) error {
+	if err := a.ensureThreadLoaded(ctx, sessionID); err != nil {
+		return err
+	}
 	_, err := a.request(ctx, "thread/archive", map[string]any{"threadId": sessionID})
 	return err
 }
 
 func (a *CodexAdapter) UnarchiveThread(ctx context.Context, sessionID string) error {
+	if err := a.ensureThreadLoaded(ctx, sessionID); err != nil {
+		return err
+	}
 	_, err := a.request(ctx, "thread/unarchive", map[string]any{"threadId": sessionID})
 	return err
 }

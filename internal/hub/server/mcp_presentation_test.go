@@ -87,7 +87,7 @@ func TestPresentationToolResultNonImageReturnsLinkOnly(t *testing.T) {
 }
 
 func TestDecoratePublishedAttachmentResultReturnsURLOnlyMetadata(t *testing.T) {
-	now := time.Date(2026, 8, 18, 8, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	data := []byte("attachment")
 	relay := newPresentationStore(t.TempDir())
 	sum := sha256.Sum256(data)
