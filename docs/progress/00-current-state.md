@@ -10,7 +10,7 @@
 - branch: `main`
 - sourceReleaseCommit: `c724945406f1072086c905a2a8f9b4de200e629b`
 - phase: `0.4.23 PRODUCTION DEPLOYED / HEALTHY`
-- finalReleaseGate: `core release gate PASS；go build ./...、go vet ./...、go test ./... -count=1、跨平台 build、Hub restore E2E、Local Bridge E2E 与 ChatGPT Cloud live E2E PASS；精确 scripts/release-gate.sh --full 在 Git history secretscan 发现 325 个既有历史命中后按设计停止，未绕过或伪装为 full PASS；post-history 专项未宣称通过`
+- finalReleaseGate: `core release gate PASS；go build ./...、go vet ./...、go test ./... -count=1、跨平台 build、Hub restore E2E、Local Bridge E2E 与 ChatGPT Cloud live E2E PASS；精确 scripts/release-gate.sh --full 在 Git history secretscan 发现 325 个既有历史命中后按设计停止，未绕过或伪装为 full PASS；其余 post-history full stages（全部专项、WSL、Browser、CC Switch、Claude、multi-provider、Local Bridge→Codex product）已单独 PASS；windows/386 按设计 skip fuzz/race`
 - productionHub: `0.4.23 / SHA256 534eccaac8f921d625c7b4da48dbe8fb426940d0967e4b006e37a9db1edaec1 / PID 666081 / systemd active / local+public livez+readyz 200`
 - productionSpiderctl: `0.4.23 / SHA256 62f2003f7da6cd1c19e36ec99dbc486a18ac8f8e4c1a6747bf982ee5fac0abd7`
 - productionNode: `PCa / 0.4.23 / windows-amd64 / generation=131 / last_seen=2026-08-20T03:33:27Z / active / release SHA256 d4d6cb1b3e09de4d35cfbdd6af10822bc57219ff6566df8f4aacda7c1d92ace8`

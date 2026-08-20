@@ -180,6 +180,6 @@
 
 - `chatgpt_cloud` `session.steer` 已真实接入 `/backend-api/f/steer_turn`；MCP `ai_control` 的 tools/list、initialize instructions 与 capability guide 明确支持通过 Codex 创建 visible ChatGPT CHAT 会话，不再保留“ChatGPT cloud creation is explicitly unsupported”的过时描述。
 - 源提交 `c724945406f1072086c905a2a8f9b4de200e629b` 已推送 `origin/main`，分支 `codex/release-0.4.23` 与 tag `v0.4.23` 已推送；源码版本为 0.4.23，五个显式构建目标均 `vcs.modified=false`。
-- core release gate、全仓 test/vet/build 与真实 `TestChatGPTCloud` live E2E PASS；精确 `--full` gate 在 Git history secretscan 的 325 个既有历史命中处按设计停止，未绕过历史安全门禁。
+- core release gate、全仓 test/vet/build、history 之后的全部专项/WSL/Browser/CC Switch/Claude/multi-provider/Local Bridge→Codex product stages 与真实 `TestChatGPTCloud` live E2E PASS；精确 `--full` gate 在 Git history secretscan 的 325 个既有历史命中处按设计停止，未绕过历史安全门禁；windows/386 按设计 skip fuzz/race。
 - 生产备份 `pre-0.4.23-c724945406f1072086c905a2a8f9b4de200e629b.zip` Verify PASS；Hub/spiderctl 已原子升级到 0.4.23，三平台 Node release 与 push marker 已发布，PCa idle-safe 自更新到 0.4.23 / generation=131；本机/公网 livez/readyz=200，未认证 MCP=401，OAuth metadata=200。
 - ChatGPT App/客户端如果缓存旧工具 Schema，需 Refresh；本次未读取生产 OAuth 凭据执行认证冷 `tools/list`，以本地 MCP E2E 与公开未认证边界作为服务端证据。
