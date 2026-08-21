@@ -244,6 +244,16 @@
 - 生产 Hub SHA256=`534eccaac8f921d625c7b4da48dbe8fb426940d0967e4b006e37a9db1edaec1`、spiderctl SHA256=`62f2003f7da6cd1c19e36ec99dbc486a18ac8f8e4c1a6747bf982ee5fac0abd7`、PID=`666081`；rollback/pre-0.4.23-c724945 保留旧 0.4.22 Hub/spiderctl。Node push marker SHA256 分别为 Windows=`d4d6cb1b3e09de4d35cfbdd6af10822bc57219ff6566df8f4aacda7c1d92ace8`、darwin-amd64=`9d68a650837b24cb0685f2e838ed67a15586451b8ef5788fdcc7a50623ffe843`、darwin-arm64=`f51726b5b8745d81c700aed3652fbba7696441449414dae9e1b674a73e43d4fb`。
 - PCa 已完成 idle-safe 自更新到 0.4.23 / windows-amd64 / generation=131，Hub DB 最近心跳 `2026-08-20T03:44:25Z`；当前认证 MCP 已真实调用 `machine_list`（online=true、runtimeStatus=ready）及 `capability_list(view=overview/view=tool,name=ai_control)`，返回 ServerVersion=`0.4.23`、GuideVersion=`1.3` 并包含 ChatGPT CHAT 创建要求。ChatGPT App 的已缓存顶层工具定义仍需用户执行 Refresh；认证生产原始 `tools/list` 冷调用未读取生产凭据，故不伪装为已完成该外部宿主动作。
 - **部署验收：PASS / PRODUCTION HEALTHY；MCP 运行时 capability discovery：PASS；ChatGPT App Refresh 与原始 tools/list 冷调用：待外部宿主动作。**
+
+## 2026-08-21 — 0.4.24 Release Hardening / Production Deployment
+
+- 审计修复：新 Hub 不再接受固定默认管理员密码；fresh DB 要求显式 `FAST_SPIDER_ADMIN_PASSWORD`，既有管理员通过 `password_version` 强制轮换并撤销旧会话。ChatGPT Cloud `session.create` 复用持久幂等存储，realtime 订阅增加 root cancellation、idle LRU 与精确 waiter 释放，watch 先验证 conversation。Nginx Fast Spider 两份入口配置固定覆盖 `X-Forwarded-For`、`X-Real-IP`、`CF-Connecting-IP` 为 `$remote_addr`。
+- 验证：clean reachable clone 的 `scripts/release-gate.sh --full` 终态 PASS；`go test ./...`、`go vet ./...`、`git diff --check`、跨平台构建、真实 Codex plugin/MCP E2E、真实 ChatGPT Cloud live E2E、生产本机/公网健康检查全部 PASS。Windows/386 按设计 skip fuzz/race。
+- Git：源码 release commit `ceef5843dfb8dd4453eef0141c83ec20ad152f85`，构建产物 `vcs.revision=ceef584`、`vcs.modified=false`。本轮从 origin 派生的 clean clone 用于历史 secretscan，原工作树因取证引入不可达旧对象，未绕过或删除该对象。
+- 生产：备份 `/srv/backups/pre-0.4.24-ceef5843dfb8dd4453eef0141c83ec20ad152f85.zip` Verify `valid=true`、86 files、SHA256=`b0c3b7e4713b964a8180020301e09c8596206e24da0c7e601b290f2de9a3950b`、size=`17189631`。Hub `0.4.24` SHA256=`d25533e821a6bf45833c6e9c52d8745c1f3dbc08a1e49bd717b9988c8fe0cad9`、PID=`1279423`；spiderctl SHA256=`dbd9c19647ee3106b863e22caa036f2c44d4eb46fa6a7205b10e99d2c66388ec`；systemd active，本机与公网 livez/readyz=200，未认证 MCP=401，OAuth metadata=200。
+- 三平台 Node release 已推送：Windows SHA256=`f26c166ed54b6803089a2034a0a47f595b4be8895f46f350ae5edf3a57035302`、darwin-amd64=`855aa8a36020fe05af94c1f5a3e1a6feb8a324abf443919f7b9ab6137e1b1549`、darwin-arm64=`78c378ca76f9997020a504fe05ab3a6131b8ab70749b27b4acbe7c2f02d6ea0f`；PCa 重启后注册 generation=`136`。本机正式 EXE SHA256=`f26c166ed54b6803089a2034a0a47f595b4be8895f46f350ae5edf3a57035302`，旧实验构建备份保留。
+- 本机 production Local Bridge smoke：`pluginMarketplaces=5`、`mcpServers=4`、`fileReadSucceeded=true`；真实 MCP status 返回 `codex_apps` 222 tools，确认 AI 插件可读 MCP 并可执行文件读取能力。
+- **部署验收：PASS / PRODUCTION HEALTHY / AI plugin + MCP runtime PASS。**
 <!-- fast-spider:managed:acceptance:end -->
 
 ## Manual Acceptance Notes

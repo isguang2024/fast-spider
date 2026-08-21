@@ -183,3 +183,10 @@
 - core release gate、全仓 test/vet/build、history 之后的全部专项/WSL/Browser/CC Switch/Claude/multi-provider/Local Bridge→Codex product stages 与真实 `TestChatGPTCloud` live E2E PASS；精确 `--full` gate 在 Git history secretscan 的 325 个既有历史命中处按设计停止，未绕过历史安全门禁；windows/386 按设计 skip fuzz/race。
 - 生产备份 `pre-0.4.23-c724945406f1072086c905a2a8f9b4de200e629b.zip` Verify PASS；Hub/spiderctl 已原子升级到 0.4.23，三平台 Node release 与 push marker 已发布，PCa idle-safe 自更新到 0.4.23 / generation=131；本机/公网 livez/readyz=200，未认证 MCP=401，OAuth metadata=200。
 - 已通过当前认证 MCP 真实调用 `machine_list` 与 `capability_list(view=overview/view=tool,name=ai_control)`：生产 ServerVersion=`0.4.23`、GuideVersion=`1.3`，返回 ChatGPT CHAT 创建参数；ChatGPT App/客户端如果缓存旧顶层工具 Schema，仍需 Refresh。本次未读取生产 OAuth 凭据执行原始冷 `tools/list`，以本地 tools/list E2E、生产 capability discovery 与公开未认证边界作为服务端证据。
+
+### 2026-08-21 — 0.4.24 发布加固、部署与 AI/MCP 验收
+
+- 修复固定管理员默认凭据、管理员密码轮换/旧会话撤销、ChatGPT Cloud session.create 持久幂等、realtime 订阅关闭/有界空闲回收/精确 waiter 释放与 conversation watch 校验；Nginx Fast Spider 入口覆盖客户端 IP 头，阻断外部伪造。
+- 源码 release commit `ceef5843dfb8dd4453eef0141c83ec20ad152f85`；clean reachable clone 的完整 release gate PASS，真实 Codex plugin/MCP、ChatGPT Cloud live、WSL/Browser/CC Switch/Claude/multi-provider 与 Local Bridge→Codex product E2E PASS。Windows/386 按设计 skip fuzz/race。
+- 生产已完成备份 Verify、Hub/spiderctl 原子升级、三平台 Node release push 与本机 Windows Node 受控替换；Hub/spiderctl/Node 均为 0.4.24，PCa generation=136，systemd 与本机/公网健康检查正常，回滚副本保留。
+- 本机真实 Local Bridge smoke 返回 `pluginMarketplaces=5`、`mcpServers=4`、`fileReadSucceeded=true`；MCP status 读取到 `codex_apps`，可见 222 tools，证明 AI 插件能读取 MCP 并正常调用能力。
