@@ -42,6 +42,7 @@ type ChatGPTCloudAdapter struct {
 
 	conduitMu             sync.Mutex
 	conduitByConversation map[string]string
+	createOverride        func(context.Context, string, string) (chatgptCloudTurnResult, error)
 }
 
 type chatgptCloudTurnResult struct {
@@ -78,6 +79,30 @@ func NewChatGPTCloudAdapter(logger *slog.Logger, tokenSource func(ctx context.Co
 // WatchRealtime returns live pubsub events for a conversation after the cursor.
 func (a *ChatGPTCloudAdapter) WatchRealtime(ctx context.Context, conversationID string, cursor int64, wait time.Duration) ([]chatgptCloudEvent, int64, error) {
 	return a.realtime.watch(ctx, conversationID, cursor, wait)
+}
+
+// StopRealtime terminates the pubsub subscription for a conversation.
+func (a *ChatGPTCloudAdapter) StopRealtime(conversationID string) {
+	if a != nil && a.realtime != nil {
+		a.realtime.stopWatching(conversationID)
+	}
+}
+
+// Close terminates realtime subscriptions and releases idle HTTP connections.
+func (a *ChatGPTCloudAdapter) Close(ctx context.Context) error {
+	if a == nil {
+		return nil
+	}
+	var firstErr error
+	if a.realtime != nil {
+		if err := a.realtime.Close(ctx); err != nil {
+			firstErr = err
+		}
+	}
+	if a.http != nil {
+		a.http.CloseIdleConnections()
+	}
+	return firstErr
 }
 
 func (a *ChatGPTCloudAdapter) cacheConduit(conversationID, conduit string) {
@@ -362,6 +387,9 @@ func (a *ChatGPTCloudAdapter) Create(ctx context.Context, prompt, model string) 
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return chatgptCloudTurnResult{}, fmt.Errorf("creating a ChatGPT cloud conversation requires a first message")
+	}
+	if a.createOverride != nil {
+		return a.createOverride(ctx, prompt, model)
 	}
 	return a.sendTurn(ctx, chatgptNewChatBody(prompt, model))
 }

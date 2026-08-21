@@ -12,7 +12,7 @@
 
 Connection Token 只用于首次登记，不保存到 Node。MCP OAuth 不参与 Node 登记。
 
-Admin 后台位于 `/admin/login`，当前只提供创建 Owner 用户的能力，不提供角色控制，也不复用 Owner 的 Web Session。默认管理员为 `admin`，初始密码为 `AA@@123456`；数据库只保存密码哈希。
+Admin 后台位于 `/admin/login`，当前只提供创建 Owner 用户的能力，不提供角色控制，也不复用 Owner 的 Web Session。管理员用户名固定为 `admin`，首次启动必须通过 `FAST_SPIDER_ADMIN_PASSWORD` 或 `--admin-password` 显式注入强密码；系统不提供公开默认密码，数据库只保存密码哈希。由旧版本创建的管理员在首次升级时必须显式轮换密码，轮换会使既有管理员会话失效。
 
 ## 本地权限
 

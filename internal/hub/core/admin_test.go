@@ -2,12 +2,41 @@ package core
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
 	"github.com/isguang2024/fast-spider/internal/hub/registry"
 	"github.com/isguang2024/fast-spider/internal/hub/store"
 )
+
+const testAdminPassword = "admin-test-password-123"
+
+func TestAdminInitializationRequiresExplicitPassword(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	st, err := store.Open(ctx, filepath.Join(dataDir, "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	service, err := New(st, registry.New(), Config{DataDir: dataDir, Version: "admin-init-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.EnsureAdminAccount(ctx, ""); !errors.Is(err, store.ErrAdminPasswordRequired) {
+		t.Fatalf("missing admin password error=%v", err)
+	}
+	if exists, err := st.HasAdminAccount(ctx, DefaultAdminUsername); err != nil || exists {
+		t.Fatalf("fresh data dir created admin account exists=%v err=%v", exists, err)
+	}
+	if err := service.EnsureAdminAccount(ctx, testAdminPassword); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.LoginAdmin(ctx, DefaultAdminUsername, testAdminPassword, "127.0.0.1"); err != nil {
+		t.Fatalf("explicit admin password cannot login: %v", err)
+	}
+}
 
 func TestAdminAccountAndUserCreation(t *testing.T) {
 	ctx := context.Background()
@@ -21,13 +50,13 @@ func TestAdminAccountAndUserCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.EnsureAdminAccount(ctx); err != nil {
+	if err := service.EnsureAdminAccount(ctx, testAdminPassword); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.EnsureAdminAccount(ctx); err != nil {
+	if err := service.EnsureAdminAccount(ctx, testAdminPassword); err != nil {
 		t.Fatal(err)
 	}
-	admin, err := service.LoginAdmin(ctx, DefaultAdminUsername, DefaultAdminPassword, "127.0.0.1")
+	admin, err := service.LoginAdmin(ctx, DefaultAdminUsername, testAdminPassword, "127.0.0.1")
 	if err != nil || admin.Username != DefaultAdminUsername {
 		t.Fatalf("admin login=%+v err=%v", admin, err)
 	}

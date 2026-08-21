@@ -70,6 +70,7 @@ func TestRestoredHubStartsHealthy(t *testing.T) {
 		"--listen", addr,
 		"--data-dir", restored,
 		"--allowed-hosts", "127.0.0.1,localhost",
+		"--admin-password", "restored-hub-e2e-password-123",
 	)
 	hub.Stdout = &logs
 	hub.Stderr = &logs

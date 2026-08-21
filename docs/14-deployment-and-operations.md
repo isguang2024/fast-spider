@@ -1,10 +1,12 @@
-# 部署与运维（0.4.23）
+# 部署与运维（0.4.24）
 
 ## Hub
 
-生产主线只保留一个 `fast-spider-hub` systemd 服务。Hub 监听 loopback，由 Nginx/TLS 反向代理公网路径。生产关键配置：AllowedHosts、PublicBaseURL、OAuth redirect host allowlist、data-dir、release-dir。
+生产主线只保留一个 `fast-spider-hub` systemd 服务。Hub 监听 loopback，由 Nginx/TLS 反向代理公网路径。生产关键配置：AllowedHosts、PublicBaseURL、OAuth redirect host allowlist、data-dir、release-dir。首次启动前必须在权限为 `0600` 的环境文件中设置唯一的 `FAST_SPIDER_ADMIN_PASSWORD`；旧版本数据库升级时再次设置它以完成一次性密码轮换，轮换会吊销已有管理员会话。未提供密码时 Hub 对缺少初始化或待轮换管理员的数据库拒绝启动。
 
 Hub data-dir 与 release-dir 分离：数据库/密钥/Artifact 进入备份，Windows Node EXE 和大型组件不进入 Hub 数据备份。Temporary Presentation Relay 使用系统临时目录，不进入数据库或备份；新 Node 的 Browser/OS 截图与 `artifact_get.publishFile` 都使用 attachment 模式，MCP/Direct 只返回 URL 元数据，最长 TTL 为 48 小时，Hub 每分钟按 `expiresAt` 自动删除，单次上传上限均为 64 MiB。旧 Node 未携带 resource kind 时仍按 20 分钟 presentation 兼容语义处理。Hub 启动/退出会清理临时根，因此 48 小时是最长保留上限而不是跨 Hub 重启的持久化承诺。反向代理应对 Fast Spider 路径允许至少 64 MiB 请求体；Nginx 建议同时设置 `proxy_request_buffering off`，避免大图/临时文件先完整落到代理缓存。
+
+Hub 只监听 loopback 时会把反向代理视为可信来源，因此代理必须覆盖而不是追加客户端可控的转发头。Nginx 至少应为 Fast Spider 的所有 location 设置 `X-Real-IP $remote_addr`、`X-Forwarded-For $remote_addr` 和 `CF-Connecting-IP $remote_addr`；不要使用会保留调用方原始值的 `$proxy_add_x_forwarded_for`，否则登录与 OAuth 注册的按 IP 限速可能被伪造头绕过。
 
 0.4.20 增加独立 Direct API。生产 PublicBaseURL 为 `/fast-spider` 时，对外入口为 `GET /fast-spider/direct/v1/tools` 和 `POST /fast-spider/direct/v1/call`，仅接受后台生成的 `fsp_tmp_` Direct Access Key Bearer。Direct Key 与 OAuth、Connection Token 完全隔离；默认只读，高危 Scope 单独授权，高权限最长 24 小时、只读最长 7 天，可绑定单一 Machine 并设置每分钟限速。MCP 与 Direct API 对共有工具复用同一 `toolExecutor`，不得维护两套 Capability 参数映射；MCP-only `audit_log` 不进入 Direct Access Key 工具目录。
 

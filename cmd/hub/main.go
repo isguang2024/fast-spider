@@ -29,8 +29,12 @@ func main() {
 	allowedHosts := flag.String("allowed-hosts", "localhost,127.0.0.1", "comma-separated Host allowlist; use the public Hub hostname in production")
 	publicBaseURL := flag.String("public-base-url", "", "public Hub base URL used for MCP OAuth discovery, for example https://sharedservices.example/fast-spider")
 	oauthRedirectHosts := flag.String("oauth-redirect-hosts", "chatgpt.com,localhost,127.0.0.1,::1", "comma-separated OAuth redirect host allowlist")
+	adminPassword := flag.String("admin-password", "", "one-time administrator password; prefer FAST_SPIDER_ADMIN_PASSWORD to avoid process listings")
 	showVersion := flag.Bool("version", false, "print Fast Spider version and exit")
 	flag.Parse()
+	if strings.TrimSpace(*adminPassword) == "" {
+		*adminPassword = os.Getenv("FAST_SPIDER_ADMIN_PASSWORD")
+	}
 	if *showVersion {
 		fmt.Println(version.Version)
 		return
@@ -67,7 +71,7 @@ func main() {
 	if err != nil {
 		fatal(logger, "initialize hub core", err)
 	}
-	if err := service.EnsureAdminAccount(ctx); err != nil {
+	if err := service.EnsureAdminAccount(ctx, *adminPassword); err != nil {
 		fatal(logger, "initialize admin account", err)
 	}
 	bootstrapToken, err := service.EnsureBootstrap(ctx)

@@ -36,18 +36,27 @@ type chatgptCloudRealtime struct {
 	notify    chan struct{}
 	watching  map[string]*realtimeSubscription
 	closed    bool
+	rootCtx   context.Context
+	cancel    context.CancelFunc
+	closeOnce sync.Once
+	wg        sync.WaitGroup
 }
+
+const maxChatGPTCloudRealtimeSubscriptions = 64
 
 type realtimeSubscription struct {
 	conversationID string
 	cancel         context.CancelFunc
 	done           chan struct{}
+	lastUsed       time.Time
+	waiters        int
 }
 
 func newChatGPTCloudRealtime(logger *slog.Logger, baseURL string, httpClient *http.Client, tokenSource func(ctx context.Context) (string, error)) *chatgptCloudRealtime {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	rootCtx, cancel := context.WithCancel(context.Background())
 	return &chatgptCloudRealtime{
 		logger:      logger,
 		baseURL:     baseURL,
@@ -55,6 +64,8 @@ func newChatGPTCloudRealtime(logger *slog.Logger, baseURL string, httpClient *ht
 		tokenSource: tokenSource,
 		notify:      make(chan struct{}),
 		watching:    map[string]*realtimeSubscription{},
+		rootCtx:     rootCtx,
+		cancel:      cancel,
 	}
 }
 
@@ -89,21 +100,60 @@ func (r *chatgptCloudRealtime) emit(conversationID, eventType string) {
 }
 
 // ensureWatching starts a pubsub subscription for a conversation if not active.
-func (r *chatgptCloudRealtime) ensureWatching(ctx context.Context, conversationID string) {
+func (r *chatgptCloudRealtime) ensureWatching(_ context.Context, conversationID string, waiting ...bool) (*realtimeSubscription, error) {
+	isWaiting := len(waiting) > 0 && waiting[0]
+	var evicted *realtimeSubscription
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
-		return
+		return nil, fmt.Errorf("chatgpt_cloud realtime is closed")
 	}
-	if _, active := r.watching[conversationID]; active {
+	if active := r.watching[conversationID]; active != nil {
+		active.lastUsed = time.Now()
+		if isWaiting {
+			active.waiters++
+		}
 		r.mu.Unlock()
-		return
+		return active, nil
 	}
-	subCtx, cancel := context.WithCancel(context.Background())
-	sub := &realtimeSubscription{conversationID: conversationID, cancel: cancel, done: make(chan struct{})}
+	if len(r.watching) >= maxChatGPTCloudRealtimeSubscriptions {
+		for _, candidate := range r.watching {
+			if candidate.waiters > 0 {
+				continue
+			}
+			if evicted == nil || candidate.lastUsed.Before(evicted.lastUsed) {
+				evicted = candidate
+			}
+		}
+		if evicted == nil {
+			r.mu.Unlock()
+			return nil, fmt.Errorf("chatgpt_cloud realtime subscription limit reached (%d): all subscriptions have active waiters", maxChatGPTCloudRealtimeSubscriptions)
+		}
+		delete(r.watching, evicted.conversationID)
+		evicted.cancel()
+	}
+	subCtx, cancel := context.WithCancel(r.rootCtx)
+	sub := &realtimeSubscription{conversationID: conversationID, cancel: cancel, done: make(chan struct{}), lastUsed: time.Now()}
+	if isWaiting {
+		sub.waiters = 1
+	}
 	r.watching[conversationID] = sub
+	r.wg.Add(1)
 	r.mu.Unlock()
-	go r.runSubscription(subCtx, sub)
+	go func() {
+		defer r.wg.Done()
+		r.runSubscription(subCtx, sub)
+	}()
+	return sub, nil
+}
+
+func (r *chatgptCloudRealtime) releaseWaiter(sub *realtimeSubscription) {
+	r.mu.Lock()
+	if sub != nil && r.watching[sub.conversationID] == sub && sub.waiters > 0 {
+		sub.waiters--
+		sub.lastUsed = time.Now()
+	}
+	r.mu.Unlock()
 }
 
 func (r *chatgptCloudRealtime) stopWatching(conversationID string) {
@@ -113,6 +163,34 @@ func (r *chatgptCloudRealtime) stopWatching(conversationID string) {
 	r.mu.Unlock()
 	if sub != nil {
 		sub.cancel()
+	}
+}
+
+// Close stops every active pubsub subscription and waits for its websocket
+// connection (if any) to observe cancellation. It is safe to call repeatedly.
+func (r *chatgptCloudRealtime) Close(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	r.closeOnce.Do(func() {
+		r.mu.Lock()
+		r.closed = true
+		r.cancel()
+		for _, sub := range r.watching {
+			sub.cancel()
+		}
+		r.mu.Unlock()
+	})
+	done := make(chan struct{})
+	go func() {
+		r.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -253,7 +331,14 @@ func (r *chatgptCloudRealtime) watch(ctx context.Context, conversationID string,
 	if wait < 0 || wait > 15*time.Second {
 		return nil, cursor, fmt.Errorf("wait is outside the allowed range")
 	}
-	r.ensureWatching(ctx, conversationID)
+	isWaiting := wait > 0
+	sub, err := r.ensureWatching(ctx, conversationID, isWaiting)
+	if err != nil {
+		return nil, cursor, err
+	}
+	if isWaiting {
+		defer r.releaseWaiter(sub)
+	}
 	deadline := time.Now().Add(wait)
 	for {
 		r.mu.Lock()

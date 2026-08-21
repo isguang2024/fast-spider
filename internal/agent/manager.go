@@ -120,6 +120,11 @@ func (m *AgentManager) Close(ctx context.Context) error {
 		return nil
 	}
 	var firstErr error
+	if m.chatgptCloud != nil {
+		if err := m.chatgptCloud.Close(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	if m.codex != nil {
 		if err := m.codex.Close(ctx); err != nil && firstErr == nil {
 			firstErr = err

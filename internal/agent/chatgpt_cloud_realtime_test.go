@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -37,6 +38,7 @@ func TestChatgptHandleWSFramesIgnoresReplies(t *testing.T) {
 
 func TestChatgptCloudRealtimeEmitNormalizes(t *testing.T) {
 	r := newChatGPTCloudRealtime(nil, "https://chatgpt.com", nil, nil)
+	defer r.Close(context.Background())
 	r.emit("abc", "conversation-turn-complete")
 	r.emit("abc", "conversation-created")
 	r.emit("abc", "some-other-update")
@@ -57,6 +59,7 @@ func TestChatgptCloudRealtimeEmitNormalizes(t *testing.T) {
 
 func TestChatgptCloudRealtimeWatchTimeout(t *testing.T) {
 	r := newChatGPTCloudRealtime(nil, "https://chatgpt.com", nil, nil)
+	defer r.Close(context.Background())
 	start := time.Now()
 	events, _, err := r.watch(context.Background(), "missing", 0, 300*time.Millisecond)
 	if err != nil {
@@ -67,5 +70,57 @@ func TestChatgptCloudRealtimeWatchTimeout(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed < 250*time.Millisecond {
 		t.Fatalf("watch returned too fast (%v)", elapsed)
+	}
+}
+
+func TestChatgptCloudRealtimeSubscriptionsAreBoundedAndCloseable(t *testing.T) {
+	r := newChatGPTCloudRealtime(nil, "https://chatgpt.com", nil, nil)
+	for i := 0; i < maxChatGPTCloudRealtimeSubscriptions; i++ {
+		if _, err := r.ensureWatching(context.Background(), fmt.Sprintf("conversation-%d", i)); err != nil {
+			t.Fatalf("ensureWatching(%d): %v", i, err)
+		}
+	}
+	if _, err := r.ensureWatching(context.Background(), "conversation-over-limit"); err != nil {
+		t.Fatalf("idle subscription should be evictable: %v", err)
+	}
+	r.mu.Lock()
+	count := len(r.watching)
+	r.mu.Unlock()
+	if count != maxChatGPTCloudRealtimeSubscriptions {
+		t.Fatalf("realtime subscriptions=%d want %d", count, maxChatGPTCloudRealtimeSubscriptions)
+	}
+	if err := r.Close(context.Background()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	r.mu.Lock()
+	deferred := len(r.watching)
+	closed := r.closed
+	r.mu.Unlock()
+	if !closed || deferred != 0 {
+		t.Fatalf("realtime close state closed=%v watching=%d", closed, deferred)
+	}
+}
+
+func TestChatgptCloudRealtimeDoesNotEvictActiveWaiter(t *testing.T) {
+	r := newChatGPTCloudRealtime(nil, "https://chatgpt.com", nil, nil)
+	defer r.Close(context.Background())
+	if _, err := r.ensureWatching(context.Background(), "conversation-active", true); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < maxChatGPTCloudRealtimeSubscriptions-1; i++ {
+		if _, err := r.ensureWatching(context.Background(), fmt.Sprintf("conversation-idle-%d", i)); err != nil {
+			t.Fatalf("ensure idle %d: %v", i, err)
+		}
+	}
+	if _, err := r.ensureWatching(context.Background(), "conversation-new"); err != nil {
+		t.Fatalf("idle eviction with active waiter failed: %v", err)
+	}
+	r.mu.Lock()
+	_, active := r.watching["conversation-active"]
+	_, added := r.watching["conversation-new"]
+	count := len(r.watching)
+	r.mu.Unlock()
+	if !active || !added || count != maxChatGPTCloudRealtimeSubscriptions {
+		t.Fatalf("active=%v added=%v count=%d", active, added, count)
 	}
 }

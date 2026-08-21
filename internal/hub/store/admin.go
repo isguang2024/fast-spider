@@ -7,11 +7,17 @@ import (
 	"time"
 )
 
+var (
+	ErrAdminPasswordRequired = errors.New("admin password initialization required")
+	ErrAdminRotationRequired = errors.New("admin password rotation required")
+)
+
 type AdminAccountRecord struct {
-	ID           string
-	Username     string
-	PasswordHash string
-	CreatedAt    time.Time
+	ID              string
+	Username        string
+	PasswordHash    string
+	PasswordVersion int
+	CreatedAt       time.Time
 }
 
 type AdminSessionRecord struct {
@@ -31,8 +37,8 @@ func (s *Store) HasAdminAccount(ctx context.Context, username string) (bool, err
 }
 
 func (s *Store) CreateAdminAccountIfAbsent(ctx context.Context, id, username, passwordHash string, now time.Time) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO admin_accounts(id, username, password_hash, created_at, updated_at)
-		VALUES(?,?,?,?,?) ON CONFLICT(username) DO NOTHING`, id, username, passwordHash, now.Unix(), now.Unix())
+	_, err := s.db.ExecContext(ctx, `INSERT INTO admin_accounts(id, username, password_hash, password_version, created_at, updated_at)
+			VALUES(?,?,?,1,?,?) ON CONFLICT(username) DO NOTHING`, id, username, passwordHash, now.Unix(), now.Unix())
 	return err
 }
 
@@ -40,9 +46,9 @@ func (s *Store) AdminAccountByUsername(ctx context.Context, username string) (Ad
 	var rec AdminAccountRecord
 	var created int64
 	err := s.db.QueryRowContext(ctx,
-		"SELECT id, username, password_hash, created_at FROM admin_accounts WHERE username = ?",
+		"SELECT id, username, password_hash, password_version, created_at FROM admin_accounts WHERE username = ?",
 		username,
-	).Scan(&rec.ID, &rec.Username, &rec.PasswordHash, &created)
+	).Scan(&rec.ID, &rec.Username, &rec.PasswordHash, &rec.PasswordVersion, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AdminAccountRecord{}, ErrNotFound
 	}
@@ -51,6 +57,34 @@ func (s *Store) AdminAccountByUsername(ctx context.Context, username string) (Ad
 	}
 	rec.CreatedAt = time.Unix(created, 0).UTC()
 	return rec, nil
+}
+
+// RotateAdminPassword updates an account that predates explicit password
+// initialization and revokes every session issued before the rotation.
+func (s *Store) RotateAdminPassword(ctx context.Context, adminID, passwordHash string, now time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE admin_accounts
+		SET password_hash = ?, password_version = 1, updated_at = ?
+		WHERE id = ? AND password_version = 0`, passwordHash, now.Unix(), adminID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrConflict
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE admin_sessions SET revoked_at = ?
+		WHERE admin_id = ? AND revoked_at IS NULL`, now.Unix(), adminID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) CreateAdminSession(ctx context.Context, rec AdminSessionRecord, tokenHash string) error {

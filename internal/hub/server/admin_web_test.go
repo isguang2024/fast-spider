@@ -28,7 +28,7 @@ func TestAdminCanCreateUserAndIsolatedFromOwnerSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.EnsureAdminAccount(ctx); err != nil {
+	if err := service.EnsureAdminAccount(ctx, "admin-web-test-password-123"); err != nil {
 		t.Fatal(err)
 	}
 	hub := server.New(service, server.Config{})
@@ -41,7 +41,7 @@ func TestAdminCanCreateUserAndIsolatedFromOwnerSession(t *testing.T) {
 		t.Fatalf("unauthenticated admin status=%d location=%q", status, headers.Get("Location"))
 	}
 	status, headers, _ = webTestRequest(t, adminClient, http.MethodPost, httpServer.URL+"/admin/login", url.Values{
-		"username": {core.DefaultAdminUsername}, "password": {core.DefaultAdminPassword},
+		"username": {core.DefaultAdminUsername}, "password": {"admin-web-test-password-123"},
 	})
 	if status != http.StatusSeeOther || !strings.HasSuffix(headers.Get("Location"), "/admin") {
 		t.Fatalf("admin login status=%d location=%q", status, headers.Get("Location"))

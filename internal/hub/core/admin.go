@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,6 @@ import (
 
 const (
 	DefaultAdminUsername = "admin"
-	DefaultAdminPassword = "AA@@123456"
 	adminSessionTTL      = 12 * time.Hour
 )
 
@@ -28,26 +28,52 @@ type AdminSessionResult struct {
 	Record store.AdminSessionRecord
 }
 
-func (s *Service) EnsureAdminAccount(ctx context.Context) error {
-	exists, err := s.store.HasAdminAccount(ctx, DefaultAdminUsername)
-	if err != nil || exists {
-		return err
+func (s *Service) EnsureAdminAccount(ctx context.Context, passwords ...string) error {
+	password := ""
+	if len(passwords) > 0 {
+		password = passwords[0]
 	}
-	hash, err := security.HashPassword(DefaultAdminPassword)
+	record, err := s.store.AdminAccountByUsername(ctx, DefaultAdminUsername)
+	if errors.Is(err, store.ErrNotFound) {
+		if err := security.ValidatePassword(password); err != nil {
+			return store.ErrAdminPasswordRequired
+		}
+		hash, err := security.HashPassword(password)
+		if err != nil {
+			return err
+		}
+		id, err := security.RandomOpaque("adm_")
+		if err != nil {
+			return err
+		}
+		return s.store.CreateAdminAccountIfAbsent(ctx, id, DefaultAdminUsername, hash, s.now().UTC())
+	}
 	if err != nil {
 		return err
 	}
-	id, err := security.RandomOpaque("adm_")
+	if record.PasswordVersion > 0 {
+		return nil
+	}
+	if err := security.ValidatePassword(password); err != nil {
+		return store.ErrAdminRotationRequired
+	}
+	hash, err := security.HashPassword(password)
 	if err != nil {
 		return err
 	}
-	return s.store.CreateAdminAccountIfAbsent(ctx, id, DefaultAdminUsername, hash, s.now().UTC())
+	if err := s.store.RotateAdminPassword(ctx, record.ID, hash, s.now().UTC()); err != nil {
+		if errors.Is(err, store.ErrConflict) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Service) LoginAdmin(ctx context.Context, username, password, remoteAddr string) (AdminAccountView, error) {
 	username = strings.TrimSpace(username)
 	record, err := s.store.AdminAccountByUsername(ctx, username)
-	if err != nil || !security.VerifyPassword(record.PasswordHash, password) {
+	if err != nil || record.PasswordVersion == 0 || !security.VerifyPassword(record.PasswordHash, password) {
 		_ = s.audit(ctx, store.AuditEntry{ActorType: "admin", ActorID: username, Action: "admin.login", Result: "rejected", RemoteAddr: remoteAddr, CreatedAt: s.now().UTC()})
 		return AdminAccountView{}, store.ErrUnauthorized
 	}
