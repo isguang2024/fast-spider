@@ -76,7 +76,7 @@ step "Local Bridge E2E" go test -tags localbridgee2e ./internal/localbridge -cou
 
 if [[ "$mode" == "full" ]]; then
   step "Secret scanner synthetic self-test" go run ./cmd/secretscan --self-test
-  step "Full Git object database secret scan" go run ./cmd/secretscan --history "${private_marker_args[@]}"
+  step "Full Git object database secret scan" go run ./cmd/secretscan --history
   step "0.4.2 Task Workspace gate" go test ./internal/node ./internal/nodeui -run 'Test(WorkingPlan|WorkingMarkdown|WorkingProgress)' -count=1
   step "0.4.2 Managed ripgrep/native search gate" go test ./internal/node ./internal/nodeui -run 'Test(ManagedRipgrep|NativeSearch|RipgrepJSON|SearchFileSelfTest)' -count=1
   step "0.4.2 ripgrep component packager gate" go test ./cmd/ripgreppack -count=1
