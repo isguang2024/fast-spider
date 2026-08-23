@@ -190,3 +190,10 @@
 - 源码 release commit `ceef5843dfb8dd4453eef0141c83ec20ad152f85`；clean reachable clone 的完整 release gate PASS，真实 Codex plugin/MCP、ChatGPT Cloud live、WSL/Browser/CC Switch/Claude/multi-provider 与 Local Bridge→Codex product E2E PASS。Windows/386 按设计 skip fuzz/race。
 - 生产已完成备份 Verify、Hub/spiderctl 原子升级、三平台 Node release push 与本机 Windows Node 受控替换；Hub/spiderctl/Node 均为 0.4.24，PCa generation=136，systemd 与本机/公网健康检查正常，回滚副本保留。
 - 本机真实 Local Bridge smoke 返回 `pluginMarketplaces=5`、`mcpServers=4`、`fileReadSucceeded=true`；MCP status 读取到 `codex_apps`，可见 222 tools，证明 AI 插件能读取 MCP 并正常调用能力。
+
+### 2026-08-23 — ChatGPT Cloud 会话路由与 Git remote-helper 修复
+
+- 修复 `chatgpt_cloud` 创建与后续控制不对称：visibility sidecar 现在保存 `backend + workingDirectory`，FS 创建的 cloud conversation 后续只传 `sessionId` 即可自动路由；普通 Codex `session.list` 合并 FS 管理的 cloud conversation，显式 `backend=chatgpt_cloud` 保留完整账号云列表语义。
+- 修复 Cloud 创建被 60 秒 HTTP Client 全局超时早于 120 秒 SSE 边界截断的问题；HTTP Client 不再设置该全局短超时。SSE 已返回 conversation ID 后即使流尾异常，manager 仍持久化已创建会话并返回 `created_execution_unknown`，同 idempotency key 继续重放同一 ID，不再把已创建误判为可重试创建。
+- 修复 `git_control fetch/pull/push` 的空 remote-helper 根因：不再注入 `-c remote.<name>.vcs=`，避免 Git 解释为 `git-remote-`；仓库真实配置中的非空 `remote.<name>.vcs` 仍由安全检查 fail-closed 拒绝。`remote` 省略时统一按当前分支 upstream → `origin` → 唯一 remote 解析，多 remote 歧义时要求显式指定。
+- 回归证据：ChatGPT Cloud 自动 backend 路由、默认列表合并、known-ID stream error 幂等恢复；Git remote 推断、ambiguous remote fail-closed、真实本地 bare remote fetch（省略 remote）均通过。相关 `internal/agent`、`internal/node`、`internal/hub/server`、`internal/hub/core` 包级完整测试与 `git diff --check` PASS。

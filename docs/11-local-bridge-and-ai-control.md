@@ -111,7 +111,7 @@ Model Mapping 目前识别 Claude 的 `ANTHROPIC_MODEL` / Sonnet / Opus / Haiku 
 
 ### `session.create`
 
-公网 MCP 必需：绝对 `workingDirectory` 与 12-128 字符 `idempotencyKey`。可选：`model`、`thinking`，以及首个 Turn 的输入。Node 对 Codex 与 Claude Code 均持久保存 key/spec hash/小型结果；同 key 同 spec 在进程重启后仍重放同一 Session，同 key 不同 spec（包括可见性语义）返回冲突，中间态不确定时不重复创建。索引采用严格全量校验，任何损坏或语义不完整记录均 fail-closed；记录不按时间自动过期。已知 Session 经 `session.delete` 明确删除后回收；无已知 Session 的 `in_doubt` 记录须先检查 `session.list`，确认没有创建后调用 `session.delete`，省略 `sessionId` 并传原 `idempotencyKey` 与 `decision=confirm_not_created` 显式释放。Claude 原生 history 仍由 Claude 自身保存。
+公网 MCP 必需：绝对 `workingDirectory` 与 12-128 字符 `idempotencyKey`。可选：`model`、`thinking`，以及首个 Turn 的输入。Node 对 Codex 与 Claude Code 均持久保存 key/spec hash/小型结果；同 key 同 spec 在进程重启后仍重放同一 Session，同 key 不同 spec（包括可见性语义）返回冲突，中间态不确定时不重复创建。索引采用严格全量校验，任何损坏或语义不完整记录均 fail-closed；记录不按时间自动过期。ChatGPT Cloud 的 HTTP Client 不再设置短于 SSE 流的全局 60 秒超时；若流尾异常但已观察到 conversation ID，则记录为已创建并返回 `phase=created_execution_unknown`，不会诱导重复建会话。已知 Session 经 `session.delete` 明确删除后回收；无已知 Session 的 `in_doubt` Cloud 记录须先用 `backend=chatgpt_cloud` 的 `session.list` 检查完整云列表，确认没有创建后调用 `session.delete`，省略 `sessionId` 并传原 `idempotencyKey` 与 `decision=confirm_not_created` 显式释放。Claude 原生 history 仍由 Claude 自身保存。
 
 `session.delete` 使用持久 delete intent：先把与 Session 关联的 create 记录标为 deleting，再删除 Provider Session，最后回收记录。若 Provider 已删除但最终落盘失败，重试同一删除会把 Provider not-found 视为已完成并续做回收，不会留下无法清理的容量占用。
 
@@ -129,7 +129,7 @@ Git 子目录和 linked worktree 会解析到主工作树对应的 Codex Desktop
 Fast Spider 用 Codex app-server 的 ChatGPT 登录态（`getAuthStatus`）配合自解 Sentinel（PoW + turnstile token）走官方
 `/backend-api/f/conversation` 流创建会话，`externalIdType=chatgpt_conversation`，会话出现在账号的 ChatGPT 聊天列表。
 `chatgpt_cloud` 必须 `visibility=visible`（云端会话天然对外可见），`ephemeral=true` 不支持；首次消息必须随
-`session.create` 提供（ChatGPT 无空会话创建接口）。依赖本机 Codex app-server 已登录 ChatGPT，否则返回明确错误。
+`session.create` 提供（ChatGPT 无空会话创建接口）。依赖本机 Codex app-server 已登录 ChatGPT，否则返回明确错误。创建成功后 Fast Spider 在 sidecar 中保存 `sessionId → backend=chatgpt_cloud + workingDirectory`，因此后续 `session.get/send/watch/result/rename/delete/cancel/steer` 只需 `sessionId`，不必重复声明 backend。普通 Codex `session.list` 会合并 FS 自己管理过的 Cloud 会话；显式 `backend=chatgpt_cloud` 的 `session.list` 才访问 `/backend-api/conversations` 并返回账号云端列表。
 
 `chatgpt_cloud` 的操作映射（`providerId=codex` + `backend=chatgpt_cloud`）：
 
@@ -140,7 +140,7 @@ Fast Spider 用 Codex app-server 的 ChatGPT 登录态（`getAuthStatus`）配�
 | `session.send` | follow-up（`conversation_id` + `parent_message_id`=最后 assistant 消息，自动解析） |
 | `session.get` | `GET /backend-api/conversation/{id}`（mapping 全量消息） |
 | `session.result` | 同上，返回最新 `finalAgentMessage` |
-| `session.list` | `GET /backend-api/conversations` |
+| `session.list` | 显式 `backend=chatgpt_cloud` 时 `GET /backend-api/conversations`；省略 backend 的普通 Codex 列表仅合并 FS sidecar 中受管 Cloud 会话，不扫描整个账号历史 |
 | `session.rename` | `POST /conversation/id/{id}/rename` |
 | `session.delete` | `DELETE /conversation/id/{id}` |
 | `session.cancel` | `POST /stop_conversation`（无活动轮时幂等返回） |

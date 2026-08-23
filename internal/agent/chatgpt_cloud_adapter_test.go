@@ -10,6 +10,13 @@ import (
 	"testing"
 )
 
+func TestChatGPTCloudHTTPClientDoesNotCutOffBoundedStream(t *testing.T) {
+	client := newChatGPTCloudHTTPClient()
+	if client.Timeout != 0 {
+		t.Fatalf("ChatGPT cloud HTTP client timeout=%v, want 0 so operation contexts own deadlines", client.Timeout)
+	}
+}
+
 func TestChatGPTCloudAdapterSteerPostsToSteerTurn(t *testing.T) {
 	var steerBody map[string]any
 	var prepareBody map[string]any

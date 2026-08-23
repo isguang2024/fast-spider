@@ -135,6 +135,88 @@ func TestGitControlRejectsExecutableFilterForAddedPath(t *testing.T) {
 	}
 }
 
+func TestResolveConfiguredGitRemoteUsesUpstreamThenOrigin(t *testing.T) {
+	root := initTestGitRepository(t)
+	runTestGit(t, root, "remote", "add", "origin", "https://example.invalid/origin.git")
+	runTestGit(t, root, "remote", "add", "upstream", "https://example.invalid/upstream.git")
+	branchOutput, _, err := runGitCommand(context.Background(), root, []string{"branch", "--show-current"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := strings.TrimSpace(branchOutput)
+	if branch == "" {
+		t.Fatal("test repository has no current branch")
+	}
+	runTestGit(t, root, "config", "branch."+branch+".remote", "upstream")
+	got, err := resolveConfiguredGitRemote(context.Background(), root, "")
+	if err != nil || got != "upstream" {
+		t.Fatalf("upstream remote=%q err=%v", got, err)
+	}
+	runTestGit(t, root, "config", "--unset", "branch."+branch+".remote")
+	got, err = resolveConfiguredGitRemote(context.Background(), root, "")
+	if err != nil || got != "origin" {
+		t.Fatalf("origin fallback=%q err=%v", got, err)
+	}
+}
+
+func TestResolveConfiguredGitRemoteRejectsAmbiguousFallback(t *testing.T) {
+	root := initTestGitRepository(t)
+	runTestGit(t, root, "remote", "add", "upstream", "https://example.invalid/upstream.git")
+	runTestGit(t, root, "remote", "add", "backup", "https://example.invalid/backup.git")
+	if got, err := resolveConfiguredGitRemote(context.Background(), root, ""); err == nil || got != "" || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ambiguous remote got=%q err=%v", got, err)
+	}
+	for _, arg := range gitSideEffectCommandConfig("") {
+		if strings.Contains(arg, "remote..") || strings.HasPrefix(arg, "remote.-") {
+			t.Fatalf("empty remote generated remote-specific config %q", arg)
+		}
+	}
+	for _, arg := range gitSideEffectCommandConfig("origin") {
+		if arg == "remote.origin.vcs=" {
+			t.Fatalf("network safety config must not force an empty remote helper: %q", arg)
+		}
+	}
+}
+
+func TestGitControlFetchInfersOriginWhenRemoteOmitted(t *testing.T) {
+	dataDir := t.TempDir()
+	root := initTestGitRepository(t)
+	remote := filepath.Join(dataDir, "remotes", "origin.git")
+	if err := os.MkdirAll(remote, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, remote, "init", "--bare")
+	runTestGit(t, root, "remote", "add", "origin", remote)
+	client, err := New(Config{DataDir: dataDir, Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.gitControl(context.Background(), map[string]any{
+		"action": "fetch", "repositoryPath": root, "idempotencyKey": "fetch-infer-origin-001",
+	})
+	if err != nil {
+		t.Fatalf("fetch without remote: %v", err)
+	}
+	if result.Job == nil || result.Job.JobID == "" {
+		t.Fatalf("fetch did not start a job: %+v", result)
+	}
+	cursor := result.Job.NextCursor
+	for i := 0; i < 10; i++ {
+		snapshot, watchErr := client.jobWatch(context.Background(), map[string]any{"jobId": result.Job.JobID, "cursor": cursor, "waitSeconds": int64(1)})
+		if watchErr != nil {
+			t.Fatal(watchErr)
+		}
+		cursor = snapshot.NextCursor
+		if snapshot.State == "completed" || snapshot.State == "failed" || snapshot.State == "canceled" {
+			if snapshot.State != "completed" || snapshot.ExitCode == nil || *snapshot.ExitCode != 0 {
+				t.Fatalf("fetch job=%+v", snapshot)
+			}
+			return
+		}
+	}
+	t.Fatal("fetch job did not finish")
+}
+
 func TestGitControlRejectsExecutableNetworkConfigForEveryNetworkAction(t *testing.T) {
 	dataDir := t.TempDir()
 	root := initTestGitRepository(t)

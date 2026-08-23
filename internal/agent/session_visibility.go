@@ -215,6 +215,10 @@ func (s sessionVisibilitySpec) applyToResult(out map[string]any, sessionID strin
 }
 
 func (s sessionVisibilitySpec) record(providerID, sessionID string, now time.Time) sessionVisibilityRecord {
+	return s.recordForDirectory(providerID, sessionID, "", now)
+}
+
+func (s sessionVisibilitySpec) recordForDirectory(providerID, sessionID, workingDirectory string, now time.Time) sessionVisibilityRecord {
 	return sessionVisibilityRecord{
 		SessionID:           sessionID,
 		ProviderID:          providerID,
@@ -227,6 +231,7 @@ func (s sessionVisibilitySpec) record(providerID, sessionID string, now time.Tim
 		VisibilityState:     s.VisibilityState,
 		VisibilityGuarantee: s.Guarantee,
 		VisibilityNote:      s.Note,
+		WorkingDirectory:    strings.TrimSpace(workingDirectory),
 		CreatedAt:           now,
 		UpdatedAt:           now,
 	}
@@ -244,6 +249,7 @@ type sessionVisibilityRecord struct {
 	VisibilityState     string    `json:"visibilityState"`
 	VisibilityGuarantee string    `json:"visibilityGuarantee"`
 	VisibilityNote      string    `json:"visibilityNote"`
+	WorkingDirectory    string    `json:"workingDirectory,omitempty"`
 	CreatedAt           time.Time `json:"createdAt"`
 	UpdatedAt           time.Time `json:"updatedAt"`
 }
@@ -261,6 +267,11 @@ func (r sessionVisibilityRecord) applyToResult(out map[string]any) {
 	out["visibilityNote"] = r.VisibilityNote
 	out["externalId"] = r.ExternalID
 	out["externalIdType"] = r.ExternalIDType
+	if r.WorkingDirectory != "" {
+		out["workingDirectory"] = r.WorkingDirectory
+		out["projectDirectory"] = r.WorkingDirectory
+		out["cwd"] = r.WorkingDirectory
+	}
 	if r.ExternalIDType == "codex_thread" {
 		out["externalThreadId"] = r.ExternalID
 	} else if r.ExternalIDType == "claude_session" {
@@ -278,6 +289,18 @@ func defaultSessionVisibilityRecord(providerID, sessionID string) sessionVisibil
 		backend = sessionBackendClaudeLocal
 		externalType = "claude_session"
 	}
+	return defaultSessionVisibilityRecordForBackend(providerID, sessionID, backend, externalType)
+}
+
+func defaultChatGPTCloudVisibilityRecord(sessionID string) sessionVisibilityRecord {
+	return defaultSessionVisibilityRecordForBackend("codex", sessionID, sessionBackendChatGPTCloud, "chatgpt_conversation")
+}
+
+func defaultSessionVisibilityRecordForBackend(providerID, sessionID, backend, externalType string) sessionVisibilityRecord {
+	note := "This session predates the visibility contract; Fast Spider has no stored visibility metadata. The provider session ID is returned without a stronger UI visibility claim."
+	if backend == sessionBackendChatGPTCloud {
+		note = "This ChatGPT cloud conversation has no stored Fast Spider creation metadata. It is provider-owned and is being identified from the explicit cloud backend."
+	}
 	return sessionVisibilityRecord{
 		SessionID:           sessionID,
 		ProviderID:          providerID,
@@ -288,7 +311,7 @@ func defaultSessionVisibilityRecord(providerID, sessionID string) sessionVisibil
 		ExternalIDType:      externalType,
 		VisibilityState:     "unmanaged_existing",
 		VisibilityGuarantee: "unmanaged_existing",
-		VisibilityNote:      "This session predates the visibility contract; Fast Spider has no stored visibility metadata. The provider session ID is returned without a stronger UI visibility claim.",
+		VisibilityNote:      note,
 	}
 }
 
@@ -395,6 +418,9 @@ func validateSessionVisibilityRecord(record sessionVisibilityRecord) error {
 	}
 	if record.ExternalID == "" || record.ExternalID != record.SessionID || record.ExternalIDType == "" || record.VisibilityState == "" || record.VisibilityGuarantee == "" || record.VisibilityNote == "" {
 		return fmt.Errorf("incomplete visibility metadata")
+	}
+	if len(record.WorkingDirectory) > 4096 || strings.ContainsAny(record.WorkingDirectory, "\x00\r\n") {
+		return fmt.Errorf("invalid working directory")
 	}
 	if record.CreatedAt.IsZero() || record.UpdatedAt.IsZero() {
 		return fmt.Errorf("missing visibility timestamp")
@@ -568,6 +594,15 @@ func (m *AgentManager) visibilitySnapshot() (map[string]sessionVisibilityRecord,
 		return nil, unavailableSessionVisibilityState(err)
 	}
 	return snapshot, nil
+}
+
+func (m *AgentManager) storedSessionVisibilityRecord(providerID, sessionID string) (sessionVisibilityRecord, bool, error) {
+	snapshot, err := m.visibilitySnapshot()
+	if err != nil {
+		return sessionVisibilityRecord{}, false, err
+	}
+	record, ok := snapshot[sessionVisibilityKey(providerID, sessionID)]
+	return record, ok, nil
 }
 
 func (m *AgentManager) persistSessionVisibility(record sessionVisibilityRecord) error {

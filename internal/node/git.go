@@ -115,23 +115,27 @@ func (c *Client) gitControl(ctx context.Context, params map[string]any) (gitCont
 		}
 		return c.runGitWrite(ctx, repositoryPath, input.Action, []string{"commit", "--no-gpg-sign", "-m", message})
 	case "fetch", "pull", "push":
-		if input.IdempotencyKey == "" || input.Remote == "" {
-			return gitControlResult{}, fmt.Errorf("remote and idempotencyKey are required for git network actions")
+		if input.IdempotencyKey == "" {
+			return gitControlResult{}, fmt.Errorf("idempotencyKey is required for git network actions")
 		}
-		if err := validateConfiguredRemote(ctx, repositoryPath, input.Remote, c.cfg.DataDir); err != nil {
+		remote, err := resolveConfiguredGitRemote(ctx, repositoryPath, input.Remote)
+		if err != nil {
 			return gitControlResult{}, err
 		}
-		if err := validateGitSideEffects(ctx, repositoryPath, input.Action, nil, input.Remote); err != nil {
+		if err := validateConfiguredRemote(ctx, repositoryPath, remote, c.cfg.DataDir); err != nil {
 			return gitControlResult{}, err
 		}
-		args := []string{input.Action, input.Remote}
+		if err := validateGitSideEffects(ctx, repositoryPath, input.Action, nil, remote); err != nil {
+			return gitControlResult{}, err
+		}
+		args := []string{input.Action, remote}
 		if input.Branch != "" {
 			if err := validateGitRef(input.Branch); err != nil {
 				return gitControlResult{}, err
 			}
 			args = append(args, input.Branch)
 		}
-		gitArgv := append([]string{"git", "-c", "color.ui=false", "-c", "core.pager=cat", "-c", "core.fsmonitor=false", "-c", "diff.external=", "-c", "interactive.diffFilter="}, gitSideEffectCommandConfig(input.Remote)...)
+		gitArgv := append([]string{"git", "-c", "color.ui=false", "-c", "core.pager=cat", "-c", "core.fsmonitor=false", "-c", "diff.external=", "-c", "interactive.diffFilter="}, gitSideEffectCommandConfig(remote)...)
 		gitArgv = append(gitArgv, args...)
 		job, err := c.jobs.StartShell(repositoryPath, gitArgv, gitNetworkTimeout, input.IdempotencyKey)
 		if err != nil {
@@ -403,7 +407,6 @@ func gitSideEffectCommandConfig(remote string) []string {
 		"-c", "remote."+remote+".proxy=",
 		"-c", "remote."+remote+".uploadpack=git-upload-pack",
 		"-c", "remote."+remote+".receivepack=git-receive-pack",
-		"-c", "remote."+remote+".vcs=",
 	)
 }
 
@@ -413,6 +416,52 @@ func validateGitRef(value string) error {
 		return fmt.Errorf("invalid git ref")
 	}
 	return nil
+}
+
+func resolveConfiguredGitRemote(ctx context.Context, root, requested string) (string, error) {
+	if remote := strings.TrimSpace(requested); remote != "" {
+		if len(remote) > 128 || strings.HasPrefix(remote, "-") || strings.ContainsAny(remote, "\x00\r\n/\\:") {
+			return "", fmt.Errorf("invalid git remote")
+		}
+		return remote, nil
+	}
+
+	branchOutput, _, branchErr := runGitCommand(ctx, root, []string{"branch", "--show-current"})
+	if branchErr == nil {
+		branch := strings.TrimSpace(branchOutput)
+		if branch != "" {
+			remoteOutput, _, remoteErr := runGitCommand(ctx, root, []string{"config", "--get", "branch." + branch + ".remote"})
+			if remoteErr == nil {
+				remote := strings.TrimSpace(remoteOutput)
+				if remote != "" && remote != "." {
+					return remote, nil
+				}
+			}
+		}
+	}
+
+	remotesOutput, _, err := runGitCommand(ctx, root, []string{"remote"})
+	if err != nil {
+		return "", fmt.Errorf("inspect git remotes: %w", err)
+	}
+	var remotes []string
+	for _, line := range strings.Split(remotesOutput, "\n") {
+		if remote := strings.TrimSpace(line); remote != "" {
+			remotes = append(remotes, remote)
+		}
+	}
+	for _, remote := range remotes {
+		if remote == "origin" {
+			return remote, nil
+		}
+	}
+	if len(remotes) == 1 {
+		return remotes[0], nil
+	}
+	if len(remotes) == 0 {
+		return "", fmt.Errorf("git network action requires a configured remote")
+	}
+	return "", fmt.Errorf("git network action remote is ambiguous; specify remote explicitly")
 }
 
 func validateConfiguredRemote(ctx context.Context, root, remote, nodeDataDir string) error {

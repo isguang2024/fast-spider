@@ -54,6 +54,10 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 	if err != nil {
 		return nil, err
 	}
+	workingDirectory, err := requiredAgentDirectory(input.WorkingDirectory)
+	if err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(input.Prompt) == "" {
 		return nil, fmt.Errorf("backend=chatgpt_cloud session.create requires a prompt (the first message); ChatGPT has no empty cloud conversation create API")
 	}
@@ -61,24 +65,23 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 	if idempotencyKey != "" && (len(idempotencyKey) < 12 || len(idempotencyKey) > 128 || strings.ContainsAny(idempotencyKey, "\x00\r\n")) {
 		return nil, fmt.Errorf("idempotencyKey must be 12 to 128 safe characters")
 	}
-	specValue := map[string]any{
+	previousSpecValue := map[string]any{
 		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
 		"prompt": strings.TrimSpace(input.Prompt), "model": strings.TrimSpace(input.Model),
 	}
-	legacySpecHash := sessionCreateSpecHash(specValue)
 	for key, value := range spec.hashFields() {
-		specValue[key] = value
+		previousSpecValue[key] = value
 	}
+	previousSpecHash := sessionCreateSpecHash(previousSpecValue)
+	specValue := cloneAgentMap(previousSpecValue)
+	specValue["workingDirectory"] = workingDirectory
 	specHash := sessionCreateSpecHash(specValue)
 	storeKey := "codex:" + idempotencyKey
 	if idempotencyKey != "" {
 		if m.createStore == nil {
 			return nil, &createIdempotencyError{code: "AGENT_IDEMPOTENCY_STORE_UNAVAILABLE", message: "session.create idempotency state is unavailable"}
 		}
-		legacyHashes := []string(nil)
-		if sessionVisibilityUsesLegacyDefaults(input) {
-			legacyHashes = []string{legacySpecHash}
-		}
+		legacyHashes := []string{previousSpecHash}
 		replayed, ok, err := m.createStore.begin(storeKey, specHash, legacyHashes...)
 		if err != nil {
 			return nil, err
@@ -89,7 +92,7 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 				return nil, &createIdempotencyError{code: "AGENT_CREATE_IN_DOUBT", message: "replayed session.create result has no session ID; inspect session.list before retrying"}
 			}
 			spec.applyToResult(replayed, sessionID)
-			if err := m.persistSessionVisibility(spec.record("codex", sessionID, time.Now().UTC())); err != nil {
+			if err := m.persistSessionVisibility(spec.recordForDirectory("codex", sessionID, workingDirectory, time.Now().UTC())); err != nil {
 				return nil, err
 			}
 			replayed["idempotencyProtected"] = true
@@ -97,16 +100,16 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 			return replayed, nil
 		}
 	}
-	result, err := m.chatgptCloud.Create(ctx, input.Prompt, input.Model)
-	if err != nil {
+	result, createErr := m.chatgptCloud.Create(ctx, input.Prompt, input.Model)
+	if createErr != nil && strings.TrimSpace(result.ConversationID) == "" {
 		if idempotencyKey != "" {
 			if persistenceErr := m.createStore.update(storeKey, "in_doubt", nil); persistenceErr != nil {
-				return nil, errors.Join(err, fmt.Errorf("persist ambiguous ChatGPT cloud conversation creation: %w", persistenceErr))
+				return nil, errors.Join(createErr, fmt.Errorf("persist ambiguous ChatGPT cloud conversation creation: %w", persistenceErr))
 			}
 		}
-		return nil, err
+		return nil, createErr
 	}
-	sessionID := result.ConversationID
+	sessionID := strings.TrimSpace(result.ConversationID)
 	if sessionID == "" {
 		missingIDErr := fmt.Errorf("ChatGPT cloud did not return a conversation id")
 		if idempotencyKey != "" {
@@ -116,7 +119,7 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 		}
 		return nil, missingIDErr
 	}
-	if err := m.persistSessionVisibility(spec.record("codex", sessionID, time.Now().UTC())); err != nil {
+	if err := m.persistSessionVisibility(spec.recordForDirectory("codex", sessionID, workingDirectory, time.Now().UTC())); err != nil {
 		if idempotencyKey != "" {
 			if persistenceErr := m.createStore.update(storeKey, "in_doubt", map[string]any{"sessionId": sessionID}); persistenceErr != nil {
 				err = errors.Join(err, fmt.Errorf("persist ambiguous ChatGPT cloud visibility metadata: %w", persistenceErr))
@@ -132,6 +135,11 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 		"phase":                "ready",
 		"realtimeChannel":      "session.watch",
 		"idempotencyProtected": idempotencyKey != "",
+		"workingDirectory":     workingDirectory,
+	}
+	if createErr != nil {
+		out["phase"] = "created_execution_unknown"
+		out["creationRecoveredFromStreamError"] = true
 	}
 	spec.applyToResult(out, sessionID)
 	if idempotencyKey != "" {
@@ -204,7 +212,12 @@ func (m *AgentManager) chatgptCloudGet(ctx context.Context, input agentControlPa
 	if err != nil {
 		return nil, err
 	}
-	_, _ = decorateSessionWithVisibility(detail, "codex", snapshot)
+	detail["providerId"] = "codex"
+	if record, ok := snapshot[sessionVisibilityKey("codex", input.SessionID)]; ok {
+		record.applyToResult(detail)
+	} else {
+		defaultChatGPTCloudVisibilityRecord(input.SessionID).applyToResult(detail)
+	}
 	return map[string]any{"session": detail, "pendingRequests": []map[string]any{}}, nil
 }
 
@@ -213,7 +226,26 @@ func (m *AgentManager) chatgptCloudList(ctx context.Context, input agentControlP
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"sessions": items}, nil
+	snapshot, err := m.visibilitySnapshot()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		id := chatgptCloudListSessionID(item)
+		if id == "" {
+			continue
+		}
+		item["sessionId"] = id
+		item["providerId"] = "codex"
+		if record, ok := snapshot[sessionVisibilityKey("codex", id)]; ok {
+			record.applyToResult(item)
+		} else {
+			defaultChatGPTCloudVisibilityRecord(id).applyToResult(item)
+		}
+		out = append(out, item)
+	}
+	return map[string]any{"sessions": out}, nil
 }
 
 func (m *AgentManager) chatgptCloudResult(ctx context.Context, input agentControlParams) (map[string]any, error) {

@@ -132,7 +132,7 @@ type gitControlInput struct {
 	Revision       string   `json:"revision,omitempty" jsonschema:"revision for show"`
 	Paths          []string `json:"paths,omitempty" jsonschema:"repository-relative paths for add"`
 	Message        string   `json:"message,omitempty" jsonschema:"commit message"`
-	Remote         string   `json:"remote,omitempty" jsonschema:"configured remote name for network actions"`
+	Remote         string   `json:"remote,omitempty" jsonschema:"fetch/pull/push remote; omit to infer upstream, origin, or sole remote"`
 	Branch         string   `json:"branch,omitempty" jsonschema:"branch or ref for network/worktree actions"`
 	WorktreePath   string   `json:"worktreePath,omitempty" jsonschema:"absolute managed worktree path for create/deleteWorktree; create may omit to use the Fast Spider managed directory"`
 	IdempotencyKey string   `json:"idempotencyKey,omitempty" jsonschema:"required for network actions"`
@@ -256,12 +256,12 @@ type aiControlInput struct {
 	RequestID             string              `json:"requestId,omitempty" jsonschema:"pending Codex server request ID required for session.respond"`
 	IdempotencyKey        string              `json:"idempotencyKey,omitempty" jsonschema:"12-128 character key required for session.create; with session.delete and no sessionId, identifies an unresolved create reservation to release"`
 	Visibility            string              `json:"visibility,omitempty" jsonschema:"session.create: visible or internal; default visible"`
-	Backend               string              `json:"backend,omitempty" jsonschema:"session.create: codex_local,claude_local,chatgpt_cloud; chatgpt_cloud requires providerId=codex + a ChatGPT-authenticated Codex app-server"`
-	VisibilityTarget      string              `json:"visibilityTarget,omitempty" jsonschema:"session.create: codex_local,claude_local,chatgpt_cloud,none; default backend or none"`
+	Backend               string              `json:"backend,omitempty" jsonschema:"session.create backend: codex_local, claude_local, or chatgpt_cloud"`
+	VisibilityTarget      string              `json:"visibilityTarget,omitempty" jsonschema:"session.create target: codex_local, claude_local, chatgpt_cloud, or none"`
 	Ephemeral             *bool               `json:"ephemeral,omitempty" jsonschema:"session.create: internal Codex default true; persistent internal=false"`
 	Mode                  string              `json:"mode,omitempty" jsonschema:"provider.readiness mode: passive or safe"`
-	Prompt                string              `json:"prompt,omitempty" jsonschema:"text input for session.create/session.send/session.steer; a turn may instead contain skills/images/localImages/mentions"`
-	WorkingDirectory      string              `json:"workingDirectory,omitempty" jsonschema:"absolute working directory on the Node machine; required for session.create and used by session.list/send/fork/settings plus skills/plugins discovery when supplied"`
+	Prompt                string              `json:"prompt,omitempty" jsonschema:"text for session.create/send/steer"`
+	WorkingDirectory      string              `json:"workingDirectory,omitempty" jsonschema:"absolute working directory; required for session.create"`
 	Model                 string              `json:"model,omitempty" jsonschema:"optional provider model ID"`
 	Thinking              string              `json:"thinking,omitempty" jsonschema:"optional provider reasoning effort for session.create/session.send"`
 	Cursor                int64               `json:"cursor,omitempty" jsonschema:"last consumed normalized event sequence"`

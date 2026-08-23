@@ -173,6 +173,18 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		strings.EqualFold(strings.TrimSpace(input.VisibilityTarget), sessionBackendChatGPTCloud) {
 		return m.controlChatGPTCloud(ctx, action, input)
 	}
+	// Once a cloud conversation has been created, callers should only need its
+	// sessionId. Recover the backend from the persisted visibility sidecar instead
+	// of silently falling back to codex_local.
+	if providerID == "codex" && strings.TrimSpace(input.SessionID) != "" && strings.TrimSpace(input.Backend) == "" && strings.TrimSpace(input.VisibilityTarget) == "" {
+		record, ok, err := m.storedSessionVisibilityRecord("codex", input.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		if ok && record.Backend == sessionBackendChatGPTCloud {
+			return m.controlChatGPTCloud(ctx, action, input)
+		}
+	}
 	if providerID == "claude_code" {
 		if m.claude == nil {
 			return nil, node.ErrAgentProviderUnavailable
@@ -233,6 +245,9 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		root, err := optionalAgentDirectory(input.WorkingDirectory)
 		if err != nil {
 			return nil, err
+		}
+		if strings.TrimSpace(input.Backend) == "" && strings.TrimSpace(input.VisibilityTarget) == "" {
+			return m.sessionListWithManagedCloud(ctx, root, input.Limit)
 		}
 		return m.sessionList(ctx, root, input.Limit)
 	case "session.get":

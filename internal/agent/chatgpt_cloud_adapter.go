@@ -147,7 +147,10 @@ func newChatGPTCloudHTTPClient() *http.Client {
 			return utlsDial(ctx, network, addr)
 		},
 	}
-	return &http.Client{Transport: tr, Timeout: 60 * time.Second}
+	// Do not impose a client-wide timeout shorter than the bounded SSE stream.
+	// Dial and per-operation contexts provide the limits; a global 60s timeout
+	// previously turned successful cloud creates into ambiguous failures.
+	return &http.Client{Transport: tr}
 }
 
 // token resolves the desktop-app ChatGPT access token.
@@ -229,11 +232,13 @@ func (a *ChatGPTCloudAdapter) sendTurnTo(ctx context.Context, path string, body 
 		return chatgptCloudTurnResult{}, err
 	}
 	result, err := a.streamPath(ctx, path, token, conduit, body, sentinel)
-	if err != nil {
-		return chatgptCloudTurnResult{}, err
+	if result.ConversationID != "" {
+		a.cacheConduit(result.ConversationID, conduit)
 	}
-	a.cacheConduit(result.ConversationID, conduit)
-	return result, nil
+	// Preserve a provider-emitted conversation ID even if the tail of the SSE
+	// stream later fails. The manager can then persist the created conversation
+	// instead of marking the entire create as unknown and inviting a duplicate.
+	return result, err
 }
 
 func (a *ChatGPTCloudAdapter) prepare(ctx context.Context, token string, body map[string]any) (string, error) {

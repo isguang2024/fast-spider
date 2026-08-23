@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestChatGPTCloudSessionCreateReplaysThePersistedResult(t *testing.T) {
@@ -19,7 +20,7 @@ func TestChatGPTCloudSessionCreateReplaysThePersistedResult(t *testing.T) {
 	}
 	params := map[string]any{
 		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
-		"prompt": "hello cloud", "model": "gpt-test", "idempotencyKey": "cloud-idempotency-01",
+		"prompt": "hello cloud", "model": "gpt-test", "idempotencyKey": "cloud-idempotency-01", "workingDirectory": t.TempDir(),
 	}
 	first, err := manager.Control(context.Background(), "session.create", params)
 	if err != nil {
@@ -50,7 +51,7 @@ func TestChatGPTCloudSessionCreateFailsClosedAfterAmbiguousError(t *testing.T) {
 	}
 	params := map[string]any{
 		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
-		"prompt": "may have been created", "idempotencyKey": "cloud-in-doubt-01",
+		"prompt": "may have been created", "idempotencyKey": "cloud-in-doubt-01", "workingDirectory": t.TempDir(),
 	}
 	if _, err := manager.Control(context.Background(), "session.create", params); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("first create error=%v", err)
@@ -73,6 +74,100 @@ func TestChatGPTCloudSessionCreateFailsClosedAfterAmbiguousError(t *testing.T) {
 	}
 	if creates != 1 {
 		t.Fatalf("cloud creates=%d want 1", creates)
+	}
+}
+
+func TestChatGPTCloudSessionCreateKeepsKnownConversationAfterStreamError(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	workingDirectory := t.TempDir()
+	var creates int
+	manager.chatgptCloud.createOverride = func(context.Context, string, string) (chatgptCloudTurnResult, error) {
+		creates++
+		return chatgptCloudTurnResult{ConversationID: "cloud-known-after-error"}, context.DeadlineExceeded
+	}
+	params := map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
+		"prompt": "created before stream ended", "idempotencyKey": "cloud-known-error-01", "workingDirectory": workingDirectory,
+	}
+	first, err := manager.Control(context.Background(), "session.create", params)
+	if err != nil {
+		t.Fatalf("create with known conversation ID: %v", err)
+	}
+	if first["sessionId"] != "cloud-known-after-error" || first["phase"] != "created_execution_unknown" {
+		t.Fatalf("first=%#v", first)
+	}
+	second, err := manager.Control(context.Background(), "session.create", params)
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if creates != 1 || second["sessionId"] != first["sessionId"] {
+		t.Fatalf("creates=%d first=%#v second=%#v", creates, first, second)
+	}
+}
+
+func TestChatGPTCloudSessionGetAutoRoutesFromStoredBackend(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/conversation/cloud-auto-route" {
+			t.Fatalf("unexpected request path %s", r.URL.Path)
+		}
+		writeChatGPTCloudTestJSON(t, w, map[string]any{
+			"conversation_id": "cloud-auto-route", "title": "Cloud auto route", "default_model_slug": "gpt-5-6",
+			"mapping": map[string]any{},
+		})
+	}))
+	defer server.Close()
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	manager.chatgptCloud.baseURL = server.URL
+	manager.chatgptCloud.http = server.Client()
+	manager.chatgptCloud.tokenSource = func(context.Context) (string, error) { return "token", nil }
+	workingDirectory := t.TempDir()
+	spec, err := resolveSessionVisibility("codex", agentControlParams{Backend: sessionBackendChatGPTCloud, Visibility: sessionVisibilityVisible})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.persistSessionVisibility(spec.recordForDirectory("codex", "cloud-auto-route", workingDirectory, time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+	result, err := manager.Control(context.Background(), "session.get", map[string]any{
+		"providerId": "codex", "sessionId": "cloud-auto-route",
+	})
+	if err != nil {
+		t.Fatalf("session.get without backend: %v", err)
+	}
+	session, _ := result["session"].(map[string]any)
+	if session["backend"] != sessionBackendChatGPTCloud || session["externalIdType"] != "chatgpt_conversation" {
+		t.Fatalf("session=%#v", session)
+	}
+}
+
+func TestDefaultCodexSessionListIncludesManagedCloudSessions(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	manager.codex.requestOverride = func(_ context.Context, method string, _ map[string]any) (map[string]any, error) {
+		if method != "thread/list" {
+			return nil, fmt.Errorf("unexpected method %s", method)
+		}
+		return map[string]any{"data": []any{}}, nil
+	}
+	workingDirectory := t.TempDir()
+	spec, err := resolveSessionVisibility("codex", agentControlParams{Backend: sessionBackendChatGPTCloud, Visibility: sessionVisibilityVisible})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.persistSessionVisibility(spec.recordForDirectory("codex", "cloud-managed-list", workingDirectory, time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+	result, err := manager.Control(context.Background(), "session.list", map[string]any{
+		"providerId": "codex", "workingDirectory": workingDirectory, "limit": 10,
+	})
+	if err != nil {
+		t.Fatalf("default session.list: %v", err)
+	}
+	sessions, _ := result["sessions"].([]map[string]any)
+	if len(sessions) != 1 || sessions[0]["sessionId"] != "cloud-managed-list" || sessions[0]["backend"] != sessionBackendChatGPTCloud {
+		t.Fatalf("sessions=%#v", sessions)
 	}
 }
 
