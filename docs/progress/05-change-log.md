@@ -197,3 +197,7 @@
 - 修复 Cloud 创建被 60 秒 HTTP Client 全局超时早于 120 秒 SSE 边界截断的问题；HTTP Client 不再设置该全局短超时。SSE 已返回 conversation ID 后即使流尾异常，manager 仍持久化已创建会话并返回 `created_execution_unknown`，同 idempotency key 继续重放同一 ID，不再把已创建误判为可重试创建。
 - 修复 `git_control fetch/pull/push` 的空 remote-helper 根因：不再注入 `-c remote.<name>.vcs=`，避免 Git 解释为 `git-remote-`；仓库真实配置中的非空 `remote.<name>.vcs` 仍由安全检查 fail-closed 拒绝。`remote` 省略时统一按当前分支 upstream → `origin` → 唯一 remote 解析，多 remote 歧义时要求显式指定。
 - 回归证据：ChatGPT Cloud 自动 backend 路由、默认列表合并、known-ID stream error 幂等恢复；Git remote 推断、ambiguous remote fail-closed、真实本地 bare remote fetch（省略 remote）均通过。相关 `internal/agent`、`internal/node`、`internal/hub/server`、`internal/hub/core` 包级完整测试与 `git diff --check` PASS。
+- 正式版本提升至 `0.4.25`，release commit `7d699615e02889556a35d7ed71996c137ee77688` 与 tag `v0.4.25` 已推送。release commit 上全仓 `go test ./... -count=1` 约45秒 PASS；五个正式跨平台产物均 `vcs.modified=false`。
+- 升级前备份 Verify `valid=true`，SHA256=`ce6bab522c5777660ce4e4ccd64a7ec2c74e7730ab3d3bee07ca5560eec61003`。生产 Hub/spiderctl 已升级 0.4.25，本机及 `sharedservices.tibbs.app/fast-spider` 公网 livez/readyz=200，未认证 MCP=401、OAuth metadata=200。
+- 三平台 Node release/version/push marker 已发布 0.4.25；PCa 在真实 busy 期间按设计保持旧进程，活动结束后 idle-safe 自动替换并以 `generation=139 / online / ready` 重连，没有为升级强制中断任务。
+- 生产故障复验完成：新 Node `git_control fetch` 省略 remote 的网络 Job exit 0；既有 ChatGPT Cloud conversation 的 `session.get` 省略 backend 后自动返回 `backend=chatgpt_cloud / externalIdType=chatgpt_conversation`。

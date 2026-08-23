@@ -5,19 +5,20 @@
 <!-- fast-spider:managed:current-state:start -->
 ## Managed Current State
 
-- planId: `fs-0.4.24-release-hardening`
-- targetVersion: `0.4.24`
+- planId: `fs-0.4.25-cloud-routing-release`
+- targetVersion: `0.4.25`
 - branch: `main`
-- sourceReleaseCommit: `ceef5843dfb8dd4453eef0141c83ec20ad152f85`
-- phase: `0.4.24 PRODUCTION DEPLOYED / HEALTHY`
-- finalReleaseGate: `clean reachable clone scripts/release-gate.sh --full PASS；go test/vet/build、restore/local bridge、WSL、Browser、CC Switch、Claude、multi-provider、Local Bridge→Codex product 与真实 ChatGPT Cloud live E2E PASS；Windows/386 按设计 skip fuzz/race；原工作树因取证所需不可达旧对象存在历史扫描命中，未绕过该门禁`
-- productionHub: `0.4.24 / SHA256 d25533e821a6bf45833c6e9c52d8745c1f3dbc08a1e49bd717b9988c8fe0cad9 / PID 1279423 / systemd active / local+public livez+readyz 200`
-- productionSpiderctl: `0.4.24 / SHA256 dbd9c19647ee3106b863e22caa036f2c44d4eb46fa6a7205b10e99d2c66388ec`
-- productionNode: `PCa / 0.4.24 / windows-amd64 / generation=136 / online=true / runtimeStatus=ready / release SHA256 f26c166ed54b6803089a2034a0a47f595b4be8895f46f350ae5edf3a57035302`
-- hubRollback: `production versioned rollback /usr/local/bin/fast-spider-hub.0.4.24-ceef584-attempt2.previous SHA256 155fefd0828fce0a2b971fe054e9de87fb8f2988ff4875ee666d5f37d641c5f0；spiderctl SHA256 7f99c2c327342d9cc503922b37b12e8a27397b2bdac7daa2d306be00421cdfcf；三平台旧 release 与配置备份保留`
-- verifiedBackups: `pre-0.4.24-ceef5843dfb8dd4453eef0141c83ec20ad152f85.zip / SHA256 b0c3b7e4713b964a8180020301e09c8596206e24da0c7e601b290f2de9a3950b / size=17189631 / valid=true / manifest source version=0.4.23`
-- workingContext11: `0.4.24 admin password rotation、ChatGPT Cloud session.create idempotency、realtime lifecycle、Hub/spiderctl、三平台 Node release、Windows PCa replacement、Nginx client-IP hardening 与生产健康检查 done`
-- schemaStatus: `真实 Codex adapter/plugin/MCP E2E PASS；本机 production Local Bridge smoke 返回 pluginMarketplaces=5、mcpServers=4、fileReadSucceeded=true；生产未认证 /mcp=401、OAuth metadata=200；admin password 已生成并存于 /etc/fast-spider/hub.env（600:root:root），不写入文档`
+- sourceReleaseCommit: `7d699615e02889556a35d7ed71996c137ee77688`
+- phase: `0.4.25 PRODUCTION DEPLOYED / HEALTHY`
+- finalReleaseGate: `release commit 上 go test ./... -count=1 PASS（Job job_zYkw_qDiZv4rbaZzZsa8uUEvKetq_hnc，约45秒）+ git diff --check PASS；五个正式产物 cross-build PASS 且 v0.4.25 / vcs.revision=7d699615... / vcs.modified=false；本次按短周期发布约束未重跑 scripts/release-gate.sh --full，不虚报 full gate`
+- productionHub: `0.4.25 / SHA256 b385fd7284733812a293fd6ca78b39b4e1cabc674db5418b01f6c9f226a84088 / PID 2718057 / systemd active / local+public livez+readyz 200`
+- productionSpiderctl: `0.4.25 / SHA256 1f8ba444471c5d5cb9b8dd7544b7f08e57d1772c21e6f1822fcce3a827fae227`
+- productionNode: `PCa / 0.4.25 / windows-amd64 / generation=139 / online=true / runtimeStatus=ready / release SHA256 5c041433208f7649c8446337904d8cc3f3fc7810c1dd41e59834989b1d4a7a28；busy 时按策略延迟替换，活动结束后自动升级且未强制中断任务`
+- nodeReleases: `windows-amd64 SHA256 5c041433208f7649c8446337904d8cc3f3fc7810c1dd41e59834989b1d4a7a28；darwin-amd64 b0d5c5bd9f65b8712f546b3c3bd31963eaee5bd4327a46e28e7771994efcfc43；darwin-arm64 7eb72594b2ca471778841d832c27f6f851864efc612ac48fd81620c6e45b4f2d；version.txt 与 push marker 均为 0.4.25`
+- hubRollback: `/usr/local/bin/fast-spider-hub.0.4.25-7d69961.previous SHA256 d25533e821a6bf45833c6e9c52d8745c1f3dbc08a1e49bd717b9988c8fe0cad9；spiderctl.0.4.25-7d69961.previous SHA256 dbd9c19647ee3106b863e22caa036f2c44d4eb46fa6a7205b10e99d2c66388ec；三平台 0.4.24 artifact/version/push 另保留 pre-0.4.25-7d69961 副本`
+- verifiedBackups: `pre-0.4.25-7d699615e02889556a35d7ed71996c137ee77688.zip / SHA256 ce6bab522c5777660ce4e4ccd64a7ec2c74e7730ab3d3bee07ca5560eec61003 / size=23916609 / valid=true / 93 files / manifest source version=0.4.24`
+- workingContext11: `0.4.25 ChatGPT Cloud sessionId backend 自动路由、managed cloud list、known-ID SSE 恢复、Git remote-helper 修复、Hub/spiderctl、三平台 Node release、PCa idle-safe 自更新与生产 smoke done`
+- schemaStatus: `生产新 Node 上 git_control(fetch, remote omitted) exitCode=0；既有 ChatGPT cloud conversation session.get 省略 backend 正确返回 backend=chatgpt_cloud / externalIdType=chatgpt_conversation；公网 /fast-spider/livez=200、readyz=200、未认证 /mcp=401、OAuth metadata=200`
 - completed041: `FS-041-001..015 PASS / no 0.4.1 release`
 - completed042: `FS-042-001..017 PASS / 0.4.2 formally released and deployed`
 - completed043: `0.4.3 formally released and deployed`
@@ -34,6 +35,7 @@
 - completed0422: `publishFile/Browser/OS screenshot URL-only attachment、48h TTL/自动清理、三平台 Node release、Hub/spiderctl 0.4.22 与 PCa 自更新完成；公网 attachment smoke PASS`
 - completed0423: `chatgpt_cloud session.steer 接入 /f/steer_turn；MCP ai_control 明确 visible ChatGPT CHAT session.create；0.4.23 Hub/spiderctl/三平台 Node 发布、PCa generation=131 自更新与公网健康检查完成`
 - completed0424: `admin credential fail-closed/rotation、ChatGPT Cloud idempotency、realtime subscription lifecycle、Nginx client-IP hardening；0.4.24 Hub/spiderctl/三平台 Node 发布、PCa generation=136、本机插件/MCP/file-read smoke 与公网健康检查完成`
+- completed0425: `ChatGPT Cloud sessionId 自动 backend 路由、managed cloud list、known-ID stream error 幂等恢复、Git remote-helper/remote 推断修复；Hub/spiderctl/三平台 Node 0.4.25 发布、PCa generation=139 idle-safe 自更新、生产 Git/Cloud/public health smoke PASS`
 - currentTask: `none`
 - nextGate: `进入稳定使用阶段；仅在新的真实故障、可复现性能瓶颈或明确新需求出现时开启下一计划`
 

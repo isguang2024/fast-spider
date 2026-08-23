@@ -329,3 +329,14 @@
 - PCa Node 保持 0.4.14 windows/amd64，generation=82、online/ready；0.4.17 未构建/部署 Node，也未修改 Node release、version.txt 或 push.json。
 - 发布后 ChatGPT App Refresh 最终宿主门禁已通过：`api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe")` 精确只返回 `machine_list`；真实 `machine_list` 返回 PCa online/ready、Node 0.4.14、generation=82。随后按需发现并调用 `capability_list`，connection-check 返回生产 ServerVersion=0.4.17；再以 `revisioned` 过滤发现精确只加载 `working_context`。整个复验在当前会话完成，无需新会话、无需重新登录或 OAuth 授权。
 - **Final Acceptance: PASS / PRODUCTION READY**。0.4.17 的服务端发布、回滚/备份、MCP 复杂度预算、请求到达诊断、Refresh 后 `fsprobe` 单工具发现及同会话按需恢复均已验收；当前无剩余内部或宿主侧发布阻断项。
+
+### 2026-08-23 — 0.4.25 Cloud Session / Git Remote 修复生产发布
+
+- 修复提交 `73d6cf6bfce210c46cac0deebe20328b02a49e5f` 已 fast-forward 合并 `main`；版本提交 `7d699615e02889556a35d7ed71996c137ee77688` 已推送 `origin/main`，tag `v0.4.25` 已推送。
+- release commit 上 `go test ./... -count=1` Job `job_zYkw_qDiZv4rbaZzZsa8uUEvKetq_hnc` exitCode=0、约45秒，`git diff --check` PASS。Linux Hub/spiderctl、Windows amd64 Node、Darwin amd64/arm64 Node 五个产物均为 `v0.4.25`、`vcs.revision=7d699615...`、`vcs.modified=false`。本轮未重跑耗时更高的 `scripts/release-gate.sh --full`，不将其记为通过。
+- 升级前备份 `/srv/backups/pre-0.4.25-7d699615e02889556a35d7ed71996c137ee77688.zip` Verify `valid=true`，93 files，SHA256=`ce6bab522c5777660ce4e4ccd64a7ec2c74e7730ab3d3bee07ca5560eec61003`，size=23916609，manifest source version=0.4.24。
+- 生产 Hub/spiderctl 已升级到 0.4.25：Hub SHA256=`b385fd7284733812a293fd6ca78b39b4e1cabc674db5418b01f6c9f226a84088`，spiderctl SHA256=`1f8ba444471c5d5cb9b8dd7544b7f08e57d1772c21e6f1822fcce3a827fae227`，Hub PID=2718057，systemd active，本机和公网 livez/readyz 均 200；未认证 `/fast-spider/mcp`=401，OAuth metadata=200。
+- 三平台 Node release 已发布为 0.4.25：Windows amd64 SHA256=`5c041433208f7649c8446337904d8cc3f3fc7810c1dd41e59834989b1d4a7a28`；Darwin amd64=`b0d5c5bd9f65b8712f546b3c3bd31963eaee5bd4327a46e28e7771994efcfc43`；Darwin arm64=`7eb72594b2ca471778841d832c27f6f851864efc612ac48fd81620c6e45b4f2d`。0.4.24 artifact/version/push 与 Hub/spiderctl 均保留可回滚副本。
+- PCa 收到新 release 时因真实能力调用保持 `runtimeStatus=busy`，按 idle-safe 设计未强制重启；活动结束后自动更新到 `0.4.25 / generation=139 / online / ready`，证明发布未中断正在运行任务。
+- 生产功能复验 PASS：新 Node 上 `git_control(fetch)` 省略 `remote` 的真实网络 Job `job_iVkefXAERWz8ia6gEOAv805N7NVU8cLp` exitCode=0；对既有 ChatGPT cloud conversation 调用 `session.get` 时省略 backend，正确返回 `backend=chatgpt_cloud` 与 `externalIdType=chatgpt_conversation`。
+- **Final Acceptance: PASS / PRODUCTION READY**。0.4.25 源码、Hub/spiderctl、三平台 release、Windows PCa 自更新、备份/回滚与两项故障生产复验均已闭环。
