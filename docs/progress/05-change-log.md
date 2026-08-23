@@ -191,7 +191,7 @@
 - 生产已完成备份 Verify、Hub/spiderctl 原子升级、三平台 Node release push 与本机 Windows Node 受控替换；Hub/spiderctl/Node 均为 0.4.24，PCa generation=136，systemd 与本机/公网健康检查正常，回滚副本保留。
 - 本机真实 Local Bridge smoke 返回 `pluginMarketplaces=5`、`mcpServers=4`、`fileReadSucceeded=true`；MCP status 读取到 `codex_apps`，可见 222 tools，证明 AI 插件能读取 MCP 并正常调用能力。
 
-### 2026-08-23 — ChatGPT Cloud 会话路由与 Git remote-helper 修复
+### 2026-08-23 — 0.4.25 ChatGPT Cloud 会话路由与 Git remote-helper 修复
 
 - 修复 `chatgpt_cloud` 创建与后续控制不对称：visibility sidecar 现在保存 `backend + workingDirectory`，FS 创建的 cloud conversation 后续只传 `sessionId` 即可自动路由；普通 Codex `session.list` 合并 FS 管理的 cloud conversation，显式 `backend=chatgpt_cloud` 保留完整账号云列表语义。
 - 修复 Cloud 创建被 60 秒 HTTP Client 全局超时早于 120 秒 SSE 边界截断的问题；HTTP Client 不再设置该全局短超时。SSE 已返回 conversation ID 后即使流尾异常，manager 仍持久化已创建会话并返回 `created_execution_unknown`，同 idempotency key 继续重放同一 ID，不再把已创建误判为可重试创建。
