@@ -206,3 +206,5 @@ Contributions should follow [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of 
 ## License
 
 Fast Spider is released under the Apache License 2.0. See [LICENSE](LICENSE).
+
+Third-party dependency notice guidance is available in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
