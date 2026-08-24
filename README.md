@@ -90,6 +90,8 @@ go run ./cmd/node connect \
   --name dev-node
 ```
 
+For no-server usage, run Hub locally and expose it with a free or free-tier tunnel only when cloud clients must reach it. See [Free Local Deployment](docs/free-local-deployment.md).
+
 For more details, see [Getting Started](docs/getting-started.md), [Configuration Reference](docs/configuration.md) and [Deployment and Operations](docs/14-deployment-and-operations.md).
 
 ## MCP tools
@@ -131,6 +133,7 @@ Start here:
 
 - [Documentation Index](docs/README.md)
 - [Getting Started](docs/getting-started.md)
+- [Free Local Deployment](docs/free-local-deployment.md)
 - [Configuration Reference](docs/configuration.md)
 - [Product Vision](docs/00-product-vision.md)
 - [Requirements and Scope](docs/01-requirements-and-scope.md)
