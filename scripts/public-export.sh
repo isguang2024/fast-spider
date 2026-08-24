@@ -105,7 +105,7 @@ trap cleanup_on_exit EXIT
 
 git archive --format=tar "$source_commit" | tar -xf - -C "$output"
 
-for forbidden in .git .local .learnings; do
+for forbidden in .git .local .learnings docs/progress; do
   if [[ -e "$output/$forbidden" ]]; then
     echo "public archive unexpectedly contains $forbidden" >&2
     exit 1
