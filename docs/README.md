@@ -5,6 +5,7 @@ This directory contains the public design, operations and release documentation 
 ## Start here
 
 - [Getting Started](getting-started.md) — first deployment and development workflow.
+- [Configuration Reference](configuration.md) — command flags, environment variables and production notes.
 - [Product Vision](00-product-vision.md) — product positioning and boundaries.
 - [Requirements and Scope](01-requirements-and-scope.md) — supported and intentionally unsupported capabilities.
 - [System Architecture](02-system-architecture.md) — Hub, Node and client surfaces.
