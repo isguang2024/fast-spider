@@ -18,8 +18,14 @@ for path in \
   SECURITY.md \
   CONTRIBUTING.md \
   CODE_OF_CONDUCT.md \
+  THIRD_PARTY_NOTICES.md \
+  .env.example \
+  .github/pull_request_template.md \
+  .github/ISSUE_TEMPLATE/bug_report.md \
+  .github/ISSUE_TEMPLATE/feature_request.md \
   docs/README.md \
   docs/getting-started.md \
+  docs/configuration.md \
   docs/public-release.md \
   scripts/public-export.sh; do
   require_file "$path"
