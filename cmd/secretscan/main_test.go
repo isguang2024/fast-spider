@@ -149,6 +149,15 @@ func TestPublicExportRejectsSecretPresentOnlyInFilename(t *testing.T) {
 
 func TestGitignoreCoversRootAndNestedCredentialStores(t *testing.T) {
 	root := filepath.Join("..", "..")
+	repo := t.TempDir()
+	gitignore, err := os.ReadFile(filepath.Join(root, ".gitignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), gitignore, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runFixtureCommand(t, repo, "git", "init", "-q")
 	for _, path := range []string{
 		".aws/credentials", "nested/.aws/credentials",
 		".docker/config.json", "nested/.docker/config.json",
@@ -156,10 +165,9 @@ func TestGitignoreCoversRootAndNestedCredentialStores(t *testing.T) {
 		".config/gcloud/application_default_credentials.json",
 		"nested/.config/gcloud/application_default_credentials.json",
 	} {
-		cmd := exec.Command("git", "check-ignore", "--no-index", "-q", "--", path)
-		cmd.Dir = root
-		if err := cmd.Run(); err != nil {
-			t.Fatalf("credential path %s is not ignored: %v", path, err)
+		cmd := exec.Command("git", "-C", repo, "check-ignore", "--no-index", "-q", "--", path)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("credential path %s is not ignored: %v (%s)", path, err, strings.TrimSpace(string(output)))
 		}
 	}
 }
