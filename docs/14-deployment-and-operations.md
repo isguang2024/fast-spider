@@ -66,8 +66,8 @@ go run ./cmd/ripgreppack --rg-exe <prepared rg.exe> --out <release-dir/component
 ## 备份
 
 ```bash
-spiderctl backup --data-dir /var/lib/fast-spider --out /srv/backups/fast-spider-<timestamp>.zip
-spiderctl backup-verify --file /srv/backups/fast-spider-<timestamp>.zip
+spiderctl backup --data-dir /var/lib/fast-spider --out ./backups/fast-spider-<timestamp>.zip
+spiderctl backup-verify --file ./backups/fast-spider-<timestamp>.zip
 ```
 
 备份包含 Hub secrets，必须按敏感数据保存。升级生产前必须先生成并校验备份。普通 `fast-spider-<timestamp>.zip` 不属于 release rotation，`backup-prune` 永远不会识别或删除它。
@@ -76,8 +76,8 @@ spiderctl backup-verify --file /srv/backups/fast-spider-<timestamp>.zip
 
 ```bash
 # 用即将升级到的版本与当前来源提交生成标准名称
-spiderctl backup --data-dir /var/lib/fast-spider --out /srv/backups/pre-<target-semver>-<source-commit>.zip
-spiderctl backup-verify --file /srv/backups/pre-<target-semver>-<source-commit>.zip
+spiderctl backup --data-dir /var/lib/fast-spider --out ./backups/pre-<target-semver>-<source-commit>.zip
+spiderctl backup-verify --file ./backups/pre-<target-semver>-<source-commit>.zip
 
 # 仅在升级成功后执行；第一条只输出计划，不写磁盘
 spiderctl backup-prune --dir <absolute-backup-dir> --keep 3

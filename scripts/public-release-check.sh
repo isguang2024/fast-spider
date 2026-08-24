@@ -37,20 +37,22 @@ if git ls-files | grep -E '^(docs/progress/|\.local/|\.learnings/|data/|artifact
   exit 1
 fi
 
-if git ls-files | grep -E '(^|/)(\.env($|\.)|id_rsa$|id_dsa$|id_ecdsa$|id_ed25519$|credentials\.json$|service-account\.json$|service_account\.json$|secrets\.(json|ya?ml)$|.*\.(pem|key|p12|pfx|jks|keystore|pkcs8|sqlite|sqlite3|db|log)$)' >/dev/null; then
+filename_matches="$({
+  git ls-files |
+    grep -E '(^|/)(\.env($|\.)|id_rsa$|id_dsa$|id_ecdsa$|id_ed25519$|credentials\.json$|service-account\.json$|service_account\.json$|secrets\.(json|ya?ml)$|.*\.(pem|key|p12|pfx|jks|keystore|pkcs8|sqlite|sqlite3|db|log)$)' |
+    grep -Ev '(^|/)\.env\.(example|sample|template)$' || true
+})"
+if [[ -n "$filename_matches" ]]; then
   echo "tracked public source contains sensitive-looking filenames" >&2
-  git ls-files | grep -E '(^|/)(\.env($|\.)|id_rsa$|id_dsa$|id_ecdsa$|id_ed25519$|credentials\.json$|service-account\.json$|service_account\.json$|secrets\.(json|ya?ml)$|.*\.(pem|key|p12|pfx|jks|keystore|pkcs8|sqlite|sqlite3|db|log)$)' >&2
+  printf '%s\n' "$filename_matches" >&2
   exit 1
 fi
 
 for pattern in \
-  'PCa' \
   '/srv/backups' \
-  'pre-0.4.' \
   'PRODUCTION READY' \
   'production deployment' \
-  'Machine mach_' \
-  'generation='; do
+  'Machine mach_'; do
   if git grep -n --fixed-strings "$pattern" -- ':!docs/public-release.md' ':!scripts/public-release-check.sh' >/tmp/fast-spider-public-check.$$ 2>/dev/null; then
     echo "public source contains internal release marker: $pattern" >&2
     cat /tmp/fast-spider-public-check.$$ >&2

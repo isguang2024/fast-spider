@@ -36,7 +36,7 @@ Hub 的持久数据都位于 `--data-dir`：
 ```bash
 spiderctl backup \
   --data-dir /var/lib/fast-spider \
-  --out /srv/backups/fast-spider-20260808.zip
+  --out ./backups/fast-spider-20260808.zip
 ```
 
 如果省略 `--out`，默认在当前目录生成带 UTC 时间的文件名。
@@ -57,7 +57,7 @@ spiderctl backup \
 ## 4. 校验命令
 
 ```bash
-spiderctl backup-verify --file /srv/backups/fast-spider-20260808.zip
+spiderctl backup-verify --file ./backups/fast-spider-20260808.zip
 ```
 
 校验内容：
@@ -89,7 +89,7 @@ Prune 只处理 root 的直接标准候选，且只删除 version `<= --through`
 
 ```bash
 spiderctl restore \
-  --file /srv/backups/fast-spider-20260808.zip \
+  --file ./backups/fast-spider-20260808.zip \
   --data-dir /var/lib/fast-spider-restored
 ```
 
