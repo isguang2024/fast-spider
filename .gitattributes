@@ -22,3 +22,4 @@
 # Internal/private development records must never enter a public source archive.
 .learnings/ export-ignore
 .local/ export-ignore
+docs/progress/ export-ignore
