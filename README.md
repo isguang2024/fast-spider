@@ -90,7 +90,7 @@ go run ./cmd/node connect \
   --name dev-node
 ```
 
-For more details, see [Getting Started](docs/getting-started.md) and [Deployment and Operations](docs/14-deployment-and-operations.md).
+For more details, see [Getting Started](docs/getting-started.md), [Configuration Reference](docs/configuration.md) and [Deployment and Operations](docs/14-deployment-and-operations.md).
 
 ## MCP tools
 
@@ -129,7 +129,9 @@ Tool inputs use explicit absolute paths for machine-local operations. Examples:
 
 Start here:
 
+- [Documentation Index](docs/README.md)
 - [Getting Started](docs/getting-started.md)
+- [Configuration Reference](docs/configuration.md)
 - [Product Vision](docs/00-product-vision.md)
 - [Requirements and Scope](docs/01-requirements-and-scope.md)
 - [System Architecture](docs/02-system-architecture.md)
@@ -150,6 +152,12 @@ Run the standard checks:
 go test ./... -count=1
 go vet ./...
 git diff --check
+```
+
+Run the public release hygiene check:
+
+```bash
+bash scripts/public-release-check.sh
 ```
 
 Run the release gate:
