@@ -86,6 +86,7 @@ func runConnect(logger *slog.Logger, args []string) {
 	noRun := fs.Bool("no-run", false, "finish after registration without starting the Node connection")
 	browserSidecarDir := fs.String("browser-sidecar-dir", "", "optional Playwright sidecar directory")
 	disableLocalBridge := fs.Bool("disable-local-bridge", false, "disable the current-user AF_UNIX Local Bridge after connect")
+	projectRoot := fs.String("project-root", "", "project root for safe Project mode; omit to keep Machine mode")
 	_ = fs.Parse(args)
 	if *hubURL == "" || *token == "" {
 		fatalIf(errors.New("connect requires --hub and --token"))
@@ -94,7 +95,7 @@ func runConnect(logger *slog.Logger, args []string) {
 	fatalIf(err)
 	defer lease.Close()
 	client, err := node.New(node.Config{
-		DataDir: *dataDir, Version: version.Version, AllowInsecure: *allowInsecure, Logger: logger,
+		DataDir: *dataDir, Version: version.Version, AllowInsecure: *allowInsecure, ProjectRoot: *projectRoot, Logger: logger,
 	})
 	fatalIf(err)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -110,6 +111,7 @@ func runConnect(logger *slog.Logger, args []string) {
 		allowInsecure:      *allowInsecure,
 		browserSidecarDir:  *browserSidecarDir,
 		disableLocalBridge: *disableLocalBridge,
+		projectRoot:        *projectRoot,
 	})
 }
 
@@ -118,6 +120,7 @@ type nodeRunOptions struct {
 	allowInsecure      bool
 	browserSidecarDir  string
 	disableLocalBridge bool
+	projectRoot        string
 }
 
 func runNode(logger *slog.Logger, args []string) {
@@ -126,6 +129,7 @@ func runNode(logger *slog.Logger, args []string) {
 	allowInsecure := fs.Bool("allow-insecure", false, "allow a previously registered http/ws Hub only for local development")
 	browserSidecarDir := fs.String("browser-sidecar-dir", "", "optional Playwright sidecar directory; defaults to FAST_SPIDER_BROWSER_SIDECAR_DIR or ./sidecar/browser")
 	disableLocalBridge := fs.Bool("disable-local-bridge", false, "disable the current-user AF_UNIX Local Bridge")
+	projectRoot := fs.String("project-root", "", "project root for safe Project mode; omit to keep Machine mode")
 	_ = fs.Parse(args)
 	lease, err := nodeinstance.Acquire()
 	fatalIf(err)
@@ -135,6 +139,7 @@ func runNode(logger *slog.Logger, args []string) {
 		allowInsecure:      *allowInsecure,
 		browserSidecarDir:  *browserSidecarDir,
 		disableLocalBridge: *disableLocalBridge,
+		projectRoot:        *projectRoot,
 	})
 }
 
@@ -144,7 +149,7 @@ func runNodeLocked(logger *slog.Logger, opts nodeRunOptions) {
 	if logErr != nil {
 		logger.Warn("operation log store unavailable", "error", logErr)
 	}
-	client, err := node.New(node.Config{DataDir: opts.dataDir, Version: version.Version, AllowInsecure: opts.allowInsecure, BrowserSidecarDir: opts.browserSidecarDir, Agent: agentController, Logger: logger, OperationLog: operationLog})
+	client, err := node.New(node.Config{DataDir: opts.dataDir, Version: version.Version, AllowInsecure: opts.allowInsecure, ProjectRoot: opts.projectRoot, BrowserSidecarDir: opts.browserSidecarDir, Agent: agentController, Logger: logger, OperationLog: operationLog})
 	fatalIf(err)
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

@@ -32,10 +32,13 @@ type ConnectionStatus struct {
 }
 
 type Config struct {
-	DataDir           string
-	Version           string
-	DisplayName       string
-	AllowInsecure     bool
+	DataDir       string
+	Version       string
+	DisplayName   string
+	AllowInsecure bool
+	// ProjectRoot enables the default open-source project boundary. An empty
+	// value preserves the original machine mode and its OS-account boundary.
+	ProjectRoot       string
 	BrowserSidecarDir string
 	Agent             AgentController
 	// AgentCallerOwned keeps the injected Agent under the caller's ownership.
@@ -63,6 +66,7 @@ type Client struct {
 	requestSem     chan struct{}
 	screenshotSem  chan struct{}
 	operationLog   *operationlog.Store
+	projectPolicy  *projectPolicy
 }
 
 type machineRegistrationResponse struct {
@@ -94,6 +98,10 @@ func New(cfg Config) (*Client, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	projectPolicy, err := newProjectPolicy(cfg.ProjectRoot)
+	if err != nil {
+		return nil, err
+	}
 	keyPath := filepath.Join(cfg.DataDir, "secrets", "node-ed25519.key")
 	pub, priv, err := security.LoadOrCreateEd25519(keyPath)
 	if err != nil {
@@ -111,9 +119,19 @@ func New(cfg Config) (*Client, error) {
 		screenshotSem:  make(chan struct{}, 1),
 		agent:          cfg.Agent,
 		operationLog:   cfg.OperationLog,
+		projectPolicy:  projectPolicy,
 	}
 	client.browser = NewBrowserManager(cfg.DataDir, cfg.BrowserSidecarDir, cfg.Logger)
 	return client, nil
+}
+
+// ProjectRoot returns the resolved project boundary, or an empty string when
+// this Node is running in the original machine mode.
+func (c *Client) ProjectRoot() string {
+	if c.projectPolicy == nil {
+		return ""
+	}
+	return c.projectPolicy.root
 }
 
 func (c *Client) State() (State, error) { return LoadState(c.statePath) }

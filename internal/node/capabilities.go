@@ -128,6 +128,10 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 		ctx, cancel = context.WithDeadline(ctx, deadline)
 		defer cancel()
 	}
+	if err := c.projectPolicy.validate(req.Capability, req.Action, req.Params); err != nil {
+		response.Error = capabilityError(err)
+		return response
+	}
 
 	var result any
 	var err error
@@ -314,6 +318,12 @@ func capabilityError(err error) *protocolv1.ProtocolError {
 		return protocolError("DEADLINE_EXCEEDED", "request deadline exceeded or canceled", true)
 	case errors.Is(err, ErrAbsolutePathRequired):
 		return protocolError("ABSOLUTE_PATH_REQUIRED", "an absolute local path is required", false)
+	case errors.Is(err, ErrProjectPathForbidden):
+		return protocolError("PROJECT_PATH_FORBIDDEN", "the requested local path is outside the Node project root", false)
+	case errors.Is(err, ErrProjectModeRequired):
+		return protocolError("PROJECT_MODE_REQUIRED", "project mode requires an explicit path inside the Node project root", false)
+	case errors.Is(err, ErrProjectNativeCaptureDenied):
+		return protocolError("PROJECT_CAPABILITY_DENIED", "native desktop and window capture is disabled in project mode", false)
 	case errors.Is(err, os.ErrNotExist):
 		return protocolError("NOT_FOUND", "path was not found", false)
 	case errors.Is(err, ErrReadLimit):

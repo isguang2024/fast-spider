@@ -28,6 +28,8 @@ func main() {
 	switch os.Args[1] {
 	case "setup-url":
 		setupURL(os.Args[2:])
+	case "share":
+		share(os.Args[2:])
 	case "backup":
 		backup(os.Args[2:])
 	case "backup-verify":
@@ -231,5 +233,5 @@ func fatalf(format string, args ...any) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: spiderctl <setup-url|backup|backup-verify|backup-prune|staging-prune|node-update-push|restore|version> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: spiderctl <setup-url|share|backup|backup-verify|backup-prune|staging-prune|node-update-push|restore|version> [flags]")
 }

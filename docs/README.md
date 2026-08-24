@@ -5,7 +5,11 @@ This directory contains the public design, operations and release documentation 
 ## Start here
 
 - [Getting Started](getting-started.md) — first deployment and development workflow.
+- [Getting Started (简体中文)](getting-started.zh-CN.md) — 中文首次上手与 Project mode。
 - [Free Local Deployment](free-local-deployment.md) — run Hub locally and expose it with a free or free-tier tunnel.
+- [Free Local Deployment (简体中文)](free-local-deployment.zh-CN.md) — 免费本地 Hub、Tunnel 与 Windows 路径。
+- [Security Model](security-model.md) — what MCP, Hub, Node and Project mode can and cannot do.
+- [安全模型（简体中文）](security-model.zh-CN.md) — 面向用户的权限、凭据与 Tunnel 边界。
 - [Configuration Reference](configuration.md) — command flags, environment variables and production notes.
 - [Product Vision](00-product-vision.md) — product positioning and boundaries.
 - [Requirements and Scope](01-requirements-and-scope.md) — supported and intentionally unsupported capabilities.
@@ -31,6 +35,7 @@ This directory contains the public design, operations and release documentation 
 ## Security and operations
 
 - [Security Threat Model](09-security-threat-model.md)
+- [User Security Model](security-model.md)
 - [Deployment and Operations](14-deployment-and-operations.md)
 - [Observability](15-observability.md)
 - [Update and Recovery](16-update-and-recovery.md)
@@ -43,6 +48,7 @@ This directory contains the public design, operations and release documentation 
 - [Roadmap](19-roadmap.md)
 - [Open Questions](20-open-questions.md)
 - [Public Release Guide](public-release.md)
+- [npm Wrapper Plan](npm-wrapper-plan.md)
 
 ## Public documentation policy
 

@@ -24,8 +24,39 @@ Fast Spider uses command-line flags for most runtime configuration. Environment 
 | `FAST_SPIDER_CODEX_APP_SERVER_SOCKET` | no | Optional explicit socket path for an externally owned Codex app-server proxy. |
 | `FAST_SPIDER_WSL_DISTRIBUTION` | tests only | Selects the WSL distribution for local full-gate tests. |
 | `FAST_SPIDER_WSL_TEST_CWD` | tests only | Selects a Windows path used by WSL runtime tests. |
+| `FAST_SPIDER_HUB_BIN` | `share` only | Optional absolute or PATH-resolvable Hub executable used when `share` cannot use the source tree. |
+| `FAST_SPIDER_SOURCE_ROOT` | `share` only | Fast Spider source tree used for `go run ./cmd/hub` and the printed Node command. |
 
 See `.env.example` for a safe local template.
+
+## Node project profile
+
+`cmd/node connect` and `cmd/node run` accept:
+
+| Flag | Default | Description |
+|---|---:|---|
+| `--project-root` | empty | Resolved project directory for Project mode. Omit it to preserve Machine mode. |
+
+Project mode checks explicit file, search, shell/build cwd, Git, context,
+artifact and AI input paths at the Node capability boundary. Native desktop,
+display and window screenshots are disabled. It is a path-constraint profile,
+not a complete OS sandbox.
+
+## `spiderctl share`
+
+| Flag | Default | Description |
+|---|---:|---|
+| `--project` | `.` | Project directory bound to the printed Node command. |
+| `--tunnel` | `none` | `none`, `cloudflare` or `ngrok`. Tunnel binaries must already be in `PATH`. |
+| `--listen` | `127.0.0.1:8787` | Loopback Hub address. Share rejects non-loopback addresses. |
+| `--data-dir` | temporary | Hub profile directory. Keep it outside the project root. |
+| `--hub-bin` | auto | Optional `fast-spider-hub` executable. |
+| `--node-bin` | auto | Optional Node executable name/path for the printed command. |
+| `--source-root` | auto | Fast Spider source tree fallback when Hub/Node binaries are unavailable. |
+
+`share` creates a temporary owner account and Node Connection Token through the
+existing Web Console flow. The printed token is for Node registration only;
+MCP still uses OAuth and Direct API still uses a Direct Access Key.
 
 ## Production notes
 

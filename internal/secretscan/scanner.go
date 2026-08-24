@@ -169,7 +169,10 @@ func ScanTree(ctx context.Context, root string, options Options) ([]Finding, err
 			}
 			return s.scanBytes(location{source: "tree", path: rel}, []byte(target), 0)
 		}
-		entryInfo, err := entry.Info()
+		// Use Lstat instead of the cached DirEntry.Info result. On provider-
+		// mounted Windows workspaces, the cached FileInfo can fail os.SameFile
+		// against the handle opened below even when the file did not change.
+		entryInfo, err := os.Lstat(path)
 		if err != nil {
 			return fmt.Errorf("inspect tree entry %s", s.safeLocator(rel))
 		}

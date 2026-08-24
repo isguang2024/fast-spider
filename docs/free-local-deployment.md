@@ -1,5 +1,7 @@
 # Free Local Deployment
 
+[简体中文](free-local-deployment.zh-CN.md)
+
 This guide describes how to run Fast Spider without renting a server.
 
 The intended setup is:
@@ -18,6 +20,38 @@ This is useful for personal use, demos, testing and small private workflows. It 
 | Stable tunnel | 0 or free-tier | Yes | ChatGPT/MCP/OAuth callbacks and repeatable demos |
 | Temporary tunnel | 0 or free-tier | Yes | Short demos and webhook-style testing |
 
+## Fast path: `share`
+
+For a disposable first run, let the CLI create the local Hub profile and
+owner account:
+
+```bash
+go run ./cmd/spiderctl share --project . --tunnel none
+```
+
+The command keeps Hub on loopback, binds the Node to the selected project and
+prints a 30-day Node Connection Token plus the Node command. It does not start
+Node automatically. Run the printed command in a second terminal, then use
+the printed MCP URL. MCP authentication is OAuth; the printed Bearer token is
+only for registering the Node.
+
+Use a free tunnel when a cloud MCP client must reach the local Hub:
+
+```bash
+go run ./cmd/spiderctl share --project . --tunnel cloudflare
+go run ./cmd/spiderctl share --project . --tunnel ngrok
+```
+
+`cloudflared` and `ngrok` must already be installed and available in `PATH`.
+The CLI checks this before starting the Hub and gives an install hint when the
+dependency is missing. Cloudflare Quick Tunnel URLs and default ngrok URLs are
+temporary; do not treat them as a permanent service address.
+
+If the CLI is installed outside the source checkout, provide a
+`fast-spider-hub` executable or set `FAST_SPIDER_SOURCE_ROOT` to the source
+tree. A supplied `--data-dir` must stay outside the project root so the
+Project-mode policy cannot read Hub secrets as project files.
+
 ## Security boundary
 
 A tunnel exposes the local Hub to the Internet. Keep the boundary narrow:
@@ -31,6 +65,11 @@ A tunnel exposes the local Hub to the Internet. Keep the boundary narrow:
 - Treat LocalTunnel/random tunnel URLs as temporary and untrusted.
 
 Node still executes with the operating system permissions of the user running Node. A free tunnel changes network reachability, not the local privilege model.
+
+Project mode narrows explicit file, search, working-directory, Git, artifact
+and AI input paths, and disables native desktop/window screenshots. It does not
+sandbox arbitrary shell interpreters, Git remotes, browser network access or
+provider credentials. Use Machine mode only for private, advanced workflows.
 
 ## Option A: local only
 
@@ -169,6 +208,18 @@ go run ./cmd/hub \
 
 Do not use a random temporary tunnel URL as a permanent MCP or OAuth endpoint.
 
+## Windows users
+
+PowerShell users can run the same source command from the repository root:
+
+```text
+go run .\cmd\spiderctl share --project . --tunnel none
+```
+
+Keep the Hub terminal open. Copy the printed Node command into a second
+PowerShell window. If `cloudflared` or `ngrok` is installed but not found,
+restart the shell after adding its installation directory to `PATH`.
+
 ## Node connection examples
 
 Same machine:
@@ -219,3 +270,28 @@ The tunnel is not routing to `http://127.0.0.1:8787`, or Hub was started with a 
 ### Tunnel hostname changed
 
 Restart Hub with the new hostname and update external client settings. Prefer a stable tunnel hostname for repeated use.
+
+### `share` says that the Hub cannot be started
+
+Install `fast-spider-hub`, set `FAST_SPIDER_HUB_BIN`, or run the command from
+the Fast Spider source tree. An installed `spiderctl` by itself is not a
+complete Hub distribution.
+
+### `cloudflared` or `ngrok` is not in PATH
+
+Install the selected tunnel client, make sure the executable is visible to the
+same shell, and rerun `share`. The command intentionally does not download or
+install tunnel software.
+
+### Project path is rejected
+
+The printed Node command must include `--project-root` pointing to the same
+directory used by `share`. Do not replace it with a sibling directory or a
+Machine-mode Node when testing the public onboarding path.
+
+### ChatGPT cannot connect to the MCP URL
+
+Use `--tunnel cloudflare` or `--tunnel ngrok`, confirm that the public hostname
+appears in Hub `--allowed-hosts`, and ensure Hub was started with the same
+public URL in `--public-base-url`. The Node Connection Token is not an MCP
+OAuth credential; complete OAuth at the MCP URL.

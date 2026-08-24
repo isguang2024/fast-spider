@@ -14,6 +14,7 @@ require_file() {
 
 for path in \
   README.md \
+  README.zh-CN.md \
   LICENSE \
   SECURITY.md \
   CONTRIBUTING.md \
@@ -25,6 +26,12 @@ for path in \
   .github/ISSUE_TEMPLATE/feature_request.md \
   docs/README.md \
   docs/getting-started.md \
+  docs/getting-started.zh-CN.md \
+  docs/free-local-deployment.md \
+  docs/free-local-deployment.zh-CN.md \
+  docs/security-model.md \
+  docs/security-model.zh-CN.md \
+  docs/npm-wrapper-plan.md \
   docs/configuration.md \
   docs/public-release.md \
   scripts/public-export.sh; do

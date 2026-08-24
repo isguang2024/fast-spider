@@ -1,5 +1,7 @@
 # Fast Spider
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Fast Spider is a self-hosted, cross-platform remote development and automation platform.
 
 It connects one or more user-owned machines to a Hub over outbound HTTPS/WSS. The Hub provides identity, routing, jobs, audit logs, artifacts and API surfaces. Each Node performs the actual work on the local machine under the operating-system user that started it.
@@ -58,6 +60,43 @@ Requirements:
 - Git
 - Optional Node.js / Playwright dependencies for browser automation
 
+### Three-minute safe trial
+
+The public first-run path uses **Project mode**. It binds the Node capability
+policy to the selected project directory instead of presenting the original
+whole-machine Machine mode as the default.
+
+From the Fast Spider source tree:
+
+```bash
+git clone https://github.com/isguang2024/fast-spider.git
+cd fast-spider
+go run ./cmd/spiderctl share --project . --tunnel none
+```
+
+`share` starts a temporary local Hub, creates the first owner and a short-lived
+Node connection token, then prints the Node command and MCP URL. It does not
+start Node for you: run the printed command in a second terminal. The MCP URL
+uses OAuth; the printed Bearer credential is only for Node registration.
+
+For a CLI installed outside the source tree, install the command and provide a
+`fast-spider-hub` binary or set `FAST_SPIDER_SOURCE_ROOT`:
+
+```bash
+go install github.com/isguang2024/fast-spider/cmd/spiderctl@latest
+spiderctl share --project .
+```
+
+The first safe request to use after connecting is:
+
+```text
+Inspect this repository and summarize its structure. Do not make changes.
+```
+
+Use `--tunnel cloudflare` or `--tunnel ngrok` only when a cloud client must
+reach the local Hub. See [Security Model](docs/security-model.md) before
+sharing a tunnel URL.
+
 Start a local Hub:
 
 ```bash
@@ -92,7 +131,20 @@ go run ./cmd/node connect \
 
 For no-server usage, run Hub locally and expose it with a free or free-tier tunnel only when cloud clients must reach it. See [Free Local Deployment](docs/free-local-deployment.md).
 
-For more details, see [Getting Started](docs/getting-started.md), [Configuration Reference](docs/configuration.md) and [Deployment and Operations](docs/14-deployment-and-operations.md).
+For more details, see [Getting Started](docs/getting-started.md), [Security Model](docs/security-model.md), [Configuration Reference](docs/configuration.md) and [Deployment and Operations](docs/14-deployment-and-operations.md).
+
+## Project mode and Machine mode
+
+Project mode is the recommended open-source onboarding profile. The Node
+checks file, search, shell/build working directories, Git repositories and
+artifact paths at the capability boundary and rejects paths outside the bound
+project root. Native desktop/window screenshots are disabled in this mode.
+Shells, Git remotes, browsers and AI providers can still have side effects, so
+Project mode is a path-constraint profile, not an operating-system sandbox.
+
+Machine mode remains available for private, advanced use and preserves the
+original OS-user trust boundary. Do not expose a Machine-mode Node through a
+public tunnel unless you understand and accept the whole-machine risk.
 
 ## MCP tools
 
@@ -133,7 +185,11 @@ Start here:
 
 - [Documentation Index](docs/README.md)
 - [Getting Started](docs/getting-started.md)
+- [Getting Started (简体中文)](docs/getting-started.zh-CN.md)
 - [Free Local Deployment](docs/free-local-deployment.md)
+- [Free Local Deployment (简体中文)](docs/free-local-deployment.zh-CN.md)
+- [Security Model](docs/security-model.md)
+- [安全模型（简体中文）](docs/security-model.zh-CN.md)
 - [Configuration Reference](docs/configuration.md)
 - [Product Vision](docs/00-product-vision.md)
 - [Requirements and Scope](docs/01-requirements-and-scope.md)
