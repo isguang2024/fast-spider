@@ -29,7 +29,16 @@ func (m *AgentManager) providers(ctx context.Context) map[string]any {
 	if m.ccswitch != nil {
 		discovery.route = m.ccswitch.InspectApp
 	}
-	return discoverProviders(ctx, m.registry, discovery)
+	result := discoverProviders(ctx, m.registry, discovery)
+	providers, _ := result["providers"].([]any)
+	for _, raw := range providers {
+		provider, _ := raw.(map[string]any)
+		if mapString(provider, "providerId") == "codex" {
+			provider["desktopBridge"] = m.codex.desktopBridgeMetadata()
+			break
+		}
+	}
+	return result
 }
 
 func discoverProviders(ctx context.Context, registry providerRegistry, discovery providerDiscovery) map[string]any {

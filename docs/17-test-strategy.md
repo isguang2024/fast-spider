@@ -8,9 +8,9 @@ Codex 发布门禁必须在实际选择的 runtime 上覆盖 create/get/list/wat
 
 Node 发布推送门禁必须验证“忙碌不重启”：先启动一个真实长任务，再发起 `node-update-push`；Node 可完成 Ready 预下载并上报 `busy`，但版本/PID 不得在任务结束前切换，Job 必须自然完成。之后连续空闲达到 grace 后才允许自更新；新任务在 release drain 窗口返回可重试 `NODE_UPDATING`。最终 Node 版本/SHA、generation 和 `.previous` 回滚副本必须对账通过。
 
-MCP 分层能力门禁必须使用冷 Client 验证 initialize 返回 `FastSpider_FS` Server Title 和不超过 2 KiB 的能力地图，覆盖十类能力、`@FastSpider_FS`、`machine_list`、`audit_log`、按需指南与 `session.list`；tools/list 固定 19 个工具。`audit_log` 必须验证 Owner 隔离、无 Node 可读及过滤/limit 边界；`machine_list` 描述中的唯一过滤标记 `fsprobe` 必须只出现一次；完整 19 工具目录、连接入口三工具和任一单工具序列化体积上限分别为 48 KiB、8 KiB、8 KiB。无参数及 Machine 旧调用必须兼容；overview 不超过 8 KiB，单个 tool/workflow/error 不超过 12 KiB；未知 view、缺 name 和未知 name 必须拒绝。注册工具、指南目录和公共文档工具名必须自动对账。
+MCP 分层能力门禁必须使用冷 Client 验证 initialize 返回 `FastSpider_FS` Server Title 和不超过 2 KiB 的能力地图，覆盖十类能力、`@FastSpider_FS`、`machine_list`、`audit_log`、按需指南与 `session.list`；tools/list 固定 19 个工具。`audit_log` 必须验证 Owner 隔离、无 Node 可读及过滤/limit 边界；`machine_list` 描述中的唯一过滤标记 `fsprobe` 必须只出现一次，默认 20/最大 50 的稳定页必须覆盖 `hasMore/nextCursor`，默认不得读取或返回完整 capability descriptors，`includeCapabilities=true` 才展开。完整 19 工具目录、连接入口三工具和任一单工具序列化体积上限分别为 48 KiB、8 KiB、8 KiB。无参数 Direct 及 Machine 旧调用必须兼容；overview 不超过 8 KiB，单个 tool/workflow/error 不超过 12 KiB；未知 view、缺 name 和未知 name 必须拒绝。注册工具、指南目录和公共文档工具名必须自动对账。
 
-MCP 调用诊断门禁必须通过真实 SDK 请求确认 initialize、tools/list、tools/call、工具名、成功/失败和稳定错误分类；0.4.17 还必须验证通过 Bearer Token 的 MCP HTTP 请求会更新 `lastMcpRequestAt`，但不会伪造一条 method event。ring 最多 64 条、不同 Owner 隔离。序列化结果不得包含 arguments、Prompt、Token、路径或原始 User-Agent。后台 API 未登录返回 401，登录后只能读取当前 Owner 的快照；页面只加载一次并提供手动刷新。
+MCP 调用诊断门禁必须通过真实 SDK 请求确认 initialize、tools/list、tools/call、工具名、成功/失败和稳定错误分类；0.4.17 还必须验证通过 Bearer Token 的 MCP HTTP 请求会更新 `lastMcpRequestAt`，但不会伪造一条 method event。每 Owner ring 最多 64 条、Owner 快照空闲 TTL 24 小时、总量最多 1024，并验证过期及最久未触达淘汰；不同 Owner 隔离。序列化结果不得包含 arguments、Prompt、Token、路径或原始 User-Agent。默认工具结果必须省略模型可见的 transport IDs/timing、保留业务续作字段并把诊断放入 `_meta`；`diagnostics=true` 恢复完整结果；普通 structured result 不得再复制成文本 `content`，Artifact 原生内容仍保留。后台 API 未登录返回 401，登录后只能读取当前 Owner 的快照；页面只加载一次并提供手动刷新。
 
 ## 必测主链
 

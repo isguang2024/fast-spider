@@ -10,13 +10,15 @@ Fast Spider 的日志和指标以低噪音、低基数、可排障为目标。
 
 ## 请求级轻量 Timing
 
-每次 capability 由 Hub 生成 `requestId + traceId` 并透传 Node/Job。响应仅带紧凑的实测 timing：通用层为 `nodeExecutionMs/hubPreDispatchMs/nodeRoundTripMs/hubTotalMs`；Job 为 `queueMs/runMs` 与时间戳；搜索为 primary/fallback/total；Browser 为 startup/operation/queue/total；Agent readiness 为各层 elapsed。无法准确测量的字段不伪造。
+每次 capability 由 Hub 生成 `requestId + traceId` 并透传 Node/Job。Hub↔Node 与 Direct 响应带紧凑的实测 timing：通用层为 `nodeExecutionMs/hubPreDispatchMs/nodeRoundTripMs/hubTotalMs`；Job 为 `queueMs/runMs` 与时间戳；搜索为 primary/fallback/total；Browser 为 startup/operation/queue/total；Agent readiness 为各层 elapsed。无法准确测量的字段不伪造。
+
+公网 MCP 默认把 transport IDs、timing 和纯诊断 elapsed/check time 从模型可见的 `structuredContent` 投影到 `_meta.fastSpider/diagnostics`；调用时显式传 `diagnostics=true` 才恢复完整可见字段。投影只发生在 MCP Adapter，不递归删除 Provider 自有 metadata，也不删除业务 ID、状态、错误、hash、cursor 或 expiry。错误结果的 `IsError` 和稳定 error code 保持原契约。
 
 这些 timing 默认不落长期日志、不创建 span/collector/外部时序库。管理端“诊断”页只在人工刷新时显示 Agent/Browser readiness 和 WSL 可用性，不发 Prompt、不创建 Session、不高频轮询。
 
 ## MCP 调用诊断
 
-Hub 使用 MCP SDK 正式 Receiving Middleware 观察 `initialize`、`tools/list` 与 `tools/call`；0.4.17 同时在 Bearer Token 验证成功后仅更新该 Owner 的“最近已认证 MCP HTTP 请求时间”。每个 Owner 只维护一个进程内快照和最近 64 条有界 ring，不写数据库或磁盘日志；Hub 重启后自然清空。HTTP 到达时间不伪造成 MCP method event，ring 仍只保存 initialize/tools/list/tools/call。记录字段仅包括事件时间、方法、`tools/call` 工具名、`success|failure`、稳定错误分类、归一化客户端类型、Server/Guide 版本和 Server 启动时间。
+Hub 使用 MCP SDK 正式 Receiving Middleware 观察 `initialize`、`tools/list` 与 `tools/call`；0.4.17 同时在 Bearer Token 验证成功后仅更新该 Owner 的“最近已认证 MCP HTTP 请求时间”。每个 Owner 只维护一个进程内快照和最近 64 条有界 ring，不写数据库或磁盘日志；Owner 快照空闲 24 小时过期，进程内总量最多 1024，新增 Owner 超限时淘汰最久未触达项，Hub 重启后全部自然清空。回收在写入或人工读取快照时惰性执行，不增加后台定时器。HTTP 到达时间不伪造成 MCP method event，ring 仍只保存 initialize/tools/list/tools/call。记录字段仅包括事件时间、方法、`tools/call` 工具名、`success|failure`、稳定错误分类、归一化客户端类型、Server/Guide 版本和 Server 启动时间。
 
 严格不读取或保存 Authorization Header、Token、Cookie、完整请求体、工具 arguments、Prompt、本机路径、文件正文、IP、原始 User-Agent 或原始错误堆栈。客户端类型只从 MCP `clientInfo.name` 或请求头做有限归一化，原值不进入快照。已登录 Web 后台通过只读 `/app/api/mcp-diagnostics` 加载当前 Owner 快照；未登录返回 401。页面进入时读取一次，并只提供手动刷新，不做轮询。
 

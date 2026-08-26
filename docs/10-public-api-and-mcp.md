@@ -34,9 +34,17 @@ Current 不提供目录列表工具；`audit_log` 只读查询 Hub 本地 `audit
 
 Codex 保留 Provider/Model、Skills/Hooks/Permission Profiles/Plugins/MCP discovery、Thread/Goal/Settings/Review、原生多类型 Turn、`outputSchema`、steer/respond 和 app-server auto-resume。Claude Code 第一版提供 models/capabilities 与 session list/get/create/send/watch/cancel/result/rename/archive/unarchive，使用原生 UUID + `stream-json` + `--resume`，Prompt 经 stdin。FS 不映射 Codex 的 `fs/*`/`command/exec/*`/`mcpServer/tool/call`，也不提供 CC Switch Provider/Token/Takeover 写入或 Claude permission bypass 第二执行链。
 
+Windows Node 默认附加 Codex Desktop owner/control bridge（`FAST_SPIDER_CODEX_DESKTOP_BRIDGE=0` 可关闭），但仍保留 FS 原有的 app-server 创建和执行路径。公开 MCP 的 `ai_control` 可通过 `providers.list`、`provider.readiness`、`provider.capabilities` 以及本地 Codex `session.create/send` 返回值中的 `desktopBridge` 读取当前是否启用、是否已连接、自动释放规则和能力限制。`nativeConversationStreaming=unsupported` 表示尚未生成 Desktop renderer 私有的完整 snapshot/patch，不能据此宣称 Desktop 已能原生实时显示 FS 会话内容。
+
 ## ChatGPT 调用与工具发现
 
 Hub 的 MCP `initialize` 会返回不超过 2 KiB 的常驻能力地图，并把 Server Title 固定为 `FastSpider_FS`。能力地图只说明十类能力、第一步和固定安全链路，不复制完整 Schema、参数示例或错误表。当 ChatGPT 已选择该 App 或用户显式 `@FastSpider_FS` 时，调用侧应先尝试工具而不是仅依据界面文本判断“插件未加载”：连接测试使用只读 `capability_list(view=overview)` + `machine_list`；需要本机操作但尚无 `machineId` 时先调用 `machine_list`。
+
+所有 machine-bound MCP 工具支持可选 `diagnostics`。省略或传 `false` 时使用稳定的紧凑结果：`structuredContent` 不重复携带 transport `requestId/traceId/callRequestId/callTraceId`、通用 `timing`、搜索 elapsed 和 readiness 检查时间；这些诊断事实移到结果 `_meta.fastSpider/diagnostics`，不会进入模型对话正文。传 `diagnostics=true` 才把同一批字段同时保留在结构化结果中，供单次排障。`machineId/providerId/sessionId/jobId/turnId`、cursor、hash、state/error/exitCode、URL/expiry 等业务续作与校验事实始终保留；原生 Artifact 内容不受影响。Hub-local 工具也只返回一次 `structuredContent`，不再把同一 JSON 自动复制到文本 `content`。
+
+公网 MCP 的 `machine_list` 使用稳定的管理备注/显示名/ID 顺序分页，默认 `limit=20`、最大 50；`hasMore=true` 时把返回的 `nextCursor` 原样传给下一页。它默认省略每台机器重复的完整 capability descriptors，只返回发现和选机需要的 machine/online/runtime/version 等事实；确需在同一响应展开时传 `includeCapabilities=true`，否则使用 `machine_get` 或 `capability_list` 读取详细能力。底层只查询当前页，默认页也不读取数据库 capability 列表。
+
+诊断投影只属于 MCP Adapter；Direct API 和 Hub↔Node capability 契约继续返回完整诊断字段。Direct 无参数 `machine_list` 也保持旧的完整返回；Direct 调用方可显式使用同一组 `limit/cursor/includeCapabilities` 取得有界页。MCP 为 `Stateless`，因此不使用“前 N 次详细、后续自动省略”或按客户端类型猜测的进程内计数：重连、重试、并发、多实例和重启都不会改变响应形状。调用侧缓存若存在，必须把 `diagnostics` 纳入 key，并继续按 Owner/Machine/Session 隔离。
 
 `capability_list` 是唯一按需指南入口，没有新增第 19 个 guide/help 工具：
 

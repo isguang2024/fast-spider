@@ -24,6 +24,23 @@ func TestReadinessResultExposesExplicitCreateLayers(t *testing.T) {
 	}
 }
 
+func TestReadinessResultPublishesCodexDesktopBridgeMetadata(t *testing.T) {
+	t.Setenv(codexDesktopBridgeEnv, "0")
+	manager := &AgentManager{codex: NewCodexAdapter(nil)}
+	layers := map[string]readinessLayer{
+		"routing":        {State: "ready", ReasonCode: "OK"},
+		"provider":       {State: "ready", ReasonCode: "OK"},
+		"harness":        {State: "ready", ReasonCode: "OK"},
+		"sessionBackend": {State: "ready", ReasonCode: "OK"},
+		"readyCreate":    {State: "ready", ReasonCode: "READY"},
+	}
+	result := manager.readinessResultWithDesktopBridge("codex", "safe", layers, time.Now())
+	desktopBridge, _ := result["desktopBridge"].(map[string]any)
+	if desktopBridge["state"] != "disabled" || desktopBridge["nativeConversationStreaming"] != "unsupported" {
+		t.Fatalf("desktopBridge=%#v", desktopBridge)
+	}
+}
+
 func TestClassifyRouteReadinessUsesInspectedRouteFacts(t *testing.T) {
 	tests := []struct {
 		name, state, reason string

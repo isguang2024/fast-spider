@@ -26,6 +26,7 @@ const (
 	codexRPCLineLimit       = 8 << 20
 	codexEventLimit         = 1000
 	codexAppServerSocketEnv = "FAST_SPIDER_CODEX_APP_SERVER_SOCKET"
+	codexDesktopBridgeEnv   = "FAST_SPIDER_CODEX_DESKTOP_BRIDGE"
 )
 
 type codexRPCError struct {
@@ -69,6 +70,11 @@ type codexServerRequest struct {
 	Responding bool
 }
 
+type codexSessionLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
 type CodexAdapter struct {
 	logger       *slog.Logger
 	versionCache *ttlCache[versionProbe]
@@ -77,7 +83,8 @@ type CodexAdapter struct {
 	configErr    *ExecutionError
 
 	startMu     sync.Mutex
-	loadMu      sync.Mutex
+	loadLocksMu sync.Mutex
+	loadLocks   map[string]*codexSessionLock
 	mu          sync.Mutex
 	rpcWriteMu  sync.Mutex
 	cmd         *exec.Cmd
@@ -99,6 +106,7 @@ type CodexAdapter struct {
 	serverMu        sync.Mutex
 	serverRequests  map[string]codexServerRequest
 	requestOverride func(context.Context, string, map[string]any) (map[string]any, error)
+	desktopBridge   *codexDesktopBridge
 }
 
 func NewCodexAdapter(logger *slog.Logger) *CodexAdapter {
@@ -302,6 +310,10 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 		_ = a.stopProcess(context.Background(), cmd)
 		return err
 	}
+	if err := a.ensureDesktopBridge(); err != nil {
+		_ = a.stopProcess(context.Background(), cmd)
+		return err
+	}
 	return nil
 }
 
@@ -330,7 +342,12 @@ func (a *CodexAdapter) Close(ctx context.Context) error {
 	a.mu.Lock()
 	a.closed = true
 	cmd := a.cmd
+	desktopBridge := a.desktopBridge
+	a.desktopBridge = nil
 	a.mu.Unlock()
+	if desktopBridge != nil {
+		desktopBridge.Close()
+	}
 	if cmd == nil {
 		return nil
 	}
@@ -893,6 +910,15 @@ func (a *CodexAdapter) handleNotification(method string, raw json.RawMessage) {
 		event.Detail = map[string]any{"errorClass": class}
 	}
 	a.recordEvent(event)
+	if method == "turn/completed" && sessionID != "" {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := a.unloadThread(ctx, sessionID); err != nil {
+				a.logger.Debug("unload completed Codex thread", "sessionId", sessionID, "error", err)
+			}
+		}()
+	}
 }
 
 func (a *CodexAdapter) recordEvent(event AgentEvent) {
@@ -1065,6 +1091,10 @@ func (a *CodexAdapter) ReadThread(ctx context.Context, sessionID string) (map[st
 	// Codex can acknowledge turn/start before the persisted thread is ready for
 	// includeTurns. A metadata-only read keeps immediate get/watch/result calls
 	// stable and also supports a newly-created session that has no first turn yet.
+	return a.ReadThreadMetadata(ctx, sessionID)
+}
+
+func (a *CodexAdapter) ReadThreadMetadata(ctx context.Context, sessionID string) (map[string]any, error) {
 	return a.request(ctx, "thread/read", map[string]any{"threadId": sessionID, "includeTurns": false})
 }
 
@@ -1105,16 +1135,14 @@ func (a *CodexAdapter) ensureThreadLoaded(ctx context.Context, sessionID string)
 	if strings.TrimSpace(sessionID) == "" {
 		return fmt.Errorf("sessionId is required")
 	}
+	unlock := a.lockSessionLoad(sessionID)
+	defer unlock()
+	return a.ensureThreadLoadedLocked(ctx, sessionID)
+}
+
+func (a *CodexAdapter) ensureThreadLoadedLocked(ctx context.Context, sessionID string) error {
 	a.mu.Lock()
 	_, loaded := a.loaded[sessionID]
-	a.mu.Unlock()
-	if loaded {
-		return nil
-	}
-	a.loadMu.Lock()
-	defer a.loadMu.Unlock()
-	a.mu.Lock()
-	_, loaded = a.loaded[sessionID]
 	a.mu.Unlock()
 	if loaded {
 		return nil
@@ -1124,6 +1152,43 @@ func (a *CodexAdapter) ensureThreadLoaded(ctx context.Context, sessionID string)
 	}
 	a.markThreadLoaded(sessionID)
 	return nil
+}
+
+func (a *CodexAdapter) unloadThread(ctx context.Context, sessionID string) error {
+	if strings.TrimSpace(sessionID) == "" {
+		return fmt.Errorf("sessionId is required")
+	}
+	unlock := a.lockSessionLoad(sessionID)
+	defer unlock()
+	return a.unloadThreadLocked(ctx, sessionID)
+}
+
+func (a *CodexAdapter) unloadThreadLocked(ctx context.Context, sessionID string) error {
+	if a.ActiveTurn(sessionID) != "" {
+		return nil
+	}
+	a.mu.Lock()
+	_, loaded := a.loaded[sessionID]
+	a.mu.Unlock()
+	if !loaded {
+		return nil
+	}
+	_, err := a.request(ctx, "thread/unsubscribe", map[string]any{"threadId": sessionID})
+	if err != nil && !isCodexThreadAlreadyUnsubscribed(err) {
+		return err
+	}
+	a.mu.Lock()
+	delete(a.loaded, sessionID)
+	a.mu.Unlock()
+	return nil
+}
+
+func isCodexThreadAlreadyUnsubscribed(err error) bool {
+	if err == nil || isAgentSessionNotFound(err) {
+		return true
+	}
+	message := strings.ToLower(executionDebugText(err))
+	return containsAny(message, "not subscribed", "already unsubscribed")
 }
 
 func codexThreadStartParams(workingDirectory, projectDirectory, model, thinking string) map[string]any {
@@ -1221,17 +1286,14 @@ func (a *CodexAdapter) StartTurnWithInputs(ctx context.Context, sessionID string
 }
 
 func (a *CodexAdapter) StartTurnWithOptions(ctx context.Context, sessionID string, inputs []map[string]any, options codexTurnOptions) (map[string]any, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("sessionId is required")
+	}
 	if len(inputs) == 0 {
 		return nil, fmt.Errorf("at least one valid turn input is required")
 	}
 	if len(inputs) > 64 {
 		return nil, fmt.Errorf("turn input count exceeds 64")
-	}
-	if active := a.ActiveTurn(sessionID); active != "" {
-		return nil, node.ErrAgentSessionBusy
-	}
-	if err := a.ensureThreadLoaded(ctx, sessionID); err != nil {
-		return nil, err
 	}
 	params := map[string]any{
 		"threadId": sessionID,
@@ -1254,6 +1316,14 @@ func (a *CodexAdapter) StartTurnWithOptions(ctx context.Context, sessionID strin
 		if strings.TrimSpace(value) != "" {
 			params[key] = value
 		}
+	}
+	unlock := a.lockSessionLoad(sessionID)
+	defer unlock()
+	if active := a.ActiveTurn(sessionID); active != "" {
+		return nil, node.ErrAgentSessionBusy
+	}
+	if err := a.ensureThreadLoadedLocked(ctx, sessionID); err != nil {
+		return nil, err
 	}
 	result, err := a.request(ctx, "turn/start", params)
 	if err != nil {
@@ -1574,11 +1644,18 @@ func (a *CodexAdapter) RenameThread(ctx context.Context, sessionID, name string)
 }
 
 func (a *CodexAdapter) ArchiveThread(ctx context.Context, sessionID string) error {
-	if err := a.ensureThreadLoaded(ctx, sessionID); err != nil {
+	if strings.TrimSpace(sessionID) == "" {
+		return fmt.Errorf("sessionId is required")
+	}
+	unlock := a.lockSessionLoad(sessionID)
+	defer unlock()
+	if err := a.ensureThreadLoadedLocked(ctx, sessionID); err != nil {
 		return err
 	}
-	_, err := a.request(ctx, "thread/archive", map[string]any{"threadId": sessionID})
-	return err
+	if _, err := a.request(ctx, "thread/archive", map[string]any{"threadId": sessionID}); err != nil {
+		return err
+	}
+	return a.unloadThreadLocked(ctx, sessionID)
 }
 
 func (a *CodexAdapter) UnarchiveThread(ctx context.Context, sessionID string) error {
@@ -1589,8 +1666,8 @@ func (a *CodexAdapter) UnarchiveThread(ctx context.Context, sessionID string) er
 	return err
 }
 func (a *CodexAdapter) DeleteThread(ctx context.Context, sessionID string) error {
-	a.loadMu.Lock()
-	defer a.loadMu.Unlock()
+	unlock := a.lockSessionLoad(sessionID)
+	defer unlock()
 	_, err := a.request(ctx, "thread/delete", map[string]any{"threadId": sessionID})
 	if err == nil || isAgentSessionNotFound(err) {
 		a.mu.Lock()
@@ -1598,6 +1675,31 @@ func (a *CodexAdapter) DeleteThread(ctx context.Context, sessionID string) error
 		a.mu.Unlock()
 	}
 	return err
+}
+
+func (a *CodexAdapter) lockSessionLoad(sessionID string) func() {
+	a.loadLocksMu.Lock()
+	if a.loadLocks == nil {
+		a.loadLocks = make(map[string]*codexSessionLock)
+	}
+	lock := a.loadLocks[sessionID]
+	if lock == nil {
+		lock = &codexSessionLock{}
+		a.loadLocks[sessionID] = lock
+	}
+	lock.refs++
+	a.loadLocksMu.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		a.loadLocksMu.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(a.loadLocks, sessionID)
+		}
+		a.loadLocksMu.Unlock()
+	}
 }
 func (a *CodexAdapter) ForkThread(ctx context.Context, sessionID, cwd string) (map[string]any, error) {
 	p := map[string]any{"threadId": sessionID}

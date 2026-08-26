@@ -152,6 +152,27 @@ func TestProviderDiscoveryRunsIndependentReadOnlyProbesInParallel(t *testing.T) 
 	}
 }
 
+func TestProvidersListPublishesCodexDesktopBridgeMetadata(t *testing.T) {
+	t.Setenv(codexDesktopBridgeEnv, "0")
+	codex := NewCodexAdapter(nil)
+	codex.versionCache.set("version", versionProbe{version: "codex-test"})
+	claude := NewClaudeCodeAdapter(t.TempDir(), nil, nil)
+	claude.versionCache.set("version", versionProbe{version: "claude-test"})
+	claude.authCache.set("auth", map[string]any{"configured": true})
+	manager := &AgentManager{codex: codex, claude: claude, registry: staticProviderRegistry()}
+
+	result := manager.providers(context.Background())
+	providers, _ := result["providers"].([]any)
+	if len(providers) != 2 {
+		t.Fatalf("providers=%#v", providers)
+	}
+	codexProvider, _ := providers[0].(map[string]any)
+	desktopBridge, _ := codexProvider["desktopBridge"].(map[string]any)
+	if desktopBridge["enabled"] != false || desktopBridge["state"] != "disabled" || desktopBridge["nativeConversationStreaming"] != "unsupported" {
+		t.Fatalf("Codex desktopBridge=%#v", desktopBridge)
+	}
+}
+
 func TestRouteDiscoveryErrorIsClassifiedWithoutRawPayload(t *testing.T) {
 	raw := errors.New("network connection reset token=secret-value endpoint=https://private.example/v1")
 	route := publicRouteDiscovery("codex", nil, raw)

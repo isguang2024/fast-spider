@@ -54,7 +54,7 @@ func (m *AgentManager) providerReadiness(ctx context.Context, input agentControl
 		layers["harness"] = readinessLayer{State: "blocked", ReasonCode: "NOT_CHECKED"}
 		layers["sessionBackend"] = readinessLayer{State: "blocked", ReasonCode: "NOT_CHECKED"}
 		layers["readyCreate"] = readinessLayer{State: "blocked", ReasonCode: "NOT_CHECKED"}
-		return readinessResult(providerID, mode, layers, started), nil
+		return m.readinessResultWithDesktopBridge(providerID, mode, layers, started), nil
 	}
 	layers["provider"] = measuredReadiness(func() (string, string) {
 		if _, err := m.codex.Availability(ctx); err != nil {
@@ -66,7 +66,7 @@ func (m *AgentManager) providerReadiness(ctx context.Context, input agentControl
 		layers["harness"] = readinessLayer{State: "unknown", ReasonCode: "HARNESS_NOT_RUNNING"}
 		layers["sessionBackend"] = readinessLayer{State: "unknown", ReasonCode: "NOT_CHECKED"}
 		layers["readyCreate"] = readinessLayer{State: "unknown", ReasonCode: "NOT_CHECKED"}
-		return readinessResult(providerID, mode, layers, started), nil
+		return m.readinessResultWithDesktopBridge(providerID, mode, layers, started), nil
 	}
 	layers["harness"] = measuredReadiness(func() (string, string) {
 		if err := m.codex.ensureStarted(ctx); err != nil {
@@ -107,7 +107,15 @@ func (m *AgentManager) providerReadiness(ctx context.Context, input agentControl
 		}
 		return "ready", "READY"
 	})
-	return readinessResult(providerID, mode, layers, started), nil
+	return m.readinessResultWithDesktopBridge(providerID, mode, layers, started), nil
+}
+
+func (m *AgentManager) readinessResultWithDesktopBridge(providerID, mode string, layers map[string]readinessLayer, started time.Time) map[string]any {
+	result := readinessResult(providerID, mode, layers, started)
+	if providerID == "codex" && m.codex != nil {
+		result["desktopBridge"] = m.codex.desktopBridgeMetadata()
+	}
+	return result
 }
 
 func classifyRouteReadiness(route map[string]any) (string, string) {

@@ -256,7 +256,7 @@ func TestDirectAccessAPIMachineBinding(t *testing.T) {
 	}
 	body := readBody(t, resp)
 	resp.Body.Close()
-	if !strings.Contains(body, machineA) || strings.Contains(body, machineB) {
+	if !strings.Contains(body, machineA) || strings.Contains(body, machineB) || strings.Contains(body, "hasMore") || strings.Contains(body, "nextCursor") {
 		t.Fatalf("bound machine_list escaped machine boundary: %s", body)
 	}
 

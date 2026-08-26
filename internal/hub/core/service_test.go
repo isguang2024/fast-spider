@@ -296,6 +296,18 @@ func TestListMachinesLoadsCapabilitiesForOwnerBatch(t *testing.T) {
 			t.Fatalf("machine %s capabilities=%+v", machine.MachineID, machine.Capabilities)
 		}
 	}
+	firstPage, hasMore, err := service.ListMachinesPage(ctx, account.OwnerID, 0, 1, false)
+	if err != nil || len(firstPage) != 1 || !hasMore || firstPage[0].DisplayName != "Node A" || len(firstPage[0].Capabilities) != 0 {
+		t.Fatalf("compact first machine page=%+v hasMore=%v err=%v", firstPage, hasMore, err)
+	}
+	secondPage, hasMore, err := service.ListMachinesPage(ctx, account.OwnerID, 1, 1, false)
+	if err != nil || len(secondPage) != 1 || hasMore || secondPage[0].DisplayName != "Node B" || len(secondPage[0].Capabilities) != 0 {
+		t.Fatalf("compact second machine page=%+v hasMore=%v err=%v", secondPage, hasMore, err)
+	}
+	fullPage, _, err := service.ListMachinesPage(ctx, account.OwnerID, 0, 1, true)
+	if err != nil || len(fullPage) != 1 || len(fullPage[0].Capabilities) != 1 {
+		t.Fatalf("full machine page=%+v err=%v", fullPage, err)
+	}
 }
 
 func stringJSON(value any) string {

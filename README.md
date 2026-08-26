@@ -179,6 +179,8 @@ Tool inputs use explicit absolute paths for machine-local operations. Examples:
 - `git_control`: absolute `repositoryPath`
 - `ai_control.session.create`: absolute `workingDirectory`
 
+On Windows, local Codex sessions enable the Codex Desktop owner/control bridge by default; set `FAST_SPIDER_CODEX_DESKTOP_BRIDGE=0` to disable it. Public `ai_control` discovery and local session results include `desktopBridge` state. This bridge preserves Fast Spider's existing app-server execution path and does not yet promise native Desktop live-history rendering.
+
 ## Documentation
 
 Start here:

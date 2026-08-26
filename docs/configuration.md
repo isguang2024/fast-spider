@@ -22,6 +22,7 @@ Fast Spider uses command-line flags for most runtime configuration. Environment 
 | `FAST_SPIDER_ADMIN_PASSWORD` | first Hub startup / admin rotation | One-time administrator password. Prefer this over `--admin-password` so secrets are not visible in process listings. |
 | `FAST_SPIDER_CODEX_EXECUTABLE` | no | Absolute path override for the Codex executable used by Node. |
 | `FAST_SPIDER_CODEX_APP_SERVER_SOCKET` | no | Optional explicit socket path for an externally owned Codex app-server proxy. |
+| `FAST_SPIDER_CODEX_DESKTOP_BRIDGE` | no | Windows defaults to enabled. Set `0`/`false` to disable the local Codex Desktop owner/control IPC bridge; set `1`/`true` to require it explicitly on Windows. It does not replace Fast Spider's app-server and does not yet provide native Desktop live-history streaming. |
 | `FAST_SPIDER_WSL_DISTRIBUTION` | tests only | Selects the WSL distribution for local full-gate tests. |
 | `FAST_SPIDER_WSL_TEST_CWD` | tests only | Selects a Windows path used by WSL runtime tests. |
 | `FAST_SPIDER_HUB_BIN` | `share` only | Optional absolute or PATH-resolvable Hub executable used when `share` cannot use the source tree. |

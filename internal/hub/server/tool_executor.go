@@ -53,8 +53,30 @@ func executeTypedTool[T any](executor *toolExecutor, ctx context.Context, ownerI
 func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInput any) (any, error) {
 	switch tool {
 	case "machine_list":
-		if _, err := toolInput[machineListInput](tool, rawInput); err != nil {
+		input, err := toolInput[machineListInput](tool, rawInput)
+		if err != nil {
 			return nil, err
+		}
+		if input.Limit != 0 || input.Cursor != 0 || input.IncludeCapabilities != nil {
+			if input.Limit == 0 {
+				input.Limit = 20
+			}
+			if input.Limit < 1 || input.Limit > 50 || input.Cursor < 0 {
+				return nil, &toolRequestError{message: "limit must be between 1 and 50 and cursor must be non-negative"}
+			}
+			includeCapabilities := input.IncludeCapabilities != nil && *input.IncludeCapabilities
+			machines, hasMore, err := e.service.ListMachinesPage(ctx, ownerID, input.Cursor, input.Limit, includeCapabilities)
+			if err != nil {
+				return nil, err
+			}
+			out := machineListOutput{Machines: make([]mcpMachine, 0, len(machines)), HasMore: &hasMore}
+			for _, machine := range machines {
+				out.Machines = append(out.Machines, toMCPMachine(machine))
+			}
+			if hasMore {
+				out.NextCursor = input.Cursor + len(machines)
+			}
+			return out, nil
 		}
 		machines, err := e.service.ListMachines(ctx, ownerID)
 		if err != nil {

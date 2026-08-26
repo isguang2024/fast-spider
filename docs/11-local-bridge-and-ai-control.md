@@ -23,7 +23,7 @@ Provider Token、Codex/ChatGPT 本地认证和其他 Provider secret 只保留�
 当前内置两个 AI Harness：
 
 ```text
-providerId=codex        -> Codex app-server --stdio
+providerId=codex        -> Codex app-server --stdio + Windows 默认 Desktop owner/control bridge
 providerId=claude_code  -> Claude Code CLI stream-json
 ```
 
@@ -176,6 +176,10 @@ Codex app-server 可以在 Turn 中主动发送 Server Request。Fast Spider 当
 
 `session.watch` 使用 Node 维护的有界事件 cursor，返回标准化 Turn/assistant/status/error/interactive request 事件；最长单次 long-poll 15 秒。`session.watch` 与 `session.get` 都同时返回当前 `pendingRequests` 快照，因此即使客户端断线、事件 cursor 过旧或事件环发生截断，也能重新取得仍待回答的 requestId。
 
+仅用于存在性授权的 session action（steer/respond/watch/cancel/rename/archive/fork/compact/rollback/goal/review）以 `thread/read(includeTurns=false)` 读取元数据，避免长会话在每次控制动作前重复加载完整历史；`session.get/result/send` 等确实需要 Turn 内容的动作继续使用 `includeTurns=true`。
+
+Codex 的 resume/unsubscribe/start-turn/archive/delete 只按同一 `sessionId` 串行；不同 Session 使用独立短生命周期锁，可以并发推进。最后一个持有者/等待者退出后锁项立即删除，不形成随历史 Session 数量增长的常驻锁表。
+
 `session.result` 读取 Codex 持久 Thread 的最新 Turn 事实，返回真实 status 与 `finalAgentMessage`。即使 Turn 使用了 `outputSchema`，Fast Spider 仍保留 raw final message，不宣称已经变成强类型对象；调用方可在需要时自行 JSON decode。
 
 ### `session.cancel`
@@ -245,7 +249,9 @@ Plugin 是 Codex 的能力包，可包含 Skills、Apps、MCP servers、Hooks �
 
 `session.rollback` 的参数是 `numTurns`（1–1000），表示从 Thread 末尾删除 N 个 Codex turns。**它只修改 Codex 对话历史，不回滚本地工作树文件，也不等价于 Git reset/revert。**因此 rollback 之后仍应以 Git/文件系统事实判断代码状态。
 
-Codex app-server 默认是由 Fast Spider 管理的本机子进程。Fast Spider 记录当前进程内已加载 Thread；若 app-server 崩溃或被重启，下一次 Turn/Review 前自动调用官方 `thread/resume(threadId)` 重新加载持久 Thread，再继续操作。调用方无需维护第二个 resume 状态机，也不需要新增公开 `session.resume`。实验性共享 owner 模式可通过绝对 `FAST_SPIDER_CODEX_APP_SERVER_SOCKET` 接入外部 `codex app-server --listen unix://...`，此时 Fast Spider 只管理 proxy 客户端，不直接修改 Codex 状态文件；该模式仍要求外部 owner 真正存在，不能把普通 Desktop stdio 子进程自动当成可连接 endpoint。
+Codex app-server 默认是由 Fast Spider 管理的本机子进程。Fast Spider 记录当前进程内已加载 Thread；若 app-server 崩溃或被重启，下一次 Turn/Review 前自动调用官方 `thread/resume(threadId)` 重新加载持久 Thread，再继续操作。调用方无需维护第二个 resume 状态机，也不需要新增公开 `session.resume`。Windows 还默认连接当前用户的 Codex Desktop owner/follower IPC；可用 `FAST_SPIDER_CODEX_DESKTOP_BRIDGE=0` 明确关闭。它只认领当前 adapter 已加载的本地 Thread，终态或归档后通过 `thread/unsubscribe` 自动释放，并提供 follower 控制转发；它不替代 FS 自己的 app-server，也尚不能生成 Desktop renderer 私有的完整 `conversationState` snapshot/patch，因此不承诺 Desktop 原生界面实时显示完整内容。`providers.list`、`provider.readiness`、`provider.capabilities` 和本地 Codex `session.create/send` 结果都会返回 `desktopBridge` 状态与该限制。
+
+实验性共享 app-server owner 模式仍可通过绝对 `FAST_SPIDER_CODEX_APP_SERVER_SOCKET` 接入外部 `codex app-server --listen unix://...`，此时 Fast Spider 只管理 proxy 客户端，不直接修改 Codex 状态文件；它与 Desktop owner/control bridge 是不同层：前者替换 app-server transport，后者只是附加的 Desktop IPC 控制路由。
 
 ## 10. Goal
 

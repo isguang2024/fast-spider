@@ -1,4 +1,4 @@
-# 部署与运维（0.4.25）
+# 部署与运维（0.4.26）
 
 ## Hub
 
@@ -23,7 +23,8 @@ Fast Spider 不捆绑用户的 AI 账号或 Provider：
 - Codex Harness 要求本机已有可执行的 Codex CLI/app-server。
 - Windows 上若 Codex Desktop 提供 `%LOCALAPPDATA%/OpenAI/Codex/bin/<runtime>/codex.exe`，Node 优先使用最近更新且可正常执行的 Desktop runtime，以保证它与 Desktop 写入的 `CODEX_HOME` 配置格式一致；否则回退到 `PATH`。可用绝对路径环境变量 `FAST_SPIDER_CODEX_EXECUTABLE` 明确覆盖该选择。
 - 共享 app-server owner 的实验入口（仅测试分支/显式配置）：设置绝对路径环境变量 `FAST_SPIDER_CODEX_APP_SERVER_SOCKET` 后，Node 不再启动独立 `app-server --stdio`，而是通过 `codex app-server proxy --sock <path>` 转发 WebSocket RPC；Node 不写入 Codex SQLite/rollout，也不负责停止 socket owner。该 socket owner 需由外部先以 `codex app-server --listen unix://<path>` 启动。
-- 该入口不等于自动接管当前 Codex Desktop。在 Windows 本机，Desktop 当前启动的 app-server 是由 Desktop 父进程管理的 stdio 子进程，没有公开给 FS 的 socket 地址；未获得可连接的 Desktop endpoint 前，不能宣称 FS 会话已经具备 Desktop 原生归档语义。
+- Windows 默认启用 Desktop owner/follower bridge；只有显式设置 `FAST_SPIDER_CODEX_DESKTOP_BRIDGE=0` 才关闭（`=1` 可用于跨环境明确声明启用）。Node 仍按原方式管理自己的 app-server，同时连接当前用户的固定本机管道 `\\.\pipe\codex-ipc` 并在断线后自动重连；只为本 adapter 已加载的会话响应 `thread-owner-discovery`，Turn 完成或归档触发 `thread/unsubscribe` 后立即停止认领。当前支持从 Desktop follower 转发启动、追加、中断和 compact Turn，以及命令/文件审批、用户输入与 MCP elicitation 响应。
+- Desktop bridge 使用的是 Codex Desktop 26.820 的内部 IPC 契约，不是公开稳定 API。当前实现尚不能生成 Desktop renderer 所需的私有 `conversationState` snapshot/patch，因此它只完成 owner 发现与控制路由基础，不能宣称 FS 创建的会话已经能在 Desktop 原生界面完整实时显示；Desktop 或应用内工具若绕过 follower IPC 直接连接自己的 app-server，仍会得到 active writer。升级 Desktop 后必须先运行针对当前版本的 IPC E2E 再启用该实验配置。
 - Claude Code Harness 要求本机已有 `claude` CLI；Fast Spider 只探测版本/安全的 auth 配置并运行原生 Session。
 - CC Switch 若安装，则 `~/.cc-switch/cc-switch.db` 作为只读 Routing SSOT；Fast Spider 不创建、迁移或修改该数据库，也不负责启动/更新 CC Switch。
 - Node data-dir 中的 `agent/claude-code-sessions.json` 只是 Fast Spider 本地控制索引；Claude 原生会话、CC Switch 数据和 Provider 凭据仍由各自产品管理。

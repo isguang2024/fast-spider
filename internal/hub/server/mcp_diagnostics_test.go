@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 func TestMCPDiagnosticsAreBoundedIsolatedAndAllowlisted(t *testing.T) {
 	started := time.Date(2026, 8, 14, 1, 2, 3, 0, time.UTC)
 	store := newMCPDiagnosticsStore("0.4.16", started)
+	store.now = func() time.Time { return started.Add(2 * time.Hour) }
 	for index := 0; index < maxMCPDiagnosticEvents+9; index++ {
 		store.record("owner-a", "tools/call", "file_read", "codex", "success", "", started.Add(time.Duration(index)*time.Second))
 	}
@@ -43,6 +45,7 @@ func TestMCPDiagnosticsAreBoundedIsolatedAndAllowlisted(t *testing.T) {
 func TestMCPDiagnosticsTrackAuthenticatedRequestWithoutCreatingFakeToolEvents(t *testing.T) {
 	started := time.Date(2026, 8, 14, 1, 2, 3, 0, time.UTC)
 	store := newMCPDiagnosticsStore("0.4.17", started)
+	store.now = func() time.Time { return started.Add(time.Hour) }
 	requestAt := started.Add(30 * time.Second)
 	store.recordAuthenticatedRequest("owner-a", "chatgpt", requestAt)
 
@@ -76,6 +79,7 @@ func TestMCPDiagnosticsNormalizeClientsAndStableErrors(t *testing.T) {
 func TestMCPDiagnosticsCarryRecognizedClientAcrossStatelessHandshakeWindow(t *testing.T) {
 	started := time.Date(2026, 8, 14, 1, 2, 3, 0, time.UTC)
 	store := newMCPDiagnosticsStore("0.4.16", started)
+	store.now = func() time.Time { return started.Add(time.Hour) }
 	store.record("owner-a", "initialize", "", "mcpcli", "success", "", started)
 	store.record("owner-a", "tools/list", "", "other", "success", "", started.Add(time.Second))
 	store.record("owner-a", "tools/call", "machine_list", "other", "success", "", started.Add(2*time.Second))
@@ -85,5 +89,31 @@ func TestMCPDiagnosticsCarryRecognizedClientAcrossStatelessHandshakeWindow(t *te
 	store.record("owner-a", "tools/call", "machine_list", "other", "success", "", started.Add(mcpClientAttributionWindow+time.Second))
 	if snapshot := store.snapshot("owner-a"); snapshot.ClientType != "other" {
 		t.Fatalf("stale client attribution was retained: %+v", snapshot)
+	}
+}
+
+func TestMCPDiagnosticsExpireAndBoundOwners(t *testing.T) {
+	started := time.Date(2026, 8, 14, 1, 2, 3, 0, time.UTC)
+	now := started
+	store := newMCPDiagnosticsStore("bounded-owners", started)
+	store.now = func() time.Time { return now }
+	store.record("stale-owner", "initialize", "", "mcpcli", "success", "", now)
+	now = now.Add(mcpDiagnosticOwnerTTL + time.Second)
+	if snapshot := store.snapshot("stale-owner"); snapshot.Diagnosis != "no_initialize" {
+		t.Fatalf("expired owner snapshot=%+v", snapshot)
+	}
+
+	for index := 0; index < maxMCPDiagnosticOwners; index++ {
+		at := now.Add(time.Duration(index) * time.Second)
+		store.record(fmt.Sprintf("owner-%04d", index), "initialize", "", "mcpcli", "success", "", at)
+	}
+	store.record("owner-overflow", "initialize", "", "mcpcli", "success", "", now.Add(maxMCPDiagnosticOwners*time.Second))
+	store.mu.Lock()
+	ownerCount := len(store.owners)
+	_, oldestExists := store.owners["owner-0000"]
+	_, newestExists := store.owners["owner-overflow"]
+	store.mu.Unlock()
+	if ownerCount != maxMCPDiagnosticOwners || oldestExists || !newestExists {
+		t.Fatalf("bounded owners count=%d oldest=%v newest=%v", ownerCount, oldestExists, newestExists)
 	}
 }

@@ -511,6 +511,32 @@ func (s *Store) ListMachines(ctx context.Context, ownerID string) ([]MachineReco
 	return out, rows.Err()
 }
 
+func (s *Store) ListMachinesPage(ctx context.Context, ownerID string, offset, limit int) ([]MachineRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, owner_id, display_name, COALESCE(admin_note,''), status, os, arch, node_version,
+		COALESCE(capability_digest,''), last_seen_at, last_connection_generation, revoked_at, revision, created_at, updated_at
+		FROM machines WHERE owner_id = ? AND deleted_at IS NULL
+		ORDER BY COALESCE(NULLIF(admin_note,''), display_name), id LIMIT ? OFFSET ?`, ownerID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MachineRecord
+	for rows.Next() {
+		var rec MachineRecord
+		var lastSeen, revoked sql.NullInt64
+		var created, updated int64
+		if err := rows.Scan(&rec.ID, &rec.OwnerID, &rec.DisplayName, &rec.AdminNote, &rec.Status, &rec.OS, &rec.Arch, &rec.NodeVersion,
+			&rec.CapabilityDigest, &lastSeen, &rec.LastConnectionGeneration, &revoked, &rec.Revision, &created, &updated); err != nil {
+			return nil, err
+		}
+		rec.CreatedAt = time.Unix(created, 0).UTC()
+		rec.UpdatedAt = time.Unix(updated, 0).UTC()
+		normalizeTimes(&rec, lastSeen, revoked)
+		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) GetMachine(ctx context.Context, ownerID, machineID string) (MachineRecord, error) {
 	var rec MachineRecord
 	var lastSeen, revoked sql.NullInt64

@@ -119,6 +119,49 @@ func TestCodexAppServerSocketPathRequiresAbsolutePath(t *testing.T) {
 	}
 }
 
+func TestCodexSessionLoadLocksSerializePerSessionOnly(t *testing.T) {
+	adapter := NewCodexAdapter(nil)
+	unlockA := adapter.lockSessionLoad("session-a")
+	sameAcquired := make(chan struct{})
+	otherAcquired := make(chan struct{})
+	done := make(chan struct{})
+
+	go func() {
+		unlock := adapter.lockSessionLoad("session-a")
+		close(sameAcquired)
+		unlock()
+		close(done)
+	}()
+	go func() {
+		unlock := adapter.lockSessionLoad("session-b")
+		close(otherAcquired)
+		unlock()
+	}()
+
+	select {
+	case <-otherAcquired:
+	case <-time.After(time.Second):
+		t.Fatal("different session was blocked by session-a")
+	}
+	select {
+	case <-sameAcquired:
+		t.Fatal("same session was not serialized")
+	case <-time.After(50 * time.Millisecond):
+	}
+	unlockA()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("same session did not resume after unlock")
+	}
+	adapter.loadLocksMu.Lock()
+	remaining := len(adapter.loadLocks)
+	adapter.loadLocksMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("session lock entries leaked: %d", remaining)
+	}
+}
+
 func TestCodexConfigWarningBecomesSanitizedCapabilityError(t *testing.T) {
 	adapter := NewCodexAdapter(nil)
 	adapter.handleNotification("configWarning", json.RawMessage(`{"message":"Invalid configuration; using defaults","details":"config.toml token=secret-value"}`))

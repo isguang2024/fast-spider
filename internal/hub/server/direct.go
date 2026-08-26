@@ -304,18 +304,16 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 		if err != nil {
 			return nil, err
 		}
+		if key.MachineID != "" {
+			machine, err := s.service.GetMachine(ctx, ownerID, key.MachineID)
+			if err != nil {
+				return nil, err
+			}
+			return machineListOutput{Machines: []mcpMachine{toMCPMachine(machine)}}, nil
+		}
 		out, err := executeTypedTool[machineListOutput](s.toolExecutor, ctx, ownerID, tool, input)
 		if err != nil {
 			return nil, err
-		}
-		if key.MachineID != "" {
-			filtered := out.Machines[:0]
-			for _, machine := range out.Machines {
-				if machine.MachineID == key.MachineID {
-					filtered = append(filtered, machine)
-				}
-			}
-			out.Machines = filtered
 		}
 		return out, nil
 

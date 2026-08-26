@@ -134,6 +134,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	var names []string
+	var machineListSchema []byte
 	var codeSearchSchema []byte
 	var fileReadSchema []byte
 	var fileEditSchema []byte
@@ -162,6 +163,9 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		}
 		if tool.Name == "code_search" {
 			codeSearchSchema, _ = json.Marshal(tool.InputSchema)
+		}
+		if tool.Name == "machine_list" {
+			machineListSchema, _ = json.Marshal(tool.InputSchema)
 		}
 		if tool.Name == "file_read" {
 			fileReadSchema, _ = json.Marshal(tool.InputSchema)
@@ -208,6 +212,16 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 			t.Fatalf("file_read schema missing %q: %s", field, fileReadSchema)
 		}
 	}
+	for name, schema := range map[string][]byte{"file_read": fileReadSchema, "ai_control": aiControlSchema} {
+		if !bytes.Contains(schema, []byte(`"diagnostics"`)) {
+			t.Fatalf("%s schema missing diagnostics opt-in: %s", name, schema)
+		}
+	}
+	for _, field := range []string{"limit", "cursor", "includeCapabilities"} {
+		if !bytes.Contains(machineListSchema, []byte(`"`+field+`"`)) {
+			t.Fatalf("machine_list schema missing %s: %s", field, machineListSchema)
+		}
+	}
 	for _, field := range []string{"action", "previewOf", "content", "oldText", "newText", "edits", "expectedFileSha256", "expectedAbsent"} {
 		if !bytes.Contains(fileEditSchema, []byte(`"`+field+`"`)) {
 			t.Fatalf("file_edit schema missing %q: %s", field, fileEditSchema)
@@ -232,6 +246,11 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	if !strings.Contains(aiControlDescription, "ChatGPT cloud CHAT") {
 		t.Fatalf("ai_control description does not advertise ChatGPT CHAT creation: %q", aiControlDescription)
 	}
+	for _, needle := range []string{"desktopBridge", "Desktop owner/control bridge", "nativeConversationStreaming=unsupported"} {
+		if !strings.Contains(aiControlDescription, needle) {
+			t.Fatalf("ai_control description missing %q: %q", needle, aiControlDescription)
+		}
+	}
 
 	defaultGuide := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "capability_list", map[string]any{})
 	defaultGuideRaw, _ := json.Marshal(defaultGuide.StructuredContent)
@@ -246,6 +265,9 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	}
 	if defaultGuide.IsError || !strings.Contains(string(defaultGuideRaw), `"capabilities"`) || !strings.Contains(string(defaultGuideRaw), `"view":"overview"`) || len(defaultGuidePayload.Guide.ToolSummaries) != 19 || len(defaultGuidePayload.CapabilitySummaries) == 0 {
 		t.Fatalf("default capability_list=%s", defaultGuideRaw)
+	}
+	if len(defaultGuide.Content) != 0 {
+		t.Fatalf("capability_list duplicated structured output into content: %#v", defaultGuide.Content)
 	}
 	for _, guideCall := range []struct {
 		arguments map[string]any
@@ -310,8 +332,16 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw, _ := json.Marshal(machineResult.StructuredContent)
-	if !strings.Contains(string(raw), state.MachineID) {
+	if !strings.Contains(string(raw), state.MachineID) || !strings.Contains(string(raw), `"hasMore":false`) || strings.Contains(string(raw), `"capabilities"`) || len(machineResult.Content) != 0 {
 		t.Fatalf("machine_list=%s", raw)
+	}
+	machineResultFull, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "machine_list", Arguments: map[string]any{"includeCapabilities": true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	machineResultFullRaw, _ := json.Marshal(machineResultFull.StructuredContent)
+	if !strings.Contains(string(machineResultFullRaw), `"capabilities"`) {
+		t.Fatalf("machine_list includeCapabilities=%s", machineResultFullRaw)
 	}
 	machineCatalog := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "capability_list", map[string]any{"machineId": state.MachineID})
 	machineCatalogRaw, _ := json.Marshal(machineCatalog.StructuredContent)
@@ -335,6 +365,9 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	}
 	if err := json.Unmarshal(raw, &read); err != nil || read.FileSHA256 == "" || !strings.Contains(read.Content, "needle value") {
 		t.Fatalf("file_read err=%v raw=%s", err, raw)
+	}
+	if bytes.Contains(raw, []byte(`"requestId"`)) || bytes.Contains(raw, []byte(`"traceId"`)) || bytes.Contains(raw, []byte(`"timing"`)) || len(fileResult.Content) != 0 || len(fileResult.Meta) == 0 {
+		t.Fatalf("file_read default response is not compact: result=%+v raw=%s", fileResult, raw)
 	}
 	operationLogResult := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "operation_log", map[string]any{"machineId": state.MachineID, "limit": 10})
 	operationLogRaw, _ := json.Marshal(operationLogResult.StructuredContent)
@@ -473,7 +506,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		t.Fatalf("working_context markdown.list=%s", raw)
 	}
 
-	buildResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "build_control", Arguments: map[string]any{"machineId": state.MachineID, "action": "run", "argv": e2eEchoArgv(), "cwd": root, "timeoutSeconds": 10, "idempotencyKey": "idem_e2e_build_0001"}})
+	buildResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "build_control", Arguments: map[string]any{"machineId": state.MachineID, "action": "run", "argv": e2eEchoArgv(), "cwd": root, "timeoutSeconds": 10, "idempotencyKey": "idem_e2e_build_0001", "diagnostics": true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,6 +526,9 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	}
 	if err := json.Unmarshal(raw, &build); err != nil || build.Result.Job.JobID == "" || build.Result.RequestID != build.Result.Job.RequestID || build.Result.TraceID != build.Result.Job.TraceID || build.Result.Job.Runtime != "host" || build.Result.Job.Timing.ProcessStartedAt == "" {
 		t.Fatalf("build decode=%v raw=%s", err, raw)
+	}
+	if len(buildResult.Meta) == 0 || len(buildResult.Content) != 0 {
+		t.Fatalf("build diagnostics metadata/content=%+v", buildResult)
 	}
 	waitFor(t, 10*time.Second, func() bool {
 		result, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "job_watch", Arguments: map[string]any{"machineId": state.MachineID, "jobId": build.Result.Job.JobID}})
@@ -553,14 +589,14 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	}
 	raw, _ = json.Marshal(shellResult.StructuredContent)
 	var job struct {
-		JobID     string       `json:"jobId"`
-		RequestID string       `json:"requestId"`
-		TraceID   string       `json:"traceId"`
-		Runtime   string       `json:"runtime"`
-		Timing    e2eJobTiming `json:"timing"`
+		JobID   string `json:"jobId"`
+		Runtime string `json:"runtime"`
 	}
-	if err := json.Unmarshal(raw, &job); err != nil || job.JobID == "" || job.RequestID == "" || job.TraceID == "" || job.Runtime != "host" || job.Timing.ProcessStartedAt == "" || job.Timing.QueueMs < 0 {
+	if err := json.Unmarshal(raw, &job); err != nil || job.JobID == "" || job.Runtime != "host" {
 		t.Fatalf("shell=%v raw=%s", err, raw)
+	}
+	if bytes.Contains(raw, []byte(`"requestId"`)) || bytes.Contains(raw, []byte(`"traceId"`)) || bytes.Contains(raw, []byte(`"timing"`)) || len(shellResult.Content) != 0 || len(shellResult.Meta) == 0 {
+		t.Fatalf("shell_run default response is not compact: result=%+v raw=%s", shellResult, raw)
 	}
 	if _, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "job_cancel", Arguments: map[string]any{"machineId": state.MachineID, "jobId": job.JobID}}); err != nil {
 		t.Fatal(err)

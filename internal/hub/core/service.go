@@ -291,6 +291,35 @@ func (s *Service) ListMachines(ctx context.Context, ownerID string) ([]MachineVi
 	return views, nil
 }
 
+func (s *Service) ListMachinesPage(ctx context.Context, ownerID string, offset, limit int, includeCapabilities bool) ([]MachineView, bool, error) {
+	if offset < 0 || limit < 1 || limit > 50 {
+		return nil, false, fmt.Errorf("invalid machine page offset or limit")
+	}
+	records, err := s.store.ListMachinesPage(ctx, ownerID, offset, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	hasMore := len(records) > limit
+	if hasMore {
+		records = records[:limit]
+	}
+	views := make([]MachineView, 0, len(records))
+	for _, rec := range records {
+		var view MachineView
+		if includeCapabilities {
+			view, err = s.machineView(ctx, rec)
+			if err != nil {
+				return nil, false, err
+			}
+		} else {
+			view = s.machineViewWithCapabilities(rec, nil)
+			view.Capabilities = nil
+		}
+		views = append(views, view)
+	}
+	return views, hasMore, nil
+}
+
 func (s *Service) GetMachine(ctx context.Context, ownerID, machineID string) (MachineView, error) {
 	rec, err := s.store.GetMachine(ctx, ownerID, machineID)
 	if err != nil {

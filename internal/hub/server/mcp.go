@@ -17,7 +17,11 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-type machineListInput struct{}
+type machineListInput struct {
+	Limit               int   `json:"limit,omitempty" jsonschema:"page size; MCP default 20 and maximum 50"`
+	Cursor              int   `json:"cursor,omitempty" jsonschema:"zero-based cursor returned as nextCursor"`
+	IncludeCapabilities *bool `json:"includeCapabilities,omitempty" jsonschema:"include full capability descriptors; MCP default false"`
+}
 
 type machineGetInput struct {
 	MachineID string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
@@ -46,6 +50,7 @@ type capabilityListInput struct {
 }
 
 type fileReadInput struct {
+	MCPResponseOptions
 	MachineID          string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
 	Path               string `json:"path" jsonschema:"absolute regular UTF-8 text file path on the Node machine"`
 	Offset             *int64 `json:"offset,omitempty" jsonschema:"byte offset, default 0; cannot be combined with line selectors or statOnly"`
@@ -67,6 +72,7 @@ func addOptionalFileReadParam[T any](params map[string]any, key string, value *T
 }
 
 type codeSearchInput struct {
+	MCPResponseOptions
 	MachineID     string   `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
 	Query         string   `json:"query" jsonschema:"literal text or regular expression to search"`
 	Path          string   `json:"path" jsonschema:"absolute directory path to search on the Node machine"`
@@ -82,6 +88,7 @@ type codeSearchInput struct {
 }
 
 type fileEditInput struct {
+	MCPResponseOptions
 	MachineID          string          `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
 	Action             string          `json:"action,omitempty" jsonschema:"edit (legacy default), create, replace, editMany, or preview"`
 	PreviewOf          string          `json:"previewOf,omitempty" jsonschema:"create, replace, or editMany when action is preview"`
@@ -105,6 +112,7 @@ type executionRuntimeInput struct {
 }
 
 type shellRunInput struct {
+	MCPResponseOptions
 	MachineID      string                 `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
 	Argv           []string               `json:"argv" jsonschema:"explicit executable and arguments; no implicit shell interpolation. Windows cmd example: [\"cmd.exe\",\"/d\",\"/s\",\"/c\",\"mkdir\",\"V:\\\\target\"]"`
 	Cwd            string                 `json:"cwd" jsonschema:"absolute working directory on the Node machine. On Windows, bare drive V: is accepted as shorthand for drive root V:\\; drive-relative forms such as V:folder remain invalid"`
@@ -114,6 +122,7 @@ type shellRunInput struct {
 }
 
 type jobWatchInput struct {
+	MCPResponseOptions
 	MachineID   string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
 	JobID       string `json:"jobId" jsonschema:"opaque job ID returned by shell_run/build_control/git_control"`
 	Cursor      int64  `json:"cursor,omitempty" jsonschema:"last consumed event sequence"`
@@ -121,11 +130,13 @@ type jobWatchInput struct {
 }
 
 type jobCancelInput struct {
+	MCPResponseOptions
 	MachineID string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
 	JobID     string `json:"jobId" jsonschema:"opaque job ID returned by shell_run/build_control/git_control"`
 }
 
 type gitControlInput struct {
+	MCPResponseOptions
 	MachineID      string   `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
 	RepositoryPath string   `json:"repositoryPath" jsonschema:"absolute path to the Git repository on the Node machine"`
 	Action         string   `json:"action" jsonschema:"one of status,diff,stagedDiff,log,show,branches,currentBranch,worktrees,add,commit,fetch,pull,push,createWorktree,deleteWorktree"`
@@ -139,6 +150,7 @@ type gitControlInput struct {
 }
 
 type buildControlInput struct {
+	MCPResponseOptions
 	MachineID      string                 `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
 	Action         string                 `json:"action" jsonschema:"run"`
 	Argv           []string               `json:"argv" jsonschema:"build executable and arguments"`
@@ -149,6 +161,7 @@ type buildControlInput struct {
 }
 
 type artifactGetInput struct {
+	MCPResponseOptions
 	Action      string `json:"action" jsonschema:"get, uploadFile, uploadJobLog, or publishFile. Prefer uploadFile/uploadJobLog + get for native MCP content; publishFile creates a 48-hour temporary attachment URL and never embeds the file in the chat result"`
 	ArtifactID  string `json:"artifactId,omitempty" jsonschema:"artifact ID for get"`
 	MachineID   string `json:"machineId,omitempty" jsonschema:"machine ID for upload/publish actions"`
@@ -159,6 +172,7 @@ type artifactGetInput struct {
 }
 
 type workingContextInput struct {
+	MCPResponseOptions
 	MachineID            string           `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
 	Action               string           `json:"action" jsonschema:"get,set,clear,plan.init,plan.get,plan.list,plan.sync,task.update,markdown.list,markdown.read,markdown.append,or progress.watch"`
 	ProjectPath          string           `json:"projectPath" jsonschema:"absolute project directory on the Node machine"`
@@ -212,6 +226,7 @@ type browserBatchStepInput struct {
 }
 
 type browserControlInput struct {
+	MCPResponseOptions
 	MachineID        string                  `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
 	Action           string                  `json:"action" jsonschema:"readiness,launch,close,page.open,page.navigate,page.close,pages.list,click,type,press,wait,batch,snapshot,screenshot,events"`
 	BrowserSessionID string                  `json:"browserSessionId,omitempty" jsonschema:"opaque managed browser session ID"`
@@ -237,6 +252,7 @@ type browserControlInput struct {
 }
 
 type screenshotTakeInput struct {
+	MCPResponseOptions
 	MachineID    string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
 	Action       string `json:"action" jsonschema:"listDisplays, desktop, display, listWindows, or window"`
 	DisplayIndex int    `json:"displayIndex,omitempty" jsonschema:"zero-based active display index for action=display"`
@@ -246,6 +262,7 @@ type screenshotTakeInput struct {
 }
 
 type aiControlInput struct {
+	MCPResponseOptions
 	MachineID             string              `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
 	Action                string              `json:"action" jsonschema:"routing.status,providers.list,provider.readiness,models.list,provider.capabilities,projects.list,skills.list,hooks.list,permissions.list,plugins.list,plugins.installed,plugins.get,plugin.skill.read,mcp.status.list,session.list,session.get,session.create,session.send,session.steer,session.respond,session.watch,session.cancel,session.result,session.rename,session.archive,session.unarchive,session.delete,session.fork,session.compact,session.rollback,session.goal.get,session.goal.set,session.goal.clear,session.settings.update,session.review"`
 	ProviderID            string              `json:"providerId,omitempty" jsonschema:"AI harness provider ID; defaults to codex"`
@@ -327,7 +344,9 @@ type mcpMachine struct {
 }
 
 type machineListOutput struct {
-	Machines []mcpMachine `json:"machines"`
+	Machines   []mcpMachine `json:"machines"`
+	HasMore    *bool        `json:"hasMore,omitempty"`
+	NextCursor int          `json:"nextCursor,omitempty"`
 }
 
 type machineGetOutput struct {
@@ -374,41 +393,41 @@ type capabilityListOutput struct {
 }
 
 type fileReadOutput struct {
-	RequestID       string           `json:"requestId,omitempty"`
-	TraceID         string           `json:"traceId,omitempty"`
-	Path            string           `json:"path"`
-	Content         *string          `json:"content,omitempty"`
-	Offset          int64            `json:"offset"`
-	BytesRead       int64            `json:"bytesRead"`
-	SourceBytesRead int64            `json:"sourceBytesRead,omitempty"`
-	Size            int64            `json:"size"`
-	LineStart       int              `json:"lineStart,omitempty"`
-	LineEnd         int              `json:"lineEnd,omitempty"`
-	StatOnly        bool             `json:"statOnly,omitempty"`
-	Truncated       bool             `json:"truncated"`
-	ChunkSHA256     string           `json:"chunkSha256,omitempty"`
-	FileSHA256      string           `json:"fileSha256"`
-	Encoding        string           `json:"encoding"`
-	Timing          capabilityTiming `json:"timing"`
+	RequestID       string            `json:"requestId,omitempty"`
+	TraceID         string            `json:"traceId,omitempty"`
+	Path            string            `json:"path"`
+	Content         *string           `json:"content,omitempty"`
+	Offset          int64             `json:"offset"`
+	BytesRead       int64             `json:"bytesRead"`
+	SourceBytesRead int64             `json:"sourceBytesRead,omitempty"`
+	Size            int64             `json:"size"`
+	LineStart       int               `json:"lineStart,omitempty"`
+	LineEnd         int               `json:"lineEnd,omitempty"`
+	StatOnly        bool              `json:"statOnly,omitempty"`
+	Truncated       bool              `json:"truncated"`
+	ChunkSHA256     string            `json:"chunkSha256,omitempty"`
+	FileSHA256      string            `json:"fileSha256"`
+	Encoding        string            `json:"encoding"`
+	Timing          *capabilityTiming `json:"timing,omitempty"`
 }
 
 type fileEditOutput struct {
-	RequestID     string         `json:"requestId,omitempty"`
-	TraceID       string         `json:"traceId,omitempty"`
-	Success       bool           `json:"success"`
-	Changed       bool           `json:"changed"`
-	Path          string         `json:"path"`
-	Operation     string         `json:"operation"`
-	Preview       bool           `json:"preview,omitempty"`
-	EditsApplied  int            `json:"editsApplied"`
-	OldSHA256     string         `json:"oldSha256,omitempty"`
-	NewSHA256     string         `json:"newSha256"`
-	BytesChanged  int64          `json:"bytesChanged"`
-	LineDelta     int            `json:"lineDelta"`
-	Timing        fileEditTiming `json:"timing"`
-	Warnings      []string       `json:"warnings,omitempty"`
-	Diff          string         `json:"diff,omitempty"`
-	DiffTruncated bool           `json:"diffTruncated,omitempty"`
+	RequestID     string          `json:"requestId,omitempty"`
+	TraceID       string          `json:"traceId,omitempty"`
+	Success       bool            `json:"success"`
+	Changed       bool            `json:"changed"`
+	Path          string          `json:"path"`
+	Operation     string          `json:"operation"`
+	Preview       bool            `json:"preview,omitempty"`
+	EditsApplied  int             `json:"editsApplied"`
+	OldSHA256     string          `json:"oldSha256,omitempty"`
+	NewSHA256     string          `json:"newSha256"`
+	BytesChanged  int64           `json:"bytesChanged"`
+	LineDelta     int             `json:"lineDelta"`
+	Timing        *fileEditTiming `json:"timing,omitempty"`
+	Warnings      []string        `json:"warnings,omitempty"`
+	Diff          string          `json:"diff,omitempty"`
+	DiffTruncated bool            `json:"diffTruncated,omitempty"`
 }
 
 type fileEditTiming struct {
@@ -448,7 +467,7 @@ type jobOutput struct {
 	TruncatedBefore int64         `json:"truncatedBefore,omitempty"`
 	StartedAt       string        `json:"startedAt"`
 	FinishedAt      string        `json:"finishedAt,omitempty"`
-	Timing          jobTiming     `json:"timing"`
+	Timing          *jobTiming    `json:"timing,omitempty"`
 }
 
 type jobTiming struct {
@@ -491,11 +510,11 @@ type codeSearchOutput struct {
 	Incomplete        bool              `json:"incomplete,omitempty"`
 	Engine            string            `json:"engine"`
 	FallbackReason    string            `json:"fallbackReason,omitempty"`
-	PrimaryElapsedMs  int64             `json:"primaryElapsedMs"`
-	FallbackElapsedMs int64             `json:"fallbackElapsedMs"`
-	ElapsedMs         int64             `json:"elapsedMs"`
+	PrimaryElapsedMs  *int64            `json:"primaryElapsedMs,omitempty"`
+	FallbackElapsedMs *int64            `json:"fallbackElapsedMs,omitempty"`
+	ElapsedMs         *int64            `json:"elapsedMs,omitempty"`
 	Truncated         bool              `json:"truncated"`
-	Timing            capabilityTiming  `json:"timing"`
+	Timing            *capabilityTiming `json:"timing,omitempty"`
 }
 
 func (s *Server) newMCPHandler() http.Handler {
@@ -527,11 +546,11 @@ func (s *Server) newMCPHandler() http.Handler {
 
 const mcpServerInstructions = `FastSpider_FS is the remote development control plane. When selected or mentioned as @FastSpider_FS, try a real read-only tool before judging UI text.
 
-ChatGPT recovery: tools may be lazy/evicted. If namespace is absent, do not report disconnect or request login. Use filtered connector discovery for connection tools, e.g. api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Never load all 19 schemas for health; load only needed tools. Report unmounted only if discovery fails.
+ChatGPT tools may be lazy/evicted. If the namespace is absent, use filtered discovery, e.g. api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Never load all 19 schemas for health or request login unless discovery and a real connection check fail.
 
-Capability map: connection = capability_list, machine_list, machine_get; audit = audit_log, operation_log; files = code_search, file_read, file_edit; jobs = shell_run, build_control, job_watch, job_cancel; Git = git_control; browser = browser_control, screenshot_take; AI = ai_control; Codex supports session.create with providerId=codex, backend=chatgpt_cloud for a visible ChatGPT CHAT (prompt required; app-server must be logged in); context = working_context; roles = thinking_team; artifacts = artifact_get. operation_log reads bounded Node events and omits paths, messages and IPs. shell_run is host/WSL process entry point; on Windows use explicit argv such as ["powershell.exe","-NoProfile","-NonInteractive","-Command","Get-Date; tzutil /g"] or ["cmd.exe","/d","/s","/c","tzutil /g"], not a separate PowerShell tool.
+Capability map: connection = capability_list, machine_list, machine_get; audit = audit_log, operation_log; files = code_search, file_read, file_edit; jobs = shell_run, build_control, job_watch, job_cancel; Git = git_control; browser = browser_control, screenshot_take; AI = ai_control; context = working_context; roles = thinking_team; artifacts = artifact_get. Codex session.create supports providerId=codex, backend=chatgpt_cloud for a visible ChatGPT CHAT when app-server is logged in. On Windows, local Codex uses the Desktop owner/control bridge by default; ai_control providers.list/provider.readiness/provider.capabilities and local session results expose desktopBridge state, but nativeConversationStreaming=unsupported does not prove live Desktop history.
 
-Rules: unknown machineId -> machine_list. Connection check = capability_list(view=overview) + machine_list. If a low-level capability ID is unclear, read capability_list(view=capability,name=<capabilityId>); then use its mcpTools mapping. Load detailed guidance only with view=tool|workflow|error for the current need. Codex history starts at ai_control(action=session.list), then get/watch/result. Every shell/build jobId must reach a terminal state via job_watch. File edits use search/read -> SHA -> preview -> CAS write -> read. Browser flow is readiness -> launch -> open -> snapshot refs -> actions -> close. Screenshots and publishFile return URL-only attachments, max 48h, no native chat content.`
+Rules: machine-bound results are compact; use diagnostics=true for timing/trace. Unknown machineId -> machine_list. Connection check = capability_list(view=overview) + machine_list. Read unclear low-level IDs with capability_list(view=capability,name=<capabilityId>), and only the needed detail with view=tool|workflow|error. Codex history starts at ai_control(action=session.list), then get/watch/result. Every shell/build jobId must reach a terminal state via job_watch. File edits use search/read -> SHA -> preview -> CAS write -> read. Browser flow is readiness -> launch -> open -> snapshot refs -> actions -> close. shell_run is the host/WSL process entry; on Windows put powershell.exe or cmd.exe in argv (e.g. tzutil /g), not a separate PowerShell tool. Screenshots and publishFile return URL-only attachments, max 48h.`
 
 func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	server := mcp.NewServer(
@@ -541,109 +560,100 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	server.AddReceivingMiddleware(s.mcpDiagnostics.middleware(ownerID))
 
 	mcp.AddTool(server, mcpToolDefinition("machine_list", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input machineListInput) (*mcp.CallToolResult, machineListOutput, error) {
-		out, err := executeTypedTool[machineListOutput](s.toolExecutor, ctx, ownerID, "machine_list", input)
-		return nil, out, err
+		if input.Limit == 0 {
+			input.Limit = 20
+		}
+		if input.IncludeCapabilities == nil {
+			include := false
+			input.IncludeCapabilities = &include
+		}
+		return executeMCPStructuredTool[machineListOutput](s.toolExecutor, ctx, ownerID, "machine_list", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("machine_get", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input machineGetInput) (*mcp.CallToolResult, machineGetOutput, error) {
-		out, err := executeTypedTool[machineGetOutput](s.toolExecutor, ctx, ownerID, "machine_get", input)
-		return nil, out, err
+		return executeMCPStructuredTool[machineGetOutput](s.toolExecutor, ctx, ownerID, "machine_get", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("audit_log", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input auditLogInput) (*mcp.CallToolResult, auditLogOutput, error) {
-		out, err := executeTypedTool[auditLogOutput](s.toolExecutor, ctx, ownerID, "audit_log", input)
-		return nil, out, err
+		return executeMCPStructuredTool[auditLogOutput](s.toolExecutor, ctx, ownerID, "audit_log", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("operation_log", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input operationLogInput) (*mcp.CallToolResult, operationLogOutput, error) {
-		out, err := executeTypedTool[operationLogOutput](s.toolExecutor, ctx, ownerID, "operation_log", input)
-		return nil, out, err
+		return executeMCPStructuredTool[operationLogOutput](s.toolExecutor, ctx, ownerID, "operation_log", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("capability_list", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input capabilityListInput) (*mcp.CallToolResult, capabilityListOutput, error) {
-		out, err := executeTypedTool[capabilityListOutput](s.toolExecutor, ctx, ownerID, "capability_list", input)
-		return nil, out, err
+		return executeMCPStructuredTool[capabilityListOutput](s.toolExecutor, ctx, ownerID, "capability_list", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("file_read", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input fileReadInput) (*mcp.CallToolResult, fileReadOutput, error) {
-		out, err := executeTypedTool[fileReadOutput](s.toolExecutor, ctx, ownerID, "file_read", input)
-		return nil, out, err
+		return executeMCPTool[fileReadOutput](s.toolExecutor, ctx, ownerID, "file_read", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("code_search", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input codeSearchInput) (*mcp.CallToolResult, codeSearchOutput, error) {
-		out, err := executeTypedTool[codeSearchOutput](s.toolExecutor, ctx, ownerID, "code_search", input)
-		return nil, out, err
+		return executeMCPTool[codeSearchOutput](s.toolExecutor, ctx, ownerID, "code_search", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("file_edit", toolAnnotations(false, true, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input fileEditInput) (*mcp.CallToolResult, fileEditOutput, error) {
-		out, err := executeTypedTool[fileEditOutput](s.toolExecutor, ctx, ownerID, "file_edit", input)
-		return nil, out, err
+		return executeMCPTool[fileEditOutput](s.toolExecutor, ctx, ownerID, "file_edit", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("shell_run", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input shellRunInput) (*mcp.CallToolResult, jobOutput, error) {
-		out, err := executeTypedTool[jobOutput](s.toolExecutor, ctx, ownerID, "shell_run", input)
-		return nil, out, err
+		return executeMCPTool[jobOutput](s.toolExecutor, ctx, ownerID, "shell_run", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("job_watch", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input jobWatchInput) (*mcp.CallToolResult, jobOutput, error) {
-		out, err := executeTypedTool[jobOutput](s.toolExecutor, ctx, ownerID, "job_watch", input)
-		return nil, out, err
+		return executeMCPTool[jobOutput](s.toolExecutor, ctx, ownerID, "job_watch", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("job_cancel", toolAnnotations(false, true, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input jobCancelInput) (*mcp.CallToolResult, jobOutput, error) {
-		out, err := executeTypedTool[jobOutput](s.toolExecutor, ctx, ownerID, "job_cancel", input)
-		return nil, out, err
+		return executeMCPTool[jobOutput](s.toolExecutor, ctx, ownerID, "job_cancel", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("git_control", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input gitControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "git_control", input)
-		return nil, out, err
+		return executeMCPTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "git_control", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("build_control", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input buildControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "build_control", input)
-		return nil, out, err
+		return executeMCPTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "build_control", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("browser_control", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input browserControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "browser_control", input)
+		result, out, err := executeMCPTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "browser_control", input)
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
 		if err := s.decoratePublishedAttachmentResult(ownerID, out.Result); err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
-		return nil, out, nil
+		return result, out, nil
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("screenshot_take", toolAnnotations(false, false, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input screenshotTakeInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "screenshot_take", input)
+		result, out, err := executeMCPTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "screenshot_take", input)
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
 		if err := s.decoratePublishedAttachmentResult(ownerID, out.Result); err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
-		return nil, out, nil
+		return result, out, nil
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("thinking_team", toolAnnotations(true, false, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input thinkingTeamInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "thinking_team", input)
-		return nil, out, err
+		return executeMCPStructuredTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "thinking_team", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("ai_control", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input aiControlInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "ai_control", input)
-		return nil, out, err
+		return executeMCPTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "ai_control", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("working_context", toolAnnotations(false, false, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input workingContextInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "working_context", input)
-		return nil, out, err
+		return executeMCPTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "working_context", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("artifact_get", toolAnnotations(false, false, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input artifactGetInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		out, err := executeTypedTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "artifact_get", input)
+		diagnosticResult, out, err := executeMCPTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "artifact_get", input)
 		if err != nil {
 			return nil, genericCapabilityOutput{}, err
 		}
@@ -651,22 +661,22 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		case "uploadFile", "uploadJobLog":
 			if artifactID, _ := out.Result["artifactId"].(string); strings.TrimSpace(artifactID) != "" {
 				if artifact, getErr := s.service.GetArtifact(ctx, ownerID, artifactID); getErr == nil {
-					return s.artifactNativeToolResult(ctx, artifact), out, nil
+					return mergeMCPToolResults(s.artifactNativeToolResult(ctx, artifact), diagnosticResult), out, nil
 				}
 			}
 		case "publishFile":
 			if err := s.decoratePublishedAttachmentResult(ownerID, out.Result); err != nil {
 				return nil, genericCapabilityOutput{}, err
 			}
-			return nil, out, nil
+			return diagnosticResult, out, nil
 		case "get":
 			artifact, getErr := s.service.GetArtifact(ctx, ownerID, input.ArtifactID)
 			if getErr != nil {
 				return nil, genericCapabilityOutput{}, getErr
 			}
-			return s.artifactNativeToolResult(ctx, artifact), out, nil
+			return mergeMCPToolResults(s.artifactNativeToolResult(ctx, artifact), diagnosticResult), out, nil
 		}
-		return nil, out, nil
+		return diagnosticResult, out, nil
 	})
 
 	return server

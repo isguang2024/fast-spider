@@ -13,6 +13,8 @@ import (
 
 const (
 	maxMCPDiagnosticEvents     = 64
+	maxMCPDiagnosticOwners     = 1024
+	mcpDiagnosticOwnerTTL      = 24 * time.Hour
 	mcpClientAttributionWindow = 5 * time.Minute
 )
 
@@ -52,6 +54,7 @@ type ownerMCPDiagnostics struct {
 	errorCode        string
 	recognizedClient string
 	recognizedAt     time.Time
+	lastTouched      time.Time
 	events           []mcpDiagnosticEvent
 }
 
@@ -60,12 +63,13 @@ type mcpDiagnosticsStore struct {
 	serverVersion   string
 	serverStartedAt string
 	owners          map[string]*ownerMCPDiagnostics
+	now             func() time.Time
 }
 
 func newMCPDiagnosticsStore(serverVersion string, startedAt time.Time) *mcpDiagnosticsStore {
 	return &mcpDiagnosticsStore{
 		serverVersion: serverVersion, serverStartedAt: startedAt.UTC().Format(time.RFC3339),
-		owners: make(map[string]*ownerMCPDiagnostics),
+		owners: make(map[string]*ownerMCPDiagnostics), now: time.Now,
 	}
 }
 
@@ -79,11 +83,7 @@ func (d *mcpDiagnosticsStore) recordAuthenticatedRequest(ownerID, clientType str
 	stamp := at.UTC().Format(time.RFC3339)
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	owner := d.owners[ownerID]
-	if owner == nil {
-		owner = &ownerMCPDiagnostics{}
-		d.owners[ownerID] = owner
-	}
+	owner := d.ownerLocked(ownerID, at)
 	owner.lastMCPRequestAt = stamp
 	if clientType != "other" {
 		owner.recognizedClient = clientType
@@ -121,11 +121,7 @@ func (d *mcpDiagnosticsStore) record(ownerID, method, toolName, clientType, resu
 	stamp := at.UTC().Format(time.RFC3339)
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	owner := d.owners[ownerID]
-	if owner == nil {
-		owner = &ownerMCPDiagnostics{}
-		d.owners[ownerID] = owner
-	}
+	owner := d.ownerLocked(ownerID, at)
 	if clientType != "other" {
 		owner.recognizedClient = clientType
 		owner.recognizedAt = at
@@ -156,12 +152,13 @@ func (d *mcpDiagnosticsStore) record(ownerID, method, toolName, clientType, resu
 }
 
 func (d *mcpDiagnosticsStore) snapshot(ownerID string) mcpDiagnosticSnapshot {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	out := mcpDiagnosticSnapshot{
 		ServerVersion: d.serverVersion, GuideVersion: mcpGuideVersion, ServerStartedAt: d.serverStartedAt,
 		RecentEvents: make([]mcpDiagnosticEvent, 0),
 	}
+	d.pruneExpiredOwnersLocked(d.now().UTC())
 	owner := d.owners[ownerID]
 	if owner == nil {
 		out.Diagnosis = "no_initialize"
@@ -189,6 +186,44 @@ func (d *mcpDiagnosticsStore) snapshot(ownerID string) mcpDiagnosticSnapshot {
 		out.Diagnosis = "no_initialize"
 	}
 	return out
+}
+
+func (d *mcpDiagnosticsStore) ownerLocked(ownerID string, at time.Time) *ownerMCPDiagnostics {
+	if owner := d.owners[ownerID]; owner != nil {
+		if at.After(owner.lastTouched) {
+			owner.lastTouched = at
+		}
+		return owner
+	}
+	d.pruneExpiredOwnersLocked(at)
+	if len(d.owners) >= maxMCPDiagnosticOwners {
+		d.evictOldestOwnerLocked()
+	}
+	owner := &ownerMCPDiagnostics{lastTouched: at}
+	d.owners[ownerID] = owner
+	return owner
+}
+
+func (d *mcpDiagnosticsStore) pruneExpiredOwnersLocked(now time.Time) {
+	for ownerID, owner := range d.owners {
+		if owner.lastTouched.IsZero() || (!now.Before(owner.lastTouched) && now.Sub(owner.lastTouched) >= mcpDiagnosticOwnerTTL) {
+			delete(d.owners, ownerID)
+		}
+	}
+}
+
+func (d *mcpDiagnosticsStore) evictOldestOwnerLocked() {
+	oldestID := ""
+	var oldestAt time.Time
+	for ownerID, owner := range d.owners {
+		if oldestID == "" || owner.lastTouched.Before(oldestAt) || (owner.lastTouched.Equal(oldestAt) && ownerID < oldestID) {
+			oldestID = ownerID
+			oldestAt = owner.lastTouched
+		}
+	}
+	if oldestID != "" {
+		delete(d.owners, oldestID)
+	}
 }
 
 func normalizedMCPClientType(req mcp.Request) string {

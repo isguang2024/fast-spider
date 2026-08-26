@@ -267,7 +267,7 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 	case "session.send":
 		return m.sessionSend(ctx, input)
 	case "session.steer":
-		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
+		if _, err := m.authorizedThreadMetadata(ctx, input.SessionID); err != nil {
 			return nil, err
 		}
 		if strings.TrimSpace(input.TurnID) == "" {
@@ -282,7 +282,7 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		}
 		return map[string]any{"sessionId": input.SessionID, "turnId": input.TurnID, "steered": true, "result": result}, nil
 	case "session.respond":
-		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
+		if _, err := m.authorizedThreadMetadata(ctx, input.SessionID); err != nil {
 			return nil, err
 		}
 		if strings.TrimSpace(input.RequestID) == "" {
@@ -290,7 +290,7 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		}
 		return m.codex.RespondPendingRequest(ctx, input.SessionID, input.RequestID, input)
 	case "session.watch":
-		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
+		if _, err := m.authorizedThreadMetadata(ctx, input.SessionID); err != nil {
 			return nil, err
 		}
 		if input.WaitSeconds < 0 || input.WaitSeconds > 15 {
@@ -302,7 +302,7 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		}
 		return map[string]any{"sessionId": input.SessionID, "events": events, "nextCursor": next, "truncatedBefore": truncatedBefore, "pendingRequests": m.codex.PendingRequests(input.SessionID)}, nil
 	case "session.cancel":
-		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
+		if _, err := m.authorizedThreadMetadata(ctx, input.SessionID); err != nil {
 			return nil, err
 		}
 		if err := m.codex.InterruptTurn(ctx, input.SessionID, input.TurnID); err != nil {
@@ -322,7 +322,7 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		}
 		return result, nil
 	case "session.rename":
-		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
+		if _, err := m.authorizedThreadMetadata(ctx, input.SessionID); err != nil {
 			return nil, err
 		}
 		if strings.TrimSpace(input.Name) == "" || len(input.Name) > 128 {
@@ -333,7 +333,7 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		}
 		return map[string]any{"sessionId": input.SessionID, "name": input.Name}, nil
 	case "session.archive":
-		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
+		if _, err := m.authorizedThreadMetadata(ctx, input.SessionID); err != nil {
 			return nil, err
 		}
 		if err := m.codex.ArchiveThread(ctx, input.SessionID); err != nil {
@@ -341,7 +341,7 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		}
 		return map[string]any{"sessionId": input.SessionID, "archived": true}, nil
 	case "session.unarchive":
-		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
+		if _, err := m.authorizedThreadMetadata(ctx, input.SessionID); err != nil {
 			return nil, err
 		}
 		if err := m.codex.UnarchiveThread(ctx, input.SessionID); err != nil {
@@ -354,7 +354,7 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		}
 		return m.deleteCodexSession(ctx, input.SessionID)
 	case "session.fork":
-		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
+		if _, err := m.authorizedThreadMetadata(ctx, input.SessionID); err != nil {
 			return nil, err
 		}
 		workingDirectory := ""
@@ -375,7 +375,7 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		}
 		return map[string]any{"sourceSessionId": input.SessionID, "sessionId": forkedID, "thread": result["thread"], "forked": true}, nil
 	case "session.compact":
-		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
+		if _, err := m.authorizedThreadMetadata(ctx, input.SessionID); err != nil {
 			return nil, err
 		}
 		if err := m.codex.CompactThread(ctx, input.SessionID); err != nil {
@@ -383,7 +383,7 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		}
 		return map[string]any{"sessionId": input.SessionID, "compactionStarted": true}, nil
 	case "session.rollback":
-		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
+		if _, err := m.authorizedThreadMetadata(ctx, input.SessionID); err != nil {
 			return nil, err
 		}
 		if input.NumTurns < 1 || input.NumTurns > 1000 {
@@ -394,12 +394,12 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		}
 		return map[string]any{"sessionId": input.SessionID, "numTurns": input.NumTurns, "rolledBack": true, "workingTreeChanged": false}, nil
 	case "session.goal.get":
-		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
+		if _, err := m.authorizedThreadMetadata(ctx, input.SessionID); err != nil {
 			return nil, err
 		}
 		return m.codex.GetGoal(ctx, input.SessionID)
 	case "session.goal.set":
-		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
+		if _, err := m.authorizedThreadMetadata(ctx, input.SessionID); err != nil {
 			return nil, err
 		}
 		if err := validateGoalInput(input); err != nil {
@@ -407,7 +407,7 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		}
 		return m.codex.SetGoal(ctx, input.SessionID, input.Objective, input.GoalStatus, input.TokenBudget)
 	case "session.goal.clear":
-		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
+		if _, err := m.authorizedThreadMetadata(ctx, input.SessionID); err != nil {
 			return nil, err
 		}
 		return m.codex.ClearGoal(ctx, input.SessionID)
@@ -441,7 +441,7 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		}
 		return m.codex.UpdateSettings(ctx, input.SessionID, input)
 	case "session.review":
-		if _, err := m.authorizedThread(ctx, input.SessionID); err != nil {
+		if _, err := m.authorizedThreadMetadata(ctx, input.SessionID); err != nil {
 			return nil, err
 		}
 		if err := validateReviewInput(input); err != nil {
@@ -866,6 +866,7 @@ func (m *AgentManager) codexCapabilities(ctx context.Context) (map[string]any, e
 		"authoritativeInputs": true,
 		"derived":             true,
 		"sessionVisibility":   sessionVisibilityCapabilityMatrix(),
+		"desktopBridge":       m.codex.desktopBridgeMetadata(),
 	}
 	if route != nil {
 		out["route"] = route
@@ -1180,6 +1181,7 @@ func (m *AgentManager) sessionCreate(ctx context.Context, input agentControlPara
 		"phase":                "ready",
 		"realtimeChannel":      "session.watch",
 		"idempotencyProtected": idempotencyKey != "",
+		"desktopBridge":        m.codex.desktopBridgeMetadata(),
 	}
 	spec.applyToResult(out, sessionID)
 	if idempotencyKey != "" {
@@ -1348,6 +1350,7 @@ func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams
 		"executionMode": executionMode,
 		"owner":         owner,
 		"phase":         "running",
+		"desktopBridge": m.codex.desktopBridgeMetadata(),
 	}, nil
 }
 
@@ -1640,6 +1643,21 @@ func (m *AgentManager) authorizedThread(ctx context.Context, sessionID string) (
 		return nil, fmt.Errorf("sessionId is required")
 	}
 	result, err := m.codex.ReadThread(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	thread, _ := result["thread"].(map[string]any)
+	if len(thread) == 0 {
+		return nil, node.ErrAgentSessionNotFound
+	}
+	return thread, nil
+}
+
+func (m *AgentManager) authorizedThreadMetadata(ctx context.Context, sessionID string) (map[string]any, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("sessionId is required")
+	}
+	result, err := m.codex.ReadThreadMetadata(ctx, sessionID)
 	if err != nil {
 		return nil, err
 	}
