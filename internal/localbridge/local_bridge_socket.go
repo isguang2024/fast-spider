@@ -13,7 +13,7 @@ import (
 )
 
 func Endpoint(dataDir string) string {
-	return filepath.Join(dataDir, "local", "bridge.sock")
+	return platformLocalBridgeEndpoint(dataDir)
 }
 
 func runLocalBridgeServer(ctx context.Context, dataDir string, handler func(context.Context, io.ReadWriteCloser)) error {

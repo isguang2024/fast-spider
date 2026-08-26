@@ -14,7 +14,7 @@ Local Bridge 与远程 Hub 请求共用同一套：
 → Agent / Browser / Git / File 等实际能力
 ```
 
-Windows/Linux 当前使用用户 data-dir 下的 AF_UNIX/UDS；默认随 Node 启用，可通过本机设置/启动参数关闭。它不监听局域网 TCP，不引入 Local Client 注册、Token、Grant、Lease 或逐请求 Approval。当前 OS 用户及 data-dir ACL 就是本地信任边界。
+Windows/Linux 当前使用用户 data-dir 下的 AF_UNIX/UDS；Windows 遇到 AF_UNIX 路径上限时先使用 data-dir 的 8.3 别名，仍过长则使用当前用户 home ACL 下按 data-dir 哈希命名的等价端点。默认随 Node 启用，可通过本机设置/启动参数关闭。它不监听局域网 TCP，不引入 Local Client 注册、Token、Grant、Lease 或逐请求 Approval。当前 OS 用户及 data-dir ACL（或 Windows 回退端点的用户 home ACL）就是本地信任边界。
 
 Provider Token、Codex/ChatGPT 本地认证和其他 Provider secret 只保留在 Node/Provider 本机，不进入 Hub、MCP 响应或 Working Context。
 
