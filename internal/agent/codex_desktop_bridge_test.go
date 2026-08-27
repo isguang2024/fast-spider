@@ -58,6 +58,21 @@ func TestCodexDesktopBridgeMetadataPublishesDefaultAndLimit(t *testing.T) {
 	}
 }
 
+func TestCodexDesktopBridgeLocalClientOverrideWinsOverEnvironment(t *testing.T) {
+	t.Setenv(codexDesktopBridgeEnv, "1")
+	adapter := NewCodexAdapter(nil)
+	adapter.SetCodexDesktopBridgeEnabled(false)
+	metadata := adapter.desktopBridgeMetadata()
+	if metadata["enabled"] != false || metadata["configurationSource"] != "local_client" || metadata["state"] != "disabled" {
+		t.Fatalf("local shared mode metadata=%#v", metadata)
+	}
+	adapter.SetCodexDesktopBridgeEnabled(true)
+	metadata = adapter.desktopBridgeMetadata()
+	if metadata["enabled"] != true || metadata["configurationSource"] != "local_client" {
+		t.Fatalf("local managed mode metadata=%#v", metadata)
+	}
+}
+
 func TestCodexDesktopBridgeOnlyClaimsLoadedLocalThreads(t *testing.T) {
 	adapter := NewCodexAdapter(nil)
 	adapter.loaded["thread-owned"] = struct{}{}

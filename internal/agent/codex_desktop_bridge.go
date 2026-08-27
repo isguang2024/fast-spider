@@ -82,16 +82,25 @@ func codexDesktopBridgeConfigured() (bool, error) {
 	}
 }
 
-func (a *CodexAdapter) desktopBridgeMetadata() map[string]any {
-	enabled, configErr := codexDesktopBridgeConfigured()
-	explicitlyConfigured := strings.TrimSpace(os.Getenv(codexDesktopBridgeEnv)) != ""
-	configurationSource := "platform_default"
-	if explicitlyConfigured {
-		configurationSource = "environment"
+func (a *CodexAdapter) desktopBridgeConfiguration() (enabled, defaultEnabled bool, source string, err error) {
+	a.mu.Lock()
+	override := a.desktopBridgeEnabled
+	a.mu.Unlock()
+	if override != nil {
+		return *override, false, "local_client", nil
 	}
+	enabled, err = codexDesktopBridgeConfigured()
+	if strings.TrimSpace(os.Getenv(codexDesktopBridgeEnv)) != "" {
+		return enabled, runtime.GOOS == "windows", "environment", err
+	}
+	return enabled, runtime.GOOS == "windows", "platform_default", err
+}
+
+func (a *CodexAdapter) desktopBridgeMetadata() map[string]any {
+	enabled, defaultEnabled, configurationSource, configErr := a.desktopBridgeConfiguration()
 	out := map[string]any{
 		"enabled":                     enabled,
-		"defaultEnabled":              runtime.GOOS == "windows",
+		"defaultEnabled":              defaultEnabled,
 		"configurationSource":         configurationSource,
 		"ownership":                   "loaded_local_threads_only",
 		"automaticRelease":            "thread_unsubscribe_on_terminal_or_archive",
@@ -129,7 +138,7 @@ func (a *CodexAdapter) desktopBridgeMetadata() map[string]any {
 }
 
 func (a *CodexAdapter) ensureDesktopBridge() error {
-	enabled, err := codexDesktopBridgeConfigured()
+	enabled, _, _, err := a.desktopBridgeConfiguration()
 	if err != nil || !enabled {
 		return err
 	}

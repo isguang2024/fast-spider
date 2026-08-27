@@ -103,10 +103,11 @@ type CodexAdapter struct {
 	eventNotify chan struct{}
 	activeTurns map[string]string
 
-	serverMu        sync.Mutex
-	serverRequests  map[string]codexServerRequest
-	requestOverride func(context.Context, string, map[string]any) (map[string]any, error)
-	desktopBridge   *codexDesktopBridge
+	serverMu             sync.Mutex
+	serverRequests       map[string]codexServerRequest
+	requestOverride      func(context.Context, string, map[string]any) (map[string]any, error)
+	desktopBridge        *codexDesktopBridge
+	desktopBridgeEnabled *bool
 }
 
 func NewCodexAdapter(logger *slog.Logger) *CodexAdapter {
@@ -122,6 +123,27 @@ func NewCodexAdapter(logger *slog.Logger) *CodexAdapter {
 		eventNotify:    make(chan struct{}),
 		activeTurns:    make(map[string]string),
 		serverRequests: make(map[string]codexServerRequest),
+	}
+}
+
+// SetCodexDesktopBridgeEnabled lets the local Node client own the session
+// ownership mode. Command-line Node processes keep using the environment
+// fallback because they never call this method.
+func (a *CodexAdapter) SetCodexDesktopBridgeEnabled(enabled bool) {
+	a.mu.Lock()
+	a.desktopBridgeEnabled = &enabled
+	bridge := a.desktopBridge
+	if !enabled {
+		a.desktopBridge = nil
+	}
+	started := !a.closed && a.cmd != nil && a.cmd.Process != nil && a.cmd.ProcessState == nil
+	a.mu.Unlock()
+	if bridge != nil && !enabled {
+		bridge.Close()
+		return
+	}
+	if enabled && started {
+		_ = a.ensureDesktopBridge()
 	}
 }
 

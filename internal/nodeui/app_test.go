@@ -77,8 +77,15 @@ func TestLocalConfigV1LoadsIntoV2WithoutLosingExistingSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Version != localConfigVersion || cfg.MachineName != "Legacy Node" || cfg.HubURL != "https://hub.example" || !cfg.LocalBridgeEnabled || cfg.AutoStartEnabled || cfg.AutoUpdateEnabled {
+	if cfg.Version != localConfigVersion || cfg.MachineName != "Legacy Node" || cfg.HubURL != "https://hub.example" || !cfg.LocalBridgeEnabled || cfg.AutoStartEnabled || cfg.AutoUpdateEnabled || cfg.CodexDesktopBridgeEnabled || cfg.CodexDesktopBridgeConfigured {
 		t.Fatalf("legacy config migration mismatch: %+v", cfg)
+	}
+}
+
+func TestDefaultLocalConfigStartsWithSharedCodexDesktopSessions(t *testing.T) {
+	cfg := defaultLocalConfig("Test Node")
+	if cfg.CodexDesktopBridgeEnabled || cfg.CodexDesktopBridgeConfigured {
+		t.Fatalf("new local config must wait for an explicit shared/managed choice: %+v", cfg)
 	}
 }
 
@@ -161,6 +168,28 @@ func TestLocalUIConfigPreservesRegistrationHubWhenHubFieldIsOmitted(t *testing.T
 	}
 	if app.config.HubURL != "https://custom.example/fast-spider" || app.config.MachineName != "Renamed Node" {
 		t.Fatalf("config lost registration state: %+v", app.config)
+	}
+}
+
+func TestLocalUIConfigSavesCodexDesktopSessionMode(t *testing.T) {
+	app, err := New(Options{DataDir: t.TempDir(), Version: "ui-test", MachineName: "Test Node", Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(configRequest{MachineName: "Test Node", LocalBridgeEnabled: true, CodexDesktopBridgeConfigured: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/config", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Fast-Spider-UI-Token", app.uiToken)
+	response := httptest.NewRecorder()
+	app.handler().ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("config status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !app.config.CodexDesktopBridgeConfigured || app.config.CodexDesktopBridgeEnabled {
+		t.Fatalf("shared session mode was not saved: %+v", app.config)
 	}
 }
 

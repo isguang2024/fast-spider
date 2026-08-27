@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -96,13 +97,15 @@ type connectRequest struct {
 }
 
 type configRequest struct {
-	HubURL                string `json:"hubUrl"`
-	MachineName           string `json:"machineName"`
-	BrowserSidecarDir     string `json:"browserSidecarDir"`
-	LocalBridgeEnabled    bool   `json:"localBridgeEnabled"`
-	AutoStartEnabled      bool   `json:"autoStartEnabled"`
-	AutoUpdateEnabled     bool   `json:"autoUpdateEnabled"`
-	AllowInsecureLocalHub bool   `json:"allowInsecureLocalHub"`
+	HubURL                       string `json:"hubUrl"`
+	MachineName                  string `json:"machineName"`
+	BrowserSidecarDir            string `json:"browserSidecarDir"`
+	LocalBridgeEnabled           bool   `json:"localBridgeEnabled"`
+	AutoStartEnabled             bool   `json:"autoStartEnabled"`
+	AutoUpdateEnabled            bool   `json:"autoUpdateEnabled"`
+	AllowInsecureLocalHub        bool   `json:"allowInsecureLocalHub"`
+	CodexDesktopBridgeEnabled    bool   `json:"codexDesktopBridgeEnabled"`
+	CodexDesktopBridgeConfigured bool   `json:"codexDesktopBridgeConfigured"`
 }
 
 type componentEnsureRequest struct {
@@ -140,13 +143,15 @@ func New(opts Options) (*App, error) {
 	if err != nil {
 		opts.Logger.Warn("operation log store unavailable", "error", err)
 	}
+	agentController := agent.New(opts.DataDir, opts.Logger)
+	agentController.SetCodexDesktopBridgeEnabled(cfg.CodexDesktopBridgeEnabled)
 	return &App{
 		opts:            opts,
 		config:          cfg,
 		uiToken:         uiToken,
 		runtimeStatus:   "stopped",
 		openFolder:      openLocalFolder,
-		agentController: agent.New(opts.DataDir, opts.Logger),
+		agentController: agentController,
 		componentEnsure: componentmgr.Ensure,
 		operationLog:    opLog,
 	}, nil
@@ -441,16 +446,18 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		hubURL = old.HubURL
 	}
 	next := LocalConfig{
-		Version:               localConfigVersion,
-		HubURL:                hubURL,
-		MachineName:           strings.TrimSpace(req.MachineName),
-		BrowserSidecarDir:     strings.TrimSpace(req.BrowserSidecarDir),
-		LocalBridgeEnabled:    req.LocalBridgeEnabled,
-		AutoStartEnabled:      req.AutoStartEnabled,
-		AutoUpdateEnabled:     req.AutoUpdateEnabled,
-		AllowInsecureLocalHub: req.AllowInsecureLocalHub,
-		WorkingProjectPath:    old.WorkingProjectPath,
-		WorkingPlanID:         old.WorkingPlanID,
+		Version:                      localConfigVersion,
+		HubURL:                       hubURL,
+		MachineName:                  strings.TrimSpace(req.MachineName),
+		BrowserSidecarDir:            strings.TrimSpace(req.BrowserSidecarDir),
+		LocalBridgeEnabled:           req.LocalBridgeEnabled,
+		AutoStartEnabled:             req.AutoStartEnabled,
+		AutoUpdateEnabled:            req.AutoUpdateEnabled,
+		AllowInsecureLocalHub:        req.AllowInsecureLocalHub,
+		CodexDesktopBridgeEnabled:    req.CodexDesktopBridgeEnabled,
+		CodexDesktopBridgeConfigured: req.CodexDesktopBridgeConfigured,
+		WorkingProjectPath:           old.WorkingProjectPath,
+		WorkingPlanID:                old.WorkingPlanID,
 	}
 	if next.MachineName == "" {
 		writeAPIError(w, http.StatusBadRequest, errors.New("设备名称不能为空"))
@@ -458,6 +465,10 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	if !autostartSupported() && next.AutoStartEnabled {
 		writeAPIError(w, http.StatusBadRequest, errors.New("当前系统暂不支持开机自动启动"))
+		return
+	}
+	if next.CodexDesktopBridgeEnabled && runtime.GOOS != "windows" {
+		writeAPIError(w, http.StatusBadRequest, errors.New("Codex Desktop 会话接管仅支持 Windows"))
 		return
 	}
 	if err := setAutostart(next.AutoStartEnabled, a.opts.DataDir); err != nil {
@@ -473,6 +484,11 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	a.config = next
 	a.mu.Unlock()
+	if old.CodexDesktopBridgeEnabled != next.CodexDesktopBridgeEnabled {
+		if controller, ok := a.agentController.(interface{ SetCodexDesktopBridgeEnabled(bool) }); ok {
+			controller.SetCodexDesktopBridgeEnabled(next.CodexDesktopBridgeEnabled)
+		}
+	}
 	if old.BrowserSidecarDir != next.BrowserSidecarDir || old.LocalBridgeEnabled != next.LocalBridgeEnabled || old.AllowInsecureLocalHub != next.AllowInsecureLocalHub || old.MachineName != next.MachineName {
 		a.restartRuntime()
 	}

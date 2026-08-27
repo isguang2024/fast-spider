@@ -9,29 +9,33 @@ import (
 	"strings"
 )
 
-const localConfigVersion = 3
+const localConfigVersion = 4
 
 const defaultHubURL = ""
 
 type LocalConfig struct {
-	Version               int    `json:"version"`
-	HubURL                string `json:"hubUrl"`
-	MachineName           string `json:"machineName"`
-	BrowserSidecarDir     string `json:"browserSidecarDir,omitempty"`
-	LocalBridgeEnabled    bool   `json:"localBridgeEnabled"`
-	AutoStartEnabled      bool   `json:"autoStartEnabled"`
-	AutoUpdateEnabled     bool   `json:"autoUpdateEnabled"`
-	AllowInsecureLocalHub bool   `json:"allowInsecureLocalHub"`
-	WorkingProjectPath    string `json:"workingProjectPath,omitempty"`
-	WorkingPlanID         string `json:"workingPlanId,omitempty"`
+	Version                      int    `json:"version"`
+	HubURL                       string `json:"hubUrl"`
+	MachineName                  string `json:"machineName"`
+	BrowserSidecarDir            string `json:"browserSidecarDir,omitempty"`
+	LocalBridgeEnabled           bool   `json:"localBridgeEnabled"`
+	AutoStartEnabled             bool   `json:"autoStartEnabled"`
+	AutoUpdateEnabled            bool   `json:"autoUpdateEnabled"`
+	AllowInsecureLocalHub        bool   `json:"allowInsecureLocalHub"`
+	CodexDesktopBridgeEnabled    bool   `json:"codexDesktopBridgeEnabled"`
+	CodexDesktopBridgeConfigured bool   `json:"codexDesktopBridgeConfigured"`
+	WorkingProjectPath           string `json:"workingProjectPath,omitempty"`
+	WorkingPlanID                string `json:"workingPlanId,omitempty"`
 }
 
 func defaultLocalConfig(machineName string) LocalConfig {
 	return LocalConfig{
-		Version:            localConfigVersion,
-		HubURL:             defaultHubURL,
-		MachineName:        strings.TrimSpace(machineName),
-		LocalBridgeEnabled: true,
+		Version:                      localConfigVersion,
+		HubURL:                       defaultHubURL,
+		MachineName:                  strings.TrimSpace(machineName),
+		LocalBridgeEnabled:           true,
+		CodexDesktopBridgeEnabled:    false,
+		CodexDesktopBridgeConfigured: false,
 	}
 }
 
@@ -48,7 +52,7 @@ func loadLocalConfig(dataDir, machineName string) (LocalConfig, error) {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return LocalConfig{}, fmt.Errorf("decode local config: %w", err)
 	}
-	if cfg.Version == 1 || cfg.Version == 2 {
+	if cfg.Version == 1 || cfg.Version == 2 || cfg.Version == 3 {
 		cfg.Version = localConfigVersion
 	} else if cfg.Version != localConfigVersion {
 		return LocalConfig{}, fmt.Errorf("unsupported local config version %d", cfg.Version)

@@ -34,7 +34,7 @@ Current 不提供目录列表工具；`audit_log` 只读查询 Hub 本地 `audit
 
 Codex 保留 Provider/Model、Skills/Hooks/Permission Profiles/Plugins/MCP discovery、Thread/Goal/Settings/Review、原生多类型 Turn、`outputSchema`、steer/respond 和 app-server auto-resume。Claude Code 第一版提供 models/capabilities 与 session list/get/create/send/watch/cancel/result/rename/archive/unarchive，使用原生 UUID + `stream-json` + `--resume`，Prompt 经 stdin。FS 不映射 Codex 的 `fs/*`/`command/exec/*`/`mcpServer/tool/call`，也不提供 CC Switch Provider/Token/Takeover 写入或 Claude permission bypass 第二执行链。
 
-Windows Node 默认附加 Codex Desktop owner/control bridge（`FAST_SPIDER_CODEX_DESKTOP_BRIDGE=0` 可关闭），但仍保留 FS 原有的 app-server 创建和执行路径。公开 MCP 的 `ai_control` 可通过 `providers.list`、`provider.readiness`、`provider.capabilities` 以及本地 Codex `session.create/send` 返回值中的 `desktopBridge` 读取当前是否启用、是否已连接、自动释放规则和能力限制。`nativeConversationStreaming=unsupported` 表示尚未生成 Desktop renderer 私有的完整 snapshot/patch，不能据此宣称 Desktop 已能原生实时显示 FS 会话内容。
+Windows Node UI 首次启动由本机配置选择 Codex 会话模式：共享模式（推荐）不附加 Codex Desktop owner/control bridge，FS 接管模式才启用它。该本机选择优先于环境变量；无 Node UI 配置的 headless 进程仍可用 `FAST_SPIDER_CODEX_DESKTOP_BRIDGE=0` 关闭默认 bridge。FS 原有的 app-server 创建和执行路径不变。公开 MCP 的 `ai_control` 可通过 `providers.list`、`provider.readiness` 读取 `desktopBridge` 状态。
 
 ## ChatGPT 调用与工具发现
 

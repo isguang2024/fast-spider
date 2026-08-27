@@ -138,6 +138,14 @@ func (m *AgentManager) Close(ctx context.Context) error {
 	return firstErr
 }
 
+// SetCodexDesktopBridgeEnabled applies the Node UI's local session-ownership
+// setting without changing environment variables or restarting the app-server.
+func (m *AgentManager) SetCodexDesktopBridgeEnabled(enabled bool) {
+	if m != nil && m.codex != nil {
+		m.codex.SetCodexDesktopBridgeEnabled(enabled)
+	}
+}
+
 func (m *AgentManager) ownsCodexDesktopMetadata() bool {
 	return m == nil || m.codex == nil || !m.codex.usesExternalAppServer()
 }
