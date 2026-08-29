@@ -21,7 +21,7 @@
 | Routing cache | 默认 1.5 秒，最多 8 key | 请求时自动 | Route 变化可显式 invalidate |
 | Browser availability | 成功 30 秒、失败 5 秒；最多 128 个 holder，空闲 1 分钟可淘汰 | diagnostics/readiness | 只缓存探测结果，不共享 Browser Session |
 | Codex loaded thread 集合 | app-server 进程期 | load/delete/进程退出 | 删除成功立即淘汰对应记录 |
-| Browser Session 目录 | 活动期；空闲 10 分钟关闭 | Node 启动对账 + 每分钟周期维护 | 每轮扫描最多 256 项、删除最多 32 项；只回收严格 `brs_` 随机 ID、超过 1 小时的普通目录；大 backlog 会在后续轮次继续清理 |
+| Browser Session 目录 | 调用方 `close` 后立即删除；遗漏关闭时空闲 10 分钟关闭 | 显式 `close` + Node 启动对账 + 每分钟周期维护 | 一次浏览器验收一个 Session，调用方在 finally/defer 路径关闭；孤儿回收每轮扫描最多 256 项、删除最多 32 项，只处理严格 `brs_` 随机 ID、超过 1 小时的普通目录；大 backlog 会在后续轮次继续清理 |
 | Job 日志 | 运行期 + 本地保留窗口 | Node 周期维护 | 受 Job 数量、日志大小和保留时间共同约束 |
 | Managed Component ZIP/旧版本 | 安装完成后 | 组件中心显式安装/更新 | 安装按组件串行、临时目录唯一；已验证版本按语义版本选择最新，未知文件保留 |
 | Node update staging | Ready/apply 完成或显式 staging prune | Node 启动；`spiderctl staging-prune` | future、失败现场、`.previous` 和未知目录保留 |

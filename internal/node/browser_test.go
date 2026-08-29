@@ -122,3 +122,26 @@ func TestBrowserMaintenanceProtectsActiveSession(t *testing.T) {
 		t.Fatalf("active browser session was removed: %v", err)
 	}
 }
+
+func TestBrowserSessionCleanupRemovesOwnedDirectory(t *testing.T) {
+	dataDir := t.TempDir()
+	id := "brs_" + strings.Repeat("c", browserOpaqueIDEncodedBytes)
+	path := filepath.Join(dataDir, "browser", "sessions", id)
+	if err := os.MkdirAll(filepath.Join(path, "screenshots"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manager := &BrowserManager{
+		dataDir: dataDir,
+		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		session: &browserSessionRecord{BrowserSessionID: id, SessionDir: path},
+	}
+
+	manager.clearSession(*manager.session)
+
+	if manager.session != nil {
+		t.Fatal("browser session remained active after cleanup")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("browser session directory still exists after cleanup: %v", err)
+	}
+}

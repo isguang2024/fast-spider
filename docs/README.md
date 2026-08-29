@@ -28,6 +28,7 @@ This directory contains the public design, operations and release documentation 
 ## API and integrations
 
 - [Public API and MCP](10-public-api-and-mcp.md)
+- [调用方约束规格（简体中文）](caller-constraints.zh-CN.md) — FS 工具调用的生命周期、临时文件与清理责任。
 - [Local Bridge and AI Control](11-local-bridge-and-ai-control.md)
 - [Browser and Screenshot](12-browser-and-screenshot.md)
 - [Thinking Team](22-thinking-team.md)

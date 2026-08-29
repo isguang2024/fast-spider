@@ -73,6 +73,22 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 				t.Fatalf("ai_control guide still advertises ChatGPT cloud as unsupported: %s", guide.Summary)
 			}
 		}
+		if name == "browser_control" {
+			guideText := strings.Join(append([]string{guide.Summary}, guide.SafeSequence...), "\n")
+			for _, needle := range []string{"one session", "finally/defer", "close", "session directory"} {
+				if !strings.Contains(guideText, needle) {
+					t.Fatalf("browser_control guide missing %q: %+v", needle, guide)
+				}
+			}
+		}
+		if name == "build_control" {
+			guideText := strings.Join(append([]string{guide.Summary}, guide.SafeSequence...), "\n")
+			for _, needle := range []string{"temporary", "compiled test binary", "success/failure/cancel"} {
+				if !strings.Contains(guideText, needle) {
+					t.Fatalf("build_control guide missing %q: %+v", needle, guide)
+				}
+			}
+		}
 	}
 	for _, name := range []string{"connection-check", "file-edit", "shell-job", "build-job", "git-change", "browser", "codex-session", "long-task", "artifact-display"} {
 		guide, err := newMCPGuide("0.4.17", "workflow", name)
