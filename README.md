@@ -68,6 +68,31 @@ MCP / Web / CLI / Local Bridge
 4. Progress, logs, results, errors and artifacts return through the same job
    lifecycle and remain available for audit.
 
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%">
+      <a href="docs/images/fast-spider-node-overview.png"><img src="docs/images/fast-spider-node-overview.png" alt="Fast Spider Node connection overview"></a><br>
+      <strong>Node overview</strong> — connection, local permission and runtime status. The private Hub URL is redacted.
+    </td>
+    <td width="50%">
+      <a href="docs/images/fast-spider-ai-routing.png"><img src="docs/images/fast-spider-ai-routing.png" alt="Fast Spider AI and routing status"></a><br>
+      <strong>AI and routing</strong> — provider-neutral Codex and Claude Code discovery and effective capabilities.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <a href="docs/images/fast-spider-diagnostics.png"><img src="docs/images/fast-spider-diagnostics.png" alt="Fast Spider diagnostics center"></a><br>
+      <strong>Diagnostics</strong> — redacted Node, Hub, agent and local capability readiness.
+    </td>
+    <td width="50%">
+      <a href="docs/images/fast-spider-components.png"><img src="docs/images/fast-spider-components.png" alt="Fast Spider managed component center"></a><br>
+      <strong>Components</strong> — verified browser, search and file capability status.
+    </td>
+  </tr>
+</table>
+
 ## What it does not provide
 
 Fast Spider is not a hidden remote desktop, privilege escalation tool or generic tunnel.

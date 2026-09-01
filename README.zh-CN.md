@@ -67,6 +67,31 @@ MCP / Web / CLI / Local Bridge
 3. Node 校验能力参数，再以启动 Node 的操作系统用户权限执行。
 4. 进度、日志、结果、错误和产物通过同一任务生命周期返回并进入审计。
 
+## 产品截图
+
+<table>
+  <tr>
+    <td width="50%">
+      <a href="docs/images/fast-spider-node-overview.png"><img src="docs/images/fast-spider-node-overview.png" alt="Fast Spider Node 连接概览"></a><br>
+      <strong>设备概览</strong>——查看连接、本地权限和运行状态；私有 Hub 地址已经脱敏。
+    </td>
+    <td width="50%">
+      <a href="docs/images/fast-spider-ai-routing.png"><img src="docs/images/fast-spider-ai-routing.png" alt="Fast Spider AI 与路由状态"></a><br>
+      <strong>AI 与路由</strong>——统一发现 Codex、Claude Code 及其有效能力。
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <a href="docs/images/fast-spider-diagnostics.png"><img src="docs/images/fast-spider-diagnostics.png" alt="Fast Spider 诊断中心"></a><br>
+      <strong>诊断中心</strong>——查看脱敏后的 Node、Hub、Agent 和本地能力就绪状态。
+    </td>
+    <td width="50%">
+      <a href="docs/images/fast-spider-components.png"><img src="docs/images/fast-spider-components.png" alt="Fast Spider 本地组件中心"></a><br>
+      <strong>组件中心</strong>——展示已校验的浏览器、搜索和文件能力状态。
+    </td>
+  </tr>
+</table>
+
 ## 3 分钟安全试用
 
 从源码目录运行，第一次上手默认使用 Project mode：
