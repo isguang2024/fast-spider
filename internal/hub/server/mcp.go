@@ -276,7 +276,7 @@ type aiControlInput struct {
 	Backend               string              `json:"backend,omitempty" jsonschema:"session.create backend: codex_local, claude_local, or chatgpt_cloud"`
 	VisibilityTarget      string              `json:"visibilityTarget,omitempty" jsonschema:"session.create target: codex_local, claude_local, chatgpt_cloud, or none"`
 	Ephemeral             *bool               `json:"ephemeral,omitempty" jsonschema:"session.create: internal Codex default true; persistent internal=false"`
-	Mode                  string              `json:"mode,omitempty" jsonschema:"provider.readiness mode: passive or safe"`
+	Mode                  string              `json:"mode,omitempty" jsonschema:"provider.readiness: passive|safe; chatgpt_cloud session.create: complete|quick_chat"`
 	Prompt                string              `json:"prompt,omitempty" jsonschema:"text for session.create/send/steer"`
 	WorkingDirectory      string              `json:"workingDirectory,omitempty" jsonschema:"absolute working directory; required for session.create"`
 	Model                 string              `json:"model,omitempty" jsonschema:"optional provider model ID"`

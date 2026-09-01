@@ -64,7 +64,7 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		assertMCPGuideSize(t, guide, 12<<10)
 		if name == "ai_control" {
 			guideText := strings.Join(append(append(append(guide.WhenToUse, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
-			for _, needle := range []string{"session.create", "providerId=codex", "backend=chatgpt_cloud", "CHAT", "externalIdType=chatgpt_conversation"} {
+			for _, needle := range []string{"session.create", "providerId=codex", "backend=chatgpt_cloud", "mode=quick_chat", "CHAT", "externalIdType=chatgpt_conversation", "completionPending=true"} {
 				if !strings.Contains(guideText, needle) {
 					t.Fatalf("ai_control guide missing %q: %+v", needle, guide)
 				}

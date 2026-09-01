@@ -138,6 +138,102 @@ func TestChatGPTCloudSessionCreateRequiresIdempotencyKey(t *testing.T) {
 	}
 }
 
+func TestChatGPTCloudQuickChatCreateReturnsRunningAndReplays(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	var creates int
+	var selectedModel string
+	manager.chatgptCloud.createOverride = func(_ context.Context, _ string, model string) (chatgptCloudTurnResult, error) {
+		creates++
+		selectedModel = model
+		return chatgptCloudTurnResult{ConversationID: "quick-cloud-conversation"}, nil
+	}
+	params := map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "mode": "quick_chat",
+		"prompt": "answer quickly", "idempotencyKey": "cloud-quick-create-01", "workingDirectory": t.TempDir(),
+	}
+	first, err := manager.Control(context.Background(), "session.create", params)
+	if err != nil {
+		t.Fatalf("quick create: %v", err)
+	}
+	if selectedModel != "auto" || first["model"] != "auto" || first["createMode"] != "quick_chat" || first["phase"] != "running" || first["completionPending"] != true {
+		t.Fatalf("quick create result=%#v selectedModel=%q", first, selectedModel)
+	}
+	replayed, err := manager.Control(context.Background(), "session.create", params)
+	if err != nil {
+		t.Fatalf("quick replay: %v", err)
+	}
+	if creates != 1 || replayed["sessionId"] != first["sessionId"] || replayed["idempotencyStatus"] != "replayed" || replayed["createMode"] != "quick_chat" {
+		t.Fatalf("creates=%d first=%#v replayed=%#v", creates, first, replayed)
+	}
+	conflicting := cloneAgentMap(params)
+	conflicting["mode"] = "complete"
+	if _, err := manager.Control(context.Background(), "session.create", conflicting); err == nil {
+		t.Fatal("same idempotency key allowed quick_chat to change to complete")
+	}
+}
+
+func TestChatGPTCloudSessionCreateRejectsUnknownMode(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	manager.chatgptCloud.createOverride = func(context.Context, string, string) (chatgptCloudTurnResult, error) {
+		t.Fatal("provider create was called for an invalid mode")
+		return chatgptCloudTurnResult{}, nil
+	}
+	_, err := manager.Control(context.Background(), "session.create", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "mode": "fastest",
+		"prompt": "invalid mode", "idempotencyKey": "cloud-invalid-mode-01", "workingDirectory": t.TempDir(),
+	})
+	if err == nil || err.Error() != "backend=chatgpt_cloud session.create mode must be complete or quick_chat" {
+		t.Fatalf("invalid mode error=%v", err)
+	}
+}
+
+func TestChatGPTCloudCompleteCreateReplaysLegacySpecHash(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	workingDirectory := t.TempDir()
+	normalizedWorkingDirectory, err := requiredAgentDirectory(workingDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := agentControlParams{Backend: sessionBackendChatGPTCloud, Prompt: "legacy complete", WorkingDirectory: workingDirectory}
+	spec, err := resolveSessionVisibility("codex", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacySpec := map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
+		"prompt": input.Prompt, "model": "", "workingDirectory": normalizedWorkingDirectory,
+	}
+	for key, value := range spec.hashFields() {
+		legacySpec[key] = value
+	}
+	legacyHash := sessionCreateSpecHash(legacySpec)
+	storeKey := "codex:cloud-legacy-mode-01"
+	manager.createStore.records[storeKey] = sessionCreateRecord{
+		Key: storeKey, SpecHash: legacyHash, State: "succeeded",
+		Result: map[string]any{"sessionId": "legacy-cloud-conversation", "phase": "ready"}, UpdatedAt: time.Now().UTC(),
+	}
+	manager.chatgptCloud.createOverride = func(context.Context, string, string) (chatgptCloudTurnResult, error) {
+		t.Fatal("legacy complete create was not replayed")
+		return chatgptCloudTurnResult{}, nil
+	}
+	replayed, err := manager.Control(context.Background(), "session.create", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
+		"prompt": input.Prompt, "idempotencyKey": "cloud-legacy-mode-01", "workingDirectory": workingDirectory,
+	})
+	if err != nil {
+		t.Fatalf("legacy replay: %v", err)
+	}
+	if replayed["sessionId"] != "legacy-cloud-conversation" || replayed["createMode"] != "complete" || replayed["idempotencyStatus"] != "replayed" {
+		t.Fatalf("legacy replay=%#v", replayed)
+	}
+	if manager.createStore.records[storeKey].SpecHash == legacyHash {
+		t.Fatal("legacy complete spec hash was not migrated to include mode")
+	}
+}
+
 func TestChatGPTCloudSessionGetAutoRoutesFromStoredBackend(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/backend-api/conversation/cloud-auto-route" {

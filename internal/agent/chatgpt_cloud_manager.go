@@ -68,15 +68,31 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 	if len(idempotencyKey) < 12 || len(idempotencyKey) > 128 || strings.ContainsAny(idempotencyKey, "\x00\r\n") {
 		return nil, fmt.Errorf("idempotencyKey must be 12 to 128 safe characters")
 	}
-	previousSpecValue := map[string]any{
+	createMode := strings.ToLower(strings.TrimSpace(input.Mode))
+	if createMode == "" {
+		createMode = "complete"
+	}
+	if createMode != "complete" && createMode != "quick_chat" {
+		return nil, fmt.Errorf("backend=chatgpt_cloud session.create mode must be complete or quick_chat")
+	}
+	selectedModel := strings.TrimSpace(input.Model)
+	if createMode == "quick_chat" && selectedModel == "" {
+		selectedModel = "auto"
+	}
+	legacySpecValue := map[string]any{
 		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
 		"prompt": strings.TrimSpace(input.Prompt), "model": strings.TrimSpace(input.Model),
 	}
 	for key, value := range spec.hashFields() {
-		previousSpecValue[key] = value
+		legacySpecValue[key] = value
 	}
-	previousSpecHash := sessionCreateSpecHash(previousSpecValue)
-	specValue := cloneAgentMap(previousSpecValue)
+	legacySpecWithoutDirectoryHash := sessionCreateSpecHash(legacySpecValue)
+	legacySpecWithDirectory := cloneAgentMap(legacySpecValue)
+	legacySpecWithDirectory["workingDirectory"] = workingDirectory
+	legacySpecWithDirectoryHash := sessionCreateSpecHash(legacySpecWithDirectory)
+	specValue := cloneAgentMap(legacySpecWithDirectory)
+	specValue["mode"] = createMode
+	specValue["model"] = selectedModel
 	specValue["workingDirectory"] = workingDirectory
 	specHash := sessionCreateSpecHash(specValue)
 	storeKey := "codex:" + idempotencyKey
@@ -84,7 +100,10 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 		if m.createStore == nil {
 			return nil, &createIdempotencyError{code: "AGENT_IDEMPOTENCY_STORE_UNAVAILABLE", message: "session.create idempotency state is unavailable"}
 		}
-		legacyHashes := []string{previousSpecHash}
+		legacyHashes := []string(nil)
+		if createMode == "complete" {
+			legacyHashes = []string{legacySpecWithDirectoryHash, legacySpecWithoutDirectoryHash}
+		}
 		replayed, ok, err := m.createStore.begin(storeKey, specHash, legacyHashes...)
 		if err != nil {
 			return nil, err
@@ -100,10 +119,17 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 			}
 			replayed["idempotencyProtected"] = true
 			replayed["idempotencyStatus"] = "replayed"
+			replayed["createMode"] = createMode
 			return replayed, nil
 		}
 	}
-	result, createErr := m.chatgptCloud.Create(ctx, input.Prompt, input.Model)
+	var result chatgptCloudTurnResult
+	var createErr error
+	if createMode == "quick_chat" {
+		result, createErr = m.chatgptCloud.CreateQuick(ctx, input.Prompt, selectedModel)
+	} else {
+		result, createErr = m.chatgptCloud.Create(ctx, input.Prompt, selectedModel)
+	}
 	if createErr != nil && strings.TrimSpace(result.ConversationID) == "" {
 		if idempotencyKey != "" {
 			if persistenceErr := m.createStore.update(storeKey, "in_doubt", nil); persistenceErr != nil {
@@ -133,14 +159,18 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 	out := map[string]any{
 		"sessionId":            sessionID,
 		"executionMode":        "chatgpt_cloud",
-		"model":                input.Model,
+		"createMode":           createMode,
+		"model":                selectedModel,
 		"owner":                "node_agent_bridge",
 		"phase":                "ready",
 		"realtimeChannel":      "session.watch",
 		"idempotencyProtected": idempotencyKey != "",
 		"workingDirectory":     workingDirectory,
 	}
-	if createErr != nil {
+	if createMode == "quick_chat" {
+		out["phase"] = "running"
+		out["completionPending"] = true
+	} else if createErr != nil {
 		out["phase"] = "created_execution_unknown"
 		out["creationRecoveredFromStreamError"] = true
 	}

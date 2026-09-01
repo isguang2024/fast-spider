@@ -182,6 +182,22 @@ func chatgptNewChatBody(prompt, model string) map[string]any {
 	return chatgptConversationBody(prompt, model, "", "", "success")
 }
 
+// chatgptQuickChatBody mirrors the Codex Quick chat composer: it does not use
+// /f/conversation/prepare, reports client_prepare_state=none, and lets ChatGPT
+// choose the model through the "auto" route unless the caller selected one.
+func chatgptQuickChatBody(prompt, model string) map[string]any {
+	return map[string]any{
+		"action":               "next",
+		"messages":             []any{chatgptUserMessage(prompt)},
+		"model":                firstNonEmptyString(model, "auto"),
+		"parent_message_id":    chatgptCloudUUID(),
+		"client_prepare_state": "none",
+		"supported_encodings":  []string{"v1"},
+		"timezone_offset_min":  -480,
+		"timezone":             "Etc/GMT-8",
+	}
+}
+
 func chatgptFollowUpBody(conversationID, parentMessageID, prompt, model string) map[string]any {
 	return chatgptConversationBody(prompt, model, conversationID, parentMessageID, "sent")
 }
@@ -310,9 +326,94 @@ func (a *ChatGPTCloudAdapter) streamPath(ctx context.Context, path, token, condu
 	return chatgptParseStream(resp.Body, 20000)
 }
 
+type chatgptCloudTurnOutcome struct {
+	Result chatgptCloudTurnResult
+	Err    error
+}
+
+// streamQuick starts the same unprepared /f/conversation stream used by Codex
+// Quick chat. It returns as soon as ChatGPT emits the real conversation ID, then
+// keeps draining and closing the SSE response in the background.
+func (a *ChatGPTCloudAdapter) streamQuick(ctx context.Context, token string, body map[string]any, sentinel map[string]string) (chatgptCloudTurnResult, error) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return chatgptCloudTurnResult{}, err
+	}
+
+	streamCtx, cancelStream := context.WithTimeout(context.WithoutCancel(ctx), chatgptStreamTimeout)
+	stopCallerCancellation := make(chan struct{})
+	defer close(stopCallerCancellation)
+	if ctx.Done() != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+				cancelStream()
+			case <-stopCallerCancellation:
+			case <-streamCtx.Done():
+			}
+		}()
+	}
+
+	req, err := http.NewRequestWithContext(streamCtx, http.MethodPost, a.baseURL+chatgptConversationPath, strings.NewReader(string(raw)))
+	if err != nil {
+		cancelStream()
+		return chatgptCloudTurnResult{}, err
+	}
+	chatgptApplyCloudHeaders(req, token)
+	req.Header.Set("Content-Type", "application/json")
+	for key, value := range sentinel {
+		req.Header.Set(key, value)
+	}
+
+	resp, err := a.http.Do(req)
+	if err != nil {
+		cancelStream()
+		return chatgptCloudTurnResult{}, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		defer cancelStream()
+		rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return chatgptCloudTurnResult{}, fmt.Errorf("conversation stream returned %s: %s", resp.Status, strings.TrimSpace(string(rawBody)))
+	}
+
+	firstResult := make(chan chatgptCloudTurnOutcome, 1)
+	go func() {
+		defer cancelStream()
+		defer resp.Body.Close()
+		announced := false
+		result, parseErr := chatgptParseStreamObserved(resp.Body, 20000, func(observed chatgptCloudTurnResult) {
+			if announced {
+				return
+			}
+			announced = true
+			firstResult <- chatgptCloudTurnOutcome{Result: observed}
+		})
+		if !announced {
+			firstResult <- chatgptCloudTurnOutcome{Result: result, Err: parseErr}
+			return
+		}
+		if parseErr != nil {
+			a.logger.Warn("drain ChatGPT Quick chat stream", "conversationId", result.ConversationID, "error", parseErr)
+		}
+	}()
+
+	select {
+	case outcome := <-firstResult:
+		return outcome.Result, outcome.Err
+	case <-ctx.Done():
+		cancelStream()
+		return chatgptCloudTurnResult{}, ctx.Err()
+	}
+}
+
 // chatgptParseStream parses the /f/conversation SSE stream: collects the
 // conversation id and any inline message events, stopping at message_stream_complete.
 func chatgptParseStream(reader io.Reader, maxEvents int) (chatgptCloudTurnResult, error) {
+	return chatgptParseStreamObserved(reader, maxEvents, nil)
+}
+
+func chatgptParseStreamObserved(reader io.Reader, maxEvents int, onConversationID func(chatgptCloudTurnResult)) (chatgptCloudTurnResult, error) {
 	result := chatgptCloudTurnResult{}
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 4<<20)
@@ -326,8 +427,10 @@ func chatgptParseStream(reader io.Reader, maxEvents int) (chatgptCloudTurnResult
 		payload := strings.Join(dataLines, "\n")
 		var data map[string]any
 		if err := json.Unmarshal([]byte(payload), &data); err == nil {
+			observedConversationID := false
 			if cid, _ := data["conversation_id"].(string); cid != "" && result.ConversationID == "" {
 				result.ConversationID = cid
+				observedConversationID = true
 			}
 			if status, ok := chatgptCloudFirstMapValue(data, "conversation_async_status", "async_status"); ok {
 				result.AsyncStatus = status
@@ -342,6 +445,9 @@ func chatgptParseStream(reader io.Reader, maxEvents int) (chatgptCloudTurnResult
 			if input, ok := data["input_message"].(map[string]any); ok {
 				result.Messages = append(result.Messages, chatgptCloudMessageFromMap(input))
 				chatgptCloudCaptureTurnMetadata(&result, input)
+			}
+			if observedConversationID && onConversationID != nil {
+				onConversationID(result)
 			}
 			if data["type"] == "message_stream_complete" || data["type"] == "complete" {
 				return true // complete: stop
@@ -397,6 +503,27 @@ func (a *ChatGPTCloudAdapter) Create(ctx context.Context, prompt, model string) 
 		return a.createOverride(ctx, prompt, model)
 	}
 	return a.sendTurn(ctx, chatgptNewChatBody(prompt, model))
+}
+
+// CreateQuick starts a new cloud conversation with Codex Quick chat semantics:
+// skip conversation prepare and return once the real conversation ID is known.
+func (a *ChatGPTCloudAdapter) CreateQuick(ctx context.Context, prompt, model string) (chatgptCloudTurnResult, error) {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return chatgptCloudTurnResult{}, fmt.Errorf("creating a ChatGPT cloud conversation requires a first message")
+	}
+	if a.createOverride != nil {
+		return a.createOverride(ctx, prompt, firstNonEmptyString(model, "auto"))
+	}
+	token, err := a.token(ctx)
+	if err != nil {
+		return chatgptCloudTurnResult{}, err
+	}
+	sentinel, err := chatgptSentinelHeaders(ctx, a.http, a.baseURL, token)
+	if err != nil {
+		return chatgptCloudTurnResult{}, err
+	}
+	return a.streamQuick(ctx, token, chatgptQuickChatBody(prompt, model), sentinel)
 }
 
 // Send appends a follow-up message to an existing conversation. If parentMessageID

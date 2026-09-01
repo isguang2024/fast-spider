@@ -8,6 +8,13 @@ semantic versioning for public releases.
 - Add public CI, governance, support and maintainer workflow documentation.
 - Document the current early-stage public project status and contribution path.
 
+## 0.4.30 - 2026-09-02
+
+- Added Quick chat creation for ChatGPT Cloud sessions, returning as soon as
+  the conversation is created while completion continues in the background.
+- Preserved idempotent recovery, session watch/result behavior and the existing
+  complete creation mode.
+
 ## 0.4.28 - 2026-08-29
 
 - Added a configurable Codex Desktop session ownership mode for shared and

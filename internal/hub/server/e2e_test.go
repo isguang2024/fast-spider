@@ -238,7 +238,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	if !strings.Contains(strings.ToLower(shellToolDescription), "powershell.exe") || !strings.Contains(shellToolDescription, "not a separate FS tool") {
 		t.Fatalf("shell_run description does not explain Windows PowerShell discovery: %q", shellToolDescription)
 	}
-	for _, needle := range []string{"chatgpt_cloud", "providerId=codex", "visibility=visible", "session.create"} {
+	for _, needle := range []string{"chatgpt_cloud", "providerId=codex", "visibility=visible", "session.create", "quick_chat"} {
 		if !bytes.Contains(aiControlSchema, []byte(needle)) && !strings.Contains(aiControlDescription, needle) {
 			t.Fatalf("ai_control tools/list metadata missing %q: schema=%s description=%q", needle, aiControlSchema, aiControlDescription)
 		}

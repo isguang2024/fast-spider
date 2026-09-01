@@ -9,13 +9,61 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 type chatgptDeadlineTailReader struct{}
 
 func (chatgptDeadlineTailReader) Read([]byte) (int, error) {
 	return 0, context.DeadlineExceeded
+}
+
+type chatgptRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f chatgptRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+type chatgptQuickStreamBody struct {
+	mu                sync.Mutex
+	step              int
+	ctx               context.Context
+	release           <-chan struct{}
+	secondReadStarted chan struct{}
+	closed            chan struct{}
+	secondReadOnce    sync.Once
+	closeOnce         sync.Once
+}
+
+func (b *chatgptQuickStreamBody) Read(dst []byte) (int, error) {
+	b.mu.Lock()
+	switch b.step {
+	case 0:
+		b.step++
+		b.mu.Unlock()
+		return copy(dst, "data: {\"conversation_id\":\"quick-conversation-1\",\"type\":\"message\"}\n\n"), nil
+	case 1:
+		b.step++
+		ctx := b.ctx
+		b.secondReadOnce.Do(func() { close(b.secondReadStarted) })
+		b.mu.Unlock()
+		select {
+		case <-b.release:
+			return copy(dst, "data: {\"type\":\"message_stream_complete\"}\n\n"), nil
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		}
+	default:
+		b.mu.Unlock()
+		return 0, io.EOF
+	}
+}
+
+func (b *chatgptQuickStreamBody) Close() error {
+	b.closeOnce.Do(func() { close(b.closed) })
+	return nil
 }
 
 func TestChatGPTCloudHTTPClientDoesNotCutOffBoundedStream(t *testing.T) {
@@ -36,6 +84,98 @@ func TestChatGPTCloudStreamKeepsConversationIDWhenTailTimesOut(t *testing.T) {
 	}
 	if result.ConversationID != "cloud-created-before-timeout" {
 		t.Fatalf("conversation ID was lost after timeout: %#v", result)
+	}
+}
+
+func TestChatGPTCloudAdapterCreateQuickSkipsPrepareAndReturnsBeforeCompletion(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	streamBody := &chatgptQuickStreamBody{
+		release: release, secondReadStarted: make(chan struct{}), closed: make(chan struct{}),
+	}
+	var requestBody map[string]any
+	prepareCalls := 0
+	client := &http.Client{Transport: chatgptRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		response := func(status int, body io.ReadCloser) *http.Response {
+			return &http.Response{StatusCode: status, Status: fmt.Sprintf("%d", status), Header: make(http.Header), Body: body, Request: req}
+		}
+		switch req.URL.Path {
+		case chatgptSentinelPreparePath:
+			return response(http.StatusOK, io.NopCloser(strings.NewReader(`{"prepare_token":"sentinel-quick","proofofwork":{"required":true,"seed":"seed","difficulty":"ffffffff"}}`))), nil
+		case chatgptConversationPrepare:
+			prepareCalls++
+			return response(http.StatusInternalServerError, io.NopCloser(strings.NewReader("unexpected prepare"))), nil
+		case chatgptConversationPath:
+			if req.Header.Get("x-conduit-token") != "" {
+				t.Errorf("Quick chat request unexpectedly carried a conduit token")
+			}
+			if req.Header.Get("OpenAI-Sentinel-Proof-Token") == "" {
+				t.Errorf("Quick chat request missing Sentinel headers")
+			}
+			if err := json.NewDecoder(req.Body).Decode(&requestBody); err != nil {
+				return nil, err
+			}
+			streamBody.ctx = req.Context()
+			return response(http.StatusOK, streamBody), nil
+		default:
+			return response(http.StatusNotFound, io.NopCloser(strings.NewReader("not found"))), nil
+		}
+	})}
+
+	adapter := NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token-quick", nil })
+	adapter.baseURL = "https://chatgpt.test"
+	adapter.http = client
+	type createResult struct {
+		result chatgptCloudTurnResult
+		err    error
+	}
+	created := make(chan createResult, 1)
+	callerCtx, cancelCaller := context.WithCancel(context.Background())
+	defer cancelCaller()
+	go func() {
+		result, err := adapter.CreateQuick(callerCtx, "quick question", "")
+		created <- createResult{result: result, err: err}
+	}()
+
+	var outcome createResult
+	select {
+	case outcome = <-created:
+	case <-time.After(2 * time.Second):
+		t.Fatal("CreateQuick waited for the complete SSE stream")
+	}
+	if outcome.err != nil || outcome.result.ConversationID != "quick-conversation-1" {
+		t.Fatalf("CreateQuick result=%+v err=%v", outcome.result, outcome.err)
+	}
+	cancelCaller()
+	if prepareCalls != 0 {
+		t.Fatalf("conversation prepare calls=%d want 0", prepareCalls)
+	}
+	if mapString(requestBody, "model") != "auto" || mapString(requestBody, "client_prepare_state") != "none" {
+		t.Fatalf("Quick chat request body=%#v", requestBody)
+	}
+	if parentID := mapString(requestBody, "parent_message_id"); parentID == "" || parentID == "client-created-root" {
+		t.Fatalf("Quick chat parent_message_id=%q", parentID)
+	}
+	if _, exists := requestBody["conversation_mode"]; exists {
+		t.Fatalf("Quick chat request unexpectedly set conversation_mode: %#v", requestBody)
+	}
+	select {
+	case <-streamBody.secondReadStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Quick chat stream was not drained in the background")
+	}
+	select {
+	case <-streamBody.closed:
+		t.Fatal("Quick chat stream closed before the provider completed it")
+	default:
+	}
+	unblock()
+	select {
+	case <-streamBody.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Quick chat stream was not closed after background drain")
 	}
 }
 
