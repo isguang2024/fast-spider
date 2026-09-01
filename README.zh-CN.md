@@ -177,6 +177,11 @@ bash scripts/public-release-check.sh
 公共源码发布必须使用 `scripts/public-export.sh` 创建新的单 root commit，不能
 直接把私有开发 history 当作公开仓库历史。
 
+## 社区
+
+Fast Spider 认可并支持开发者社区 [LINUX DO](https://linux.do)。项目讨论与
+贡献仍通过本仓库面向所有人开放。
+
 ## 许可证
 
 Fast Spider 使用 Apache License 2.0，见 [LICENSE](LICENSE)。

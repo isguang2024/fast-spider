@@ -325,6 +325,12 @@ Project decisions and maintainer access follow [GOVERNANCE.md](GOVERNANCE.md).
 For usage questions and reproducible defects, see [SUPPORT.md](SUPPORT.md).
 Notable public changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
+## Community
+
+Fast Spider recognizes and supports the developer community at
+[LINUX DO](https://linux.do). Project discussions and contributions remain
+open to everyone through this repository.
+
 ## License
 
 Fast Spider is released under the Apache License 2.0. See [LICENSE](LICENSE).
