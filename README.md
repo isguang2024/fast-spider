@@ -19,6 +19,31 @@ Bridge.
 > adopter community is still developing. Feedback, reproducible issues and
 > focused contributions are welcome.
 
+## Codex-native development
+
+Fast Spider is developed with Codex as its primary engineering agent. The
+maintainer provides product direction, architecture decisions, acceptance
+criteria, security and privacy boundaries, and final release decisions. Codex
+supports implementation, testing, documentation, code review, debugging and
+iterative maintenance under maintainer supervision.
+
+This collaboration is part of the project's normal engineering workflow:
+
+- turn maintainer requirements into scoped implementation plans;
+- implement and test cross-platform changes on Windows, Linux and macOS;
+- review code, failure paths, permissions and privacy boundaries;
+- maintain documentation, release gates and reproducible verification evidence.
+
+## Three-part product structure
+
+Fast Spider has three clear runtime parts:
+
+| Part | Responsibility |
+|---|---|
+| Web Console | The browser-based management interface for owners and operators. It manages Nodes, credentials, jobs, routing and audit records through the Hub; it does not execute local machine actions itself. |
+| Hub | The backend and control plane. It provides authentication, APIs, routing, job lifecycle, policy coordination and audit storage. |
+| Node | The client installed on each Windows, Linux or macOS machine. It connects outbound to the Hub and performs the actual file, Shell, Git, browser and AI-session operations with the permissions of the local OS user. |
+
 ## What you can do with Fast Spider
 
 | Area | Capabilities |
@@ -131,6 +156,23 @@ Node and is routed through explicit capabilities. See the
 [security model](docs/security-model.md) for the detailed contracts.
 
 ## Quick start
+
+### Recommended: deploy with Codex
+
+The recommended deployment path is to open this repository in Codex and ask it
+to deploy the Web Console, Hub and Node for the target environment. Codex can
+inspect the operating system, follow the documented security boundaries, run
+the required checks and report the final service state.
+
+Example deployment request:
+
+```text
+Deploy Fast Spider from this repository. First explain the Web Console, Hub and
+Node topology you will use. Keep the Hub local unless I explicitly approve a
+public tunnel. Generate credentials locally, do not commit them or expose them
+in logs, run the documented checks, and report the final access URL and service
+status.
+```
 
 Requirements:
 
