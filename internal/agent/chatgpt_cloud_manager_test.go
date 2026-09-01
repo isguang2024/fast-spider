@@ -78,8 +78,8 @@ func TestChatGPTCloudSessionCreateFailsClosedAfterAmbiguousError(t *testing.T) {
 }
 
 func TestChatGPTCloudSessionCreateKeepsKnownConversationAfterStreamError(t *testing.T) {
-	manager := New(t.TempDir(), nil)
-	defer manager.Close(context.Background())
+	dataDir := t.TempDir()
+	manager := New(dataDir, nil)
 	workingDirectory := t.TempDir()
 	var creates int
 	manager.chatgptCloud.createOverride = func(context.Context, string, string) (chatgptCloudTurnResult, error) {
@@ -103,6 +103,38 @@ func TestChatGPTCloudSessionCreateKeepsKnownConversationAfterStreamError(t *test
 	}
 	if creates != 1 || second["sessionId"] != first["sessionId"] {
 		t.Fatalf("creates=%d first=%#v second=%#v", creates, first, second)
+	}
+	if record := manager.createStore.records["codex:cloud-known-error-01"]; record.State != "succeeded" {
+		t.Fatalf("recovered create record=%#v want succeeded", record)
+	}
+	if err := manager.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	restarted := New(dataDir, nil)
+	defer restarted.Close(context.Background())
+	restarted.chatgptCloud.createOverride = manager.chatgptCloud.createOverride
+	replayed, err := restarted.Control(context.Background(), "session.create", params)
+	if err != nil {
+		t.Fatalf("restart replay: %v", err)
+	}
+	if creates != 1 || replayed["sessionId"] != first["sessionId"] || replayed["idempotencyStatus"] != "replayed" {
+		t.Fatalf("restart creates=%d replay=%#v", creates, replayed)
+	}
+}
+
+func TestChatGPTCloudSessionCreateRequiresIdempotencyKey(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	manager.chatgptCloud.createOverride = func(context.Context, string, string) (chatgptCloudTurnResult, error) {
+		t.Fatal("provider create was called without an idempotency key")
+		return chatgptCloudTurnResult{}, nil
+	}
+	_, err := manager.Control(context.Background(), "session.create", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
+		"prompt": "must be protected", "workingDirectory": t.TempDir(),
+	})
+	if err == nil || err.Error() != "idempotencyKey is required for backend=chatgpt_cloud session.create" {
+		t.Fatalf("missing key error=%v", err)
 	}
 }
 

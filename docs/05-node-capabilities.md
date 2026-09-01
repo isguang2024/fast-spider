@@ -207,8 +207,8 @@ Codex 产品层存在 Automations 概念，但本机 Codex 0.141.0 的公开 CLI
 
 ## 11. 断线、重试与审计
 
-Hub 对连接中断返回结构化 `CONNECTION_LOST`，对 deadline 返回 `DEADLINE_EXCEEDED`。只读查询类能力可以声明 retryable；会产生副作用的文件编辑、Job 启动/取消、Git 写/网络、Build、Browser 操作、Agent Turn/Thread/Goal/Settings/Review 变更不能宣称可无脑重试。
+Hub 对连接中断返回结构化 `CONNECTION_LOST`，对 deadline 返回 `DEADLINE_EXCEEDED`。只读查询类能力可以声明 retryable；会产生副作用的文件编辑、Job 启动/取消、Git 写/网络、Build、Browser 操作、Agent Turn/Thread/Goal/Settings/Review 变更不能宣称可无脑重试。`session.create` 是例外：入口强制稳定 `idempotencyKey`，超时后只能使用原 key 和原参数重放以对账已有结果，不能生成新 key 重试。
 
-当前 Agent 中可安全重试的读取包括 Provider/Model/Project/Skill/Hook/Permission/Plugin/MCP 状态 discovery、Session list/get/watch/result 和 Goal get。Thread/Goal/Settings/Review/Turn 变更以及 `session.steer/respond` 进入 mutation audit；steer/respond 在连接中断后不能自动重放。
+当前 Agent 中可安全重试的读取包括 Provider/Model/Project/Skill/Hook/Permission/Plugin/MCP 状态 discovery、Session list/get/watch/result 和 Goal get。带稳定幂等键的 `session.create` 可以按原请求重放；Thread/Goal/Settings/Review/Turn 变更以及 `session.steer/respond` 进入 mutation audit，其他变更在连接中断后不能自动重放。
 
 WSS 不做写操作自动重放：完整请求未到 Node 前断线则不会执行；请求已经执行但响应丢失时，调用方先重新读取状态，再决定下一步。

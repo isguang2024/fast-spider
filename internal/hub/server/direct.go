@@ -568,6 +568,14 @@ func writeDirectError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusBadRequest, apiError{Error: protocolv1.ProtocolError{Code: "INVALID_REQUEST", Message: requestErr.message, Retryable: false}})
 		return
 	}
+	var capabilityErr *core.CapabilityCallError
+	if errors.As(err, &capabilityErr) {
+		writeJSON(w, core.ErrorStatus(err), apiError{Error: protocolv1.ProtocolError{
+			Code: capabilityErr.Code, Message: capabilityErr.Message,
+			Retryable: capabilityErr.Retryable, Details: capabilityErr.Details,
+		}})
+		return
+	}
 	status := core.ErrorStatus(err)
 	if status < 400 || status > 599 {
 		status = http.StatusInternalServerError

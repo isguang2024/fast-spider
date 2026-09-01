@@ -3,17 +3,39 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
+type chatgptDeadlineTailReader struct{}
+
+func (chatgptDeadlineTailReader) Read([]byte) (int, error) {
+	return 0, context.DeadlineExceeded
+}
+
 func TestChatGPTCloudHTTPClientDoesNotCutOffBoundedStream(t *testing.T) {
 	client := newChatGPTCloudHTTPClient()
 	if client.Timeout != 0 {
 		t.Fatalf("ChatGPT cloud HTTP client timeout=%v, want 0 so operation contexts own deadlines", client.Timeout)
+	}
+}
+
+func TestChatGPTCloudStreamKeepsConversationIDWhenTailTimesOut(t *testing.T) {
+	stream := io.MultiReader(
+		strings.NewReader("data: {\"conversation_id\":\"cloud-created-before-timeout\",\"type\":\"message\"}\n\n"),
+		chatgptDeadlineTailReader{},
+	)
+	result, err := chatgptParseStream(stream, 10)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stream error=%v want deadline exceeded", err)
+	}
+	if result.ConversationID != "cloud-created-before-timeout" {
+		t.Fatalf("conversation ID was lost after timeout: %#v", result)
 	}
 }
 

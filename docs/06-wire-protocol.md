@@ -32,11 +32,11 @@ Hub 为每次调用生成 `requestId + traceId` 并透传 Node、Job 与响应�
 
 - 请求帧在 Node 完整接收前断开，不执行该请求。
 - Node 已执行请求但 Response 丢失时，调用结果为 uncertain；Hub 返回 `CONNECTION_LOST`，不会自动重发。
-- 只读/查询动作可标记 `retryable=true`；`file.write/edit`、Shell/Build、Git 写入、浏览器动作、Agent create/send/steer/respond/Thread/Goal/Settings/Review 变更等副作用动作标记为 `retryable=false`，调用方必须先重新读取或查询状态。
+- 只读/查询动作可标记 `retryable=true`；`file.write/edit`、Shell/Build、Git 写入、浏览器动作、Agent send/steer/respond/Thread/Goal/Settings/Review 变更等副作用动作标记为 `retryable=false`，调用方必须先重新读取或查询状态。`session.create` 因强制稳定 `idempotencyKey`，只允许以原 key 和原参数安全重放。
 - Job 启动依赖 `idempotencyKey`；Node 保存有限的幂等结果并拒绝同 key 不同参数。已启动 Job 不绑定 WSS session。
 - Codex `session.create` 同样使用持久幂等记录；中间状态无法确认时不自动创建第二个 Thread。
 - `file.write/edit` 依赖 expected SHA CAS，并通过临时文件、fsync 和原子替换避免半文件。
 
 ## 错误
 
-相对路径用于要求本机路径的能力时返回 `ABSOLUTE_PATH_REQUIRED`。文件 CAS 冲突的 `ProtocolError.details` 只包含 path/expected/actual SHA；WSL runtime 使用 `RUNTIME_UNAVAILABLE` 与 `WSL_CWD_UNMAPPABLE`；搜索 fallback 使用稳定 `RG_*` reason code。Node 已进入 release drain 时，新 Capability 返回可重试 `NODE_UPDATING`，已经运行的任务不被取消。连接在响应前丢失返回 `CONNECTION_LOST`（HTTP 适配层为 503）；调用 deadline 到期返回 `DEADLINE_EXCEEDED`（HTTP 适配层为 504）。
+相对路径用于要求本机路径的能力时返回 `ABSOLUTE_PATH_REQUIRED`。文件 CAS 冲突的 `ProtocolError.details` 只包含 path/expected/actual SHA；WSL runtime 使用 `RUNTIME_UNAVAILABLE` 与 `WSL_CWD_UNMAPPABLE`；搜索 fallback 使用稳定 `RG_*` reason code。Node 已进入 release drain 时，新 Capability 返回可重试 `NODE_UPDATING`，已经运行的任务不被取消。连接在响应前丢失返回 `CONNECTION_LOST`（HTTP 适配层为 503）；调用 deadline 到期返回 `DEADLINE_EXCEEDED`（HTTP 适配层为 504）。`session.create` 将 Provider 执行 deadline 与 Node 最终回执窗口分离：Cloud 创建在 120 秒流式上限之外另有 30 秒前置准备预算，Node 可在执行 deadline 后的 20 秒窗口内持久化已观察到的会话 ID 并返回恢复结果。若最终仍超时，调用方只能以原 `idempotencyKey` 和原参数重放对账。

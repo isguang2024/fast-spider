@@ -62,7 +62,10 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 		return nil, fmt.Errorf("backend=chatgpt_cloud session.create requires a prompt (the first message); ChatGPT has no empty cloud conversation create API")
 	}
 	idempotencyKey := strings.TrimSpace(input.IdempotencyKey)
-	if idempotencyKey != "" && (len(idempotencyKey) < 12 || len(idempotencyKey) > 128 || strings.ContainsAny(idempotencyKey, "\x00\r\n")) {
+	if idempotencyKey == "" {
+		return nil, fmt.Errorf("idempotencyKey is required for backend=chatgpt_cloud session.create")
+	}
+	if len(idempotencyKey) < 12 || len(idempotencyKey) > 128 || strings.ContainsAny(idempotencyKey, "\x00\r\n") {
 		return nil, fmt.Errorf("idempotencyKey must be 12 to 128 safe characters")
 	}
 	previousSpecValue := map[string]any{

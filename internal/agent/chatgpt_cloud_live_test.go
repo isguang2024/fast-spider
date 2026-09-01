@@ -164,10 +164,11 @@ func TestChatGPTCloudManagerRealE2E(t *testing.T) {
 	t.Logf("chat models (%d): %v", len(ids), ids[:min(8, len(ids))])
 
 	created, err := m.Control(ctx, "session.create", map[string]any{
-		"providerId": "codex",
-		"backend":    sessionBackendChatGPTCloud,
-		"prompt":     "Manager 全链路：请只回复：收到。",
-		"model":      "gpt-5-6",
+		"providerId":     "codex",
+		"backend":        sessionBackendChatGPTCloud,
+		"prompt":         "Manager 全链路：请只回复：收到。",
+		"model":          "gpt-5-6",
+		"idempotencyKey": "chatgpt-live-manager-create-001",
 	})
 	if err != nil {
 		t.Fatalf("session.create: %v", err)
@@ -280,7 +281,7 @@ func TestChatGPTCloudRealtimeRealE2E(t *testing.T) {
 
 	created, err := m.Control(ctx, "session.create", map[string]any{
 		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
-		"prompt": "实时测试：请只回复：实时OK。", "model": "gpt-5-6",
+		"prompt": "实时测试：请只回复：实时OK。", "model": "gpt-5-6", "idempotencyKey": "chatgpt-live-realtime-create-001",
 	})
 	if err != nil {
 		t.Fatalf("session.create: %v", err)

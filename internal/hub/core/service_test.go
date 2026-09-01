@@ -165,12 +165,12 @@ func TestScreenshotWindowCallDeadlineAndAuditPolicy(t *testing.T) {
 }
 
 func TestAgentCapabilityRetryAndAuditPolicy(t *testing.T) {
-	for _, action := range []string{"routing.status", "provider.capabilities", "skills.list", "hooks.list", "permissions.list", "plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list", "session.goal.get"} {
+	for _, action := range []string{"routing.status", "provider.capabilities", "skills.list", "hooks.list", "permissions.list", "plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list", "session.create", "session.goal.get"} {
 		if !isRetryableCapability("agent.control", action) {
 			t.Fatalf("%s should be retryable", action)
 		}
 	}
-	for _, action := range []string{"session.create", "session.send", "session.steer", "session.respond", "session.delete", "session.rollback", "session.settings.update", "session.review"} {
+	for _, action := range []string{"session.send", "session.steer", "session.respond", "session.delete", "session.rollback", "session.settings.update", "session.review"} {
 		if isRetryableCapability("agent.control", action) {
 			t.Fatalf("%s must not be retryable", action)
 		}
@@ -183,6 +183,25 @@ func TestAgentCapabilityRetryAndAuditPolicy(t *testing.T) {
 	}
 	if !shouldAuditCapability("build.exec", "run") {
 		t.Fatal("build.exec/run must be audited as a mutation")
+	}
+}
+
+func TestSessionCreateSeparatesOperationAndResponseDeadlines(t *testing.T) {
+	now := time.Date(2026, 9, 1, 13, 0, 0, 0, time.UTC)
+	operationDeadline, responseDeadline := capabilityCallDeadlines(now, context.Background(), "agent.control", "session.create")
+	if got := operationDeadline.Sub(now); got != 150*time.Second {
+		t.Fatalf("session.create operation deadline=%s, want 2m30s", got)
+	}
+	if got := responseDeadline.Sub(operationDeadline); got != 20*time.Second {
+		t.Fatalf("session.create response grace=%s, want 20s", got)
+	}
+
+	callerDeadline := now.Add(40 * time.Second)
+	callerCtx, cancel := context.WithDeadline(context.Background(), callerDeadline)
+	defer cancel()
+	operationDeadline, responseDeadline = capabilityCallDeadlines(now, callerCtx, "agent.control", "session.create")
+	if !operationDeadline.Equal(callerDeadline) || !responseDeadline.Equal(callerDeadline) {
+		t.Fatalf("caller deadline was extended: operation=%s response=%s caller=%s", operationDeadline, responseDeadline, callerDeadline)
 	}
 }
 
@@ -331,6 +350,7 @@ func TestCapabilityTransportErrorsAreStructured(t *testing.T) {
 		{name: "lost agent send", err: registry.ErrConnectionLost, capability: "agent.control", action: "session.send", wantCode: "CONNECTION_LOST", retryable: false, status: 503},
 		{name: "deadline query", err: context.DeadlineExceeded, capability: "git.repository", action: "status", wantCode: "DEADLINE_EXCEEDED", retryable: true, status: 504},
 		{name: "deadline shell", err: context.DeadlineExceeded, capability: "shell.exec", action: "run", wantCode: "DEADLINE_EXCEEDED", retryable: false, status: 504},
+		{name: "deadline idempotent create", err: context.DeadlineExceeded, capability: "agent.control", action: "session.create", wantCode: "DEADLINE_EXCEEDED", retryable: true, status: 504},
 	}
 
 	for _, tt := range tests {
@@ -345,6 +365,11 @@ func TestCapabilityTransportErrorsAreStructured(t *testing.T) {
 			}
 			if got := ErrorStatus(err); got != tt.status {
 				t.Fatalf("ErrorStatus()=%d, want %d", got, tt.status)
+			}
+			if tt.action == "session.create" {
+				if callErr.Details["recovery"] != "retry_same_idempotency_key" || callErr.Details["mayHaveCreated"] != true {
+					t.Fatalf("session.create recovery details=%#v", callErr.Details)
+				}
 			}
 		})
 	}

@@ -420,11 +420,8 @@ func (s *Service) CallCapability(ctx context.Context, ownerID, machineID, capabi
 	if err != nil {
 		return nil, err
 	}
-	deadline := s.now().UTC().Add(capabilityCallTimeout(capability, action))
-	if current, ok := ctx.Deadline(); ok && current.Before(deadline) {
-		deadline = current
-	}
-	callCtx, cancel := context.WithDeadline(ctx, deadline)
+	operationDeadline, responseDeadline := capabilityCallDeadlines(s.now().UTC(), ctx, capability, action)
+	callCtx, cancel := context.WithDeadline(ctx, responseDeadline)
 	defer cancel()
 	dispatchStarted := time.Now()
 	response, err := s.registry.Call(callCtx, machineID, protocolv1.CapabilityRequest{
@@ -434,7 +431,7 @@ func (s *Service) CallCapability(ctx context.Context, ownerID, machineID, capabi
 		Capability:  capability,
 		Action:      action,
 		Params:      normalized,
-		Deadline:    protocolv1.Timestamp(deadline),
+		Deadline:    protocolv1.Timestamp(operationDeadline),
 		Timestamp:   protocolv1.Timestamp(s.now()),
 	})
 	nodeReturnedAt := time.Now()
@@ -488,6 +485,17 @@ func capabilityCallTransportError(err error, capability, action string) error {
 	case errors.Is(err, registry.ErrConnectionLost):
 		return &CapabilityCallError{Code: "CONNECTION_LOST", Message: "node connection was lost before a response was received", Retryable: retryable}
 	case errors.Is(err, context.DeadlineExceeded):
+		if capability == "agent.control" && action == "session.create" {
+			return &CapabilityCallError{
+				Code:      "DEADLINE_EXCEEDED",
+				Message:   "session.create response deadline exceeded; retry the same request with the original idempotencyKey to reconcile the stored result",
+				Retryable: true,
+				Details: map[string]any{
+					"mayHaveCreated": true,
+					"recovery":       "retry_same_idempotency_key",
+				},
+			}
+		}
 		return &CapabilityCallError{Code: "DEADLINE_EXCEEDED", Message: "capability call deadline exceeded", Retryable: retryable}
 	default:
 		return err
@@ -505,7 +513,7 @@ func isRetryableCapability(capability, action string) bool {
 		"working.context/get", "working.context/plan.get", "working.context/plan.list", "working.context/markdown.list", "working.context/markdown.read", "working.context/progress.watch",
 		"browser.automation/readiness", "browser.automation/pages.list", "browser.automation/snapshot", "browser.automation/events",
 		"screenshot.capture/listDisplays", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/listWindows", "screenshot.capture/window",
-		"agent.control/routing.status", "agent.control/providers.list", "agent.control/provider.readiness", "agent.control/models.list", "agent.control/provider.capabilities", "agent.control/projects.list", "agent.control/skills.list", "agent.control/hooks.list", "agent.control/permissions.list", "agent.control/plugins.list", "agent.control/plugins.installed", "agent.control/plugins.get", "agent.control/plugin.skill.read", "agent.control/mcp.status.list", "agent.control/session.list", "agent.control/session.get", "agent.control/session.watch", "agent.control/session.result", "agent.control/session.goal.get":
+		"agent.control/routing.status", "agent.control/providers.list", "agent.control/provider.readiness", "agent.control/models.list", "agent.control/provider.capabilities", "agent.control/projects.list", "agent.control/skills.list", "agent.control/hooks.list", "agent.control/permissions.list", "agent.control/plugins.list", "agent.control/plugins.installed", "agent.control/plugins.get", "agent.control/plugin.skill.read", "agent.control/mcp.status.list", "agent.control/session.list", "agent.control/session.get", "agent.control/session.create", "agent.control/session.watch", "agent.control/session.result", "agent.control/session.goal.get":
 		return true
 	default:
 		return false
@@ -522,7 +530,11 @@ func capabilityCallTimeout(capability, action string) time.Duration {
 		return 2 * time.Minute
 	case "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/window":
 		return 2 * time.Minute
-	case "agent.control/session.create", "agent.control/session.send", "agent.control/session.fork", "agent.control/session.compact", "agent.control/session.rollback", "agent.control/session.goal.set", "agent.control/session.goal.clear", "agent.control/session.settings.update", "agent.control/session.review", "agent.control/session.unarchive", "agent.control/session.delete":
+	case "agent.control/session.create":
+		// ChatGPT Cloud owns a bounded 120s SSE stream after sentinel/prepare.
+		// Keep those setup phases inside a separate, still-bounded operation budget.
+		return 150 * time.Second
+	case "agent.control/session.send", "agent.control/session.fork", "agent.control/session.compact", "agent.control/session.rollback", "agent.control/session.goal.set", "agent.control/session.goal.clear", "agent.control/session.settings.update", "agent.control/session.review", "agent.control/session.unarchive", "agent.control/session.delete":
 		return 2 * time.Minute
 	case "agent.control/session.watch", "agent.control/session.cancel", "agent.control/session.steer", "agent.control/session.respond":
 		return 30 * time.Second
@@ -531,6 +543,31 @@ func capabilityCallTimeout(capability, action string) time.Duration {
 	default:
 		return 20 * time.Second
 	}
+}
+
+func capabilityResponseGrace(capability, action string) time.Duration {
+	if capability == "agent.control" && action == "session.create" {
+		// The Node may recover a provider-emitted session ID exactly when the
+		// operation context expires, persist it, and still need to write the final
+		// response. Its WebSocket write is bounded to 15 seconds; retain a small
+		// delivery margin rather than racing the same boundary again.
+		return 20 * time.Second
+	}
+	return 0
+}
+
+func capabilityCallDeadlines(now time.Time, parent context.Context, capability, action string) (time.Time, time.Time) {
+	operationDeadline := now.Add(capabilityCallTimeout(capability, action))
+	responseDeadline := operationDeadline.Add(capabilityResponseGrace(capability, action))
+	if callerDeadline, ok := parent.Deadline(); ok {
+		if callerDeadline.Before(operationDeadline) {
+			operationDeadline = callerDeadline
+		}
+		if callerDeadline.Before(responseDeadline) {
+			responseDeadline = callerDeadline
+		}
+	}
+	return operationDeadline, responseDeadline
 }
 
 func shouldAuditCapability(capability, action string) bool {

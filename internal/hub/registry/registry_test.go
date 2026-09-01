@@ -116,6 +116,81 @@ func TestPendingCallReturnsWhenConnectionEnds(t *testing.T) {
 	}
 }
 
+func TestPendingCallAcceptsResponseAfterOperationDeadlineWithinResponseGrace(t *testing.T) {
+	requestRead := make(chan protocolv1.CapabilityRequest, 1)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("Accept() error=%v", err)
+			return
+		}
+		defer conn.CloseNow()
+		var request protocolv1.CapabilityRequest
+		if err := wsjson.Read(context.Background(), conn, &request); err != nil {
+			t.Errorf("Read() error=%v", err)
+			return
+		}
+		requestRead <- request
+		<-release
+	}))
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	wsConn, _, err := websocket.Dial(context.Background(), wsURL, nil)
+	if err != nil {
+		close(release)
+		server.Close()
+		t.Fatal(err)
+	}
+	defer func() {
+		wsConn.CloseNow()
+		close(release)
+		server.Close()
+	}()
+
+	conn := NewConnection("mach_late_success", "conn_late_success", 1, time.Now(), wsConn)
+	registry := New()
+	if _, accepted := registry.Register(conn); !accepted {
+		t.Fatal("connection was not registered")
+	}
+	operationDeadline := time.Now().Add(25 * time.Millisecond)
+	request := protocolv1.CapabilityRequest{
+		MessageType: protocolv1.MessageCapabilityRequest,
+		RequestId:   "req_late_success_001",
+		Capability:  "agent.control",
+		Action:      "session.create",
+		Params:      map[string]any{"idempotencyKey": "late-success-key-001"},
+		Deadline:    protocolv1.Timestamp(operationDeadline),
+	}
+	go func() {
+		observed := <-requestRead
+		deadline, _ := time.Parse(time.RFC3339Nano, observed.Deadline)
+		time.Sleep(time.Until(deadline) + 5*time.Millisecond)
+		conn.DeliverResponse(protocolv1.CapabilityResponse{
+			MessageType: protocolv1.MessageCapabilityResponse,
+			RequestId:   observed.RequestId,
+			Result: map[string]any{
+				"sessionId":         "cloud-late-success",
+				"phase":             "created_execution_unknown",
+				"idempotencyStatus": "created",
+			},
+			Timestamp: protocolv1.Timestamp(time.Now()),
+		})
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	response, err := registry.Call(ctx, conn.MachineID, request)
+	if err != nil {
+		t.Fatalf("late recovered response was lost: %v", err)
+	}
+	if time.Now().Before(operationDeadline) {
+		t.Fatal("response arrived before the simulated operation deadline")
+	}
+	if response.Result["sessionId"] != "cloud-late-success" || response.Result["phase"] != "created_execution_unknown" {
+		t.Fatalf("late response=%#v", response.Result)
+	}
+}
+
 func newWebSocketConnection(t *testing.T) (*Connection, <-chan struct{}) {
 	t.Helper()
 	requestRead := make(chan struct{}, 1)
