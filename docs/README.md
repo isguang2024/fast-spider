@@ -14,6 +14,7 @@ This directory contains the public design, operations and release documentation 
 - [Product Vision](00-product-vision.md) — product positioning and boundaries.
 - [Requirements and Scope](01-requirements-and-scope.md) — supported and intentionally unsupported capabilities.
 - [System Architecture](02-system-architecture.md) — Hub, Node and client surfaces.
+- [Maintainer Workflows](maintainer-workflows.md) — issue triage, review, release and responsible AI-assisted maintenance.
 
 ## Core design
 

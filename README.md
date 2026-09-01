@@ -2,22 +2,71 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Fast Spider is a self-hosted, cross-platform remote development and automation platform.
+**Use MCP or an AI coding agent to work safely across your own Windows, Linux
+and macOS machines.**
 
-It connects one or more user-owned machines to a Hub over outbound HTTPS/WSS. The Hub provides identity, routing, jobs, audit logs, artifacts and API surfaces. Each Node performs the actual work on the local machine under the operating-system user that started it.
+Fast Spider is a self-hosted remote development and automation platform. It
+turns user-owned machines into explicit, auditable capabilities for reading and
+editing code, running builds, operating Git, controlling an isolated browser,
+moving artifacts and managing local AI coding sessions.
 
-Fast Spider is designed for structured automation, not generic remote desktop access.
+The machine runs the work. Fast Spider provides the identity, routing, job
+lifecycle, audit and control plane through MCP, Web Console, CLI and Local
+Bridge.
 
-## What it provides
+> **Project status:** Fast Spider is an actively maintained, early-stage public
+> project. The core platform is functional, but the external contributor and
+> adopter community is still developing. Feedback, reproducible issues and
+> focused contributions are welcome.
 
-- Multi-node registration, discovery and revocation.
-- File read, precise file edit, code search and diff operations.
-- Shell, build, test and log-stream jobs with cancellation.
-- Git status, diff, commit and controlled remote operations.
-- Artifact transfer and temporary presentation files.
-- Browser automation and screenshots through an isolated browser runtime.
-- Provider-neutral AI control for local AI harnesses such as Codex and Claude Code.
-- MCP, Web Console, CLI and Local Bridge surfaces sharing the same capability model.
+## What you can do with Fast Spider
+
+| Area | Capabilities |
+|---|---|
+| Machines | Register, discover, inspect, disconnect and revoke multiple Windows, Linux and macOS Nodes |
+| Code and files | Read text, search repositories, apply precise edits, preserve file integrity and return diffs |
+| Commands and builds | Run shell commands, builds and tests as cancellable jobs with streamed logs and terminal results |
+| Git | Inspect status, diffs and history; create commits; manage branches and worktrees; perform controlled fetch, pull and push operations |
+| Browser | Launch an isolated Chromium profile, navigate, inspect pages, click, type, download and capture screenshots |
+| AI coding sessions | Discover and control local Codex and Claude Code sessions through a provider-neutral API |
+| Project coordination | Maintain plans, task state and Markdown working context with revision-safe updates |
+| Artifacts and evidence | Transfer generated files, expose temporary presentation assets and retain operation/audit records |
+| Access surfaces | Use the same capability model from MCP clients, the Web Console, `spiderctl` and the local bridge |
+
+Fast Spider is useful when a coding agent or automation process needs to:
+
+- inspect or change a repository on another machine you own;
+- run a Windows-specific build from Linux or a cloud-based MCP client;
+- start a test, follow its logs, cancel it and retrieve the final artifact;
+- validate a local web application in an isolated browser;
+- coordinate Codex or Claude Code sessions without copying their native history;
+- keep machine access, job state and operator actions visible in one place.
+
+## How a request runs
+
+```text
+MCP / Web / CLI / Local Bridge
+              |
+              v
+        Fast Spider Hub
+  identity | routing | jobs | audit
+              |
+        outbound HTTPS/WSS
+              |
+              v
+       Fast Spider Node
+ files | shell | Git | browser | AI
+              |
+              v
+     your operating-system user
+```
+
+1. A client asks the Hub to perform a named capability on a selected Node.
+2. The Hub authenticates the caller, records the job and routes it to the Node.
+3. The Node validates the capability input and runs it with the permissions of
+   the operating-system user that started the Node.
+4. Progress, logs, results, errors and artifacts return through the same job
+   lifecycle and remain available for audit.
 
 ## What it does not provide
 
@@ -33,7 +82,7 @@ It does not provide:
 
 Node actions run with the permissions of the current OS user. Operators should treat a connected Node as a powerful local automation agent.
 
-## Architecture
+## Architecture and trust boundary
 
 ```text
 +-------------------+        HTTPS/WSS 443        +----------------------+
@@ -50,7 +99,11 @@ Node actions run with the permissions of the current OS user. Operators should t
 +-------------------+                              +----------------------+
 ```
 
-The Hub never directly mounts a Node file system. All execution happens on the Node and is routed through explicit capabilities.
+The Hub never directly mounts a Node file system. All execution happens on the
+Node and is routed through explicit capabilities. See the
+[system architecture](docs/02-system-architecture.md),
+[capability reference](docs/05-node-capabilities.md) and
+[security model](docs/security-model.md) for the detailed contracts.
 
 ## Quick start
 
@@ -233,6 +286,10 @@ Run the extended release gate where the required local runtimes are available:
 bash scripts/release-gate.sh --full
 ```
 
+Pull requests are also checked by the public GitHub Actions workflow. See the
+[maintainer workflows](docs/maintainer-workflows.md) for issue triage, review,
+release and responsible AI-assisted maintenance practices.
+
 ## Public source release
 
 Do not publish private development history as the public repository history.
@@ -263,6 +320,10 @@ Never publish:
 ## Contributing
 
 Contributions should follow [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+Project decisions and maintainer access follow [GOVERNANCE.md](GOVERNANCE.md).
+For usage questions and reproducible defects, see [SUPPORT.md](SUPPORT.md).
+Notable public changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

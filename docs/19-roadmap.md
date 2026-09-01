@@ -1,8 +1,8 @@
-# 路线图（持续维护；当前基线 0.4.18）
+# 路线图（持续维护；当前基线 0.4.28）
 
 ## 1. 当前产品基线
 
-当前产品沿用 0.3.0 完成的 Machine-only 权限模型；0.4.x 已把 AI 能力从单 Codex 桥升级为多 Harness 控制面：`codex` + `claude_code`，CC Switch 作为只读 Routing SSOT。当前源码基线为 0.4.18。Harness、Routing Runtime、上游 Provider/Model 与 EffectiveCapabilities 分层，不再把客户端模型别名当真实上游模型。
+当前产品在保留 Machine mode 的同时，已经把 Project mode 作为公开首次使用的默认安全路径；0.4.x 也已把 AI 能力从单 Codex 桥升级为多 Harness 控制面：`codex` + `claude_code`，CC Switch 作为只读 Routing SSOT。当前源码基线为 0.4.28。Harness、Routing Runtime、上游 Provider/Model 与 EffectiveCapabilities 分层，不再把客户端模型别名当真实上游模型。
 
 固定路径契约：
 
@@ -85,7 +85,7 @@ screenshot_take, thinking_team, ai_control, working_context, artifact_get
 - Release manifest 复用未变化产物的 hash/sign 结果，避免节点集中轮询重复读取大型文件。
 - 删除型 CLI 统一为预览优先；用户数据、原生 Agent 历史、未知项和不确定状态不进入自动清理。
 - 完整资源矩阵、运维顺序和资料室定时清理边界见[缓存与生命周期维护](23-cache-and-lifecycle.md)。
-- 0.4.18 已把清理从“单次扫描”推进到持续、有界、可恢复：Browser 孤儿目录分批持续回收，组件按语义版本选最新安装，Artifact/Presentation 失败保留重试事实，Release/staging 采用取消传播和原子隔离。
+- 0.4.28 延续持续、有界、可恢复的生命周期治理，并补齐调用方对 Browser、Job 与临时 Artifact 的终态清理责任、跨平台 Node 发布验证，以及不确定 AI Session 创建结果的恢复语义。
 
 ## 3. 维护中的主线
 

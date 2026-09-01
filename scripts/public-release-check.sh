@@ -19,9 +19,13 @@ for path in \
   SECURITY.md \
   CONTRIBUTING.md \
   CODE_OF_CONDUCT.md \
+  GOVERNANCE.md \
+  SUPPORT.md \
+  CHANGELOG.md \
   THIRD_PARTY_NOTICES.md \
   .env.example \
   .github/pull_request_template.md \
+  .github/workflows/ci.yml \
   .github/ISSUE_TEMPLATE/bug_report.md \
   .github/ISSUE_TEMPLATE/feature_request.md \
   docs/README.md \
@@ -31,6 +35,7 @@ for path in \
   docs/free-local-deployment.zh-CN.md \
   docs/security-model.md \
   docs/security-model.zh-CN.md \
+  docs/maintainer-workflows.md \
   docs/npm-wrapper-plan.md \
   docs/configuration.md \
   docs/public-release.md \

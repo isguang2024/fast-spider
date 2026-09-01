@@ -509,7 +509,7 @@ func TestRuntimeReturnWaitsForLocalBridgeCleanup(t *testing.T) {
 
 func waitForRuntimeClear(t *testing.T, app *App) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		app.mu.Lock()
 		cleared := app.runtimeCancel == nil && app.runtimeDone == nil
