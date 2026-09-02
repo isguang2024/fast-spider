@@ -97,11 +97,12 @@ type CodexAdapter struct {
 	generation  uint64
 	loaded      map[string]struct{}
 
-	eventMu     sync.Mutex
-	events      []AgentEvent
-	nextEvent   int64
-	eventNotify chan struct{}
-	activeTurns map[string]string
+	eventMu       sync.Mutex
+	events        []AgentEvent
+	nextEvent     int64
+	eventNotify   chan struct{}
+	activeTurns   map[string]string
+	eventObserver func(AgentEvent)
 
 	serverMu             sync.Mutex
 	serverRequests       map[string]codexServerRequest
@@ -124,6 +125,15 @@ func NewCodexAdapter(logger *slog.Logger) *CodexAdapter {
 		activeTurns:    make(map[string]string),
 		serverRequests: make(map[string]codexServerRequest),
 	}
+}
+
+func (a *CodexAdapter) SetEventObserver(observer func(AgentEvent)) {
+	if a == nil {
+		return
+	}
+	a.eventMu.Lock()
+	a.eventObserver = observer
+	a.eventMu.Unlock()
 }
 
 // SetCodexDesktopBridgeEnabled lets the local Node client own the session
@@ -945,7 +955,6 @@ func (a *CodexAdapter) handleNotification(method string, raw json.RawMessage) {
 
 func (a *CodexAdapter) recordEvent(event AgentEvent) {
 	a.eventMu.Lock()
-	defer a.eventMu.Unlock()
 	a.nextEvent++
 	event.Sequence = a.nextEvent
 	if event.Timestamp == "" {
@@ -957,6 +966,11 @@ func (a *CodexAdapter) recordEvent(event AgentEvent) {
 	}
 	close(a.eventNotify)
 	a.eventNotify = make(chan struct{})
+	observer := a.eventObserver
+	a.eventMu.Unlock()
+	if observer != nil {
+		observer(event)
+	}
 }
 
 func (a *CodexAdapter) Watch(ctx context.Context, sessionID string, cursor int64, wait time.Duration) ([]AgentEvent, int64, int64, error) {

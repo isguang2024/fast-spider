@@ -37,6 +37,13 @@ func (m *AgentManager) controlChatGPTCloud(ctx context.Context, action string, i
 		catalog["advancedModels"] = filterChatGPTAdvancedModels(cfg.Models, thinkingOptions)
 		catalog["advancedConfigFile"] = ChatGPTAdvancedConfigFileName
 		catalog["modelSource"] = "chatgpt_cloud"
+		defaults := m.chatGPTCloudCreateDefaults()
+		catalog["localCreateDefaults"] = map[string]any{
+			"configurationMode": defaults.ConfigurationMode,
+			"mode":              defaults.Mode,
+			"model":             defaults.Model,
+			"thinking":          defaults.Thinking,
+		}
 		return catalog, nil
 	case "session.send":
 		return m.chatgptCloudSend(ctx, input)
@@ -58,6 +65,12 @@ func (m *AgentManager) controlChatGPTCloud(ctx context.Context, action string, i
 		return m.chatgptCloudCancel(ctx, input)
 	case "session.watch":
 		return m.chatgptCloudWatch(ctx, input)
+	case "session.callback.register":
+		return m.sessionCallbackRegister(ctx, input)
+	case "session.callback.unregister":
+		return m.sessionCallbackUnregister(input)
+	case "session.callback.list":
+		return m.sessionCallbackList(input)
 	case "session.steer":
 		return m.chatgptCloudSteer(ctx, input)
 	default:

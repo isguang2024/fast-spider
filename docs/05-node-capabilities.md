@@ -26,7 +26,7 @@ Hub 只负责身份、路由、deadline、审计、Job/Artifact 元数据和连�
 | `working.context` 1.1 | `get`, `set`, `clear`, `plan.init`, `plan.get`, `plan.list`, `plan.sync`, `task.update`, `markdown.list`, `markdown.read`, `markdown.append`, `progress.watch` | Plan/Task + Markdown Task Workspace；旧入口映射默认 plan |
 | `browser.automation` 1.3 | `readiness`, `launch`, `close`, `page.open`, `page.navigate`, `page.close`, `pages.list`, `click`, `type`, `press`, `wait`, `batch`, `snapshot`, `screenshot`, `events` | 隔离 Chromium，headed/headless 均由 Sidecar 管理 |
 | `screenshot.capture` | `listDisplays`, `desktop`, `display`, `listWindows`, `window` | 一次性桌面/显示器/窗口截图 |
-| `agent.control` 1.2 | 分层 readiness、AI Harness/Route discovery、会话可见性双模式与受控 Session/Turn 生命周期 | 当前 Harness 为本机 Codex + Claude Code |
+| `agent.control` 1.3 | 分层 readiness、AI Harness/Route discovery、会话可见性双模式、主动 callback 与受控 Session/Turn 生命周期 | 当前 Harness 为本机 Codex + Claude Code |
 
 当前**没有** `mkdir`、`move`、`copy`、`delete`、`purge`、`readChunks`、任意 shell 字符串执行或远程 `node.update` capability。`file.write/create` 只能创建显式目标文件且要求父目录已存在，不是通用文件管理接口。
 
@@ -149,6 +149,9 @@ session.send
 session.steer
 session.respond
 session.watch
+session.callback.register
+session.callback.unregister
+session.callback.list
 session.cancel
 session.result
 session.rename
@@ -168,6 +171,8 @@ session.review
 Agent Manager 已按 manager/provider/session/routing 边界拆分；静态 Provider Registry 只注册 `codex` 与 `claude_code`，不提供动态反射插件系统。`providers.list` 为每个 Harness 返回自己的 `supportedActions`。`routing.status` 是全局只读 action：读取 CC Switch SQLite SSOT，区分 `direct|cc_switch`、current Provider、model mapping、Takeover/health 与 EffectiveCapabilities；raw provider settings/meta/credential 永不离开 Node。
 
 `provider.readiness` 以 passive/safe 两种模式分别报告 `routeAvailable/providerAvailable/harnessAvailable/sessionBackendAvailable/readyForSessionCreate`，并为每层返回稳定 reasonCode 与耗时；safe 只启动/复用 app-server 并调用只读 thread/list，不创建 Session、不发送 Prompt。`session.create` 是 ChatGPT Cloud 的单一创建入口，`mode=complete|quick_chat` 选择等待首个回答或创建后快速返回；公网 MCP 必须携带 12-128 字符幂等键。Node 将包含 mode/model/thinking 的 spec hash 与小型结果持久化到 data-dir，重启后仍能重放同结果，key/spec 冲突或中间态不确定时拒绝重复创建。`models.list` 返回 `defaultModel`、两个 `creationModes`、实时 `modelPresets/thinkingOptions` 与 Node 本机配置的 `advancedModels`；Preset 与 Advanced 都可搭配 quick_chat/complete。Advanced 列表保存在 Node data-dir 的 `chatgpt-advanced-models.json`，不写死在源码或同步 Hub；Auto 不发送独立 thinking，其余实时档位作为 `thinking_effort` 发送。ChatGPT Cloud 默认 `mode=complete`，等待完整 SSE；`mode=quick_chat` 跳过 `/f/conversation/prepare`，默认使用 `model=auto`，收到真实 conversation ID 后立即返回 `phase=running/completionPending=true` 并在后台排空流。完整模式一旦 SSE 已返回 conversation ID，即使后续流结束异常也保存该 ID 并把执行状态标为 unknown，而不是把“已创建”重新解释成“未创建”。Provider 已明确拒绝且确认没有副作用的 create 会立即释放 reservation；真正不确定且没有已知 Session 的记录，须先用显式 `backend=chatgpt_cloud` 的 `session.list` 对账，再以 `session.delete + idempotencyKey + decision=confirm_not_created` 显式释放。
+
+ChatGPT Cloud Worker 可通过 `session.callback.register` 把 `conversation.turn.complete` 主动送到一个本机 Codex 协调/调度会话。注册记录与 pending inbox 统一持久化在 Node data-dir 的 `agent/session-callbacks.json`，损坏时 fail-closed。source Worker 只有一个 callback owner；generation 升级会清除旧代 pending。Node 优先使用 Provider payload 中真实存在的 event/turn/message ID，并持久保留最近 256 个稳定身份用于跨重连、跨重启去重；更早的极旧重放允许按至少一次语义再次送达。Provider 未给稳定 ID 时，仅用 payload 派生键做 15 秒短窗口重复抑制，不把它永久记录为事件身份，因此相同 payload 在后续合法 Turn 仍可再次送达。每个信封同时包含持久递增的本地 `event_sequence`，即使有界历史外的旧 stable ID 再次出现，也不会复用已交付的 envelope ID；同一 pending 的崩溃重发仍保持相同 ID。本地 sequence 同时作为 cursor。同一协调会话的并发 Worker 会合并成一个固定信封，信封只含 mission/task/generation/source/event sequence/key 等控制元数据，不包含 Worker 原文。协调会话 active 或 `session.send` busy 时事件继续排队，其 Turn 终态会立即唤醒重试；五分钟周期只恢复断线、重启和漏通知。协调会话再用 `session.result` 读取最终 CHAT 回复、更新账本并生成有界摘要；主控不需要读取完整会话网页或过程历史。`session.callback.list` 是只读对账入口，`session.callback.unregister` 必须匹配当前 generation。
 
 Session 可见性契约由 `visibility`、`backend`、`visibilityTarget` 独立组成。`visible` 默认映射到 provider 的本地 backend，并返回 `externalId/externalIdType`；`internal` 默认不发布目标，Codex 默认请求 ephemeral Thread，并从 Fast Spider 的普通 `session.list` 过滤。持久 internal Thread 仍可能被其他 Codex 客户端列出，API 返回 `visibilityGuarantee=not_guaranteed` 而不是宣称绝对不可见。`backend=chatgpt_cloud`（`providerId=codex`）用 Codex app-server 的 ChatGPT 登录态 + 自解 Sentinel 走官方 `/backend-api/f/conversation` 创建云端会话，`externalIdType=chatgpt_conversation`，会话出现在账号的 ChatGPT 聊天列表；必须 `visibility=visible`，且依赖 app-server 已登录。FS 创建的 Cloud 会话会在 visibility sidecar 中保存 backend 与 workingDirectory，后续 `session.get/send/watch/result/delete/...` 只传 `sessionId` 即可自动路由回 `chatgpt_cloud`。普通 Codex `session.list` 会合并当前 FS 管理的 Cloud 会话，但不会遍历账号全部 ChatGPT 历史；显式 `backend=chatgpt_cloud` 才查询完整云端列表。
 
@@ -209,6 +214,6 @@ Codex 产品层存在 Automations 概念，但本机 Codex 0.141.0 的公开 CLI
 
 Hub 对连接中断返回结构化 `CONNECTION_LOST`，对 deadline 返回 `DEADLINE_EXCEEDED`。只读查询类能力可以声明 retryable；会产生副作用的文件编辑、Job 启动/取消、Git 写/网络、Build、Browser 操作、Agent Turn/Thread/Goal/Settings/Review 变更不能宣称可无脑重试。`session.create` 是例外：入口强制稳定 `idempotencyKey`，超时后只能使用原 key 和原参数重放以对账已有结果，不能生成新 key 重试。
 
-当前 Agent 中可安全重试的读取包括 Provider/Model/Project/Skill/Hook/Permission/Plugin/MCP 状态 discovery、Session list/get/watch/result 和 Goal get。带稳定幂等键的 `session.create` 可以按原请求重放；Thread/Goal/Settings/Review/Turn 变更以及 `session.steer/respond` 进入 mutation audit，其他变更在连接中断后不能自动重放。
+当前 Agent 中可安全重试的读取包括 Provider/Model/Project/Skill/Hook/Permission/Plugin/MCP 状态 discovery、Session list/get/watch/result、Callback list 和 Goal get。带稳定幂等键的 `session.create` 可以按原请求重放；Thread/Goal/Settings/Review/Turn 变更以及 `session.steer/respond`、callback register/unregister 进入 mutation audit，其他变更在连接中断后不能自动重放。callback 写操作响应丢失时先用 `session.callback.list` 对账 owner 与 generation。
 
 WSS 不做写操作自动重放：完整请求未到 Node 前断线则不会执行；请求已经执行但响应丢失时，调用方先重新读取状态，再决定下一步。

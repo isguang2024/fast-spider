@@ -396,6 +396,8 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 			"effort": input.Effort, "permissions": input.Permissions, "personality": input.Personality, "serviceTier": input.ServiceTier, "summary": input.Summary,
 			"reviewType": input.ReviewType, "reviewDelivery": input.ReviewDelivery, "reviewBranch": input.ReviewBranch,
 			"reviewSha": input.ReviewSHA, "reviewTitle": input.ReviewTitle, "reviewInstructions": input.ReviewInstructions,
+			"callbackTargetSessionId": input.CallbackTargetSessionID, "callbackMissionId": input.CallbackMissionID,
+			"callbackTaskId": input.CallbackTaskID, "callbackGeneration": input.CallbackGeneration,
 		}
 		if len(input.Skills) > 0 {
 			converted := make([]map[string]any, len(input.Skills))

@@ -85,6 +85,35 @@ func (a *ChatGPTCloudAdapter) WatchRealtime(ctx context.Context, conversationID 
 	return a.realtime.watch(ctx, conversationID, cursor, wait)
 }
 
+func (a *ChatGPTCloudAdapter) SetRealtimeObserver(observer func(chatgptCloudEvent), sequenceFloor int64) {
+	if a == nil || a.realtime == nil {
+		return
+	}
+	a.realtime.setSequenceFloor(sequenceFloor)
+	a.realtime.setObserver(observer)
+}
+
+func (a *ChatGPTCloudAdapter) EnsureCallbackRealtime(ctx context.Context, conversationID string) error {
+	return a.EnsureCallbackRealtimeForGeneration(ctx, conversationID, 0)
+}
+
+func (a *ChatGPTCloudAdapter) EnsureCallbackRealtimeForGeneration(ctx context.Context, conversationID string, generation int64) error {
+	if a == nil || a.realtime == nil {
+		return fmt.Errorf("chatgpt_cloud realtime is unavailable")
+	}
+	return a.realtime.ensurePersistentWatchingForGeneration(ctx, conversationID, generation)
+}
+
+func (a *ChatGPTCloudAdapter) ReleaseCallbackRealtime(conversationID string) {
+	a.ReleaseCallbackRealtimeForGeneration(conversationID, 0)
+}
+
+func (a *ChatGPTCloudAdapter) ReleaseCallbackRealtimeForGeneration(conversationID string, generation int64) {
+	if a != nil && a.realtime != nil {
+		a.realtime.releasePersistentWatching(conversationID, generation)
+	}
+}
+
 // StopRealtime terminates the pubsub subscription for a conversation.
 func (a *ChatGPTCloudAdapter) StopRealtime(conversationID string) {
 	if a != nil && a.realtime != nil {
@@ -721,15 +750,20 @@ func (a *ChatGPTCloudAdapter) Models(ctx context.Context) (map[string]any, error
 		return nil, err
 	}
 	models := make([]map[string]any, 0, len(out.Models))
+	seenModels := make(map[string]struct{}, len(out.Models))
 	for _, raw := range out.Models {
 		slug, _ := raw["slug"].(string)
 		if slug == "" {
 			continue
 		}
+		if _, exists := seenModels[slug]; exists {
+			continue
+		}
+		seenModels[slug] = struct{}{}
 		model := map[string]any{
 			"id":          slug,
 			"slug":        slug,
-			"title":       firstNonEmptyString(mapString(raw, "title"), slug),
+			"title":       chatgptCloudModelDisplayTitle(slug, mapString(raw, "title")),
 			"description": mapString(raw, "description"),
 		}
 		if maxTokens, ok := raw["max_tokens"].(float64); ok {
@@ -748,6 +782,29 @@ func (a *ChatGPTCloudAdapter) Models(ctx context.Context) (map[string]any, error
 		"thinkingOptions": chatGPTThinkingOptions(presets),
 		"modelPresets":    presets,
 	}, nil
+}
+
+func chatgptCloudModelDisplayTitle(slug, providerTitle string) string {
+	switch strings.ToLower(strings.TrimSpace(slug)) {
+	case "gpt-5-6":
+		return "GPT-5.6"
+	case "gpt-5-6-instant":
+		return "GPT-5.6 Instant"
+	case "gpt-5-6-thinking":
+		return "GPT-5.6 Thinking"
+	case "gpt-5-6-pro":
+		return "GPT-5.6 Pro"
+	case "gpt-5-5":
+		return "GPT-5.5"
+	case "gpt-5-5-instant":
+		return "GPT-5.5 Instant"
+	case "gpt-5-5-thinking":
+		return "GPT-5.5 Thinking"
+	case "gpt-5-5-pro":
+		return "GPT-5.5 Pro"
+	default:
+		return firstNonEmptyString(strings.TrimSpace(providerTitle), strings.TrimSpace(slug))
+	}
 }
 
 func chatgptCloudModelPresets(versions, sliderSettings []map[string]any) []map[string]any {

@@ -207,8 +207,9 @@ const localUIHTML = `<!doctype html>
 	                <label class="switch"><input id="config-autoupdate" type="checkbox"><span><strong>自动更新</strong><br><small class="hint">后台检查并下载新版本；下次启动时自动完成替换。</small></span></label>
 					<div class="config-subsection"><strong>ChatGPT Cloud 默认创建</strong><small class="hint">仅在创建请求没有明确填写时使用；单次创建的选择优先，续聊仍继承原会话。</small></div>
 					<label class="field"><span>默认返回模式</span><select id="config-chatgpt-mode"><option value="quick_chat">Quick chat · 立即返回</option><option value="complete">Complete · 等待首个回答</option></select></label>
-					<label class="field"><span>默认模型</span><select id="config-chatgpt-model"><option value="">Auto · 由 ChatGPT 选择</option></select><small class="hint">包含 ChatGPT 实时模型与本机 Advanced 模型。</small></label>
-					<label class="field"><span>默认思考程度</span><select id="config-chatgpt-thinking"><option value="">Auto · 不指定</option></select><small class="hint">可用档位从 ChatGPT Cloud 实时目录读取。</small></label>
+					<label class="field"><span>默认配置方式</span><select id="config-chatgpt-configuration-mode"><option value="auto">自动 · 用户或 AI 决定</option><option value="preset">Preset · ChatGPT 官方</option><option value="advanced">Advanced · 本机配置</option></select><small class="hint">这是默认优先来源，不是限制；单次创建可选择另一种方式。</small></label>
+					<label class="field"><span>默认模型</span><select id="config-chatgpt-model"><option value="">不固定 · 用户或 AI 决定</option></select><small class="hint">官方 Preset 与本机 Advanced 分开显示，不再混为一列。</small></label>
+					<label class="field"><span>默认思考程度</span><select id="config-chatgpt-thinking"><option value="">Auto · 用户或 AI 决定</option></select><small class="hint">可用档位从 ChatGPT Cloud 实时目录读取；单次创建仍可覆盖。</small></label>
 	              </div>
               <details class="advanced"><summary>高级 / 开发环境选项</summary><div class="grid" style="margin-top:10px"><label class="field full"><span>浏览器 Sidecar 目录</span><input id="config-browser" maxlength="4096" placeholder="正常无需填写，Browser 组件安装后会自动配置"><small class="hint">只在本地开发或自定义 Sidecar 时手工设置。</small></label><label class="switch full"><input id="config-insecure" type="checkbox"><span><strong>允许本机开发 HTTP Hub</strong><br><small class="hint">正式环境保持关闭，只使用 HTTPS。</small></span></label></div></details>
               <div class="actions"><button class="primary" type="submit">保存本地配置</button><span id="data-dir" class="hint mono"></span></div>
@@ -281,9 +282,10 @@ const localUIHTML = `<!doctype html>
 	let selfTestBusy = false;
 	let oplogBusy = false;
 	let oplogOffset = 0;
-	let oplogTotal = 0;
-	let chatGPTAdvancedBusy = false;
-	let chatGPTThinkingOptions = [];
+		let oplogTotal = 0;
+		let chatGPTAdvancedBusy = false;
+		let chatGPTThinkingOptions = [];
+		let chatGPTCatalogData = null;
 
   async function api(path, options = {}) {
     const headers = Object.assign({'X-Fast-Spider-UI-Token': token}, options.headers || {});
@@ -333,12 +335,16 @@ const localUIHTML = `<!doctype html>
       $('config-autostart').checked = !!status.autoStartEnabled;
       $('config-autoupdate').checked = !!cfg.autoUpdateEnabled;
       $('config-insecure').checked = !!cfg.allowInsecureLocalHub;
-			$('config-codex-session-shared').checked = !codexManaged;
-			$('config-codex-session-managed').checked = codexManaged;
-			setSelectValueWithFallback($('config-chatgpt-mode'),cfg.chatgptDefaultCreateMode || 'complete','已保存的返回模式');
-			setSelectValueWithFallback($('config-chatgpt-model'),cfg.chatgptDefaultModel || '','已保存模型');
-			setSelectValueWithFallback($('config-chatgpt-thinking'),cfg.chatgptDefaultThinking || '','已保存思考程度');
-	    }
+				$('config-codex-session-shared').checked = !codexManaged;
+				$('config-codex-session-managed').checked = codexManaged;
+				setSelectValueWithFallback($('config-chatgpt-mode'),cfg.chatgptDefaultCreateMode || 'complete','已保存的返回模式');
+				setSelectValueWithFallback($('config-chatgpt-configuration-mode'),cfg.chatgptDefaultConfigurationMode || 'auto','已保存的配置方式');
+				if (chatGPTCatalogData) renderChatGPTDefaultOptions(chatGPTCatalogData);
+				else {
+				  setSelectValueWithFallback($('config-chatgpt-model'),cfg.chatgptDefaultModel || '','已保存模型');
+				  setSelectValueWithFallback($('config-chatgpt-thinking'),cfg.chatgptDefaultThinking || '','已保存思考程度');
+				}
+		    }
     if (!workingDirty) {
       $('working-project').value = cfg.workingProjectPath || '';
       $('working-plan').value = cfg.workingPlanId || 'default';
@@ -405,26 +411,61 @@ const localUIHTML = `<!doctype html>
 	  chatGPTThinkingOptions.forEach(option=>{const label=document.createElement('label');label.className='switch';const input=document.createElement('input');input.type='checkbox';input.className='advanced-thinking';input.value=option.id;input.checked=selected.has(option.id);const text=document.createElement('span');text.textContent=option.title+(option.source==='chatgpt_cloud'?' · 官方':' · 默认');label.append(input,text);thinking.appendChild(label);});
 	  row.appendChild(thinking); return row;
 	}
-	function setSelectValueWithFallback(select,value,label) {
-	  value=value || ''; if(!Array.from(select.options).some(option=>option.value===value)){const option=document.createElement('option');option.value=value;option.textContent=label+' · '+value;select.appendChild(option);} select.value=value;
-	}
-	function renderChatGPTDefaultOptions(data) {
-	  const cfg=(current && current.config) || {}; const keepDirty=configDirty;
-	  const selectedModel=keepDirty ? $('config-chatgpt-model').value : (cfg.chatgptDefaultModel || '');
-	  const selectedThinking=keepDirty ? $('config-chatgpt-thinking').value : (cfg.chatgptDefaultThinking || '');
-	  const modelSelect=$('config-chatgpt-model'); modelSelect.textContent=''; const seenModels=new Set();
-	  const addModel=(value,label)=>{value=value || '';if(seenModels.has(value))return;seenModels.add(value);const option=document.createElement('option');option.value=value;option.textContent=label;modelSelect.appendChild(option);};
-	  addModel('','Auto · 由 ChatGPT 选择');
-	  (Array.isArray(data.liveModels)?data.liveModels:[]).forEach(model=>addModel(model.id || model.slug,(model.title || model.id || model.slug)+' · 官方'));
-	  (Array.isArray(data.models)?data.models:[]).forEach(model=>addModel(model.id,(model.title || model.id)+' · Advanced'));
-	  setSelectValueWithFallback(modelSelect,selectedModel,'已保存模型（当前目录未列出）');
-	  const thinkingSelect=$('config-chatgpt-thinking'); thinkingSelect.textContent=''; const seenThinking=new Set();
-	  (Array.isArray(data.thinkingOptions)?data.thinkingOptions:[]).forEach(option=>{const value=option.value || '';if(seenThinking.has(value))return;seenThinking.add(value);const item=document.createElement('option');item.value=value;item.textContent=(option.title || option.id || 'Auto')+(option.source==='chatgpt_cloud'?' · 官方':' · Auto');thinkingSelect.appendChild(item);});
-	  if(!seenThinking.has('')){const item=document.createElement('option');item.value='';item.textContent='Auto · 不指定';thinkingSelect.insertBefore(item,thinkingSelect.firstChild);}
-	  setSelectValueWithFallback(thinkingSelect,selectedThinking,'已保存思考程度（当前目录未提供）');
-	}
+		function setSelectValueWithFallback(select,value,label) {
+		  value=value || ''; if(!Array.from(select.options).some(option=>option.value===value)){const option=document.createElement('option');option.value=value;option.textContent=label+' · '+value;select.appendChild(option);} select.value=value;
+		}
+		function chatGPTModelID(model) { return String((model && (model.id || model.slug || model.model)) || '').trim(); }
+		function chatGPTModelTitle(model) {
+		  const id=chatGPTModelID(model).toLowerCase();
+		  if(id==='gpt-5-6')return 'GPT-5.6';
+		  if(id==='gpt-5-6-instant')return 'GPT-5.6 Instant';
+		  if(id==='gpt-5-6-thinking')return 'GPT-5.6 Thinking';
+		  if(id==='gpt-5-6-pro')return 'GPT-5.6 Pro';
+		  return String((model && model.title) || chatGPTModelID(model));
+		}
+		function chatGPTModelsForConfiguration(data,configurationMode) {
+		  if(configurationMode==='advanced')return Array.isArray(data.models)?data.models:[];
+		  if(configurationMode!=='preset')return [];
+		  const liveByID=new Map((Array.isArray(data.liveModels)?data.liveModels:[]).map(model=>[chatGPTModelID(model),model]));
+		  const seen=new Set(); const result=[];
+		  (Array.isArray(data.modelPresets)?data.modelPresets:[]).forEach(preset=>{const id=chatGPTModelID(preset);if(!id||seen.has(id))return;seen.add(id);result.push(liveByID.get(id)||{id:id,title:id});});
+		  return result;
+		}
+		function renderChatGPTThinkingChoices(data,selectedThinking) {
+		  const configurationMode=$('config-chatgpt-configuration-mode').value;
+		  const selectedModel=$('config-chatgpt-model').value;
+		  const allOptions=Array.isArray(data.thinkingOptions)?data.thinkingOptions:[];
+		  let options=allOptions;
+		  if(selectedModel && configurationMode==='preset') {
+		    const allowed=new Set((Array.isArray(data.modelPresets)?data.modelPresets:[]).filter(preset=>chatGPTModelID(preset)===selectedModel).map(preset=>String(preset.thinking || '')));
+		    options=allOptions.filter(option=>allowed.has(String(option.value || '')) || (!option.value && allowed.size===0));
+		  } else if(selectedModel && configurationMode==='advanced') {
+		    const model=(Array.isArray(data.models)?data.models:[]).find(item=>chatGPTModelID(item)===selectedModel);
+		    const allowed=new Set((model && Array.isArray(model.thinking)?model.thinking:[]).map(String));
+		    options=allOptions.filter(option=>allowed.has(String(option.id || '')));
+		  }
+		  const select=$('config-chatgpt-thinking'); select.textContent=''; const seen=new Set();
+		  options.forEach(option=>{const value=String(option.value || '');if(seen.has(value))return;seen.add(value);const item=document.createElement('option');item.value=value;item.textContent=(option.title || option.id || 'Auto')+(option.source==='chatgpt_cloud'?' · 官方':' · Auto');select.appendChild(item);});
+		  if(!seen.has('')){const item=document.createElement('option');item.value='';item.textContent='Auto · 用户或 AI 决定';select.insertBefore(item,select.firstChild);}
+		  setSelectValueWithFallback(select,selectedThinking,'已保存思考程度（当前模型未提供）');
+		}
+		function renderChatGPTDefaultOptions(data) {
+		  chatGPTCatalogData=data;
+		  const cfg=(current && current.config) || {}; const keepDirty=configDirty;
+		  const configurationMode=keepDirty ? $('config-chatgpt-configuration-mode').value : (cfg.chatgptDefaultConfigurationMode || 'auto');
+		  const selectedModel=keepDirty ? $('config-chatgpt-model').value : (cfg.chatgptDefaultModel || '');
+		  const selectedThinking=keepDirty ? $('config-chatgpt-thinking').value : (cfg.chatgptDefaultThinking || '');
+		  setSelectValueWithFallback($('config-chatgpt-configuration-mode'),configurationMode,'已保存的配置方式');
+		  const modelSelect=$('config-chatgpt-model'); modelSelect.textContent=''; const seenModels=new Set();
+		  const addModel=(value,label)=>{value=value || '';if(seenModels.has(value))return;seenModels.add(value);const option=document.createElement('option');option.value=value;option.textContent=label;modelSelect.appendChild(option);};
+		  const emptyLabel=configurationMode==='preset'?'不固定 · 使用 ChatGPT 官方默认':configurationMode==='advanced'?'不固定 · 用户或 AI 从 Advanced 选择':'不固定 · 用户或 AI 决定';
+		  addModel('',emptyLabel);
+		  chatGPTModelsForConfiguration(data,configurationMode).forEach(model=>{const id=chatGPTModelID(model);const label=configurationMode==='advanced'?(chatGPTModelTitle(model)+' · '+id+' · Advanced'):(chatGPTModelTitle(model)+' · 官方');addModel(id,label);});
+		  setSelectValueWithFallback(modelSelect,selectedModel,'已保存模型（当前方式未列出）');
+		  renderChatGPTThinkingChoices(data,selectedThinking);
+		}
 	function renderChatGPTAdvanced(data) {
-	  chatGPTThinkingOptions=Array.isArray(data.thinkingOptions)?data.thinkingOptions:[]; const box=$('chatgpt-advanced-list'); box.textContent='';
+		  chatGPTThinkingOptions=Array.isArray(data.thinkingOptions)?data.thinkingOptions:[]; chatGPTCatalogData=data; const box=$('chatgpt-advanced-list'); box.textContent='';
 	  const models=Array.isArray(data.models)?data.models:[]; models.forEach(model=>box.appendChild(advancedModelRow(model)));
 	  if(!models.length){const empty=document.createElement('span');empty.className='empty';empty.textContent='尚未配置 Advanced 模型，可点击“新增模型”。';box.appendChild(empty);}
 	  $('chatgpt-advanced-file').textContent=data.configFile ? '配置文件：'+data.configFile : '';
@@ -632,7 +673,9 @@ const localUIHTML = `<!doctype html>
   });
 
   $('config-form').addEventListener('input', () => { configDirty = true; });
-  $('config-form').addEventListener('change', () => { configDirty = true; });
+	  $('config-form').addEventListener('change', () => { configDirty = true; });
+	  $('config-chatgpt-configuration-mode').addEventListener('change',()=>{if(!chatGPTCatalogData)return;$('config-chatgpt-model').value='';renderChatGPTDefaultOptions(chatGPTCatalogData);});
+	  $('config-chatgpt-model').addEventListener('change',()=>{if(chatGPTCatalogData)renderChatGPTThinkingChoices(chatGPTCatalogData,$('config-chatgpt-thinking').value);});
 
 	$('config-form').addEventListener('submit', async event => {
     event.preventDefault(); if (busy) return; busy=true; const submit = event.currentTarget.querySelector('button[type="submit"]'); submit.disabled=true;
@@ -643,7 +686,7 @@ const localUIHTML = `<!doctype html>
   });
 
 	function localConfigPayload(codexDesktopBridgeEnabled, codexDesktopBridgeConfigured) {
-			return {machineName:$('config-name').value,browserSidecarDir:$('config-browser').value,localBridgeEnabled:$('config-bridge').checked,autoStartEnabled:$('config-autostart').checked,autoUpdateEnabled:$('config-autoupdate').checked,allowInsecureLocalHub:$('config-insecure').checked,codexDesktopBridgeEnabled:codexDesktopBridgeEnabled,codexDesktopBridgeConfigured:codexDesktopBridgeConfigured,chatgptDefaultCreateMode:$('config-chatgpt-mode').value,chatgptDefaultModel:$('config-chatgpt-model').value,chatgptDefaultThinking:$('config-chatgpt-thinking').value};
+				return {machineName:$('config-name').value,browserSidecarDir:$('config-browser').value,localBridgeEnabled:$('config-bridge').checked,autoStartEnabled:$('config-autostart').checked,autoUpdateEnabled:$('config-autoupdate').checked,allowInsecureLocalHub:$('config-insecure').checked,codexDesktopBridgeEnabled:codexDesktopBridgeEnabled,codexDesktopBridgeConfigured:codexDesktopBridgeConfigured,chatgptDefaultConfigurationMode:$('config-chatgpt-configuration-mode').value,chatgptDefaultCreateMode:$('config-chatgpt-mode').value,chatgptDefaultModel:$('config-chatgpt-model').value,chatgptDefaultThinking:$('config-chatgpt-thinking').value};
 		}
 
 	$('codex-session-mode-form').addEventListener('submit', async event => {

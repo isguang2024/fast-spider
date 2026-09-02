@@ -265,7 +265,8 @@ func TestChatGPTCloudModelsReturnsCreationModesAndModelPresets(t *testing.T) {
 			"default_model_slug": "gpt-5-6",
 			"models": []any{
 				map[string]any{"slug": "gpt-5-6-instant", "title": "GPT-5.6 Instant", "max_tokens": 137000},
-				map[string]any{"slug": "gpt-5-6-thinking", "title": "GPT-5.6 Thinking", "max_tokens": 262144},
+				map[string]any{"slug": "gpt-5-6-thinking", "title": "GPT-5.6 Sol", "max_tokens": 262144},
+				map[string]any{"slug": "gpt-5-6-thinking", "title": "duplicate provider row", "max_tokens": 262144},
 			},
 			"versions": []any{map[string]any{
 				"id": "5.6",
@@ -286,6 +287,10 @@ func TestChatGPTCloudModelsReturnsCreationModesAndModelPresets(t *testing.T) {
 	}
 	if catalog["defaultModel"] != "gpt-5-6" {
 		t.Fatalf("catalog=%#v", catalog)
+	}
+	models, _ := catalog["models"].([]map[string]any)
+	if len(models) != 2 || models[1]["id"] != "gpt-5-6-thinking" || models[1]["title"] != "GPT-5.6 Thinking" {
+		t.Fatalf("models=%#v", models)
 	}
 	modes, _ := catalog["creationModes"].([]map[string]any)
 	if len(modes) != 2 || modes[0]["id"] != "quick_chat" || modes[1]["id"] != "complete" {

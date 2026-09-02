@@ -97,18 +97,19 @@ type connectRequest struct {
 }
 
 type configRequest struct {
-	HubURL                       string  `json:"hubUrl"`
-	MachineName                  string  `json:"machineName"`
-	BrowserSidecarDir            string  `json:"browserSidecarDir"`
-	LocalBridgeEnabled           bool    `json:"localBridgeEnabled"`
-	AutoStartEnabled             bool    `json:"autoStartEnabled"`
-	AutoUpdateEnabled            bool    `json:"autoUpdateEnabled"`
-	AllowInsecureLocalHub        bool    `json:"allowInsecureLocalHub"`
-	CodexDesktopBridgeEnabled    bool    `json:"codexDesktopBridgeEnabled"`
-	CodexDesktopBridgeConfigured bool    `json:"codexDesktopBridgeConfigured"`
-	ChatGPTDefaultCreateMode     *string `json:"chatgptDefaultCreateMode"`
-	ChatGPTDefaultModel          *string `json:"chatgptDefaultModel"`
-	ChatGPTDefaultThinking       *string `json:"chatgptDefaultThinking"`
+	HubURL                          string  `json:"hubUrl"`
+	MachineName                     string  `json:"machineName"`
+	BrowserSidecarDir               string  `json:"browserSidecarDir"`
+	LocalBridgeEnabled              bool    `json:"localBridgeEnabled"`
+	AutoStartEnabled                bool    `json:"autoStartEnabled"`
+	AutoUpdateEnabled               bool    `json:"autoUpdateEnabled"`
+	AllowInsecureLocalHub           bool    `json:"allowInsecureLocalHub"`
+	CodexDesktopBridgeEnabled       bool    `json:"codexDesktopBridgeEnabled"`
+	CodexDesktopBridgeConfigured    bool    `json:"codexDesktopBridgeConfigured"`
+	ChatGPTDefaultConfigurationMode *string `json:"chatgptDefaultConfigurationMode"`
+	ChatGPTDefaultCreateMode        *string `json:"chatgptDefaultCreateMode"`
+	ChatGPTDefaultModel             *string `json:"chatgptDefaultModel"`
+	ChatGPTDefaultThinking          *string `json:"chatgptDefaultThinking"`
 }
 
 type componentEnsureRequest struct {
@@ -148,7 +149,7 @@ func New(opts Options) (*App, error) {
 	}
 	agentController := agent.New(opts.DataDir, opts.Logger)
 	agentController.SetCodexDesktopBridgeEnabled(cfg.CodexDesktopBridgeEnabled)
-	agentController.SetChatGPTCloudCreateDefaults(cfg.ChatGPTDefaultCreateMode, cfg.ChatGPTDefaultModel, cfg.ChatGPTDefaultThinking)
+	agentController.SetChatGPTCloudCreateDefaults(cfg.ChatGPTDefaultConfigurationMode, cfg.ChatGPTDefaultCreateMode, cfg.ChatGPTDefaultModel, cfg.ChatGPTDefaultThinking)
 	return &App{
 		opts:            opts,
 		config:          cfg,
@@ -452,21 +453,25 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		hubURL = old.HubURL
 	}
 	next := LocalConfig{
-		Version:                      localConfigVersion,
-		HubURL:                       hubURL,
-		MachineName:                  strings.TrimSpace(req.MachineName),
-		BrowserSidecarDir:            strings.TrimSpace(req.BrowserSidecarDir),
-		LocalBridgeEnabled:           req.LocalBridgeEnabled,
-		AutoStartEnabled:             req.AutoStartEnabled,
-		AutoUpdateEnabled:            req.AutoUpdateEnabled,
-		AllowInsecureLocalHub:        req.AllowInsecureLocalHub,
-		CodexDesktopBridgeEnabled:    req.CodexDesktopBridgeEnabled,
-		CodexDesktopBridgeConfigured: req.CodexDesktopBridgeConfigured,
-		ChatGPTDefaultCreateMode:     old.ChatGPTDefaultCreateMode,
-		ChatGPTDefaultModel:          old.ChatGPTDefaultModel,
-		ChatGPTDefaultThinking:       old.ChatGPTDefaultThinking,
-		WorkingProjectPath:           old.WorkingProjectPath,
-		WorkingPlanID:                old.WorkingPlanID,
+		Version:                         localConfigVersion,
+		HubURL:                          hubURL,
+		MachineName:                     strings.TrimSpace(req.MachineName),
+		BrowserSidecarDir:               strings.TrimSpace(req.BrowserSidecarDir),
+		LocalBridgeEnabled:              req.LocalBridgeEnabled,
+		AutoStartEnabled:                req.AutoStartEnabled,
+		AutoUpdateEnabled:               req.AutoUpdateEnabled,
+		AllowInsecureLocalHub:           req.AllowInsecureLocalHub,
+		CodexDesktopBridgeEnabled:       req.CodexDesktopBridgeEnabled,
+		CodexDesktopBridgeConfigured:    req.CodexDesktopBridgeConfigured,
+		ChatGPTDefaultConfigurationMode: old.ChatGPTDefaultConfigurationMode,
+		ChatGPTDefaultCreateMode:        old.ChatGPTDefaultCreateMode,
+		ChatGPTDefaultModel:             old.ChatGPTDefaultModel,
+		ChatGPTDefaultThinking:          old.ChatGPTDefaultThinking,
+		WorkingProjectPath:              old.WorkingProjectPath,
+		WorkingPlanID:                   old.WorkingPlanID,
+	}
+	if req.ChatGPTDefaultConfigurationMode != nil {
+		next.ChatGPTDefaultConfigurationMode = *req.ChatGPTDefaultConfigurationMode
 	}
 	if req.ChatGPTDefaultCreateMode != nil {
 		next.ChatGPTDefaultCreateMode = *req.ChatGPTDefaultCreateMode
@@ -512,9 +517,9 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if controller, ok := a.agentController.(interface {
-		SetChatGPTCloudCreateDefaults(string, string, string)
+		SetChatGPTCloudCreateDefaults(string, string, string, string)
 	}); ok {
-		controller.SetChatGPTCloudCreateDefaults(next.ChatGPTDefaultCreateMode, next.ChatGPTDefaultModel, next.ChatGPTDefaultThinking)
+		controller.SetChatGPTCloudCreateDefaults(next.ChatGPTDefaultConfigurationMode, next.ChatGPTDefaultCreateMode, next.ChatGPTDefaultModel, next.ChatGPTDefaultThinking)
 	}
 	if old.BrowserSidecarDir != next.BrowserSidecarDir || old.LocalBridgeEnabled != next.LocalBridgeEnabled || old.AllowInsecureLocalHub != next.AllowInsecureLocalHub || old.MachineName != next.MachineName {
 		a.restartRuntime()

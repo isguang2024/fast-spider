@@ -41,15 +41,16 @@ func (a *appLifecycleTestAgent) Close(context.Context) error {
 func TestLocalConfigIsPrivateAndRoundTrips(t *testing.T) {
 	dataDir := t.TempDir()
 	cfg := LocalConfig{
-		Version:                  localConfigVersion,
-		HubURL:                   "https://hub.example/fast-spider",
-		MachineName:              "Office Windows",
-		BrowserSidecarDir:        `C:\FastSpider\browser`,
-		LocalBridgeEnabled:       true,
-		AllowInsecureLocalHub:    false,
-		ChatGPTDefaultCreateMode: "quick_chat",
-		ChatGPTDefaultModel:      "gpt-5-6-thinking",
-		ChatGPTDefaultThinking:   "max",
+		Version:                         localConfigVersion,
+		HubURL:                          "https://hub.example/fast-spider",
+		MachineName:                     "Office Windows",
+		BrowserSidecarDir:               `C:\FastSpider\browser`,
+		LocalBridgeEnabled:              true,
+		AllowInsecureLocalHub:           false,
+		ChatGPTDefaultConfigurationMode: "advanced",
+		ChatGPTDefaultCreateMode:        "quick_chat",
+		ChatGPTDefaultModel:             "gpt-5-6-thinking",
+		ChatGPTDefaultThinking:          "max",
 	}
 	if err := saveLocalConfig(dataDir, cfg); err != nil {
 		t.Fatal(err)
@@ -80,7 +81,7 @@ func TestLocalConfigV1LoadsIntoCurrentVersionWithoutLosingExistingSettings(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Version != localConfigVersion || cfg.MachineName != "Legacy Node" || cfg.HubURL != "https://hub.example" || !cfg.LocalBridgeEnabled || cfg.AutoStartEnabled || cfg.AutoUpdateEnabled || cfg.CodexDesktopBridgeEnabled || cfg.CodexDesktopBridgeConfigured || cfg.ChatGPTDefaultCreateMode != "complete" || cfg.ChatGPTDefaultModel != "" || cfg.ChatGPTDefaultThinking != "" {
+	if cfg.Version != localConfigVersion || cfg.MachineName != "Legacy Node" || cfg.HubURL != "https://hub.example" || !cfg.LocalBridgeEnabled || cfg.AutoStartEnabled || cfg.AutoUpdateEnabled || cfg.CodexDesktopBridgeEnabled || cfg.CodexDesktopBridgeConfigured || cfg.ChatGPTDefaultConfigurationMode != "auto" || cfg.ChatGPTDefaultCreateMode != "complete" || cfg.ChatGPTDefaultModel != "" || cfg.ChatGPTDefaultThinking != "" {
 		t.Fatalf("legacy config migration mismatch: %+v", cfg)
 	}
 }
@@ -90,21 +91,21 @@ func TestDefaultLocalConfigStartsWithSharedCodexDesktopSessions(t *testing.T) {
 	if cfg.CodexDesktopBridgeEnabled || cfg.CodexDesktopBridgeConfigured {
 		t.Fatalf("new local config must wait for an explicit shared/managed choice: %+v", cfg)
 	}
-	if cfg.ChatGPTDefaultCreateMode != "complete" || cfg.ChatGPTDefaultModel != "" || cfg.ChatGPTDefaultThinking != "" {
+	if cfg.ChatGPTDefaultConfigurationMode != "auto" || cfg.ChatGPTDefaultCreateMode != "complete" || cfg.ChatGPTDefaultModel != "" || cfg.ChatGPTDefaultThinking != "" {
 		t.Fatalf("new local config must preserve existing ChatGPT create defaults: %+v", cfg)
 	}
 }
 
 type chatGPTDefaultsTestAgent struct {
-	mode, model, thinking string
+	configurationMode, mode, model, thinking string
 }
 
 func (a *chatGPTDefaultsTestAgent) Control(context.Context, string, map[string]any) (map[string]any, error) {
 	return map[string]any{}, nil
 }
 func (a *chatGPTDefaultsTestAgent) Close(context.Context) error { return nil }
-func (a *chatGPTDefaultsTestAgent) SetChatGPTCloudCreateDefaults(mode, model, thinking string) {
-	a.mode, a.model, a.thinking = mode, model, thinking
+func (a *chatGPTDefaultsTestAgent) SetChatGPTCloudCreateDefaults(configurationMode, mode, model, thinking string) {
+	a.configurationMode, a.mode, a.model, a.thinking = configurationMode, mode, model, thinking
 }
 
 func TestLocalUIConfigUpdatesChatGPTCreateDefaultsImmediately(t *testing.T) {
@@ -114,8 +115,8 @@ func TestLocalUIConfigUpdatesChatGPTCreateDefaultsImmediately(t *testing.T) {
 	}
 	fake := &chatGPTDefaultsTestAgent{}
 	app.agentController = fake
-	mode, model, thinking := "quick_chat", "gpt-5.6-terra-wm", "max"
-	body, err := json.Marshal(configRequest{MachineName: "Test Node", LocalBridgeEnabled: true, ChatGPTDefaultCreateMode: &mode, ChatGPTDefaultModel: &model, ChatGPTDefaultThinking: &thinking})
+	configurationMode, mode, model, thinking := "advanced", "quick_chat", "gpt-5.6-terra-wm", "max"
+	body, err := json.Marshal(configRequest{MachineName: "Test Node", LocalBridgeEnabled: true, ChatGPTDefaultConfigurationMode: &configurationMode, ChatGPTDefaultCreateMode: &mode, ChatGPTDefaultModel: &model, ChatGPTDefaultThinking: &thinking})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,11 +128,11 @@ func TestLocalUIConfigUpdatesChatGPTCreateDefaultsImmediately(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("config status=%d body=%s", response.Code, response.Body.String())
 	}
-	if app.config.ChatGPTDefaultCreateMode != mode || app.config.ChatGPTDefaultModel != model || app.config.ChatGPTDefaultThinking != thinking {
+	if app.config.ChatGPTDefaultConfigurationMode != configurationMode || app.config.ChatGPTDefaultCreateMode != mode || app.config.ChatGPTDefaultModel != model || app.config.ChatGPTDefaultThinking != thinking {
 		t.Fatalf("saved defaults=%+v", app.config)
 	}
-	if fake.mode != mode || fake.model != model || fake.thinking != thinking {
-		t.Fatalf("runtime defaults=%q %q %q", fake.mode, fake.model, fake.thinking)
+	if fake.configurationMode != configurationMode || fake.mode != mode || fake.model != model || fake.thinking != thinking {
+		t.Fatalf("runtime defaults=%q %q %q %q", fake.configurationMode, fake.mode, fake.model, fake.thinking)
 	}
 }
 
@@ -200,6 +201,7 @@ func TestLocalUIConfigPreservesRegistrationHubWhenHubFieldIsOmitted(t *testing.T
 		t.Fatal(err)
 	}
 	app.config.HubURL = "https://custom.example/fast-spider"
+	app.config.ChatGPTDefaultConfigurationMode = "preset"
 	app.config.ChatGPTDefaultCreateMode = "quick_chat"
 	app.config.ChatGPTDefaultModel = "gpt-existing"
 	app.config.ChatGPTDefaultThinking = "max"
@@ -218,7 +220,7 @@ func TestLocalUIConfigPreservesRegistrationHubWhenHubFieldIsOmitted(t *testing.T
 	if app.config.HubURL != "https://custom.example/fast-spider" || app.config.MachineName != "Renamed Node" {
 		t.Fatalf("config lost registration state: %+v", app.config)
 	}
-	if app.config.ChatGPTDefaultCreateMode != "quick_chat" || app.config.ChatGPTDefaultModel != "gpt-existing" || app.config.ChatGPTDefaultThinking != "max" {
+	if app.config.ChatGPTDefaultConfigurationMode != "preset" || app.config.ChatGPTDefaultCreateMode != "quick_chat" || app.config.ChatGPTDefaultModel != "gpt-existing" || app.config.ChatGPTDefaultThinking != "max" {
 		t.Fatalf("older config request reset ChatGPT defaults: %+v", app.config)
 	}
 }

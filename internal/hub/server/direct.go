@@ -280,7 +280,7 @@ func isDirectAIRead(action string) bool {
 	switch strings.TrimSpace(action) {
 	case "routing.status", "providers.list", "provider.readiness", "models.list", "provider.capabilities", "projects.list",
 		"skills.list", "hooks.list", "permissions.list", "plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read",
-		"mcp.status.list", "session.list", "session.get", "session.watch", "session.result", "session.goal.get":
+		"mcp.status.list", "session.list", "session.get", "session.watch", "session.callback.list", "session.result", "session.goal.get":
 		return true
 	default:
 		return false

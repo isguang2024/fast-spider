@@ -8,6 +8,18 @@ semantic versioning for public releases.
 - Add public CI, governance, support and maintainer workflow documentation.
 - Document the current early-stage public project status and contribution path.
 
+## 0.4.34 - 2026-09-02
+
+- Add durable ChatGPT Cloud completion callbacks to a dedicated local Codex
+  coordinator, with register, unregister and reconciliation actions.
+- Persist callback registrations and pending batches across reconnects and Node
+  restarts, with generation fencing, bounded event deduplication and at-least-once
+  delivery.
+- Queue concurrent Worker completions while the coordinator is active, retry when
+  its Turn ends, and retain a low-frequency heartbeat only for recovery.
+- Advance `agent.control` to 1.3 and document the callback-first collaboration
+  contract across Node, Hub, MCP and Direct API surfaces.
+
 ## 0.4.33 - 2026-09-02
 
 - Add Node-local defaults for ChatGPT Cloud creation mode, model and reasoning

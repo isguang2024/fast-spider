@@ -32,6 +32,12 @@ func TestStaticProviderRegistry(t *testing.T) {
 	if !stringInSet("session.delete", claude.SupportedActions...) {
 		t.Fatalf("Claude Code discovery omits implemented session.delete: %v", claude.SupportedActions)
 	}
+	codex, _ := registry.get("codex")
+	for _, action := range []string{"session.callback.register", "session.callback.unregister", "session.callback.list"} {
+		if !stringInSet(action, codex.SupportedActions...) {
+			t.Fatalf("Codex discovery omits implemented %s: %v", action, codex.SupportedActions)
+		}
+	}
 	if _, ok := registry.get("dynamic-provider"); ok {
 		t.Fatal("registry unexpectedly accepted a dynamic provider")
 	}

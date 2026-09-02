@@ -165,17 +165,17 @@ func TestScreenshotWindowCallDeadlineAndAuditPolicy(t *testing.T) {
 }
 
 func TestAgentCapabilityRetryAndAuditPolicy(t *testing.T) {
-	for _, action := range []string{"routing.status", "provider.capabilities", "skills.list", "hooks.list", "permissions.list", "plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list", "session.create", "session.goal.get"} {
+	for _, action := range []string{"routing.status", "provider.capabilities", "skills.list", "hooks.list", "permissions.list", "plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list", "session.create", "session.callback.list", "session.goal.get"} {
 		if !isRetryableCapability("agent.control", action) {
 			t.Fatalf("%s should be retryable", action)
 		}
 	}
-	for _, action := range []string{"session.send", "session.steer", "session.respond", "session.delete", "session.rollback", "session.settings.update", "session.review"} {
+	for _, action := range []string{"session.send", "session.steer", "session.respond", "session.callback.register", "session.callback.unregister", "session.delete", "session.rollback", "session.settings.update", "session.review"} {
 		if isRetryableCapability("agent.control", action) {
 			t.Fatalf("%s must not be retryable", action)
 		}
 	}
-	if !shouldAuditCapability("agent.control", "session.delete") || !shouldAuditCapability("agent.control", "session.goal.set") || !shouldAuditCapability("agent.control", "session.steer") || !shouldAuditCapability("agent.control", "session.respond") {
+	if !shouldAuditCapability("agent.control", "session.delete") || !shouldAuditCapability("agent.control", "session.goal.set") || !shouldAuditCapability("agent.control", "session.steer") || !shouldAuditCapability("agent.control", "session.respond") || !shouldAuditCapability("agent.control", "session.callback.register") || !shouldAuditCapability("agent.control", "session.callback.unregister") {
 		t.Fatal("destructive/state-changing agent actions must be audited")
 	}
 	if shouldAuditCapability("agent.control", "skills.list") {

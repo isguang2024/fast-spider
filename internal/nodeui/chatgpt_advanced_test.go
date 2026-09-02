@@ -98,7 +98,7 @@ func TestLocalUIRejectsStaleChatGPTThinkingOption(t *testing.T) {
 }
 
 func TestLocalUIContainsChatGPTAdvancedEditor(t *testing.T) {
-	for _, needle := range []string{"ChatGPT Cloud Advanced", `id="chatgpt-advanced-form"`, "/api/chatgpt-advanced-models", "Quick chat 与等待首个回答", `id="config-chatgpt-mode"`, `id="config-chatgpt-model"`, `id="config-chatgpt-thinking"`, "续聊仍继承原会话"} {
+	for _, needle := range []string{"ChatGPT Cloud Advanced", `id="chatgpt-advanced-form"`, "/api/chatgpt-advanced-models", "Quick chat 与等待首个回答", `id="config-chatgpt-configuration-mode"`, "Preset · ChatGPT 官方", "Advanced · 本机配置", `id="config-chatgpt-mode"`, `id="config-chatgpt-model"`, `id="config-chatgpt-thinking"`, "GPT-5.6 Thinking", "续聊仍继承原会话"} {
 		if !bytes.Contains([]byte(localUIHTML), []byte(needle)) {
 			t.Fatalf("local UI missing %q", needle)
 		}

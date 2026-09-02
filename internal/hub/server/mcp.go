@@ -263,61 +263,65 @@ type screenshotTakeInput struct {
 
 type aiControlInput struct {
 	MCPResponseOptions
-	MachineID             string              `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	Action                string              `json:"action" jsonschema:"routing.status,providers.list,provider.readiness,models.list,provider.capabilities,projects.list,skills.list,hooks.list,permissions.list,plugins.list,plugins.installed,plugins.get,plugin.skill.read,mcp.status.list,session.list,session.get,session.create,session.send,session.steer,session.respond,session.watch,session.cancel,session.result,session.rename,session.archive,session.unarchive,session.delete,session.fork,session.compact,session.rollback,session.goal.get,session.goal.set,session.goal.clear,session.settings.update,session.review"`
-	ProviderID            string              `json:"providerId,omitempty" jsonschema:"AI harness provider ID; defaults to codex"`
-	AppType               string              `json:"appType,omitempty" jsonschema:"routing.status app scope: claude,codex,or claude-desktop; omit to inspect all supported CC Switch routes"`
-	SessionID             string              `json:"sessionId,omitempty" jsonschema:"opaque provider session ID; optional thread scope for mcp.status.list"`
-	TurnID                string              `json:"turnId,omitempty" jsonschema:"active turn ID for cancel and required expected active turn ID for session.steer"`
-	AsyncTaskID           string              `json:"asyncTaskId,omitempty" jsonschema:"ChatGPT cloud active task ID for session.steer"`
-	RequestID             string              `json:"requestId,omitempty" jsonschema:"pending Codex server request ID required for session.respond"`
-	IdempotencyKey        string              `json:"idempotencyKey,omitempty" jsonschema:"12-128 character key required for session.create; with session.delete and no sessionId, identifies an unresolved create reservation to release"`
-	Visibility            string              `json:"visibility,omitempty" jsonschema:"session.create: visible or internal; default visible"`
-	Backend               string              `json:"backend,omitempty" jsonschema:"session.create backend: codex_local, claude_local, or chatgpt_cloud"`
-	VisibilityTarget      string              `json:"visibilityTarget,omitempty" jsonschema:"session.create target: codex_local, claude_local, chatgpt_cloud, or none"`
-	Ephemeral             *bool               `json:"ephemeral,omitempty" jsonschema:"session.create: internal Codex default true; persistent internal=false"`
-	Mode                  string              `json:"mode,omitempty" jsonschema:"provider.readiness: passive|safe; chatgpt_cloud creation return mode remains quick_chat or complete for both preset and advanced configuration"`
-	Prompt                string              `json:"prompt,omitempty" jsonschema:"text for session.create/send/steer"`
-	WorkingDirectory      string              `json:"workingDirectory,omitempty" jsonschema:"absolute working directory; required for session.create"`
-	Model                 string              `json:"model,omitempty" jsonschema:"optional provider model ID; chatgpt_cloud session.send inherits the first turn model when omitted"`
-	Thinking              string              `json:"thinking,omitempty" jsonschema:"optional provider reasoning effort; chatgpt_cloud session.send inherits the first turn effort when omitted"`
-	Cursor                int64               `json:"cursor,omitempty" jsonschema:"last consumed normalized event sequence"`
-	WaitSeconds           int64               `json:"waitSeconds,omitempty" jsonschema:"session.watch long-poll from 0 to 15 seconds"`
-	Limit                 int                 `json:"limit,omitempty" jsonschema:"session.list maximum, default 50 and maximum 100"`
-	Name                  string              `json:"name,omitempty" jsonschema:"new session name for session.rename"`
-	ForceReload           bool                `json:"forceReload,omitempty" jsonschema:"skills.list only; bypass the local Codex skill cache"`
-	MarketplaceKinds      []string            `json:"marketplaceKinds,omitempty" jsonschema:"plugins.list filter: local,vertical,workspace-directory,shared-with-me,created-by-me-remote"`
-	PluginName            string              `json:"pluginName,omitempty" jsonschema:"plugin name required for plugins.get"`
-	MarketplacePath       string              `json:"marketplacePath,omitempty" jsonschema:"optional absolute local marketplace path for plugins.get"`
-	RemoteMarketplaceName string              `json:"remoteMarketplaceName,omitempty" jsonschema:"remote marketplace name for plugins.get or plugin.skill.read"`
-	RemotePluginID        string              `json:"remotePluginId,omitempty" jsonschema:"remote plugin identifier required for plugin.skill.read"`
-	SkillName             string              `json:"skillName,omitempty" jsonschema:"skill name required for plugin.skill.read"`
-	NumTurns              int                 `json:"numTurns,omitempty" jsonschema:"session.rollback only; number of trailing Codex turns to remove, 1-1000; does not revert working-tree changes"`
-	Objective             string              `json:"objective,omitempty" jsonschema:"goal objective for session.goal.set"`
-	GoalStatus            string              `json:"goalStatus,omitempty" jsonschema:"session.goal.set status: active,paused,blocked,usageLimited,budgetLimited,complete"`
-	TokenBudget           int64               `json:"tokenBudget,omitempty" jsonschema:"optional non-negative Codex goal token budget"`
-	Skills                []map[string]string `json:"skills,omitempty" jsonschema:"native Codex skill inputs with name and absolute path for session.create/session.send/session.steer"`
-	Images                []string            `json:"images,omitempty" jsonschema:"absolute http(s) image URLs for session.create/session.send/session.steer"`
-	LocalImages           []string            `json:"localImages,omitempty" jsonschema:"absolute local image paths for session.create/session.send/session.steer"`
-	Mentions              []map[string]string `json:"mentions,omitempty" jsonschema:"native Codex mention inputs with name and absolute path for session.create/session.send/session.steer"`
-	ImageDetail           string              `json:"imageDetail,omitempty" jsonschema:"image detail for all image/localImage inputs: auto,low,high,original"`
-	OutputSchema          map[string]any      `json:"outputSchema,omitempty" jsonschema:"bounded JSON Schema object constraining the final assistant message for session.create/session.send"`
-	Decision              string              `json:"decision,omitempty" jsonschema:"session.respond approval/elicitation decision accept,decline,cancel; or confirm_not_created for session.delete by idempotencyKey after reconciling session.list"`
-	Answers               map[string][]string `json:"answers,omitempty" jsonschema:"session.respond answers keyed by Codex request_user_input question ID"`
-	ResponseContent       map[string]any      `json:"responseContent,omitempty" jsonschema:"session.respond structured content when accepting an MCP elicitation"`
-	PageCursor            string              `json:"pageCursor,omitempty" jsonschema:"opaque pagination cursor for permissions.list or mcp.status.list"`
-	MCPDetail             string              `json:"mcpDetail,omitempty" jsonschema:"mcp.status.list detail: full or toolsAndAuthOnly"`
-	Effort                string              `json:"effort,omitempty" jsonschema:"session.settings.update reasoning effort: low,medium,high,xhigh"`
-	Permissions           string              `json:"permissions,omitempty" jsonschema:"session.settings.update named Codex permission profile ID"`
-	Personality           string              `json:"personality,omitempty" jsonschema:"session.create/session.send turn override or session.settings.update personality: none,friendly,pragmatic"`
-	ServiceTier           string              `json:"serviceTier,omitempty" jsonschema:"session.create/session.send turn override or session.settings.update service tier"`
-	Summary               string              `json:"summary,omitempty" jsonschema:"session.create/session.send turn override or session.settings.update reasoning summary: auto,concise,detailed,none"`
-	ReviewType            string              `json:"reviewType,omitempty" jsonschema:"session.review target: uncommittedChanges,baseBranch,commit,custom; defaults to uncommittedChanges"`
-	ReviewDelivery        string              `json:"reviewDelivery,omitempty" jsonschema:"session.review delivery: inline or detached; defaults to inline"`
-	ReviewBranch          string              `json:"reviewBranch,omitempty" jsonschema:"branch required for reviewType=baseBranch"`
-	ReviewSHA             string              `json:"reviewSha,omitempty" jsonschema:"commit SHA required for reviewType=commit"`
-	ReviewTitle           string              `json:"reviewTitle,omitempty" jsonschema:"optional title for reviewType=commit"`
-	ReviewInstructions    string              `json:"reviewInstructions,omitempty" jsonschema:"instructions required for reviewType=custom"`
+	MachineID               string              `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	Action                  string              `json:"action" jsonschema:"agent.control action. ChatGPT cloud CHAT session.create uses providerId=codex, backend=chatgpt_cloud, visibility=visible and mode=quick_chat|complete. Use capability_list for the exact action catalog including session.callback.*"`
+	ProviderID              string              `json:"providerId,omitempty" jsonschema:"AI harness provider ID; defaults to codex"`
+	AppType                 string              `json:"appType,omitempty" jsonschema:"routing.status app scope: claude,codex,or claude-desktop; omit to inspect all supported CC Switch routes"`
+	SessionID               string              `json:"sessionId,omitempty" jsonschema:"opaque provider session ID; optional thread scope for mcp.status.list"`
+	TurnID                  string              `json:"turnId,omitempty" jsonschema:"active turn ID for cancel and required expected active turn ID for session.steer"`
+	AsyncTaskID             string              `json:"asyncTaskId,omitempty" jsonschema:"ChatGPT cloud active task ID for session.steer"`
+	RequestID               string              `json:"requestId,omitempty" jsonschema:"pending Codex server request ID required for session.respond"`
+	IdempotencyKey          string              `json:"idempotencyKey,omitempty" jsonschema:"12-128 character key required for session.create; with session.delete and no sessionId, identifies an unresolved create reservation to release"`
+	Visibility              string              `json:"visibility,omitempty" jsonschema:"session.create: visible or internal; default visible"`
+	Backend                 string              `json:"backend,omitempty" jsonschema:"session.create backend: codex_local, claude_local, or chatgpt_cloud"`
+	VisibilityTarget        string              `json:"visibilityTarget,omitempty" jsonschema:"session.create target: codex_local, claude_local, chatgpt_cloud, or none"`
+	Ephemeral               *bool               `json:"ephemeral,omitempty" jsonschema:"session.create: internal Codex default true; persistent internal=false"`
+	Mode                    string              `json:"mode,omitempty" jsonschema:"provider.readiness: passive|safe; chatgpt_cloud creation return mode remains quick_chat or complete for both preset and advanced configuration"`
+	Prompt                  string              `json:"prompt,omitempty" jsonschema:"text for session.create/send/steer"`
+	WorkingDirectory        string              `json:"workingDirectory,omitempty" jsonschema:"absolute working directory; required for session.create"`
+	Model                   string              `json:"model,omitempty" jsonschema:"optional provider model ID; chatgpt_cloud session.send inherits the first turn model when omitted"`
+	Thinking                string              `json:"thinking,omitempty" jsonschema:"optional provider reasoning effort; chatgpt_cloud session.send inherits the first turn effort when omitted"`
+	Cursor                  int64               `json:"cursor,omitempty" jsonschema:"last consumed normalized event sequence"`
+	WaitSeconds             int64               `json:"waitSeconds,omitempty" jsonschema:"session.watch long-poll from 0 to 15 seconds"`
+	Limit                   int                 `json:"limit,omitempty" jsonschema:"session.list maximum, default 50 and maximum 100"`
+	Name                    string              `json:"name,omitempty" jsonschema:"new session name for session.rename"`
+	ForceReload             bool                `json:"forceReload,omitempty" jsonschema:"skills.list only; bypass the local Codex skill cache"`
+	MarketplaceKinds        []string            `json:"marketplaceKinds,omitempty" jsonschema:"plugins.list filter: local,vertical,workspace-directory,shared-with-me,created-by-me-remote"`
+	PluginName              string              `json:"pluginName,omitempty" jsonschema:"plugin name required for plugins.get"`
+	MarketplacePath         string              `json:"marketplacePath,omitempty" jsonschema:"optional absolute local marketplace path for plugins.get"`
+	RemoteMarketplaceName   string              `json:"remoteMarketplaceName,omitempty" jsonschema:"remote marketplace name for plugins.get or plugin.skill.read"`
+	RemotePluginID          string              `json:"remotePluginId,omitempty" jsonschema:"remote plugin identifier required for plugin.skill.read"`
+	SkillName               string              `json:"skillName,omitempty" jsonschema:"skill name required for plugin.skill.read"`
+	NumTurns                int                 `json:"numTurns,omitempty" jsonschema:"session.rollback only; number of trailing Codex turns to remove, 1-1000; does not revert working-tree changes"`
+	Objective               string              `json:"objective,omitempty" jsonschema:"goal objective for session.goal.set"`
+	GoalStatus              string              `json:"goalStatus,omitempty" jsonschema:"session.goal.set status: active,paused,blocked,usageLimited,budgetLimited,complete"`
+	TokenBudget             int64               `json:"tokenBudget,omitempty" jsonschema:"optional non-negative Codex goal token budget"`
+	Skills                  []map[string]string `json:"skills,omitempty" jsonschema:"native Codex skill inputs with name and absolute path for session.create/session.send/session.steer"`
+	Images                  []string            `json:"images,omitempty" jsonschema:"absolute http(s) image URLs for session.create/session.send/session.steer"`
+	LocalImages             []string            `json:"localImages,omitempty" jsonschema:"absolute local image paths for session.create/session.send/session.steer"`
+	Mentions                []map[string]string `json:"mentions,omitempty" jsonschema:"native Codex mention inputs with name and absolute path for session.create/session.send/session.steer"`
+	ImageDetail             string              `json:"imageDetail,omitempty" jsonschema:"image detail for all image/localImage inputs: auto,low,high,original"`
+	OutputSchema            map[string]any      `json:"outputSchema,omitempty" jsonschema:"bounded JSON Schema object constraining the final assistant message for session.create/session.send"`
+	Decision                string              `json:"decision,omitempty" jsonschema:"session.respond approval/elicitation decision accept,decline,cancel; or confirm_not_created for session.delete by idempotencyKey after reconciling session.list"`
+	Answers                 map[string][]string `json:"answers,omitempty" jsonschema:"session.respond answers keyed by Codex request_user_input question ID"`
+	ResponseContent         map[string]any      `json:"responseContent,omitempty" jsonschema:"session.respond structured content when accepting an MCP elicitation"`
+	PageCursor              string              `json:"pageCursor,omitempty" jsonschema:"opaque pagination cursor for permissions.list or mcp.status.list"`
+	MCPDetail               string              `json:"mcpDetail,omitempty" jsonschema:"mcp.status.list detail: full or toolsAndAuthOnly"`
+	Effort                  string              `json:"effort,omitempty" jsonschema:"session.settings.update reasoning effort: low,medium,high,xhigh"`
+	Permissions             string              `json:"permissions,omitempty" jsonschema:"session.settings.update named Codex permission profile ID"`
+	Personality             string              `json:"personality,omitempty" jsonschema:"session.create/session.send turn override or session.settings.update personality: none,friendly,pragmatic"`
+	ServiceTier             string              `json:"serviceTier,omitempty" jsonschema:"session.create/session.send turn override or session.settings.update service tier"`
+	Summary                 string              `json:"summary,omitempty" jsonschema:"session.create/session.send turn override or session.settings.update reasoning summary: auto,concise,detailed,none"`
+	ReviewType              string              `json:"reviewType,omitempty" jsonschema:"session.review target: uncommittedChanges,baseBranch,commit,custom; defaults to uncommittedChanges"`
+	ReviewDelivery          string              `json:"reviewDelivery,omitempty" jsonschema:"session.review delivery: inline or detached; defaults to inline"`
+	ReviewBranch            string              `json:"reviewBranch,omitempty" jsonschema:"branch required for reviewType=baseBranch"`
+	ReviewSHA               string              `json:"reviewSha,omitempty" jsonschema:"commit SHA required for reviewType=commit"`
+	ReviewTitle             string              `json:"reviewTitle,omitempty" jsonschema:"optional title for reviewType=commit"`
+	ReviewInstructions      string              `json:"reviewInstructions,omitempty" jsonschema:"instructions required for reviewType=custom"`
+	CallbackTargetSessionID string              `json:"callbackTargetSessionId,omitempty" jsonschema:"local Codex coordinator session"`
+	CallbackMissionID       string              `json:"callbackMissionId,omitempty" jsonschema:"callback mission ID"`
+	CallbackTaskID          string              `json:"callbackTaskId,omitempty" jsonschema:"callback task ID"`
+	CallbackGeneration      int64               `json:"callbackGeneration,omitempty" jsonschema:"positive callback generation"`
 }
 
 type genericCapabilityOutput struct {

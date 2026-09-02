@@ -79,6 +79,9 @@ session.send
 session.steer
 session.respond
 session.watch
+session.callback.register
+session.callback.unregister
+session.callback.list
 session.cancel
 session.result
 session.rename
@@ -149,10 +152,21 @@ Cloud 只有一个创建入口 `session.create`，用 `mode=quick_chat|complete`
 | `session.delete` | `DELETE /conversation/id/{id}` |
 | `session.cancel` | `POST /stop_conversation`（无活动轮时幂等返回） |
 | `session.watch` | `/celsius/ws/user` pubsub 订阅 `conversations` + `conversation-{uuid}`；`conversation-turn-complete` 等事件 → `session.watch` 事件（提示 refetch `session.get` 取内容） |
+| `session.callback.register` | 为一个 ChatGPT Cloud Worker 注册唯一的本机 Codex 协调会话；持久保存 mission/task/generation，并建立不会被普通 watch 空闲淘汰的订阅 |
+| `session.callback.unregister` | 按 source session + generation 撤销回调 owner，同时清除该来源尚未投递的事件 |
+| `session.callback.list` | 只读列出注册、最后事件序号、最后已投递信封和 pending 数量；可按 source 或 target 过滤 |
 | `session.steer` | 活动兼容 TPP 轮：`POST /f/steer_turn`（`asyncTaskId` 映射为 `async_task_id`；普通已完成聊天无可 steer 的活动轮时明确报错） |
 
 实时同步基于 `/backend-api/celsius/ws/user` 的 pubsub（订阅 `conversations` + `conversation-{uuid}`，
 `conversation-turn-complete` 触发 refetch）——已实测：另一客户端写入后 `session.watch` 收到事件。
+
+### `session.callback.*`
+
+`session.callback.register` 只支持 `providerId=codex + backend=chatgpt_cloud`。调用方提供 Worker 的 `sessionId`、本机 Codex 协调/调度会话的 `callbackTargetSessionId`、`callbackMissionId`、`callbackTaskId` 和正整数 `callbackGeneration`。默认 target 不是用户正在对话的主控；协调会话负责并发批次、`session.result`、任务账本和有界摘要，主控只接收真正需要裁决的结果。一个 source Worker 同时只能有一个 callback owner；相同 owner/代次可幂等重放，更旧代次拒绝，更高代次会替换旧代并清除旧 pending。`session.callback.unregister` 必须携带当前 generation；`session.callback.list` 是可安全重试的只读查询。
+
+Cloud 的 `conversation.turn.complete` 会先写入 Node data-dir 下的 `agent/session-callbacks.json`，再尝试唤醒协调会话。持久索引损坏或 pending/registration 序列不一致时回调读写 fail-closed，不会用空状态覆盖。注册会先落盘再在同一 owner/generation 临界区建立持久订阅；并发注销不能在快照后留下 orphan watcher。订阅建立失败时 durable registration 保留并由恢复循环续做。事件按 `generation + event key` 去重：优先使用 Provider payload 中真实存在的 event/turn/message ID，并持久保留最近 256 个稳定身份用于跨重连、跨重启去重；超过该有界历史的极旧重放允许按至少一次语义再次投递。缺少稳定 ID 时，Node 对 payload 派生键只做 15 秒短窗口重复抑制，不写入永久 recent-event 集合；短窗口可抑制双 topic 或紧邻重放，但相同 payload 在后续合法 Turn 会生成新的 key，极端窗口边界也允许重复而不允许漏掉合法完成事件。一个 Worker 只保留最新 pending，同一协调会话的多个 Worker 会合并成一个稳定 `FAST_SPIDER_SESSION_CALLBACK_V1` 信封。信封包含 mission、task、generation、source session、event sequence/key/type 和固定控制说明；`event_sequence` 始终参与 envelope ID，使有界窗口外的重放不会复用旧 envelope，而同一 pending 的崩溃重发保持相同 ID。信封不携带 Worker 原文、Prompt、Provider payload、Token 或原始错误。
+
+投递策略是 `callback-first / heartbeat-fallback`：协调会话存在活动 Turn 或底层 `session.send` 返回 busy 时继续保留 pending；该 Turn 完成、失败或中断后立即重试。Node 重启后恢复持久订阅和 pending；五分钟检查仅用于断线、重启或漏通知恢复，不是主要轮询路径。注册和注销的 watcher 生命周期带 generation 围栏，旧代注销不会关闭新 owner 的订阅。成功 send 后才按稳定 envelope ID 清除当时投递的事件；并发到达的新事件保留给下一批。调用方仍应把重复 envelope ID 视为已投递，因为进程可能在发送成功、确认落盘前退出。协调会话只读最终 CHAT 回复和必要增量元数据，不抓取完整会话网页；实际业务网页仍由对应 Worker 读取和操作。
 
 ### `session.send`
 
@@ -318,9 +332,9 @@ custom      + reviewInstructions
 
 连接中断后的自动重试策略按 action 语义区分。
 
-可安全重新查询：Provider/Model/Project/Skill/Hook/Permission/Plugin/MCP 状态 discovery、Session list/get/watch/result、Goal get。
+可安全重新查询：Provider/Model/Project/Skill/Hook/Permission/Plugin/MCP 状态 discovery、Session list/get/watch/result、Callback list、Goal get。
 
-不可宣称可无脑重试：create/send/steer/respond/cancel/rename/archive/unarchive/delete/fork/compact/rollback、Goal set/clear、settings.update、review。尤其 steer/respond 可能已送达 Codex 但 Hub 响应丢失，调用方必须先 watch/get 查询真实状态。
+不可宣称可无脑重试：create/send/steer/respond/callback register/callback unregister/cancel/rename/archive/unarchive/delete/fork/compact/rollback、Goal set/clear、settings.update、review。尤其 steer/respond 可能已送达 Codex 但 Hub 响应丢失，调用方必须先 watch/get 查询真实状态；callback register/unregister 则先用 callback list 对账 owner 与 generation。
 
 所有 Thread/Turn/Goal/Settings/Review 状态变更及 steer/respond 进入 Hub mutation audit；Provider secret、完整 prompt、交互回答正文、原始内部事件和环境变量不写入审计详情。
 

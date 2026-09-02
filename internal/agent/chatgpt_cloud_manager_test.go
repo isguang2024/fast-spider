@@ -281,7 +281,7 @@ func TestChatGPTCloudSessionCreateRejectsUnknownMode(t *testing.T) {
 func TestChatGPTCloudSessionCreateAppliesLocalDefaultsBeforeIdempotency(t *testing.T) {
 	manager := New(t.TempDir(), nil)
 	defer manager.Close(context.Background())
-	manager.SetChatGPTCloudCreateDefaults("quick_chat", "gpt-5-6-thinking", "max")
+	manager.SetChatGPTCloudCreateDefaults("preset", "quick_chat", "gpt-5-6-thinking", "max")
 	var selectedModel string
 	manager.chatgptCloud.createOverride = func(_ context.Context, _ string, model string) (chatgptCloudTurnResult, error) {
 		selectedModel = model
@@ -298,7 +298,7 @@ func TestChatGPTCloudSessionCreateAppliesLocalDefaultsBeforeIdempotency(t *testi
 	if selectedModel != "gpt-5-6-thinking" || created["createMode"] != "quick_chat" || created["model"] != selectedModel || created["thinking"] != "max" {
 		t.Fatalf("created=%#v selectedModel=%q", created, selectedModel)
 	}
-	manager.SetChatGPTCloudCreateDefaults("complete", "gpt-other", "extended")
+	manager.SetChatGPTCloudCreateDefaults("advanced", "complete", "gpt-other", "extended")
 	if _, err := manager.Control(context.Background(), "session.create", params); err == nil {
 		t.Fatal("same idempotency key accepted different effective defaults")
 	}
@@ -307,7 +307,7 @@ func TestChatGPTCloudSessionCreateAppliesLocalDefaultsBeforeIdempotency(t *testi
 func TestChatGPTCloudSessionCreateExplicitValuesOverrideLocalDefaults(t *testing.T) {
 	manager := New(t.TempDir(), nil)
 	defer manager.Close(context.Background())
-	manager.SetChatGPTCloudCreateDefaults("quick_chat", "gpt-default", "max")
+	manager.SetChatGPTCloudCreateDefaults("advanced", "quick_chat", "gpt-default", "max")
 	var selectedModel string
 	manager.chatgptCloud.createOverride = func(_ context.Context, _ string, model string) (chatgptCloudTurnResult, error) {
 		selectedModel = model
@@ -375,7 +375,7 @@ func TestChatGPTCloudSessionSendInheritsInitialSelection(t *testing.T) {
 
 	manager := New(t.TempDir(), nil)
 	defer manager.Close(context.Background())
-	manager.SetChatGPTCloudCreateDefaults("quick_chat", "gpt-default-must-not-affect-send", "extended")
+	manager.SetChatGPTCloudCreateDefaults("advanced", "quick_chat", "gpt-default-must-not-affect-send", "extended")
 	manager.chatgptCloud.baseURL = server.URL
 	manager.chatgptCloud.http = server.Client()
 	manager.chatgptCloud.tokenSource = func(context.Context) (string, error) { return "token", nil }

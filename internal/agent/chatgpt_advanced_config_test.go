@@ -74,6 +74,7 @@ func TestChatGPTCloudModelsCombinesLiveThinkingWithNodeAdvancedModels(t *testing
 	}
 	manager := New(dataDir, nil)
 	defer manager.Close(context.Background())
+	manager.SetChatGPTCloudCreateDefaults("advanced", "quick_chat", "gpt-custom", "max")
 	manager.chatgptCloud = NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token", nil })
 	manager.chatgptCloud.baseURL = server.URL
 	manager.chatgptCloud.http = server.Client()
@@ -95,5 +96,9 @@ func TestChatGPTCloudModelsCombinesLiveThinkingWithNodeAdvancedModels(t *testing
 	}
 	if _, ok := catalog["models"].([]map[string]any); !ok {
 		t.Fatalf("live models missing: %#v", catalog["models"])
+	}
+	defaults, _ := catalog["localCreateDefaults"].(map[string]any)
+	if defaults["configurationMode"] != "advanced" || defaults["mode"] != "quick_chat" || defaults["model"] != "gpt-custom" || defaults["thinking"] != "max" {
+		t.Fatalf("localCreateDefaults=%#v", defaults)
 	}
 }

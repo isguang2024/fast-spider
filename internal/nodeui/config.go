@@ -9,37 +9,39 @@ import (
 	"strings"
 )
 
-const localConfigVersion = 5
+const localConfigVersion = 6
 
 const defaultHubURL = ""
 
 type LocalConfig struct {
-	Version                      int    `json:"version"`
-	HubURL                       string `json:"hubUrl"`
-	MachineName                  string `json:"machineName"`
-	BrowserSidecarDir            string `json:"browserSidecarDir,omitempty"`
-	LocalBridgeEnabled           bool   `json:"localBridgeEnabled"`
-	AutoStartEnabled             bool   `json:"autoStartEnabled"`
-	AutoUpdateEnabled            bool   `json:"autoUpdateEnabled"`
-	AllowInsecureLocalHub        bool   `json:"allowInsecureLocalHub"`
-	CodexDesktopBridgeEnabled    bool   `json:"codexDesktopBridgeEnabled"`
-	CodexDesktopBridgeConfigured bool   `json:"codexDesktopBridgeConfigured"`
-	ChatGPTDefaultCreateMode     string `json:"chatgptDefaultCreateMode"`
-	ChatGPTDefaultModel          string `json:"chatgptDefaultModel"`
-	ChatGPTDefaultThinking       string `json:"chatgptDefaultThinking"`
-	WorkingProjectPath           string `json:"workingProjectPath,omitempty"`
-	WorkingPlanID                string `json:"workingPlanId,omitempty"`
+	Version                         int    `json:"version"`
+	HubURL                          string `json:"hubUrl"`
+	MachineName                     string `json:"machineName"`
+	BrowserSidecarDir               string `json:"browserSidecarDir,omitempty"`
+	LocalBridgeEnabled              bool   `json:"localBridgeEnabled"`
+	AutoStartEnabled                bool   `json:"autoStartEnabled"`
+	AutoUpdateEnabled               bool   `json:"autoUpdateEnabled"`
+	AllowInsecureLocalHub           bool   `json:"allowInsecureLocalHub"`
+	CodexDesktopBridgeEnabled       bool   `json:"codexDesktopBridgeEnabled"`
+	CodexDesktopBridgeConfigured    bool   `json:"codexDesktopBridgeConfigured"`
+	ChatGPTDefaultConfigurationMode string `json:"chatgptDefaultConfigurationMode"`
+	ChatGPTDefaultCreateMode        string `json:"chatgptDefaultCreateMode"`
+	ChatGPTDefaultModel             string `json:"chatgptDefaultModel"`
+	ChatGPTDefaultThinking          string `json:"chatgptDefaultThinking"`
+	WorkingProjectPath              string `json:"workingProjectPath,omitempty"`
+	WorkingPlanID                   string `json:"workingPlanId,omitempty"`
 }
 
 func defaultLocalConfig(machineName string) LocalConfig {
 	return LocalConfig{
-		Version:                      localConfigVersion,
-		HubURL:                       defaultHubURL,
-		MachineName:                  strings.TrimSpace(machineName),
-		LocalBridgeEnabled:           true,
-		CodexDesktopBridgeEnabled:    false,
-		CodexDesktopBridgeConfigured: false,
-		ChatGPTDefaultCreateMode:     "complete",
+		Version:                         localConfigVersion,
+		HubURL:                          defaultHubURL,
+		MachineName:                     strings.TrimSpace(machineName),
+		LocalBridgeEnabled:              true,
+		CodexDesktopBridgeEnabled:       false,
+		CodexDesktopBridgeConfigured:    false,
+		ChatGPTDefaultConfigurationMode: "auto",
+		ChatGPTDefaultCreateMode:        "complete",
 	}
 }
 
@@ -111,6 +113,13 @@ func saveLocalConfig(dataDir string, cfg LocalConfig) error {
 }
 
 func normalizeChatGPTDefaults(cfg *LocalConfig) error {
+	cfg.ChatGPTDefaultConfigurationMode = strings.ToLower(strings.TrimSpace(cfg.ChatGPTDefaultConfigurationMode))
+	if cfg.ChatGPTDefaultConfigurationMode == "" {
+		cfg.ChatGPTDefaultConfigurationMode = "auto"
+	}
+	if !stringInLocalSet(cfg.ChatGPTDefaultConfigurationMode, "auto", "preset", "advanced") {
+		return errors.New("ChatGPT Cloud 默认配置方式必须是 auto、preset 或 advanced")
+	}
 	cfg.ChatGPTDefaultCreateMode = strings.ToLower(strings.TrimSpace(cfg.ChatGPTDefaultCreateMode))
 	if cfg.ChatGPTDefaultCreateMode == "" {
 		cfg.ChatGPTDefaultCreateMode = "complete"
