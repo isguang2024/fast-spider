@@ -8,6 +8,16 @@ semantic versioning for public releases.
 - Add public CI, governance, support and maintainer workflow documentation.
 - Document the current early-stage public project status and contribution path.
 
+## 0.4.32 - 2026-09-02
+
+- Separate ChatGPT Cloud quick/complete return modes from preset/advanced model
+  configuration, load Advanced models from a user-editable Node-local file, and
+  refresh reasoning choices from the live ChatGPT model catalog.
+- Preserve the initial ChatGPT Cloud model and reasoning effort when continuing a
+  session unless the caller explicitly overrides either selection.
+- Clarify deployment-specific Hub URL configuration and public-history hygiene for
+  self-hosted installations.
+
 ## 0.4.31 - 2026-09-02
 
 - Unified ChatGPT Cloud creation behind one `session.create` entry with Quick

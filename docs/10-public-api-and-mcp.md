@@ -58,7 +58,7 @@ Hub 的 MCP `initialize` 会返回不超过 2 KiB 的常驻能力地图，并把
 
 工具指南固定包含 `whenToUse/requiredInputs/safeSequence/returns/recommendedNext/commonErrors/boundedExamples`；`view=capability` 额外返回底层 capability 的 actions、summary 和 `mcpTools` 映射。overview 不超过 8 KiB，单项指南不超过 12 KiB；示例有界且不含凭据、Prompt、Cookie、环境变量或本机事实。注册工具名、指南目录、overview 摘要和本文工具列表由自动测试对账。
 
-Codex/Claude Code 的会话能力不是独立顶层工具；统一位于 `ai_control`。查询 Codex 会话列表使用 `action=session.list`，后续读取使用 `session.get/session.watch/session.result`。`ai_control` 的 `session.create` 已支持 Codex 的 visible ChatGPT cloud CHAT 会话：传 `providerId=codex`、`backend=chatgpt_cloud`、`visibility=visible`、首条 `prompt`、绝对 `workingDirectory` 和 `idempotencyKey`，要求本机 Codex app-server 已登录 ChatGPT。可选 `mode=quick_chat` 使用 Codex Quick chat 的快速创建语义：跳过 prepare，默认 `model=auto`，拿到真实 `sessionId` 即返回；省略 mode 或传 `complete` 保持等待完整流的原行为。FS 创建后的 cloud conversation 会保存 backend sidecar，后续按 `sessionId` 自动路由，不需要调用方反复携带 `backend=chatgpt_cloud`。因此 ChatGPT App 工具页只显示 `Ai control` 属于正常设计。
+Codex/Claude Code 的会话能力不是独立顶层工具；统一位于 `ai_control`。查询 Codex 会话列表使用 `action=session.list`，后续读取使用 `session.get/session.watch/session.result`。`ai_control` 的 `session.create` 已支持 Codex 的 visible ChatGPT cloud CHAT 会话：传 `providerId=codex`、`backend=chatgpt_cloud`、`visibility=visible`、首条 `prompt`、绝对 `workingDirectory` 和 `idempotencyKey`，要求本机 Codex app-server 已登录 ChatGPT。创建返回模式只有两个：`quick_chat` 跳过 prepare，拿到真实 `sessionId` 即返回；省略 mode 或传 `complete` 等待首个回答。模型配置与返回模式正交：预设配置从实时 `modelPresets` 选择组合，高级配置从 Node 本机 `chatgpt-advanced-models.json` 形成的 `advancedModels` 选择模型；`thinkingOptions` 每次从实时 ChatGPT 模型目录提取，两者均可搭配 quick_chat/complete。FS 创建后的 cloud conversation 会保存 backend sidecar，后续按 `sessionId` 自动路由，不需要调用方反复携带 `backend=chatgpt_cloud`。因此 ChatGPT App 工具页只显示 `Ai control` 属于正常设计。
 
 ChatGPT 对已发布 MCP App 的工具/输入定义可能使用经批准的快照；当 FS 修改工具名、Schema 或工具描述后，需要在 ChatGPT App/Action 管理中执行 Refresh/重新批准才能取得新的定义。纯服务可用性仍以真实 MCP initialize/tools/list 和只读调用结果为准。仓库没有独立 ChatGPT App manifest 或第二套 Plugin metadata，第一层事实源继续是 MCP initialize、工具描述和 `capability_list`。
 
@@ -70,7 +70,7 @@ ChatGPT 对已发布 MCP App 的工具/输入定义可能使用经批准的快�
 - code_search: `path`
 - shell_run/build_control: `cwd`
 - git_control: `repositoryPath`；`fetch/pull/push` 的 `remote` 可省略，Node 按“当前分支 upstream remote → origin → 唯一 remote”顺序解析，多个非 origin remote 时 fail-closed 要求显式指定
-- ai_control session.create: `providerId + workingDirectory`; 可选 `visibility=visible|internal`、`backend=codex_local|claude_local|chatgpt_cloud`、`visibilityTarget=codex_local|claude_local|chatgpt_cloud|none`、`ephemeral`，以及 ChatGPT Cloud 的 `mode=complete|quick_chat`; `providerId` 选择 Harness，不是上游 API Provider
+- ai_control session.create: `providerId + workingDirectory`; 可选 `visibility=visible|internal`、`backend=codex_local|claude_local|chatgpt_cloud`、`visibilityTarget=codex_local|claude_local|chatgpt_cloud|none`、`ephemeral`，以及 ChatGPT Cloud 的 `mode=complete|quick_chat`、`model`、`thinking`; 高级配置不会新增第三种 mode
 - ai_control routing.status: 可选 `appType=claude|codex|claude-desktop`，只读 CC Switch 路由事实
 - working_context: `projectPath`
 

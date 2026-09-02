@@ -1,8 +1,25 @@
-# 部署与运维（0.4.31）
+# 部署与运维（0.4.32）
 
 ## Hub
 
 生产主线只保留一个 `fast-spider-hub` systemd 服务。Hub 监听 loopback，由 Nginx/TLS 反向代理公网路径。生产关键配置：AllowedHosts、PublicBaseURL、OAuth redirect host allowlist、data-dir、release-dir。首次启动前必须在权限为 `0600` 的环境文件中设置唯一的 `FAST_SPIDER_ADMIN_PASSWORD`；旧版本数据库升级时再次设置它以完成一次性密码轮换，轮换会吊销已有管理员会话。未提供密码时 Hub 对缺少初始化或待轮换管理员的数据库拒绝启动。
+
+### 公网地址与自部署
+
+公网域名、路径前缀和证书属于部署实例配置，不属于源码默认值。每个部署者
+应在自己的 service environment 或启动器中设置：
+
+```text
+FAST_SPIDER_ALLOWED_HOSTS=localhost,127.0.0.1,hub.example
+FAST_SPIDER_PUBLIC_BASE_URL=https://hub.example
+FAST_SPIDER_OAUTH_REDIRECT_HOSTS=chatgpt.com,localhost,127.0.0.1,::1
+```
+
+systemd 模板会把这些值传给对应的 Hub flags；其他启动方式也必须显式传入
+`--allowed-hosts`、`--public-base-url` 和 `--oauth-redirect-hosts`。使用子路径
+时，例如 `https://example.com/fast-spider`，反向代理要把公网前缀转发到 Hub
+根路由，同时保留该前缀在 `PublicBaseURL` 中。域名或前缀改变后，重启 Hub，更新
+Node 的 Hub URL，并让外部 MCP/OAuth 客户端重新读取元数据或重新授权。
 
 Hub data-dir 与 release-dir 分离：数据库/密钥/Artifact 进入备份，Windows Node EXE 和大型组件不进入 Hub 数据备份。Temporary Presentation Relay 使用系统临时目录，不进入数据库或备份；新 Node 的 Browser/OS 截图与 `artifact_get.publishFile` 都使用 attachment 模式，MCP/Direct 只返回 URL 元数据，最长 TTL 为 48 小时，Hub 每分钟按 `expiresAt` 自动删除，单次上传上限均为 64 MiB。旧 Node 未携带 resource kind 时仍按 20 分钟 presentation 兼容语义处理。Hub 启动/退出会清理临时根，因此 48 小时是最长保留上限而不是跨 Hub 重启的持久化承诺。反向代理应对 Fast Spider 路径允许至少 64 MiB 请求体；Nginx 建议同时设置 `proxy_request_buffering off`，避免大图/临时文件先完整落到代理缓存。
 

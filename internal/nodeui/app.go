@@ -296,6 +296,8 @@ func (a *App) handler() http.Handler {
 	mux.HandleFunc("GET /api/status", a.apiOnly(a.handleStatus))
 	mux.HandleFunc("POST /api/connect", a.apiOnly(a.handleConnect))
 	mux.HandleFunc("POST /api/config", a.apiOnly(a.handleConfig))
+	mux.HandleFunc("GET /api/chatgpt-advanced-models", a.apiOnly(a.handleChatGPTAdvancedModels))
+	mux.HandleFunc("POST /api/chatgpt-advanced-models", a.apiOnly(a.handleChatGPTAdvancedModels))
 	mux.HandleFunc("POST /api/update/check", a.apiOnly(a.handleUpdateCheck))
 	mux.HandleFunc("POST /api/update/install", a.apiOnly(a.handleUpdateInstall))
 	mux.HandleFunc("GET /api/components", a.apiOnly(a.handleComponents))

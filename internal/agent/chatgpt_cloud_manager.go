@@ -25,6 +25,17 @@ func (m *AgentManager) controlChatGPTCloud(ctx context.Context, action string, i
 		if err != nil {
 			return nil, err
 		}
+		cfg, err := LoadChatGPTAdvancedConfig(m.dataDir)
+		if err != nil {
+			return nil, err
+		}
+		thinkingOptions, _ := catalog["thinkingOptions"].([]ChatGPTThinkingOption)
+		catalog["configurationModes"] = []map[string]any{
+			{"id": "preset", "title": "Preset", "modelSource": "modelPresets"},
+			{"id": "advanced", "title": "Advanced", "modelSource": "advancedModels", "thinkingSource": "thinkingOptions", "combinesWithCreationModes": true},
+		}
+		catalog["advancedModels"] = filterChatGPTAdvancedModels(cfg.Models, thinkingOptions)
+		catalog["advancedConfigFile"] = ChatGPTAdvancedConfigFileName
 		catalog["modelSource"] = "chatgpt_cloud"
 		return catalog, nil
 	case "session.send":
@@ -39,6 +50,10 @@ func (m *AgentManager) controlChatGPTCloud(ctx context.Context, action string, i
 		return m.chatgptCloudDelete(ctx, input)
 	case "session.rename":
 		return m.chatgptCloudRename(ctx, input)
+	case "session.archive":
+		return m.chatgptCloudSetArchived(ctx, input, true)
+	case "session.unarchive":
+		return m.chatgptCloudSetArchived(ctx, input, false)
 	case "session.cancel":
 		return m.chatgptCloudCancel(ctx, input)
 	case "session.watch":
@@ -48,6 +63,17 @@ func (m *AgentManager) controlChatGPTCloud(ctx context.Context, action string, i
 	default:
 		return nil, fmt.Errorf("action %q is not supported for backend=chatgpt_cloud", action)
 	}
+}
+
+func (m *AgentManager) chatgptCloudSetArchived(ctx context.Context, input agentControlParams, archived bool) (map[string]any, error) {
+	sessionID := strings.TrimSpace(input.SessionID)
+	if sessionID == "" {
+		return nil, errors.New("sessionId is required")
+	}
+	if err := m.chatgptCloud.Archive(ctx, sessionID, archived); err != nil {
+		return nil, err
+	}
+	return map[string]any{"sessionId": sessionID, "archived": archived}, nil
 }
 
 func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentControlParams) (map[string]any, error) {
@@ -80,9 +106,9 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 	if createMode == "quick_chat" && selectedModel == "" {
 		selectedModel = "auto"
 	}
-	selectedThinking := strings.ToLower(strings.TrimSpace(input.Thinking))
-	if selectedThinking != "" && !stringInSet(selectedThinking, "standard", "extended", "min", "max", "ultra", "xhigh", "zero") {
-		return nil, fmt.Errorf("backend=chatgpt_cloud thinking must be standard, extended, min, max, ultra, xhigh, or zero")
+	selectedThinking, err := normalizeChatGPTCloudThinking(input.Thinking)
+	if err != nil {
+		return nil, err
 	}
 	legacySpecValue := map[string]any{
 		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
@@ -206,19 +232,32 @@ func (m *AgentManager) chatgptCloudSend(ctx context.Context, input agentControlP
 	if strings.TrimSpace(input.Prompt) == "" {
 		return nil, fmt.Errorf("prompt is required")
 	}
-	result, err := m.chatgptCloud.Send(ctx, input.SessionID, "", input.Prompt, input.Model)
+	selectedThinking, err := normalizeChatGPTCloudThinking(input.Thinking)
+	if err != nil {
+		return nil, err
+	}
+	result, err := m.chatgptCloud.SendWithThinking(ctx, input.SessionID, "", input.Prompt, input.Model, selectedThinking)
 	if err != nil {
 		return nil, err
 	}
 	out := map[string]any{
 		"sessionId": result.ConversationID,
 		"phase":     "running",
-		"model":     input.Model,
+		"model":     result.Model,
+		"thinking":  result.Thinking,
 	}
 	if result.AsyncTaskID != "" {
 		out["asyncTaskId"] = result.AsyncTaskID
 	}
 	return out, nil
+}
+
+func normalizeChatGPTCloudThinking(value string) (string, error) {
+	thinking := strings.ToLower(strings.TrimSpace(value))
+	if thinking != "" && !stringInSet(thinking, "standard", "extended", "min", "max", "ultra", "xhigh", "zero") {
+		return "", fmt.Errorf("backend=chatgpt_cloud thinking must be standard, extended, min, max, ultra, xhigh, or zero")
+	}
+	return thinking, nil
 }
 
 func (m *AgentManager) chatgptCloudSteer(ctx context.Context, input agentControlParams) (map[string]any, error) {

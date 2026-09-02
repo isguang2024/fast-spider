@@ -133,13 +133,13 @@ Fast Spider 用 Codex app-server 的 ChatGPT 登录态（`getAuthStatus`）配�
 
 Cloud 只有一个创建入口 `session.create`，用 `mode=quick_chat|complete` 切换两种模式。省略时为 `complete`，保留原来的 prepare + 完整 SSE 等待；`quick_chat` 与 Codex Quick chat 一样不请求 `/f/conversation/prepare`，未指定模型时发送 `model=auto`，收到首个真实 conversation ID 就返回 `phase=running`、`createMode=quick_chat`、`completionPending=true`。同一 `idempotencyKey` 不能在两种 mode 或不同 model/thinking 之间复用；旧版未记录 mode/thinking 的默认完整创建仍可按原 key 重放并迁移。
 
-创建前调用 `models.list`（`backend=chatgpt_cloud`）会返回 `defaultModel`、`creationModes` 与 `modelPresets`。调用方应让用户直接选择一个组合预设，不要把模型和思考程度任意交叉组合。当前 Codex Quick chat 的 GPT-5.6/GPT-5.5 均提供 Instant、Medium、High、Extra High、Pro 五档：Instant 使用 `*-instant` 且不发送独立 thinking；Medium/High/Extra High 使用 `*-thinking`，分别发送 `thinking_effort=standard|extended|max`；Pro 使用 `*-pro` 且不发送独立 thinking。`session.create.thinking` 会原样映射到 ChatGPT 请求体的 `thinking_effort`。这些是 ChatGPT Cloud 的私有创建预设，不直接套用本地 Codex 的 `low|medium|high|xhigh` 展示语义。
+创建前调用 `models.list`（`backend=chatgpt_cloud`）会返回 `defaultModel`、两个 `creationModes`、`configurationModes`、`modelPresets`、实时完整 `models`、Node 本机 `advancedModels` 与实时 `thinkingOptions`。创建返回模式始终只有 `quick_chat|complete` 两个；参数配置另分为 `preset|advanced`，且任一配置都可搭配任一创建返回模式。预设配置直接选择官方返回的有效组合。高级模型由 Node data-dir 下的 `chatgpt-advanced-models.json` 管理，不写死在项目源码，也不同步 Hub；本地 Node UI 可新增、编辑或删除。思考档位每次从 ChatGPT 模型目录的 presets/slider 数据提取，当前仍为 Medium (`standard`)、High (`extended`) 与 Extra High (`max`)；Auto 是本地“不发送 thinking_effort”的选择。高级组合可能被 ChatGPT 服务端解析到其它 `resolved_model_slug`，调用方不得把请求别名宣称为确定的底层模型。
 
 `chatgpt_cloud` 的操作映射（`providerId=codex` + `backend=chatgpt_cloud`）：
 
 | `ai_control` | chatgpt_cloud 后端 |
 |---|---|
-| `models.list` | `GET /backend-api/models`；返回 Chat 云端 `defaultModel + creationModes + modelPresets`，与 Codex/工作模型分开 |
+| `models.list` | `GET /backend-api/models`；返回实时 presets/thinking，加上 Node 本机配置的 `advancedModels`，与 Codex/工作模型分开 |
 | `session.create` | `mode=complete`：prepare 后等待完整 `POST /backend-api/f/conversation`；`mode=quick_chat`：跳过 prepare，拿到 conversation UUID 即返回，后台排空流 |
 | `session.send` | follow-up（`conversation_id` + `parent_message_id`=最后 assistant 消息，自动解析） |
 | `session.get` | `GET /backend-api/conversation/{id}`（mapping 全量消息） |

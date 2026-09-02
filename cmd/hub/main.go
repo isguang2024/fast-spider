@@ -27,7 +27,7 @@ func main() {
 	dataDir := flag.String("data-dir", "./data", "Hub data directory")
 	releaseDir := flag.String("release-dir", "", "signed Node/component release directory; defaults to <data-dir>-releases")
 	allowedHosts := flag.String("allowed-hosts", "localhost,127.0.0.1", "comma-separated Host allowlist; use the public Hub hostname in production")
-	publicBaseURL := flag.String("public-base-url", "", "public Hub base URL used for MCP OAuth discovery, for example https://sharedservices.example/fast-spider")
+	publicBaseURL := flag.String("public-base-url", "", "public Hub base URL used for MCP OAuth discovery, for example https://hub.example/fast-spider")
 	oauthRedirectHosts := flag.String("oauth-redirect-hosts", "chatgpt.com,localhost,127.0.0.1,::1", "comma-separated OAuth redirect host allowlist")
 	adminPassword := flag.String("admin-password", "", "one-time administrator password; prefer FAST_SPIDER_ADMIN_PASSWORD to avoid process listings")
 	showVersion := flag.Bool("version", false, "print Fast Spider version and exit")

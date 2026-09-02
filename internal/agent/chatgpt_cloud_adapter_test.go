@@ -191,6 +191,68 @@ func TestChatGPTCloudCreateBodiesCarryThinkingEffort(t *testing.T) {
 	if _, ok := chatgptQuickChatBody("quick", "auto")["thinking_effort"]; ok {
 		t.Fatal("quick body sent an unselected thinking effort")
 	}
+	followUp := chatgptFollowUpBodyWithThinking("conversation-1", "assistant-1", "continue", "gpt-5-6-thinking", "max")
+	if got := mapString(followUp, "model"); got != "gpt-5-6-thinking" {
+		t.Fatalf("follow-up model=%q", got)
+	}
+	if got := mapString(followUp, "thinking_effort"); got != "max" {
+		t.Fatalf("follow-up thinking_effort=%q", got)
+	}
+}
+
+func TestChatGPTCloudSendInheritsInitialModelAndThinking(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/conversation/cloud-follow-up" {
+			http.NotFound(w, r)
+			return
+		}
+		writeChatGPTCloudTestJSON(t, w, map[string]any{
+			"conversation_id":    "cloud-follow-up",
+			"current_node":       "assistant-later",
+			"default_model_slug": "gpt-5-mini",
+			"mapping": map[string]any{
+				"root": map[string]any{"id": "root", "parent": nil, "message": nil},
+				"assistant-first": map[string]any{
+					"id": "assistant-first", "parent": "root",
+					"message": map[string]any{
+						"id": "assistant-first", "author": map[string]any{"role": "assistant"}, "create_time": 1.0,
+						"metadata": map[string]any{"default_model_slug": "gpt-5-6-thinking", "model_slug": "gpt-5-6-thinking", "thinking_effort": "max"},
+					},
+				},
+				"user-later": map[string]any{
+					"id": "user-later", "parent": "assistant-first",
+					"message": map[string]any{"id": "user-later", "author": map[string]any{"role": "user"}, "create_time": 2.0},
+				},
+				"assistant-later": map[string]any{
+					"id": "assistant-later", "parent": "user-later",
+					"message": map[string]any{
+						"id": "assistant-later", "author": map[string]any{"role": "assistant"}, "create_time": 3.0,
+						"metadata": map[string]any{"requested_model_slug": "gpt-5-6", "default_model_slug": "gpt-5-mini", "model_slug": "gpt-5-mini"},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	adapter := NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token", nil })
+	adapter.baseURL = server.URL
+	adapter.http = server.Client()
+	var parent, model, thinking string
+	adapter.sendOverride = func(_ context.Context, _, parentMessageID, _, selectedModel, selectedThinking string) (chatgptCloudTurnResult, error) {
+		parent, model, thinking = parentMessageID, selectedModel, selectedThinking
+		return chatgptCloudTurnResult{ConversationID: "cloud-follow-up"}, nil
+	}
+	result, err := adapter.SendWithThinking(context.Background(), "cloud-follow-up", "", "continue", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parent != "assistant-later" || model != "gpt-5-6-thinking" || thinking != "max" {
+		t.Fatalf("parent=%q model=%q thinking=%q", parent, model, thinking)
+	}
+	if result.Model != model || result.Thinking != thinking {
+		t.Fatalf("result=%+v", result)
+	}
 }
 
 func TestChatGPTCloudModelsReturnsCreationModesAndModelPresets(t *testing.T) {
@@ -228,6 +290,10 @@ func TestChatGPTCloudModelsReturnsCreationModesAndModelPresets(t *testing.T) {
 	modes, _ := catalog["creationModes"].([]map[string]any)
 	if len(modes) != 2 || modes[0]["id"] != "quick_chat" || modes[1]["id"] != "complete" {
 		t.Fatalf("creationModes=%#v", modes)
+	}
+	thinkingOptions, _ := catalog["thinkingOptions"].([]ChatGPTThinkingOption)
+	if len(thinkingOptions) != 2 || thinkingOptions[0].ID != "auto" || thinkingOptions[1].Value != "extended" || thinkingOptions[1].Source != "chatgpt_cloud" {
+		t.Fatalf("thinkingOptions=%#v", thinkingOptions)
 	}
 	presets, _ := catalog["modelPresets"].([]map[string]any)
 	if len(presets) != 2 || presets[1]["model"] != "gpt-5-6-thinking" || presets[1]["thinking"] != "extended" {

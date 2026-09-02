@@ -276,11 +276,11 @@ type aiControlInput struct {
 	Backend               string              `json:"backend,omitempty" jsonschema:"session.create backend: codex_local, claude_local, or chatgpt_cloud"`
 	VisibilityTarget      string              `json:"visibilityTarget,omitempty" jsonschema:"session.create target: codex_local, claude_local, chatgpt_cloud, or none"`
 	Ephemeral             *bool               `json:"ephemeral,omitempty" jsonschema:"session.create: internal Codex default true; persistent internal=false"`
-	Mode                  string              `json:"mode,omitempty" jsonschema:"provider.readiness: passive|safe; single chatgpt_cloud session.create entry: quick_chat returns after creation, complete waits for the first answer"`
+	Mode                  string              `json:"mode,omitempty" jsonschema:"provider.readiness: passive|safe; chatgpt_cloud creation return mode remains quick_chat or complete for both preset and advanced configuration"`
 	Prompt                string              `json:"prompt,omitempty" jsonschema:"text for session.create/send/steer"`
 	WorkingDirectory      string              `json:"workingDirectory,omitempty" jsonschema:"absolute working directory; required for session.create"`
-	Model                 string              `json:"model,omitempty" jsonschema:"optional provider model ID"`
-	Thinking              string              `json:"thinking,omitempty" jsonschema:"optional provider reasoning effort; chatgpt_cloud creation presets currently use standard,extended,or max with a thinking model"`
+	Model                 string              `json:"model,omitempty" jsonschema:"optional provider model ID; chatgpt_cloud session.send inherits the first turn model when omitted"`
+	Thinking              string              `json:"thinking,omitempty" jsonschema:"optional provider reasoning effort; chatgpt_cloud session.send inherits the first turn effort when omitted"`
 	Cursor                int64               `json:"cursor,omitempty" jsonschema:"last consumed normalized event sequence"`
 	WaitSeconds           int64               `json:"waitSeconds,omitempty" jsonschema:"session.watch long-poll from 0 to 15 seconds"`
 	Limit                 int                 `json:"limit,omitempty" jsonschema:"session.list maximum, default 50 and maximum 100"`

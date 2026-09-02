@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -43,6 +44,7 @@ type ChatGPTCloudAdapter struct {
 	conduitMu             sync.Mutex
 	conduitByConversation map[string]string
 	createOverride        func(context.Context, string, string) (chatgptCloudTurnResult, error)
+	sendOverride          func(context.Context, string, string, string, string, string) (chatgptCloudTurnResult, error)
 }
 
 type chatgptCloudTurnResult struct {
@@ -52,6 +54,8 @@ type chatgptCloudTurnResult struct {
 	TurnExchangeID string
 	ChimeVersion   any
 	AsyncStatus    any
+	Model          string
+	Thinking       string
 }
 
 type chatgptCloudMessage struct {
@@ -217,7 +221,13 @@ func chatgptApplyThinkingEffort(body map[string]any, thinking string) {
 }
 
 func chatgptFollowUpBody(conversationID, parentMessageID, prompt, model string) map[string]any {
-	return chatgptConversationBody(prompt, model, conversationID, parentMessageID, "sent")
+	return chatgptFollowUpBodyWithThinking(conversationID, parentMessageID, prompt, model, "")
+}
+
+func chatgptFollowUpBodyWithThinking(conversationID, parentMessageID, prompt, model, thinking string) map[string]any {
+	body := chatgptConversationBody(prompt, model, conversationID, parentMessageID, "sent")
+	chatgptApplyThinkingEffort(body, thinking)
+	return body
 }
 
 func chatgptConversationBody(prompt, model, conversationID, parentMessageID, prepareState string) map[string]any {
@@ -555,26 +565,51 @@ func (a *ChatGPTCloudAdapter) CreateQuickWithThinking(ctx context.Context, promp
 // Send appends a follow-up message to an existing conversation. If parentMessageID
 // is empty it is resolved to the latest assistant message (like the official client).
 func (a *ChatGPTCloudAdapter) Send(ctx context.Context, conversationID, parentMessageID, prompt, model string) (chatgptCloudTurnResult, error) {
+	return a.SendWithThinking(ctx, conversationID, parentMessageID, prompt, model, "")
+}
+
+// SendWithThinking appends a follow-up while preserving the model and reasoning
+// effort selected for the conversation's first assistant turn unless explicitly
+// overridden by the caller.
+func (a *ChatGPTCloudAdapter) SendWithThinking(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking string) (chatgptCloudTurnResult, error) {
 	if conversationID == "" {
 		return chatgptCloudTurnResult{}, fmt.Errorf("conversationId is required")
 	}
 	if strings.TrimSpace(prompt) == "" {
 		return chatgptCloudTurnResult{}, fmt.Errorf("message text is required")
 	}
-	if parentMessageID == "" {
+	if parentMessageID == "" || strings.TrimSpace(model) == "" || strings.TrimSpace(thinking) == "" {
 		detail, err := a.Read(ctx, conversationID)
 		if err != nil {
-			return chatgptCloudTurnResult{}, fmt.Errorf("resolve parent message: %w", err)
+			return chatgptCloudTurnResult{}, fmt.Errorf("resolve follow-up state: %w", err)
 		}
-		parentMessageID = chatgptCloudLastAssistantID(detail)
 		if parentMessageID == "" {
-			parentMessageID = chatgptCloudLastMessageID(detail)
+			parentMessageID = chatgptCloudLastAssistantID(detail)
+			if parentMessageID == "" {
+				parentMessageID = chatgptCloudLastMessageID(detail)
+			}
+		}
+		inheritedModel, inheritedThinking := chatgptCloudInitialSelection(detail)
+		if strings.TrimSpace(model) == "" {
+			model = inheritedModel
+		}
+		if strings.TrimSpace(thinking) == "" {
+			thinking = inheritedThinking
 		}
 	}
 	if parentMessageID == "" {
 		return chatgptCloudTurnResult{}, fmt.Errorf("could not resolve a parent message for the conversation")
 	}
-	return a.sendTurn(ctx, chatgptFollowUpBody(conversationID, parentMessageID, prompt, model))
+	var result chatgptCloudTurnResult
+	var err error
+	if a.sendOverride != nil {
+		result, err = a.sendOverride(ctx, conversationID, parentMessageID, prompt, model, thinking)
+	} else {
+		result, err = a.sendTurn(ctx, chatgptFollowUpBodyWithThinking(conversationID, parentMessageID, prompt, model, thinking))
+	}
+	result.Model = strings.TrimSpace(model)
+	result.Thinking = strings.TrimSpace(thinking)
+	return result, err
 }
 
 // Steer appends a correction to an active compatible TPP turn through
@@ -702,6 +737,7 @@ func (a *ChatGPTCloudAdapter) Models(ctx context.Context) (map[string]any, error
 		}
 		models = append(models, model)
 	}
+	presets := chatgptCloudModelPresets(out.Versions, out.SliderSettings)
 	return map[string]any{
 		"models":       models,
 		"defaultModel": out.DefaultModelSlug,
@@ -709,7 +745,8 @@ func (a *ChatGPTCloudAdapter) Models(ctx context.Context) (map[string]any, error
 			{"id": "quick_chat", "title": "Quick chat", "returnPhase": "running"},
 			{"id": "complete", "title": "Wait for first answer", "returnPhase": "ready"},
 		},
-		"modelPresets": chatgptCloudModelPresets(out.Versions, out.SliderSettings),
+		"thinkingOptions": chatGPTThinkingOptions(presets),
+		"modelPresets":    presets,
 	}, nil
 }
 
@@ -803,22 +840,34 @@ func (a *ChatGPTCloudAdapter) Rename(ctx context.Context, conversationID, title 
 		return err
 	}
 	body, _ := json.Marshal(map[string]any{"title": title})
-	url := a.baseURL + strings.ReplaceAll(chatgptConversationDetail, "{id}", conversationID) + "/rename"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(body)))
-	if err != nil {
-		return err
+	url := a.baseURL + strings.ReplaceAll(chatgptConversationDetail, "{id}", conversationID)
+	for attempt := 0; attempt < 10; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, strings.NewReader(string(body)))
+		if err != nil {
+			return err
+		}
+		chatgptApplyCloudHeaders(req, token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := a.http.Do(req)
+		if err != nil {
+			return err
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return nil
+		}
+		if resp.StatusCode != http.StatusNotFound || attempt == 9 {
+			return fmt.Errorf("rename conversation returned %s", resp.Status)
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
-	chatgptApplyCloudHeaders(req, token)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := a.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("rename conversation returned %s", resp.Status)
-	}
-	return nil
+	return errors.New("rename conversation did not complete")
 }
 
 // Archive sets is_archived.
@@ -947,6 +996,60 @@ func chatgptNormalizeDetail(detail map[string]any) map[string]any {
 		out["chimeVersion"] = chimeVersion
 	}
 	return out
+}
+
+func chatgptCloudInitialSelection(detail map[string]any) (string, string) {
+	type candidate struct {
+		created float64
+		value   string
+	}
+	mapping, _ := detail["mapping"].(map[string]any)
+	models := make([]candidate, 0, len(mapping))
+	thinkingEfforts := make([]candidate, 0, len(mapping))
+	for _, raw := range mapping {
+		node, _ := raw.(map[string]any)
+		message, _ := node["message"].(map[string]any)
+		if message == nil || chatgptCloudMessageRole(message) != "assistant" {
+			continue
+		}
+		metadata, _ := message["metadata"].(map[string]any)
+		model := firstNonEmptyString(
+			mapString(metadata, "requested_model_slug"),
+			mapString(metadata, "default_model_slug"),
+			mapString(metadata, "model_slug"),
+			mapString(metadata, "resolved_model_slug"),
+		)
+		thinking := mapString(metadata, "thinking_effort")
+		created, _ := message["create_time"].(float64)
+		if model != "" {
+			models = append(models, candidate{created: created, value: model})
+		}
+		if thinking != "" {
+			thinkingEfforts = append(thinkingEfforts, candidate{created: created, value: thinking})
+		}
+	}
+	sortCandidates := func(candidates []candidate) {
+		sort.SliceStable(candidates, func(i, j int) bool {
+			if candidates[i].created == 0 {
+				return false
+			}
+			if candidates[j].created == 0 {
+				return true
+			}
+			return candidates[i].created < candidates[j].created
+		})
+	}
+	sortCandidates(models)
+	sortCandidates(thinkingEfforts)
+	model := mapString(detail, "model")
+	if len(models) > 0 {
+		model = models[0].value
+	}
+	thinking := ""
+	if len(thinkingEfforts) > 0 {
+		thinking = thinkingEfforts[0].value
+	}
+	return model, thinking
 }
 
 // chatgptCloudLastAssistantID returns the id of the newest assistant message node.

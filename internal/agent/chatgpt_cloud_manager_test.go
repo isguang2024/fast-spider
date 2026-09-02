@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -138,6 +139,94 @@ func TestChatGPTCloudSessionCreateRequiresIdempotencyKey(t *testing.T) {
 	}
 }
 
+func TestChatGPTCloudSessionArchiveRoutesToCloudConversation(t *testing.T) {
+	var archived any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/backend-api/conversation/cloud-archive-1" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		archived = body["is_archived"]
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	manager.chatgptCloud = NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token", nil })
+	manager.chatgptCloud.baseURL = server.URL
+	manager.chatgptCloud.http = server.Client()
+	result, err := manager.Control(context.Background(), "session.archive", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "sessionId": "cloud-archive-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived != true || result["archived"] != true {
+		t.Fatalf("archive body=%v result=%#v", archived, result)
+	}
+}
+
+func TestChatGPTCloudSessionRenamePatchesConversationTitle(t *testing.T) {
+	var title string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/backend-api/conversation/cloud-rename-1" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		title, _ = body["title"].(string)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	manager.chatgptCloud = NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token", nil })
+	manager.chatgptCloud.baseURL = server.URL
+	manager.chatgptCloud.http = server.Client()
+	result, err := manager.Control(context.Background(), "session.rename", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "sessionId": "cloud-rename-1", "name": "Advanced | Model | High",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if title != "Advanced | Model | High" || result["renamed"] != true {
+		t.Fatalf("rename title=%q result=%#v", title, result)
+	}
+}
+
+func TestChatGPTCloudSessionRenameRetriesNewConversation404(t *testing.T) {
+	var attempts int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts < 3 {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	manager.chatgptCloud = NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token", nil })
+	manager.chatgptCloud.baseURL = server.URL
+	manager.chatgptCloud.http = server.Client()
+	if _, err := manager.Control(context.Background(), "session.rename", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "sessionId": "cloud-rename-new", "name": "Advanced | Model | High",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 3 {
+		t.Fatalf("rename attempts=%d, want 3", attempts)
+	}
+}
+
 func TestChatGPTCloudQuickChatCreateReturnsRunningAndReplays(t *testing.T) {
 	manager := New(t.TempDir(), nil)
 	defer manager.Close(context.Background())
@@ -211,6 +300,51 @@ func TestChatGPTCloudSessionCreateTracksThinkingSelection(t *testing.T) {
 	conflicting["thinking"] = "max"
 	if _, err := manager.Control(context.Background(), "session.create", conflicting); err == nil {
 		t.Fatal("same idempotency key allowed the thinking selection to change")
+	}
+}
+
+func TestChatGPTCloudSessionSendInheritsInitialSelection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/conversation/cloud-inherit-send" {
+			http.NotFound(w, r)
+			return
+		}
+		writeChatGPTCloudTestJSON(t, w, map[string]any{
+			"conversation_id":    "cloud-inherit-send",
+			"current_node":       "assistant-1",
+			"default_model_slug": "gpt-5-6-thinking",
+			"mapping": map[string]any{
+				"assistant-1": map[string]any{
+					"id": "assistant-1", "parent": nil,
+					"message": map[string]any{
+						"id": "assistant-1", "author": map[string]any{"role": "assistant"}, "create_time": 1.0,
+						"metadata": map[string]any{"default_model_slug": "gpt-5-6-thinking", "model_slug": "gpt-5-6-thinking", "thinking_effort": "max"},
+					},
+				},
+			},
+		})
+	}))
+	defer server.Close()
+
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	manager.chatgptCloud.baseURL = server.URL
+	manager.chatgptCloud.http = server.Client()
+	manager.chatgptCloud.tokenSource = func(context.Context) (string, error) { return "token", nil }
+	var model, thinking string
+	manager.chatgptCloud.sendOverride = func(_ context.Context, _, _, _, selectedModel, selectedThinking string) (chatgptCloudTurnResult, error) {
+		model, thinking = selectedModel, selectedThinking
+		return chatgptCloudTurnResult{ConversationID: "cloud-inherit-send"}, nil
+	}
+	result, err := manager.Control(context.Background(), "session.send", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
+		"sessionId": "cloud-inherit-send", "prompt": "continue",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "gpt-5-6-thinking" || thinking != "max" || result["model"] != model || result["thinking"] != thinking {
+		t.Fatalf("model=%q thinking=%q result=%#v", model, thinking, result)
 	}
 }
 

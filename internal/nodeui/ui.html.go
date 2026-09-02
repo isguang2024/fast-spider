@@ -14,7 +14,7 @@ const localUIHTML = `<!doctype html>
     .layout{display:grid;grid-template-columns:190px minmax(0,1fr);gap:16px}.nav,.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px}.nav{padding:10px;height:max-content;position:sticky;top:18px}.nav button{width:100%;border:0;background:transparent;text-align:left;padding:10px 12px;border-radius:10px;color:var(--muted);margin:2px 0}.nav button.active{background:#171717;color:#fff}.content{min-width:0}.panel{padding:22px;margin-bottom:16px}.panel h2{font-size:18px;margin:0 0 5px}.copy{color:var(--muted);margin:0 0 18px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{display:grid;gap:6px}.field.full{grid-column:1/-1}.field span{font-weight:650}.field input,.field textarea{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:#fff;outline:none}.field textarea{min-height:150px;resize:vertical;line-height:1.55}.field input:focus,.field textarea:focus{border-color:#777}.secret-row{display:grid;grid-template-columns:1fr auto;gap:8px}.secondary,.primary,.danger{border-radius:10px;padding:9px 13px;border:1px solid var(--line);background:#fff}.primary{background:#171717;border-color:#171717;color:#fff}.danger{color:var(--bad)}.actions{display:flex;align-items:center;gap:10px;margin-top:16px;flex-wrap:wrap}.hint{color:var(--muted);font-size:12px}.message{display:none;margin:0 0 16px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}.message.show{display:block}.message.error{border-color:#f0b7b2;color:var(--bad);background:#fff7f6}
     .facts{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:18px}.fact{border:1px solid var(--line);background:var(--soft);border-radius:12px;padding:12px}.fact span{display:block;color:var(--muted);font-size:12px}.fact strong{display:block;margin-top:3px;word-break:break-word}.section{display:none}.section.active{display:block}.switch{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:var(--soft)}.switch input{width:18px;height:18px}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.advanced{margin-top:14px}.advanced summary{cursor:pointer;color:var(--muted)}[hidden]{display:none!important}
     .field select{width:100%;border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:#fff}.progress-track{height:8px;border-radius:999px;background:#e6e6e0;overflow:hidden;margin-top:9px}.progress-fill{height:100%;background:var(--ok);width:0}.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}.task-list{display:grid;gap:8px}.task-row{border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:var(--soft)}.task-row strong{display:block}.task-row small{color:var(--muted)}.empty{color:var(--muted);padding:8px 0}.workspace{display:grid;grid-template-columns:230px minmax(0,1fr);gap:12px}.file-list{display:grid;gap:6px;align-content:start}.file-list button{text-align:left;min-height:38px;padding:7px 9px}.markdown-view{min-height:250px;max-height:520px;overflow:auto;margin:0;padding:14px;border:1px solid var(--line);border-radius:10px;background:#20201e;color:#f5f5f0;white-space:pre-wrap;word-break:break-word}.subhead{font-size:14px;margin:0 0 10px}
-	.data-list{display:grid;gap:7px;margin-top:12px}.data-row{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding:7px 0}.data-row:last-child{border-bottom:0}.data-row span{color:var(--muted)}.data-row strong{text-align:right;word-break:break-word}.provider-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.provider-grid .panel{margin-bottom:0}.tag-list{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.tag{border:1px solid var(--line);border-radius:999px;background:var(--soft);padding:4px 8px;font-size:12px}.notice{border:1px solid var(--line);border-radius:12px;background:var(--soft);padding:12px 14px;color:var(--muted)}
+		.data-list{display:grid;gap:7px;margin-top:12px}.data-row{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding:7px 0}.data-row:last-child{border-bottom:0}.data-row span{color:var(--muted)}.data-row strong{text-align:right;word-break:break-word}.provider-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.provider-grid .panel{margin-bottom:0}.tag-list{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.tag{border:1px solid var(--line);border-radius:999px;background:var(--soft);padding:4px 8px;font-size:12px}.notice{border:1px solid var(--line);border-radius:12px;background:var(--soft);padding:12px 14px;color:var(--muted)}.advanced-model-list{display:grid;gap:12px;margin-top:16px}.advanced-model-row{border:1px solid var(--line);border-radius:12px;background:var(--soft);padding:14px}.advanced-model-fields{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) auto;gap:10px;align-items:end}.thinking-list{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.thinking-list .switch{background:#fff;padding:7px 9px}.thinking-list .switch input{width:16px;height:16px;min-height:0}
     @media(max-width:760px){body{font-size:16px}.layout{grid-template-columns:1fr}.nav{position:static;display:flex;gap:6px;overflow:auto}.nav button{text-align:center;white-space:nowrap}.grid,.facts,.split,.workspace,.provider-grid{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}.top-actions{width:100%;flex-wrap:wrap}.status{flex:1;justify-content:center}}
   </style>
 </head>
@@ -92,8 +92,8 @@ const localUIHTML = `<!doctype html>
               <div class="fact"><span>Markdown Workspace</span><strong id="working-workspace">未初始化</strong></div>
               <div class="fact"><span>Working Context revision</span><strong id="working-revision" class="mono">—</strong></div>
             </div>
-          </div>
-          <div class="panel">
+	          </div>
+	          <div class="panel">
             <div class="split">
               <div><h3 class="subhead">当前任务</h3><div id="working-current-tasks" class="task-list"><span class="empty">暂无</span></div></div>
               <div><h3 class="subhead">阻塞任务</h3><div id="working-blocked-tasks" class="task-list"><span class="empty">暂无</span></div></div>
@@ -208,9 +208,18 @@ const localUIHTML = `<!doctype html>
               </div>
               <details class="advanced"><summary>高级 / 开发环境选项</summary><div class="grid" style="margin-top:10px"><label class="field full"><span>浏览器 Sidecar 目录</span><input id="config-browser" maxlength="4096" placeholder="正常无需填写，Browser 组件安装后会自动配置"><small class="hint">只在本地开发或自定义 Sidecar 时手工设置。</small></label><label class="switch full"><input id="config-insecure" type="checkbox"><span><strong>允许本机开发 HTTP Hub</strong><br><small class="hint">正式环境保持关闭，只使用 HTTPS。</small></span></label></div></details>
               <div class="actions"><button class="primary" type="submit">保存本地配置</button><span id="data-dir" class="hint mono"></span></div>
-            </form>
-          </div>
-          <div class="panel">
+	            </form>
+	          </div>
+	          <div class="panel">
+				<h2>ChatGPT Cloud Advanced</h2>
+				<p class="copy">Preset 继续使用 ChatGPT 实时模型预设。这里只维护本机 Advanced 模型列表；Quick chat 与等待首个回答仍可分别搭配 Preset 或 Advanced。</p>
+				<div class="notice">思考档位在每次读取与保存时从 ChatGPT Cloud 实时模型目录确认。Auto 表示不发送 thinking_effort；模型别名最终可能被服务端解析为其他 resolved model。</div>
+				<form id="chatgpt-advanced-form">
+				  <div id="chatgpt-advanced-list" class="advanced-model-list"><span class="empty">切换到本页后读取</span></div>
+				  <div class="actions"><button id="chatgpt-advanced-add" class="secondary" type="button">新增模型</button><button class="primary" type="submit">保存 Advanced 列表</button><span id="chatgpt-advanced-file" class="hint mono"></span></div>
+				</form>
+	          </div>
+	          <div class="panel">
 			<h2>版本更新</h2>
 			<p class="copy">主程序更新包由当前 Hub 签名，并同时校验 SHA256；扩展能力请在“组件”页管理。</p>
             <div class="facts">
@@ -269,6 +278,8 @@ const localUIHTML = `<!doctype html>
 	let oplogBusy = false;
 	let oplogOffset = 0;
 	let oplogTotal = 0;
+	let chatGPTAdvancedBusy = false;
+	let chatGPTThinkingOptions = [];
 
   async function api(path, options = {}) {
     const headers = Object.assign({'X-Fast-Spider-UI-Token': token}, options.headers || {});
@@ -366,7 +377,7 @@ const localUIHTML = `<!doctype html>
   function escapeText(value) {
     const span=document.createElement('span'); span.textContent=value || ''; return span.innerHTML;
   }
-  function escapeAttr(value) {
+	function escapeAttr(value) {
     return escapeText(value).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
@@ -375,6 +386,27 @@ const localUIHTML = `<!doctype html>
 	  const box=$(id); box.textContent='';
 	  if(!Array.isArray(values) || !values.length){const empty=document.createElement('span');empty.className='empty';empty.textContent='暂无';box.appendChild(empty);return;}
 	  values.forEach(value=>{const tag=document.createElement('span');tag.className='tag';tag.textContent=formatter ? formatter(value) : String(value);box.appendChild(tag);});
+	}
+	function advancedModelRow(model) {
+	  const row=document.createElement('div'); row.className='advanced-model-row';
+	  const fields=document.createElement('div'); fields.className='advanced-model-fields';
+	  const idLabel=document.createElement('label'); idLabel.className='field'; idLabel.innerHTML='<span>模型 ID</span><input class="advanced-model-id" maxlength="256" required placeholder="gpt-5.6-terra-wm">'; idLabel.querySelector('input').value=model.id || '';
+	  const titleLabel=document.createElement('label'); titleLabel.className='field'; titleLabel.innerHTML='<span>显示名称</span><input class="advanced-model-title" maxlength="128" required placeholder="GPT-5.6 Terra">'; titleLabel.querySelector('input').value=model.title || '';
+	  const remove=document.createElement('button'); remove.type='button'; remove.className='danger'; remove.textContent='删除'; remove.addEventListener('click',()=>row.remove());
+	  fields.append(idLabel,titleLabel,remove); row.appendChild(fields);
+	  const thinking=document.createElement('div'); thinking.className='thinking-list'; const selected=new Set(model.thinking || []);
+	  chatGPTThinkingOptions.forEach(option=>{const label=document.createElement('label');label.className='switch';const input=document.createElement('input');input.type='checkbox';input.className='advanced-thinking';input.value=option.id;input.checked=selected.has(option.id);const text=document.createElement('span');text.textContent=option.title+(option.source==='chatgpt_cloud'?' · 官方':' · 默认');label.append(input,text);thinking.appendChild(label);});
+	  row.appendChild(thinking); return row;
+	}
+	function renderChatGPTAdvanced(data) {
+	  chatGPTThinkingOptions=Array.isArray(data.thinkingOptions)?data.thinkingOptions:[]; const box=$('chatgpt-advanced-list'); box.textContent='';
+	  const models=Array.isArray(data.models)?data.models:[]; models.forEach(model=>box.appendChild(advancedModelRow(model)));
+	  if(!models.length){const empty=document.createElement('span');empty.className='empty';empty.textContent='尚未配置 Advanced 模型，可点击“新增模型”。';box.appendChild(empty);}
+	  $('chatgpt-advanced-file').textContent=data.configFile ? '配置文件：'+data.configFile : '';
+	}
+	async function refreshChatGPTAdvanced() {
+	  if(chatGPTAdvancedBusy)return; chatGPTAdvancedBusy=true;
+	  try{renderChatGPTAdvanced(await api('/api/chatgpt-advanced-models'));}catch(e){message(e.message,true);}finally{chatGPTAdvancedBusy=false;}
 	}
 	function renderData(id, rows) {
 	  const box=$(id); box.textContent='';
@@ -522,8 +554,9 @@ const localUIHTML = `<!doctype html>
     if (button.dataset.tab === 'working' && $('working-project').value.trim()) refreshWorking();
 	if (button.dataset.tab === 'ai') refreshAI();
 	if (button.dataset.tab === 'diagnostics') refreshDiagnostics();
-	if (button.dataset.tab === 'components') refreshComponents();
-  }));
+		if (button.dataset.tab === 'components') refreshComponents();
+		if (button.dataset.tab === 'config') refreshChatGPTAdvanced();
+	  }));
 	$('ai-refresh').addEventListener('click',refreshAI);
 	$('diagnostics-refresh').addEventListener('click',refreshDiagnostics);
 		$('components-refresh').addEventListener('click',refreshComponents);
@@ -575,7 +608,7 @@ const localUIHTML = `<!doctype html>
   $('config-form').addEventListener('input', () => { configDirty = true; });
   $('config-form').addEventListener('change', () => { configDirty = true; });
 
-  $('config-form').addEventListener('submit', async event => {
+	$('config-form').addEventListener('submit', async event => {
     event.preventDefault(); if (busy) return; busy=true; const submit = event.currentTarget.querySelector('button[type="submit"]'); submit.disabled=true;
     try {
       const data = await api('/api/config',{method:'POST',body:JSON.stringify(localConfigPayload($('config-codex-session-managed').checked, true))});
@@ -594,6 +627,11 @@ const localUIHTML = `<!doctype html>
 			const data = await api('/api/config',{method:'POST',body:JSON.stringify(localConfigPayload(selected, true))});
 			configDirty = false; renderStatus(data); message(selected ? '已启用 FS 接管模式。' : '已启用 Codex 共享模式；FS 不会再认领本地 Desktop 会话。');
 		} catch (e) { message(e.message,true); } finally { busy=false; submit.disabled=false; }
+	});
+	$('chatgpt-advanced-add').addEventListener('click',()=>{const box=$('chatgpt-advanced-list');const empty=box.querySelector('.empty');if(empty)empty.remove();box.appendChild(advancedModelRow({thinking:chatGPTThinkingOptions.map(option=>option.id)}));});
+	$('chatgpt-advanced-form').addEventListener('submit',async event=>{
+	  event.preventDefault();if(chatGPTAdvancedBusy)return;chatGPTAdvancedBusy=true;const submit=event.currentTarget.querySelector('button[type="submit"]');submit.disabled=true;
+	  try{const models=Array.from(document.querySelectorAll('.advanced-model-row')).map(row=>({id:row.querySelector('.advanced-model-id').value.trim(),title:row.querySelector('.advanced-model-title').value.trim(),thinking:Array.from(row.querySelectorAll('.advanced-thinking:checked')).map(input=>input.value)}));const data=await api('/api/chatgpt-advanced-models',{method:'POST',body:JSON.stringify({version:1,models})});renderChatGPTAdvanced(data);message('ChatGPT Advanced 模型列表已保存到本机 Node。');}catch(e){message(e.message,true);}finally{chatGPTAdvancedBusy=false;submit.disabled=false;}
 	});
 
   $('update-check').addEventListener('click', async () => {

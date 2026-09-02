@@ -12,6 +12,36 @@ Public repositories should not contain:
 - tokens, credentials, backups, logs, or generated artifacts;
 - internal task tracking documents.
 
+## If the repository is already public
+
+A clean working tree or a clean current commit does not prove that a public
+repository's history is clean. If an earlier commit contained deployment
+records, machine identifiers, private paths, generated bundles or credentials,
+deleting the file later does not remove it from Git objects available to the
+public.
+
+Before treating an existing public remote as safe, run the history scan from a
+full clone:
+
+```bash
+go run ./cmd/secretscan --history
+```
+
+For deployment-specific names that are not suitable for this repository, put
+one marker per line in the ignored `.local/public-private-markers.txt` and run:
+
+```bash
+go run ./cmd/secretscan --history \
+  --markers .local/public-private-markers.txt
+```
+
+A hit means the existing history must not be advertised as a clean public
+history.
+
+Use the export flow below to create a new one-commit public source snapshot.
+The export script never rewrites or pushes the source repository; replacing an
+already-public default branch is a separate, coordinated repository migration.
+
 ## Release flow
 
 The recommended flow is:
@@ -53,6 +83,8 @@ Before publishing:
 - review third-party licenses;
 - scan source and Git history for secrets;
 - verify deployment examples only use placeholder values;
+- verify deployment-specific Hub URLs stay in service environment/configuration,
+  not in source, examples or public release notes;
 - confirm `docs/progress`, `.local`, `.learnings`, runtime data, backups, logs and generated artifacts are not tracked;
 - confirm README and docs do not contain production-only hosts, private paths, machine names or real backup evidence.
 

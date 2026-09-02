@@ -15,11 +15,40 @@ Fast Spider uses command-line flags for most runtime configuration. Environment 
 | `--admin-password` | empty | One-time administrator password. Prefer `FAST_SPIDER_ADMIN_PASSWORD`. |
 | `--version` | false | Print version and exit. |
 
+## Deployment URL policy
+
+The public Hub URL is deployment configuration, not a compiled-in project
+default. Set `--public-base-url` to the exact HTTPS origin that external
+clients can reach. The value may include a path prefix such as
+`https://hub.example/fast-spider`; OAuth metadata, redirects and generated
+resource URLs will use that prefix.
+
+`--allowed-hosts` accepts hostnames only (no scheme or path). Include the
+public hostname and keep loopback entries when local health checks or Node
+connections are needed:
+
+```bash
+go run ./cmd/hub \
+  --listen 127.0.0.1:8787 \
+  --data-dir ./data \
+  --allowed-hosts localhost,127.0.0.1,hub.example \
+  --public-base-url https://hub.example
+```
+
+For a reverse-proxy subpath, keep the prefix in `--public-base-url` and route
+the public `/fast-spider/...` requests to the Hub's root routes. The proxy
+must also terminate TLS and preserve the documented forwarded-IP headers.
+When the hostname or prefix changes, restart Hub with the new value, update
+Node connection settings and reconnect external MCP/OAuth clients.
+
 ## Environment variables
 
 | Variable | Required | Description |
 |---|---:|---|
 | `FAST_SPIDER_ADMIN_PASSWORD` | first Hub startup / admin rotation | One-time administrator password. Prefer this over `--admin-password` so secrets are not visible in process listings. |
+| `FAST_SPIDER_ALLOWED_HOSTS` | service launcher | Host allowlist passed to `--allowed-hosts` by the systemd template or another launcher. |
+| `FAST_SPIDER_PUBLIC_BASE_URL` | service launcher | Canonical external URL passed to `--public-base-url`; keep it outside the public source tree. |
+| `FAST_SPIDER_OAUTH_REDIRECT_HOSTS` | service launcher | OAuth redirect host allowlist passed to `--oauth-redirect-hosts`. |
 | `FAST_SPIDER_CODEX_EXECUTABLE` | no | Absolute path override for the Codex executable used by Node. |
 | `FAST_SPIDER_CODEX_APP_SERVER_SOCKET` | no | Optional explicit socket path for an externally owned Codex app-server proxy. |
 | `FAST_SPIDER_CODEX_DESKTOP_BRIDGE` | no | Compatibility fallback for headless Node processes without Node UI local configuration. Set `0`/`false` to disable the local Codex Desktop owner/control IPC bridge; set `1`/`true` to require it explicitly on Windows. The Node UI's Codex session-mode setting takes precedence. It does not replace Fast Spider's app-server and does not yet provide native Desktop live-history streaming. |

@@ -88,6 +88,7 @@ type AgentManager struct {
 	chatgptCloud    *ChatGPTCloudAdapter
 	ccswitch        *CCSwitchInspector
 	logger          *slog.Logger
+	dataDir         string
 	codexStatePath  string
 	registry        providerRegistry
 	createStore     *sessionCreateStore
@@ -104,6 +105,7 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 		claude:          NewClaudeCodeAdapter(dataDir, ccswitch, logger),
 		ccswitch:        ccswitch,
 		logger:          logger,
+		dataDir:         dataDir,
 		codexStatePath:  defaultCodexDesktopStatePath(),
 		registry:        staticProviderRegistry(),
 		createStore:     newSessionCreateStore(dataDir),
