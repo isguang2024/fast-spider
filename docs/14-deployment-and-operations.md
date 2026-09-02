@@ -1,4 +1,4 @@
-# 部署与运维（0.4.32）
+# 部署与运维（0.4.33）
 
 ## Hub
 
@@ -31,7 +31,7 @@ Hub 只监听 loopback 时会把反向代理视为可信来源，因此代理必
 
 Windows 对外交付 `fast-spider-node.exe`；macOS 交付 `darwin-arm64`（Apple Silicon）和 `darwin-amd64`（Intel）两个单文件客户端。macOS 下载后需要执行 `chmod +x fast-spider-node`。Windows 第一次运行后正式副本位于 `%LOCALAPPDATA%\FastSpider\bin\fast-spider-node.exe`；macOS 使用当前用户配置目录保存 Node 状态。
 
-客户端只有“连接”和“本地配置”等本机运行设置，不需要登记目录。连接后的文件/进程权限就是当前 OS 用户权限。
+客户端只有“连接”和“本地配置”等本机运行设置，不需要登记目录。连接后的文件/进程权限就是当前 OS 用户权限。本地配置可设置 ChatGPT Cloud 新建会话默认使用 Quick chat 或 Complete，以及默认模型和思考程度；单次请求明确传入的值优先，续聊继续继承原会话。
 
 ### AI Runtime
 

@@ -71,6 +71,8 @@ type agentControlParams struct {
 	ReviewSHA             string              `json:"reviewSha,omitempty"`
 	ReviewTitle           string              `json:"reviewTitle,omitempty"`
 	ReviewInstructions    string              `json:"reviewInstructions,omitempty"`
+	modelProvided         bool
+	thinkingProvided      bool
 }
 
 type agentSkillInput struct {
@@ -83,16 +85,24 @@ type agentMentionInput struct {
 }
 
 type AgentManager struct {
-	codex           *CodexAdapter
-	claude          *ClaudeCodeAdapter
-	chatgptCloud    *ChatGPTCloudAdapter
-	ccswitch        *CCSwitchInspector
-	logger          *slog.Logger
-	dataDir         string
-	codexStatePath  string
-	registry        providerRegistry
-	createStore     *sessionCreateStore
-	visibilityStore *sessionVisibilityStore
+	codex             *CodexAdapter
+	claude            *ClaudeCodeAdapter
+	chatgptCloud      *ChatGPTCloudAdapter
+	ccswitch          *CCSwitchInspector
+	logger            *slog.Logger
+	dataDir           string
+	codexStatePath    string
+	registry          providerRegistry
+	createStore       *sessionCreateStore
+	visibilityStore   *sessionVisibilityStore
+	chatgptDefaultsMu sync.RWMutex
+	chatgptDefaults   chatGPTCloudCreateDefaults
+}
+
+type chatGPTCloudCreateDefaults struct {
+	Mode     string
+	Model    string
+	Thinking string
 }
 
 func New(dataDir string, logger *slog.Logger) *AgentManager {
@@ -110,6 +120,7 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 		registry:        staticProviderRegistry(),
 		createStore:     newSessionCreateStore(dataDir),
 		visibilityStore: newSessionVisibilityStore(dataDir),
+		chatgptDefaults: chatGPTCloudCreateDefaults{Mode: "complete"},
 	}
 	manager.chatgptCloud = NewChatGPTCloudAdapter(logger, func(ctx context.Context) (string, error) {
 		return manager.codex.AuthToken(ctx)
@@ -148,6 +159,33 @@ func (m *AgentManager) SetCodexDesktopBridgeEnabled(enabled bool) {
 	}
 }
 
+// SetChatGPTCloudCreateDefaults updates the local Node defaults used only when
+// a ChatGPT Cloud session.create request omits the corresponding field.
+func (m *AgentManager) SetChatGPTCloudCreateDefaults(mode, model, thinking string) {
+	if m == nil {
+		return
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		mode = "complete"
+	}
+	m.chatgptDefaultsMu.Lock()
+	m.chatgptDefaults = chatGPTCloudCreateDefaults{
+		Mode: mode, Model: strings.TrimSpace(model), Thinking: strings.ToLower(strings.TrimSpace(thinking)),
+	}
+	m.chatgptDefaultsMu.Unlock()
+}
+
+func (m *AgentManager) chatGPTCloudCreateDefaults() chatGPTCloudCreateDefaults {
+	if m == nil {
+		return chatGPTCloudCreateDefaults{Mode: "complete"}
+	}
+	m.chatgptDefaultsMu.RLock()
+	defaults := m.chatgptDefaults
+	m.chatgptDefaultsMu.RUnlock()
+	return defaults
+}
+
 func (m *AgentManager) ownsCodexDesktopMetadata() bool {
 	return m == nil || m.codex == nil || !m.codex.usesExternalAppServer()
 }
@@ -160,6 +198,8 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 	if err := decodeParams(params, &input); err != nil {
 		return nil, fmt.Errorf("invalid params: %w", err)
 	}
+	_, input.modelProvided = params["model"]
+	_, input.thinkingProvided = params["thinking"]
 	if action == "routing.status" {
 		return m.routingStatus(ctx, input)
 	}

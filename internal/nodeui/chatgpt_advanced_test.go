@@ -19,7 +19,7 @@ func (chatGPTAdvancedTestAgent) Control(_ context.Context, action string, _ map[
 	if action != "models.list" {
 		return map[string]any{}, nil
 	}
-	return map[string]any{"thinkingOptions": []agent.ChatGPTThinkingOption{
+	return map[string]any{"models": []map[string]any{{"id": "gpt-5-6-thinking", "title": "GPT-5.6 Thinking"}}, "creationModes": []map[string]any{{"id": "quick_chat"}, {"id": "complete"}}, "defaultModel": "gpt-5-6-thinking", "thinkingOptions": []agent.ChatGPTThinkingOption{
 		{ID: "auto", Title: "Auto", Value: "", Source: "local_default"},
 		{ID: "standard", Title: "Medium", Value: "standard", Source: "chatgpt_cloud"},
 		{ID: "extended", Title: "High", Value: "extended", Source: "chatgpt_cloud"},
@@ -75,7 +75,7 @@ func TestLocalUIManagesChatGPTAdvancedModelsInNodeDataDir(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
-	if len(result.ThinkingOptions) != 4 || result.ThinkingOptions[2].ID != "extended" || result.ConfigFile == "" {
+	if len(result.ThinkingOptions) != 4 || result.ThinkingOptions[2].ID != "extended" || len(result.LiveModels) != 1 || result.LiveModels[0]["id"] != "gpt-5-6-thinking" || len(result.CreationModes) != 2 || result.ConfigFile == "" {
 		t.Fatalf("advanced response=%+v", result)
 	}
 }
@@ -98,7 +98,7 @@ func TestLocalUIRejectsStaleChatGPTThinkingOption(t *testing.T) {
 }
 
 func TestLocalUIContainsChatGPTAdvancedEditor(t *testing.T) {
-	for _, needle := range []string{"ChatGPT Cloud Advanced", `id="chatgpt-advanced-form"`, "/api/chatgpt-advanced-models", "Quick chat 与等待首个回答"} {
+	for _, needle := range []string{"ChatGPT Cloud Advanced", `id="chatgpt-advanced-form"`, "/api/chatgpt-advanced-models", "Quick chat 与等待首个回答", `id="config-chatgpt-mode"`, `id="config-chatgpt-model"`, `id="config-chatgpt-thinking"`, "续聊仍继承原会话"} {
 		if !bytes.Contains([]byte(localUIHTML), []byte(needle)) {
 			t.Fatalf("local UI missing %q", needle)
 		}

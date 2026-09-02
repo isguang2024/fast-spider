@@ -8,6 +8,15 @@ semantic versioning for public releases.
 - Add public CI, governance, support and maintainer workflow documentation.
 - Document the current early-stage public project status and contribution path.
 
+## 0.4.33 - 2026-09-02
+
+- Add Node-local defaults for ChatGPT Cloud creation mode, model and reasoning
+  effort, configurable from the local client without restarting the Node.
+- Preserve explicit per-request selections, including Auto, and keep follow-up
+  messages inheriting the original conversation model and reasoning effort.
+- Populate default model and reasoning choices from the live ChatGPT catalog
+  together with the user-maintained Advanced model list.
+
 ## 0.4.32 - 2026-09-02
 
 - Separate ChatGPT Cloud quick/complete return modes from preset/advanced model

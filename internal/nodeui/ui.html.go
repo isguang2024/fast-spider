@@ -13,7 +13,7 @@ const localUIHTML = `<!doctype html>
     button,input,textarea,select{font:inherit}button,input,select{min-height:44px}button{cursor:pointer}button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,summary:focus-visible{outline:2px solid #4f4f49;outline-offset:2px}.shell{width:min(1100px,calc(100% - 28px));margin:24px auto 50px}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.brand{display:flex;align-items:center;gap:12px}.logo{width:38px;height:38px;border-radius:11px;background:#171717;color:#fff;display:grid;place-items:center;font-weight:800}.brand h1{font-size:18px;margin:0}.brand small{display:block;color:var(--muted);margin-top:1px}.top-actions{display:flex;align-items:center;gap:8px}.status{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--panel);padding:8px 12px;border-radius:999px}.dot{width:8px;height:8px;border-radius:50%;background:#999}.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
     .layout{display:grid;grid-template-columns:190px minmax(0,1fr);gap:16px}.nav,.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px}.nav{padding:10px;height:max-content;position:sticky;top:18px}.nav button{width:100%;border:0;background:transparent;text-align:left;padding:10px 12px;border-radius:10px;color:var(--muted);margin:2px 0}.nav button.active{background:#171717;color:#fff}.content{min-width:0}.panel{padding:22px;margin-bottom:16px}.panel h2{font-size:18px;margin:0 0 5px}.copy{color:var(--muted);margin:0 0 18px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{display:grid;gap:6px}.field.full{grid-column:1/-1}.field span{font-weight:650}.field input,.field textarea{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:#fff;outline:none}.field textarea{min-height:150px;resize:vertical;line-height:1.55}.field input:focus,.field textarea:focus{border-color:#777}.secret-row{display:grid;grid-template-columns:1fr auto;gap:8px}.secondary,.primary,.danger{border-radius:10px;padding:9px 13px;border:1px solid var(--line);background:#fff}.primary{background:#171717;border-color:#171717;color:#fff}.danger{color:var(--bad)}.actions{display:flex;align-items:center;gap:10px;margin-top:16px;flex-wrap:wrap}.hint{color:var(--muted);font-size:12px}.message{display:none;margin:0 0 16px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}.message.show{display:block}.message.error{border-color:#f0b7b2;color:var(--bad);background:#fff7f6}
     .facts{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:18px}.fact{border:1px solid var(--line);background:var(--soft);border-radius:12px;padding:12px}.fact span{display:block;color:var(--muted);font-size:12px}.fact strong{display:block;margin-top:3px;word-break:break-word}.section{display:none}.section.active{display:block}.switch{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:var(--soft)}.switch input{width:18px;height:18px}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.advanced{margin-top:14px}.advanced summary{cursor:pointer;color:var(--muted)}[hidden]{display:none!important}
-    .field select{width:100%;border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:#fff}.progress-track{height:8px;border-radius:999px;background:#e6e6e0;overflow:hidden;margin-top:9px}.progress-fill{height:100%;background:var(--ok);width:0}.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}.task-list{display:grid;gap:8px}.task-row{border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:var(--soft)}.task-row strong{display:block}.task-row small{color:var(--muted)}.empty{color:var(--muted);padding:8px 0}.workspace{display:grid;grid-template-columns:230px minmax(0,1fr);gap:12px}.file-list{display:grid;gap:6px;align-content:start}.file-list button{text-align:left;min-height:38px;padding:7px 9px}.markdown-view{min-height:250px;max-height:520px;overflow:auto;margin:0;padding:14px;border:1px solid var(--line);border-radius:10px;background:#20201e;color:#f5f5f0;white-space:pre-wrap;word-break:break-word}.subhead{font-size:14px;margin:0 0 10px}
+	    .field select{width:100%;border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:#fff}.config-subsection{grid-column:1/-1;border-top:1px solid var(--line);padding-top:16px;margin-top:4px}.config-subsection strong{display:block}.progress-track{height:8px;border-radius:999px;background:#e6e6e0;overflow:hidden;margin-top:9px}.progress-fill{height:100%;background:var(--ok);width:0}.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}.task-list{display:grid;gap:8px}.task-row{border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:var(--soft)}.task-row strong{display:block}.task-row small{color:var(--muted)}.empty{color:var(--muted);padding:8px 0}.workspace{display:grid;grid-template-columns:230px minmax(0,1fr);gap:12px}.file-list{display:grid;gap:6px;align-content:start}.file-list button{text-align:left;min-height:38px;padding:7px 9px}.markdown-view{min-height:250px;max-height:520px;overflow:auto;margin:0;padding:14px;border:1px solid var(--line);border-radius:10px;background:#20201e;color:#f5f5f0;white-space:pre-wrap;word-break:break-word}.subhead{font-size:14px;margin:0 0 10px}
 		.data-list{display:grid;gap:7px;margin-top:12px}.data-row{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding:7px 0}.data-row:last-child{border-bottom:0}.data-row span{color:var(--muted)}.data-row strong{text-align:right;word-break:break-word}.provider-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.provider-grid .panel{margin-bottom:0}.tag-list{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.tag{border:1px solid var(--line);border-radius:999px;background:var(--soft);padding:4px 8px;font-size:12px}.notice{border:1px solid var(--line);border-radius:12px;background:var(--soft);padding:12px 14px;color:var(--muted)}.advanced-model-list{display:grid;gap:12px;margin-top:16px}.advanced-model-row{border:1px solid var(--line);border-radius:12px;background:var(--soft);padding:14px}.advanced-model-fields{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) auto;gap:10px;align-items:end}.thinking-list{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.thinking-list .switch{background:#fff;padding:7px 9px}.thinking-list .switch input{width:16px;height:16px;min-height:0}
     @media(max-width:760px){body{font-size:16px}.layout{grid-template-columns:1fr}.nav{position:static;display:flex;gap:6px;overflow:auto}.nav button{text-align:center;white-space:nowrap}.grid,.facts,.split,.workspace,.provider-grid{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}.top-actions{width:100%;flex-wrap:wrap}.status{flex:1;justify-content:center}}
   </style>
@@ -204,8 +204,12 @@ const localUIHTML = `<!doctype html>
 				<label class="switch"><input id="config-codex-session-shared" name="config-codex-session-mode" type="radio" value="shared"><span><strong>Codex 共享模式（推荐）</strong><br><small class="hint">不让 FS 通过 Codex Desktop IPC 认领已加载会话，避免 Desktop 显示“已在另一个应用中打开”。</small></span></label>
 				<label class="switch"><input id="config-codex-session-managed" name="config-codex-session-mode" type="radio" value="managed"><span><strong>Codex FS 接管模式</strong><br><small class="hint">启用 Desktop owner/control 联动；适合需要 FS 接管已加载本地会话的场景。</small></span></label>
                 <label class="switch"><input id="config-autostart" type="checkbox"><span><strong>登录 Windows 后自动启动</strong><br><small class="hint">登录后隐藏启动到系统托盘，不弹出配置页面；仍然是同一个 EXE。</small></span></label>
-                <label class="switch"><input id="config-autoupdate" type="checkbox"><span><strong>自动更新</strong><br><small class="hint">后台检查并下载新版本；下次启动时自动完成替换。</small></span></label>
-              </div>
+	                <label class="switch"><input id="config-autoupdate" type="checkbox"><span><strong>自动更新</strong><br><small class="hint">后台检查并下载新版本；下次启动时自动完成替换。</small></span></label>
+					<div class="config-subsection"><strong>ChatGPT Cloud 默认创建</strong><small class="hint">仅在创建请求没有明确填写时使用；单次创建的选择优先，续聊仍继承原会话。</small></div>
+					<label class="field"><span>默认返回模式</span><select id="config-chatgpt-mode"><option value="quick_chat">Quick chat · 立即返回</option><option value="complete">Complete · 等待首个回答</option></select></label>
+					<label class="field"><span>默认模型</span><select id="config-chatgpt-model"><option value="">Auto · 由 ChatGPT 选择</option></select><small class="hint">包含 ChatGPT 实时模型与本机 Advanced 模型。</small></label>
+					<label class="field"><span>默认思考程度</span><select id="config-chatgpt-thinking"><option value="">Auto · 不指定</option></select><small class="hint">可用档位从 ChatGPT Cloud 实时目录读取。</small></label>
+	              </div>
               <details class="advanced"><summary>高级 / 开发环境选项</summary><div class="grid" style="margin-top:10px"><label class="field full"><span>浏览器 Sidecar 目录</span><input id="config-browser" maxlength="4096" placeholder="正常无需填写，Browser 组件安装后会自动配置"><small class="hint">只在本地开发或自定义 Sidecar 时手工设置。</small></label><label class="switch full"><input id="config-insecure" type="checkbox"><span><strong>允许本机开发 HTTP Hub</strong><br><small class="hint">正式环境保持关闭，只使用 HTTPS。</small></span></label></div></details>
               <div class="actions"><button class="primary" type="submit">保存本地配置</button><span id="data-dir" class="hint mono"></span></div>
 	            </form>
@@ -329,9 +333,12 @@ const localUIHTML = `<!doctype html>
       $('config-autostart').checked = !!status.autoStartEnabled;
       $('config-autoupdate').checked = !!cfg.autoUpdateEnabled;
       $('config-insecure').checked = !!cfg.allowInsecureLocalHub;
-		$('config-codex-session-shared').checked = !codexManaged;
-		$('config-codex-session-managed').checked = codexManaged;
-    }
+			$('config-codex-session-shared').checked = !codexManaged;
+			$('config-codex-session-managed').checked = codexManaged;
+			setSelectValueWithFallback($('config-chatgpt-mode'),cfg.chatgptDefaultCreateMode || 'complete','已保存的返回模式');
+			setSelectValueWithFallback($('config-chatgpt-model'),cfg.chatgptDefaultModel || '','已保存模型');
+			setSelectValueWithFallback($('config-chatgpt-thinking'),cfg.chatgptDefaultThinking || '','已保存思考程度');
+	    }
     if (!workingDirty) {
       $('working-project').value = cfg.workingProjectPath || '';
       $('working-plan').value = cfg.workingPlanId || 'default';
@@ -398,11 +405,30 @@ const localUIHTML = `<!doctype html>
 	  chatGPTThinkingOptions.forEach(option=>{const label=document.createElement('label');label.className='switch';const input=document.createElement('input');input.type='checkbox';input.className='advanced-thinking';input.value=option.id;input.checked=selected.has(option.id);const text=document.createElement('span');text.textContent=option.title+(option.source==='chatgpt_cloud'?' · 官方':' · 默认');label.append(input,text);thinking.appendChild(label);});
 	  row.appendChild(thinking); return row;
 	}
+	function setSelectValueWithFallback(select,value,label) {
+	  value=value || ''; if(!Array.from(select.options).some(option=>option.value===value)){const option=document.createElement('option');option.value=value;option.textContent=label+' · '+value;select.appendChild(option);} select.value=value;
+	}
+	function renderChatGPTDefaultOptions(data) {
+	  const cfg=(current && current.config) || {}; const keepDirty=configDirty;
+	  const selectedModel=keepDirty ? $('config-chatgpt-model').value : (cfg.chatgptDefaultModel || '');
+	  const selectedThinking=keepDirty ? $('config-chatgpt-thinking').value : (cfg.chatgptDefaultThinking || '');
+	  const modelSelect=$('config-chatgpt-model'); modelSelect.textContent=''; const seenModels=new Set();
+	  const addModel=(value,label)=>{value=value || '';if(seenModels.has(value))return;seenModels.add(value);const option=document.createElement('option');option.value=value;option.textContent=label;modelSelect.appendChild(option);};
+	  addModel('','Auto · 由 ChatGPT 选择');
+	  (Array.isArray(data.liveModels)?data.liveModels:[]).forEach(model=>addModel(model.id || model.slug,(model.title || model.id || model.slug)+' · 官方'));
+	  (Array.isArray(data.models)?data.models:[]).forEach(model=>addModel(model.id,(model.title || model.id)+' · Advanced'));
+	  setSelectValueWithFallback(modelSelect,selectedModel,'已保存模型（当前目录未列出）');
+	  const thinkingSelect=$('config-chatgpt-thinking'); thinkingSelect.textContent=''; const seenThinking=new Set();
+	  (Array.isArray(data.thinkingOptions)?data.thinkingOptions:[]).forEach(option=>{const value=option.value || '';if(seenThinking.has(value))return;seenThinking.add(value);const item=document.createElement('option');item.value=value;item.textContent=(option.title || option.id || 'Auto')+(option.source==='chatgpt_cloud'?' · 官方':' · Auto');thinkingSelect.appendChild(item);});
+	  if(!seenThinking.has('')){const item=document.createElement('option');item.value='';item.textContent='Auto · 不指定';thinkingSelect.insertBefore(item,thinkingSelect.firstChild);}
+	  setSelectValueWithFallback(thinkingSelect,selectedThinking,'已保存思考程度（当前目录未提供）');
+	}
 	function renderChatGPTAdvanced(data) {
 	  chatGPTThinkingOptions=Array.isArray(data.thinkingOptions)?data.thinkingOptions:[]; const box=$('chatgpt-advanced-list'); box.textContent='';
 	  const models=Array.isArray(data.models)?data.models:[]; models.forEach(model=>box.appendChild(advancedModelRow(model)));
 	  if(!models.length){const empty=document.createElement('span');empty.className='empty';empty.textContent='尚未配置 Advanced 模型，可点击“新增模型”。';box.appendChild(empty);}
 	  $('chatgpt-advanced-file').textContent=data.configFile ? '配置文件：'+data.configFile : '';
+	  renderChatGPTDefaultOptions(data);
 	}
 	async function refreshChatGPTAdvanced() {
 	  if(chatGPTAdvancedBusy)return; chatGPTAdvancedBusy=true;
@@ -617,8 +643,8 @@ const localUIHTML = `<!doctype html>
   });
 
 	function localConfigPayload(codexDesktopBridgeEnabled, codexDesktopBridgeConfigured) {
-		return {machineName:$('config-name').value,browserSidecarDir:$('config-browser').value,localBridgeEnabled:$('config-bridge').checked,autoStartEnabled:$('config-autostart').checked,autoUpdateEnabled:$('config-autoupdate').checked,allowInsecureLocalHub:$('config-insecure').checked,codexDesktopBridgeEnabled:codexDesktopBridgeEnabled,codexDesktopBridgeConfigured:codexDesktopBridgeConfigured};
-	}
+			return {machineName:$('config-name').value,browserSidecarDir:$('config-browser').value,localBridgeEnabled:$('config-bridge').checked,autoStartEnabled:$('config-autostart').checked,autoUpdateEnabled:$('config-autoupdate').checked,allowInsecureLocalHub:$('config-insecure').checked,codexDesktopBridgeEnabled:codexDesktopBridgeEnabled,codexDesktopBridgeConfigured:codexDesktopBridgeConfigured,chatgptDefaultCreateMode:$('config-chatgpt-mode').value,chatgptDefaultModel:$('config-chatgpt-model').value,chatgptDefaultThinking:$('config-chatgpt-thinking').value};
+		}
 
 	$('codex-session-mode-form').addEventListener('submit', async event => {
 		event.preventDefault(); if (busy) return; busy=true; const submit = event.currentTarget.querySelector('button[type="submit"]'); submit.disabled=true;

@@ -77,6 +77,16 @@ func (m *AgentManager) chatgptCloudSetArchived(ctx context.Context, input agentC
 }
 
 func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentControlParams) (map[string]any, error) {
+	defaults := m.chatGPTCloudCreateDefaults()
+	if strings.TrimSpace(input.Mode) == "" {
+		input.Mode = defaults.Mode
+	}
+	if !input.modelProvided {
+		input.Model = defaults.Model
+	}
+	if !input.thinkingProvided {
+		input.Thinking = defaults.Thinking
+	}
 	spec, err := resolveSessionVisibility("codex", input)
 	if err != nil {
 		return nil, err

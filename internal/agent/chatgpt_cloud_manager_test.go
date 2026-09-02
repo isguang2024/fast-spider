@@ -278,6 +278,53 @@ func TestChatGPTCloudSessionCreateRejectsUnknownMode(t *testing.T) {
 	}
 }
 
+func TestChatGPTCloudSessionCreateAppliesLocalDefaultsBeforeIdempotency(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	manager.SetChatGPTCloudCreateDefaults("quick_chat", "gpt-5-6-thinking", "max")
+	var selectedModel string
+	manager.chatgptCloud.createOverride = func(_ context.Context, _ string, model string) (chatgptCloudTurnResult, error) {
+		selectedModel = model
+		return chatgptCloudTurnResult{ConversationID: "cloud-defaults"}, nil
+	}
+	params := map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
+		"prompt": "use defaults", "idempotencyKey": "cloud-defaults-01", "workingDirectory": t.TempDir(),
+	}
+	created, err := manager.Control(context.Background(), "session.create", params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selectedModel != "gpt-5-6-thinking" || created["createMode"] != "quick_chat" || created["model"] != selectedModel || created["thinking"] != "max" {
+		t.Fatalf("created=%#v selectedModel=%q", created, selectedModel)
+	}
+	manager.SetChatGPTCloudCreateDefaults("complete", "gpt-other", "extended")
+	if _, err := manager.Control(context.Background(), "session.create", params); err == nil {
+		t.Fatal("same idempotency key accepted different effective defaults")
+	}
+}
+
+func TestChatGPTCloudSessionCreateExplicitValuesOverrideLocalDefaults(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	manager.SetChatGPTCloudCreateDefaults("quick_chat", "gpt-default", "max")
+	var selectedModel string
+	manager.chatgptCloud.createOverride = func(_ context.Context, _ string, model string) (chatgptCloudTurnResult, error) {
+		selectedModel = model
+		return chatgptCloudTurnResult{ConversationID: "cloud-explicit-auto"}, nil
+	}
+	created, err := manager.Control(context.Background(), "session.create", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "mode": "complete", "model": "", "thinking": "",
+		"prompt": "explicit auto", "idempotencyKey": "cloud-explicit-auto-01", "workingDirectory": t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selectedModel != "" || created["createMode"] != "complete" || created["model"] != "" || created["thinking"] != "" {
+		t.Fatalf("explicit values did not override defaults: created=%#v selectedModel=%q", created, selectedModel)
+	}
+}
+
 func TestChatGPTCloudSessionCreateTracksThinkingSelection(t *testing.T) {
 	manager := New(t.TempDir(), nil)
 	defer manager.Close(context.Background())
@@ -328,6 +375,7 @@ func TestChatGPTCloudSessionSendInheritsInitialSelection(t *testing.T) {
 
 	manager := New(t.TempDir(), nil)
 	defer manager.Close(context.Background())
+	manager.SetChatGPTCloudCreateDefaults("quick_chat", "gpt-default-must-not-affect-send", "extended")
 	manager.chatgptCloud.baseURL = server.URL
 	manager.chatgptCloud.http = server.Client()
 	manager.chatgptCloud.tokenSource = func(context.Context) (string, error) { return "token", nil }

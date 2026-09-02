@@ -97,15 +97,18 @@ type connectRequest struct {
 }
 
 type configRequest struct {
-	HubURL                       string `json:"hubUrl"`
-	MachineName                  string `json:"machineName"`
-	BrowserSidecarDir            string `json:"browserSidecarDir"`
-	LocalBridgeEnabled           bool   `json:"localBridgeEnabled"`
-	AutoStartEnabled             bool   `json:"autoStartEnabled"`
-	AutoUpdateEnabled            bool   `json:"autoUpdateEnabled"`
-	AllowInsecureLocalHub        bool   `json:"allowInsecureLocalHub"`
-	CodexDesktopBridgeEnabled    bool   `json:"codexDesktopBridgeEnabled"`
-	CodexDesktopBridgeConfigured bool   `json:"codexDesktopBridgeConfigured"`
+	HubURL                       string  `json:"hubUrl"`
+	MachineName                  string  `json:"machineName"`
+	BrowserSidecarDir            string  `json:"browserSidecarDir"`
+	LocalBridgeEnabled           bool    `json:"localBridgeEnabled"`
+	AutoStartEnabled             bool    `json:"autoStartEnabled"`
+	AutoUpdateEnabled            bool    `json:"autoUpdateEnabled"`
+	AllowInsecureLocalHub        bool    `json:"allowInsecureLocalHub"`
+	CodexDesktopBridgeEnabled    bool    `json:"codexDesktopBridgeEnabled"`
+	CodexDesktopBridgeConfigured bool    `json:"codexDesktopBridgeConfigured"`
+	ChatGPTDefaultCreateMode     *string `json:"chatgptDefaultCreateMode"`
+	ChatGPTDefaultModel          *string `json:"chatgptDefaultModel"`
+	ChatGPTDefaultThinking       *string `json:"chatgptDefaultThinking"`
 }
 
 type componentEnsureRequest struct {
@@ -145,6 +148,7 @@ func New(opts Options) (*App, error) {
 	}
 	agentController := agent.New(opts.DataDir, opts.Logger)
 	agentController.SetCodexDesktopBridgeEnabled(cfg.CodexDesktopBridgeEnabled)
+	agentController.SetChatGPTCloudCreateDefaults(cfg.ChatGPTDefaultCreateMode, cfg.ChatGPTDefaultModel, cfg.ChatGPTDefaultThinking)
 	return &App{
 		opts:            opts,
 		config:          cfg,
@@ -458,8 +462,24 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		AllowInsecureLocalHub:        req.AllowInsecureLocalHub,
 		CodexDesktopBridgeEnabled:    req.CodexDesktopBridgeEnabled,
 		CodexDesktopBridgeConfigured: req.CodexDesktopBridgeConfigured,
+		ChatGPTDefaultCreateMode:     old.ChatGPTDefaultCreateMode,
+		ChatGPTDefaultModel:          old.ChatGPTDefaultModel,
+		ChatGPTDefaultThinking:       old.ChatGPTDefaultThinking,
 		WorkingProjectPath:           old.WorkingProjectPath,
 		WorkingPlanID:                old.WorkingPlanID,
+	}
+	if req.ChatGPTDefaultCreateMode != nil {
+		next.ChatGPTDefaultCreateMode = *req.ChatGPTDefaultCreateMode
+	}
+	if req.ChatGPTDefaultModel != nil {
+		next.ChatGPTDefaultModel = *req.ChatGPTDefaultModel
+	}
+	if req.ChatGPTDefaultThinking != nil {
+		next.ChatGPTDefaultThinking = *req.ChatGPTDefaultThinking
+	}
+	if err := normalizeChatGPTDefaults(&next); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err)
+		return
 	}
 	if next.MachineName == "" {
 		writeAPIError(w, http.StatusBadRequest, errors.New("设备名称不能为空"))
@@ -490,6 +510,11 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		if controller, ok := a.agentController.(interface{ SetCodexDesktopBridgeEnabled(bool) }); ok {
 			controller.SetCodexDesktopBridgeEnabled(next.CodexDesktopBridgeEnabled)
 		}
+	}
+	if controller, ok := a.agentController.(interface {
+		SetChatGPTCloudCreateDefaults(string, string, string)
+	}); ok {
+		controller.SetChatGPTCloudCreateDefaults(next.ChatGPTDefaultCreateMode, next.ChatGPTDefaultModel, next.ChatGPTDefaultThinking)
 	}
 	if old.BrowserSidecarDir != next.BrowserSidecarDir || old.LocalBridgeEnabled != next.LocalBridgeEnabled || old.AllowInsecureLocalHub != next.AllowInsecureLocalHub || old.MachineName != next.MachineName {
 		a.restartRuntime()
