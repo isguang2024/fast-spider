@@ -179,14 +179,24 @@ func chatgptUserMessage(text string) map[string]any {
 }
 
 func chatgptNewChatBody(prompt, model string) map[string]any {
-	return chatgptConversationBody(prompt, model, "", "", "success")
+	return chatgptNewChatBodyWithThinking(prompt, model, "")
+}
+
+func chatgptNewChatBodyWithThinking(prompt, model, thinking string) map[string]any {
+	body := chatgptConversationBody(prompt, model, "", "", "success")
+	chatgptApplyThinkingEffort(body, thinking)
+	return body
 }
 
 // chatgptQuickChatBody mirrors the Codex Quick chat composer: it does not use
 // /f/conversation/prepare, reports client_prepare_state=none, and lets ChatGPT
 // choose the model through the "auto" route unless the caller selected one.
 func chatgptQuickChatBody(prompt, model string) map[string]any {
-	return map[string]any{
+	return chatgptQuickChatBodyWithThinking(prompt, model, "")
+}
+
+func chatgptQuickChatBodyWithThinking(prompt, model, thinking string) map[string]any {
+	body := map[string]any{
 		"action":               "next",
 		"messages":             []any{chatgptUserMessage(prompt)},
 		"model":                firstNonEmptyString(model, "auto"),
@@ -195,6 +205,14 @@ func chatgptQuickChatBody(prompt, model string) map[string]any {
 		"supported_encodings":  []string{"v1"},
 		"timezone_offset_min":  -480,
 		"timezone":             "Etc/GMT-8",
+	}
+	chatgptApplyThinkingEffort(body, thinking)
+	return body
+}
+
+func chatgptApplyThinkingEffort(body map[string]any, thinking string) {
+	if thinking = strings.TrimSpace(thinking); thinking != "" {
+		body["thinking_effort"] = thinking
 	}
 }
 
@@ -495,6 +513,10 @@ func chatgptCloudMessageFromMap(m map[string]any) chatgptCloudMessage {
 
 // Create starts a new cloud conversation with the first user message.
 func (a *ChatGPTCloudAdapter) Create(ctx context.Context, prompt, model string) (chatgptCloudTurnResult, error) {
+	return a.CreateWithThinking(ctx, prompt, model, "")
+}
+
+func (a *ChatGPTCloudAdapter) CreateWithThinking(ctx context.Context, prompt, model, thinking string) (chatgptCloudTurnResult, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return chatgptCloudTurnResult{}, fmt.Errorf("creating a ChatGPT cloud conversation requires a first message")
@@ -502,12 +524,16 @@ func (a *ChatGPTCloudAdapter) Create(ctx context.Context, prompt, model string) 
 	if a.createOverride != nil {
 		return a.createOverride(ctx, prompt, model)
 	}
-	return a.sendTurn(ctx, chatgptNewChatBody(prompt, model))
+	return a.sendTurn(ctx, chatgptNewChatBodyWithThinking(prompt, model, thinking))
 }
 
 // CreateQuick starts a new cloud conversation with Codex Quick chat semantics:
 // skip conversation prepare and return once the real conversation ID is known.
 func (a *ChatGPTCloudAdapter) CreateQuick(ctx context.Context, prompt, model string) (chatgptCloudTurnResult, error) {
+	return a.CreateQuickWithThinking(ctx, prompt, model, "")
+}
+
+func (a *ChatGPTCloudAdapter) CreateQuickWithThinking(ctx context.Context, prompt, model, thinking string) (chatgptCloudTurnResult, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return chatgptCloudTurnResult{}, fmt.Errorf("creating a ChatGPT cloud conversation requires a first message")
@@ -523,7 +549,7 @@ func (a *ChatGPTCloudAdapter) CreateQuick(ctx context.Context, prompt, model str
 	if err != nil {
 		return chatgptCloudTurnResult{}, err
 	}
-	return a.streamQuick(ctx, token, chatgptQuickChatBody(prompt, model), sentinel)
+	return a.streamQuick(ctx, token, chatgptQuickChatBodyWithThinking(prompt, model, thinking), sentinel)
 }
 
 // Send appends a follow-up message to an existing conversation. If parentMessageID
@@ -631,7 +657,7 @@ func (a *ChatGPTCloudAdapter) Read(ctx context.Context, conversationID string) (
 // Models returns the ChatGPT cloud chat models (from /backend-api/models) — the
 // model selection surface for chatgpt_cloud conversations, distinct from the
 // Codex/work app-server model list.
-func (a *ChatGPTCloudAdapter) Models(ctx context.Context) ([]map[string]any, error) {
+func (a *ChatGPTCloudAdapter) Models(ctx context.Context) (map[string]any, error) {
 	token, err := a.token(ctx)
 	if err != nil {
 		return nil, err
@@ -650,8 +676,11 @@ func (a *ChatGPTCloudAdapter) Models(ctx context.Context) ([]map[string]any, err
 		return nil, fmt.Errorf("list chat models returned %s", resp.Status)
 	}
 	var out struct {
-		Title  string           `json:"title"`
-		Models []map[string]any `json:"models"`
+		Title            string           `json:"title"`
+		DefaultModelSlug string           `json:"default_model_slug"`
+		Models           []map[string]any `json:"models"`
+		SliderSettings   []map[string]any `json:"slider_settings"`
+		Versions         []map[string]any `json:"versions"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
@@ -673,7 +702,59 @@ func (a *ChatGPTCloudAdapter) Models(ctx context.Context) ([]map[string]any, err
 		}
 		models = append(models, model)
 	}
-	return models, nil
+	return map[string]any{
+		"models":       models,
+		"defaultModel": out.DefaultModelSlug,
+		"creationModes": []map[string]any{
+			{"id": "quick_chat", "title": "Quick chat", "returnPhase": "running"},
+			{"id": "complete", "title": "Wait for first answer", "returnPhase": "ready"},
+		},
+		"modelPresets": chatgptCloudModelPresets(out.Versions, out.SliderSettings),
+	}, nil
+}
+
+func chatgptCloudModelPresets(versions, sliderSettings []map[string]any) []map[string]any {
+	presets := make([]map[string]any, 0)
+	seen := map[string]bool{}
+	appendPreset := func(versionID string, raw map[string]any) {
+		model := mapString(raw, "model_slug")
+		if model == "" {
+			return
+		}
+		thinking := mapString(raw, "thinking_effort")
+		lane := mapString(raw, "lane")
+		key := versionID + "\x00" + lane + "\x00" + model + "\x00" + thinking
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		preset := map[string]any{
+			"model": model,
+			"title": firstNonEmptyString(mapString(raw, "selected_display_title"), mapString(raw, "title"), model),
+		}
+		if versionID != "" {
+			preset["version"] = versionID
+		}
+		if lane != "" {
+			preset["lane"] = lane
+		}
+		if thinking != "" {
+			preset["thinking"] = thinking
+		}
+		presets = append(presets, preset)
+	}
+	for _, version := range versions {
+		versionID := mapString(version, "id")
+		rawPresets, _ := version["intelligence_presets"].([]any)
+		for _, raw := range rawPresets {
+			preset, _ := raw.(map[string]any)
+			appendPreset(versionID, preset)
+		}
+	}
+	for _, setting := range sliderSettings {
+		appendPreset("", setting)
+	}
+	return presets
 }
 
 // List returns the most recently updated conversations.

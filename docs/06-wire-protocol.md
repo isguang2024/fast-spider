@@ -34,7 +34,7 @@ Hub 为每次调用生成 `requestId + traceId` 并透传 Node、Job 与响应�
 - Node 已执行请求但 Response 丢失时，调用结果为 uncertain；Hub 返回 `CONNECTION_LOST`，不会自动重发。
 - 只读/查询动作可标记 `retryable=true`；`file.write/edit`、Shell/Build、Git 写入、浏览器动作、Agent send/steer/respond/Thread/Goal/Settings/Review 变更等副作用动作标记为 `retryable=false`，调用方必须先重新读取或查询状态。`session.create` 因强制稳定 `idempotencyKey`，只允许以原 key 和原参数安全重放。
 - Job 启动依赖 `idempotencyKey`；Node 保存有限的幂等结果并拒绝同 key 不同参数。已启动 Job 不绑定 WSS session。
-- Codex `session.create` 同样使用持久幂等记录；中间状态无法确认时不自动创建第二个 Thread。
+- Codex `session.create` 同样使用持久幂等记录；ChatGPT Cloud 的 `mode`、`model` 与 `thinking` 都属于创建 spec，中间状态无法确认时不自动创建第二个 Thread。
 - `file.write/edit` 依赖 expected SHA CAS，并通过临时文件、fsync 和原子替换避免半文件。
 
 ## 错误

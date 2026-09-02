@@ -189,6 +189,43 @@ func TestChatGPTCloudSessionCreateRejectsUnknownMode(t *testing.T) {
 	}
 }
 
+func TestChatGPTCloudSessionCreateTracksThinkingSelection(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	manager.chatgptCloud.createOverride = func(context.Context, string, string) (chatgptCloudTurnResult, error) {
+		return chatgptCloudTurnResult{ConversationID: "cloud-thinking-selection"}, nil
+	}
+	params := map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "mode": "quick_chat",
+		"prompt": "think", "model": "gpt-5-6-thinking", "thinking": "extended",
+		"idempotencyKey": "cloud-thinking-create-01", "workingDirectory": t.TempDir(),
+	}
+	created, err := manager.Control(context.Background(), "session.create", params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created["model"] != "gpt-5-6-thinking" || created["thinking"] != "extended" {
+		t.Fatalf("created=%#v", created)
+	}
+	conflicting := cloneAgentMap(params)
+	conflicting["thinking"] = "max"
+	if _, err := manager.Control(context.Background(), "session.create", conflicting); err == nil {
+		t.Fatal("same idempotency key allowed the thinking selection to change")
+	}
+}
+
+func TestChatGPTCloudSessionCreateRejectsUnknownThinking(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	_, err := manager.Control(context.Background(), "session.create", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
+		"prompt": "think", "thinking": "medium", "idempotencyKey": "cloud-invalid-thinking-01", "workingDirectory": t.TempDir(),
+	})
+	if err == nil || err.Error() != "backend=chatgpt_cloud thinking must be standard, extended, min, max, ultra, xhigh, or zero" {
+		t.Fatalf("invalid thinking error=%v", err)
+	}
+}
+
 func TestChatGPTCloudCompleteCreateReplaysLegacySpecHash(t *testing.T) {
 	manager := New(t.TempDir(), nil)
 	defer manager.Close(context.Background())

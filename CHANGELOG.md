@@ -8,6 +8,14 @@ semantic versioning for public releases.
 - Add public CI, governance, support and maintainer workflow documentation.
 - Document the current early-stage public project status and contribution path.
 
+## 0.4.31 - 2026-09-02
+
+- Unified ChatGPT Cloud creation behind one `session.create` entry with Quick
+  chat and complete modes.
+- Added model/thinking creation presets sourced from the live ChatGPT model
+  catalog and forwarded selected reasoning as `thinking_effort`.
+- Included mode, model and thinking selections in idempotent creation matching.
+
 ## 0.4.30 - 2026-09-02
 
 - Added Quick chat creation for ChatGPT Cloud sessions, returning as soon as

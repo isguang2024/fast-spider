@@ -111,7 +111,7 @@ Model Mapping 目前识别 Claude 的 `ANTHROPIC_MODEL` / Sonnet / Opus / Haiku 
 
 ### `session.create`
 
-公网 MCP 必需：绝对 `workingDirectory` 与 12-128 字符 `idempotencyKey`。可选：`model`、`thinking`，以及首个 Turn 的输入。Node 对 Codex 与 Claude Code 均持久保存 key/spec hash/小型结果；同 key 同 spec 在进程重启后仍重放同一 Session，同 key 不同 spec（包括可见性语义和 ChatGPT Cloud create mode）返回冲突，中间态不确定时不重复创建。索引采用严格全量校验，任何损坏或语义不完整记录均 fail-closed；记录不按时间自动过期。ChatGPT Cloud 默认 `mode=complete`，HTTP Client 不设置短于 SSE 流的全局 60 秒超时；若流尾异常但已观察到 conversation ID，则记录为已创建并返回 `phase=created_execution_unknown`，不会诱导重复建会话。`mode=quick_chat` 跳过 conversation prepare，默认 `model=auto`，拿到真实 conversation ID 后立即返回并在后台排空 SSE。已知 Session 经 `session.delete` 明确删除后回收；无已知 Session 的 `in_doubt` Cloud 记录须先用 `backend=chatgpt_cloud` 的 `session.list` 检查完整云列表，确认没有创建后调用 `session.delete`，省略 `sessionId` 并传原 `idempotencyKey` 与 `decision=confirm_not_created` 显式释放。Claude 原生 history 仍由 Claude 自身保存。
+公网 MCP 必需：绝对 `workingDirectory` 与 12-128 字符 `idempotencyKey`。可选：`model`、`thinking`，以及首个 Turn 的输入。Node 对 Codex 与 Claude Code 均持久保存 key/spec hash/小型结果；同 key 同 spec 在进程重启后仍重放同一 Session，同 key 不同 spec（包括可见性语义、ChatGPT Cloud create mode、model 与 thinking）返回冲突，中间态不确定时不重复创建。索引采用严格全量校验，任何损坏或语义不完整记录均 fail-closed；记录不按时间自动过期。ChatGPT Cloud 默认 `mode=complete`，HTTP Client 不设置短于 SSE 流的全局 60 秒超时；若流尾异常但已观察到 conversation ID，则记录为已创建并返回 `phase=created_execution_unknown`，不会诱导重复建会话。`mode=quick_chat` 跳过 conversation prepare，默认 `model=auto`，拿到真实 conversation ID 后立即返回并在后台排空 SSE。已知 Session 经 `session.delete` 明确删除后回收；无已知 Session 的 `in_doubt` Cloud 记录须先用 `backend=chatgpt_cloud` 的 `session.list` 检查完整云列表，确认没有创建后调用 `session.delete`，省略 `sessionId` 并传原 `idempotencyKey` 与 `decision=confirm_not_created` 显式释放。Claude 原生 history 仍由 Claude 自身保存。
 
 `session.delete` 使用持久 delete intent：先把与 Session 关联的 create 记录标为 deleting，再删除 Provider Session，最后回收记录。若 Provider 已删除但最终落盘失败，重试同一删除会把 Provider not-found 视为已完成并续做回收，不会留下无法清理的容量占用。
 
@@ -131,13 +131,15 @@ Fast Spider 用 Codex app-server 的 ChatGPT 登录态（`getAuthStatus`）配�
 `chatgpt_cloud` 必须 `visibility=visible`（云端会话天然对外可见），`ephemeral=true` 不支持；首次消息必须随
 `session.create` 提供（ChatGPT 无空会话创建接口）。依赖本机 Codex app-server 已登录 ChatGPT，否则返回明确错误。创建成功后 Fast Spider 在 sidecar 中保存 `sessionId → backend=chatgpt_cloud + workingDirectory`，因此后续 `session.get/send/watch/result/rename/delete/cancel/steer` 只需 `sessionId`，不必重复声明 backend。普通 Codex `session.list` 会合并 FS 自己管理过的 Cloud 会话；显式 `backend=chatgpt_cloud` 的 `session.list` 才访问 `/backend-api/conversations` 并返回账号云端列表。
 
-Cloud 创建可选 `mode=complete|quick_chat`。省略时为 `complete`，保留原来的 prepare + 完整 SSE 等待；`quick_chat` 与 Codex Quick chat 一样不请求 `/f/conversation/prepare`，未指定模型时发送 `model=auto`，收到首个真实 conversation ID 就返回 `phase=running`、`createMode=quick_chat`、`completionPending=true`。同一 `idempotencyKey` 不能在两种 mode 间复用；旧版未记录 mode 的默认完整创建仍可按原 key 重放并迁移。
+Cloud 只有一个创建入口 `session.create`，用 `mode=quick_chat|complete` 切换两种模式。省略时为 `complete`，保留原来的 prepare + 完整 SSE 等待；`quick_chat` 与 Codex Quick chat 一样不请求 `/f/conversation/prepare`，未指定模型时发送 `model=auto`，收到首个真实 conversation ID 就返回 `phase=running`、`createMode=quick_chat`、`completionPending=true`。同一 `idempotencyKey` 不能在两种 mode 或不同 model/thinking 之间复用；旧版未记录 mode/thinking 的默认完整创建仍可按原 key 重放并迁移。
+
+创建前调用 `models.list`（`backend=chatgpt_cloud`）会返回 `defaultModel`、`creationModes` 与 `modelPresets`。调用方应让用户直接选择一个组合预设，不要把模型和思考程度任意交叉组合。当前 Codex Quick chat 的 GPT-5.6/GPT-5.5 均提供 Instant、Medium、High、Extra High、Pro 五档：Instant 使用 `*-instant` 且不发送独立 thinking；Medium/High/Extra High 使用 `*-thinking`，分别发送 `thinking_effort=standard|extended|max`；Pro 使用 `*-pro` 且不发送独立 thinking。`session.create.thinking` 会原样映射到 ChatGPT 请求体的 `thinking_effort`。这些是 ChatGPT Cloud 的私有创建预设，不直接套用本地 Codex 的 `low|medium|high|xhigh` 展示语义。
 
 `chatgpt_cloud` 的操作映射（`providerId=codex` + `backend=chatgpt_cloud`）：
 
 | `ai_control` | chatgpt_cloud 后端 |
 |---|---|
-| `models.list` | `GET /backend-api/models`（Chat 云端模型：gpt-5-6/gpt-5-5/instant/thinking 等，与 Codex/工作模型分开） |
+| `models.list` | `GET /backend-api/models`；返回 Chat 云端 `defaultModel + creationModes + modelPresets`，与 Codex/工作模型分开 |
 | `session.create` | `mode=complete`：prepare 后等待完整 `POST /backend-api/f/conversation`；`mode=quick_chat`：跳过 prepare，拿到 conversation UUID 即返回，后台排空流 |
 | `session.send` | follow-up（`conversation_id` + `parent_message_id`=最后 assistant 消息，自动解析） |
 | `session.get` | `GET /backend-api/conversation/{id}`（mapping 全量消息） |

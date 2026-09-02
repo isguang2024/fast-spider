@@ -179,6 +179,62 @@ func TestChatGPTCloudAdapterCreateQuickSkipsPrepareAndReturnsBeforeCompletion(t 
 	}
 }
 
+func TestChatGPTCloudCreateBodiesCarryThinkingEffort(t *testing.T) {
+	quick := chatgptQuickChatBodyWithThinking("quick", "gpt-5-6-thinking", "extended")
+	if got := mapString(quick, "thinking_effort"); got != "extended" {
+		t.Fatalf("quick thinking_effort=%q", got)
+	}
+	complete := chatgptNewChatBodyWithThinking("complete", "gpt-5-6-thinking", "max")
+	if got := mapString(complete, "thinking_effort"); got != "max" {
+		t.Fatalf("complete thinking_effort=%q", got)
+	}
+	if _, ok := chatgptQuickChatBody("quick", "auto")["thinking_effort"]; ok {
+		t.Fatal("quick body sent an unselected thinking effort")
+	}
+}
+
+func TestChatGPTCloudModelsReturnsCreationModesAndModelPresets(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/models" {
+			http.NotFound(w, r)
+			return
+		}
+		writeChatGPTCloudTestJSON(t, w, map[string]any{
+			"default_model_slug": "gpt-5-6",
+			"models": []any{
+				map[string]any{"slug": "gpt-5-6-instant", "title": "GPT-5.6 Instant", "max_tokens": 137000},
+				map[string]any{"slug": "gpt-5-6-thinking", "title": "GPT-5.6 Thinking", "max_tokens": 262144},
+			},
+			"versions": []any{map[string]any{
+				"id": "5.6",
+				"intelligence_presets": []any{
+					map[string]any{"lane": "instant", "model_slug": "gpt-5-6-instant", "selected_display_title": "Instant"},
+					map[string]any{"lane": "thinking", "model_slug": "gpt-5-6-thinking", "selected_display_title": "High", "thinking_effort": "extended"},
+				},
+			}},
+		})
+	}))
+	defer server.Close()
+	adapter := NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token", nil })
+	adapter.baseURL = server.URL
+	adapter.http = server.Client()
+	catalog, err := adapter.Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if catalog["defaultModel"] != "gpt-5-6" {
+		t.Fatalf("catalog=%#v", catalog)
+	}
+	modes, _ := catalog["creationModes"].([]map[string]any)
+	if len(modes) != 2 || modes[0]["id"] != "quick_chat" || modes[1]["id"] != "complete" {
+		t.Fatalf("creationModes=%#v", modes)
+	}
+	presets, _ := catalog["modelPresets"].([]map[string]any)
+	if len(presets) != 2 || presets[1]["model"] != "gpt-5-6-thinking" || presets[1]["thinking"] != "extended" {
+		t.Fatalf("modelPresets=%#v", presets)
+	}
+}
+
 func TestChatGPTCloudAdapterSteerPostsToSteerTurn(t *testing.T) {
 	var steerBody map[string]any
 	var prepareBody map[string]any
