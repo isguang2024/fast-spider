@@ -93,6 +93,15 @@ func TestProviderReadinessReportsFailingLayerReason(t *testing.T) {
 	}
 }
 
+func TestChatGPTCloudReadinessDoesNotProbeLocalThreadList(t *testing.T) {
+	if requiresSessionBackendProbe(sessionBackendChatGPTCloud) {
+		t.Fatal("chatgpt_cloud readiness must not depend on the local thread/list backend")
+	}
+	if !requiresSessionBackendProbe("") || !requiresSessionBackendProbe("codex_local") {
+		t.Fatal("local Codex readiness must retain the thread/list backend probe")
+	}
+}
+
 func TestClassifyRouteReadinessUsesInspectedRouteFacts(t *testing.T) {
 	tests := []struct {
 		name, state, reason string

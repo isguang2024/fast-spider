@@ -87,15 +87,19 @@ func (m *AgentManager) providerReadiness(ctx context.Context, input agentControl
 		}
 		return "ready", "OK"
 	})
-	layers["sessionBackend"] = measuredReadiness(func() (string, string) {
-		if layers["harness"].State != "ready" {
-			return "blocked", "NOT_CHECKED"
-		}
-		if _, err := m.codex.ListThreads(ctx, "", 1); err != nil {
-			return "blocked", "SESSION_BACKEND_UNAVAILABLE"
-		}
-		return "ready", "OK"
-	})
+	if requiresSessionBackendProbe(backend) {
+		layers["sessionBackend"] = measuredReadiness(func() (string, string) {
+			if layers["harness"].State != "ready" {
+				return "blocked", "NOT_CHECKED"
+			}
+			if _, err := m.codex.ListThreads(ctx, "", 1); err != nil {
+				return "blocked", "SESSION_BACKEND_UNAVAILABLE"
+			}
+			return "ready", "OK"
+		})
+	} else {
+		layers["sessionBackend"] = readinessLayer{State: "ready", ReasonCode: "NOT_REQUIRED_FOR_CHATGPT_CLOUD"}
+	}
 	if strings.EqualFold(strings.TrimSpace(input.Backend), sessionBackendChatGPTCloud) {
 		layers["chatgptCloud"] = measuredReadiness(func() (string, string) {
 			if m.chatgptCloud == nil {
@@ -123,6 +127,10 @@ func (m *AgentManager) providerReadiness(ctx context.Context, input agentControl
 		m.rememberProviderReadiness(providerID, mode, backend, result)
 	}
 	return result, nil
+}
+
+func requiresSessionBackendProbe(backend string) bool {
+	return !strings.EqualFold(strings.TrimSpace(backend), sessionBackendChatGPTCloud)
 }
 
 func readinessBlockingReason(layers map[string]readinessLayer) string {
