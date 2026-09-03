@@ -17,7 +17,10 @@ import (
 	"github.com/isguang2024/fast-spider/internal/node"
 )
 
-const sessionCallbackRecoveryInterval = 5 * time.Minute
+const (
+	sessionCallbackDeliveryRetryInterval = 5 * time.Second
+	sessionCallbackRecoveryInterval      = 5 * time.Minute
+)
 
 type sessionCallbackDispatcher struct {
 	store  *sessionCallbackStore
@@ -92,12 +95,14 @@ func (d *sessionCallbackDispatcher) close(ctx context.Context) error {
 
 func (d *sessionCallbackDispatcher) run() {
 	defer d.wg.Done()
-	interval := d.interval
-	if interval <= 0 {
-		interval = sessionCallbackRecoveryInterval
+	deliveryInterval := d.interval
+	if deliveryInterval <= 0 {
+		deliveryInterval = sessionCallbackDeliveryRetryInterval
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	deliveryTicker := time.NewTicker(deliveryInterval)
+	recoveryTicker := time.NewTicker(sessionCallbackRecoveryInterval)
+	defer deliveryTicker.Stop()
+	defer recoveryTicker.Stop()
 	d.reconcileSubscriptions()
 	d.dispatchOnce()
 	for {
@@ -106,7 +111,9 @@ func (d *sessionCallbackDispatcher) run() {
 			return
 		case <-d.notify:
 			d.dispatchOnce()
-		case <-ticker.C:
+		case <-deliveryTicker.C:
+			d.dispatchOnce()
+		case <-recoveryTicker.C:
 			d.reconcileSubscriptions()
 			d.dispatchOnce()
 		}
@@ -423,27 +430,33 @@ func (m *AgentManager) reconcileCompletedCloudCallback(sourceSessionID string, g
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	detail, err := m.chatgptCloud.Read(ctx, sourceSessionID)
-	if err != nil && !errors.Is(err, context.Canceled) {
-		m.logger.Warn("reconcile completed ChatGPT Cloud callback after registration", "sourceSessionId", sourceSessionID, "error", err)
-		return
+	for attempt := 0; attempt < 16; attempt++ {
+		registration, current, storeErr := m.callbackStore.registrationFor(sourceSessionID)
+		if storeErr != nil || !current || registration.Generation != generation {
+			return
+		}
+		detail, err := m.chatgptCloud.Read(ctx, sourceSessionID)
+		if err == nil && chatgptCloudConversationStatus(detail) == "completed" {
+			sum := sha256.Sum256([]byte(sourceSessionID + "\x00register-reconcile\x00" + fmt.Sprintf("%d", generation)))
+			m.handleChatGPTCloudCallbackEvent(chatgptCloudEvent{
+				Sequence:       m.callbackStore.maxEventSequence() + 1,
+				EventKey:       "provider_evt_reconcile_" + hex.EncodeToString(sum[:])[:40],
+				Type:           "conversation.turn.complete",
+				ConversationID: sourceSessionID,
+				EventType:      "conversation-turn-complete",
+				Timestamp:      time.Now().UTC(),
+			})
+			return
+		}
+		if err != nil && !errors.Is(err, context.Canceled) && attempt == 15 {
+			m.logger.Warn("reconcile completed ChatGPT Cloud callback after registration", "sourceSessionId", sourceSessionID, "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
 	}
-	if err != nil || chatgptCloudConversationStatus(detail) != "completed" {
-		return
-	}
-	registration, current, storeErr := m.callbackStore.registrationFor(sourceSessionID)
-	if storeErr != nil || !current || registration.Generation != generation {
-		return
-	}
-	sum := sha256.Sum256([]byte(sourceSessionID + "\x00register-reconcile\x00" + fmt.Sprintf("%d", generation)))
-	m.handleChatGPTCloudCallbackEvent(chatgptCloudEvent{
-		Sequence:       m.callbackStore.maxEventSequence() + 1,
-		EventKey:       "provider_evt_reconcile_" + hex.EncodeToString(sum[:])[:40],
-		Type:           "conversation.turn.complete",
-		ConversationID: sourceSessionID,
-		EventType:      "conversation-turn-complete",
-		Timestamp:      time.Now().UTC(),
-	})
 }
 
 func (m *AgentManager) sessionCallbackUnregister(input agentControlParams) (map[string]any, error) {

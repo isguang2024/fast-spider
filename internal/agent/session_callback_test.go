@@ -714,9 +714,18 @@ func TestSessionCallbackActionsRegisterListAndUnregister(t *testing.T) {
 }
 
 func TestSessionCallbackRegisterReconcilesAlreadyCompletedCloudTurn(t *testing.T) {
+	var reads int
+	var readsMu sync.Mutex
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		readsMu.Lock()
+		reads++
+		status := "running"
+		if reads >= 3 {
+			status = "completed"
+		}
+		readsMu.Unlock()
 		writeChatGPTCloudTestJSON(t, w, map[string]any{
-			"conversation_id": "source-completed", "async_status": "completed", "current_node": "assistant-1",
+			"conversation_id": "source-completed", "async_status": status, "current_node": "assistant-1",
 			"mapping": map[string]any{"assistant-1": map[string]any{"message": map[string]any{"author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"CLOUD_COLLAB_OK"}}}}},
 		})
 	}))

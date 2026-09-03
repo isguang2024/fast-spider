@@ -8,6 +8,13 @@ semantic versioning for public releases.
 - Add public CI, governance, support and maintainer workflow documentation.
 - Document the current early-stage public project status and contribution path.
 
+## 0.4.38 - 2026-09-03
+
+- Retry callback delivery to idle Desktop dispatchers every five seconds while
+  retaining the low-frequency subscription recovery loop.
+- Retry the post-registration terminal backfill briefly to cover delayed Cloud
+  completion visibility.
+
 ## 0.4.37 - 2026-09-03
 
 - Reconcile Cloud turns that complete before callback registration and retry
