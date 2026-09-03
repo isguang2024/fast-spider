@@ -660,18 +660,19 @@ func (m *AgentManager) chatgptCloudResult(ctx context.Context, input agentContro
 		}
 		if hasCallbackResult && callbackResult.Status != "failed" {
 			applyCallbackResultMetadata(result, callbackResult)
-		} else if providerStatus == "completed" {
+		} else {
 			deliverablePath := strings.TrimSpace(input.CallbackDeliverablePath)
 			if deliverablePath != "" {
 				deliverableStatus, size, digest := inspectCallbackDeliverable(deliverablePath)
-				resultStatus := "failed"
-				if deliverableStatus == "ready" {
-					resultStatus = "ready"
-				}
 				result["deliverablePath"] = deliverablePath
 				result["deliverableStatus"] = deliverableStatus
-				applyCallbackResultMetadata(result, callbackResultMetadata{Status: resultStatus, Bytes: size, SHA256: digest})
-			} else if m.resultPublisher != nil {
+				if deliverableStatus == "ready" {
+					result["status"] = "completed"
+					applyCallbackResultMetadata(result, callbackResultMetadata{Status: "ready", Bytes: size, SHA256: digest})
+				} else if providerStatus == "completed" {
+					applyCallbackResultMetadata(result, callbackResultMetadata{Status: "failed", Bytes: size})
+				}
+			} else if providerStatus == "completed" && m.resultPublisher != nil {
 				text, textErr := chatgptCloudLatestAssistantTextLimit(detail, 8<<20)
 				if textErr != nil {
 					return nil, textErr

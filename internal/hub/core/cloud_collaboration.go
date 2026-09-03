@@ -832,10 +832,13 @@ func (s *Service) cloudCollaborationDispatchTask(ctx context.Context, ownerID st
 		if state.Chats[chatIdx].CallbackRegistered {
 			return cloudCollaborationView(rec, state, "dispatcher"), nil
 		}
-		s.registerCloudCollaborationCallbackAsync(ownerID, rec.CollaborationID, task.ID, task.Generation)
-		out := cloudCollaborationView(rec, state, "dispatcher")
-		out["callbackPending"] = true
-		return out, nil
+		if _, err := s.registerCloudCollaborationCallback(ctx, ownerID, rec, state, *task); err != nil {
+			out := cloudCollaborationView(rec, state, "dispatcher")
+			out["callbackPending"] = true
+			return out, nil
+		}
+		state.Chats[chatIdx].CallbackRegistered = true
+		return s.saveCloudCollaboration(ctx, ownerID, rec, state)
 	}
 	if task.Status != "queued" && task.Status != "create_in_doubt" {
 		return nil, store.ErrConflict
@@ -889,9 +892,16 @@ func (s *Service) cloudCollaborationDispatchTask(ctx context.Context, ownerID st
 	rec, state = updatedRec, updatedState
 	idx = taskIndex(state, req.TaskID)
 	task = &state.Tasks[idx]
-	s.registerCloudCollaborationCallbackAsync(ownerID, rec.CollaborationID, task.ID, task.Generation)
-	updated["callbackPending"] = true
-	return updated, nil
+	if _, callbackErr := s.registerCloudCollaborationCallback(ctx, ownerID, rec, state, *task); callbackErr != nil {
+		updated["callbackPending"] = true
+		return updated, nil
+	}
+	chatIdx := chatIndex(state, task.ChatSessionID)
+	if chatIdx < 0 {
+		return nil, store.ErrConflict
+	}
+	state.Chats[chatIdx].CallbackRegistered = true
+	return s.saveCloudCollaboration(ctx, ownerID, rec, state)
 }
 
 func (s *Service) persistCloudCollaborationCreatedChat(ctx context.Context, ownerID string, rec store.CloudCollaborationRecord, state cloudCollaborationState, createdTask cloudCollaborationTask, sessionID string) (store.CloudCollaborationRecord, cloudCollaborationState, map[string]any, error) {
@@ -938,22 +948,6 @@ func (s *Service) registerCloudCollaborationCallback(ctx context.Context, ownerI
 	return s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.callback.register", map[string]any{"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": task.ChatSessionID, "callbackTargetSessionId": state.DispatcherSessionID, "callbackMissionId": rec.CollaborationID, "callbackTaskId": task.ID, "callbackGeneration": task.Generation, "callbackDeliverablePath": cloudCollaborationTaskResultPath(task)})
 }
 
-func (s *Service) registerCloudCollaborationCallbackAsync(ownerID, collaborationID, taskID string, generation int64) {
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		rec, state, err := s.loadCloudCollaboration(ctx, ownerID, collaborationID)
-		if err != nil {
-			return
-		}
-		idx := taskIndex(state, taskID)
-		if idx < 0 || state.Tasks[idx].Generation != generation || state.Tasks[idx].ChatSessionID == "" {
-			return
-		}
-		_, _ = s.registerCloudCollaborationCallback(ctx, ownerID, rec, state, state.Tasks[idx])
-	}()
-}
-
 func (s *Service) cloudCollaborationPollStatus(ctx context.Context, ownerID string, rec store.CloudCollaborationRecord, state cloudCollaborationState, req CloudCollaborationRequest) (map[string]any, error) {
 	if state.Status == "closing" {
 		return s.cloudCollaborationClose(ctx, ownerID, rec, state)
@@ -968,6 +962,12 @@ func (s *Service) cloudCollaborationPollStatus(ctx context.Context, ownerID stri
 		return nil, store.ErrNotFound
 	}
 	chat := &state.Chats[chatIdx]
+	if !chat.CallbackRegistered {
+		if _, err := s.registerCloudCollaborationCallback(ctx, ownerID, rec, state, *task); err != nil {
+			return nil, err
+		}
+		chat.CallbackRegistered = true
+	}
 	result, err := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.watch", map[string]any{"providerId": "codex", "sessionId": chat.SessionID, "cursor": chat.WatchCursor, "waitSeconds": 0})
 	if err != nil {
 		return nil, err
@@ -992,9 +992,26 @@ func (s *Service) cloudCollaborationPollStatus(ctx context.Context, ownerID stri
 	}
 	providerStatus := ""
 	terminalEventID, _ := cloudCollaborationTerminalWatchEvent(result, task.ChatSessionID)
-	recoveryNotify := terminalEventID != "" && (task.Status == "active" || task.Status == "result_available" || task.Status == "completion_reported")
+	recoveryOutcome := ""
+	if terminalEventID != "" {
+		recoveryOutcome = "completed"
+	} else if chat.StalledNotified {
+		manifest, manifestErr := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.result", map[string]any{
+			"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": chat.SessionID, "resultMode": "manifest",
+			"callbackDeliverablePath": cloudCollaborationTaskResultPath(*task), "idempotencyKey": cloudCollaborationResultIdempotencyKey(rec.CollaborationID, *task),
+		})
+		if manifestErr == nil {
+			recoveryOutcome = cloudCollaborationManifestOutcome(manifest)
+			if status, _ := manifest["status"].(string); status != "" {
+				providerStatus = status
+			}
+		}
+	}
+	recoveryNotify := recoveryOutcome != "" && (task.Status == "active" || task.Status == "result_available" || task.Status == "completion_reported")
 	if recoveryNotify {
-		providerStatus = "completed"
+		if providerStatus == "" {
+			providerStatus = recoveryOutcome
+		}
 	}
 	out, saveErr := s.saveCloudCollaboration(ctx, ownerID, rec, state)
 	if saveErr != nil {
@@ -1013,7 +1030,7 @@ func (s *Service) cloudCollaborationPollStatus(ctx context.Context, ownerID stri
 	if recoveryNotify {
 		notification, notifyErr := s.notifyCloudCompletion(ctx, ownerID, CloudCompletionRequest{
 			Action: "notify", CollaborationID: rec.CollaborationID, TaskID: task.ID,
-			ActorSessionID: state.DispatcherSessionID, SourceSessionID: task.ChatSessionID, Outcome: "completed",
+			ActorSessionID: state.DispatcherSessionID, SourceSessionID: task.ChatSessionID, Outcome: recoveryOutcome,
 		})
 		if notifyErr != nil {
 			out["recoveryPending"] = true
@@ -1030,6 +1047,20 @@ func (s *Service) cloudCollaborationPollStatus(ctx context.Context, ownerID stri
 		}
 	}
 	return out, nil
+}
+
+func cloudCollaborationManifestOutcome(manifest map[string]any) string {
+	resultStatus, _ := manifest["resultStatus"].(string)
+	resultSHA256, _ := manifest["resultSHA256"].(string)
+	deliverableStatus, _ := manifest["deliverableStatus"].(string)
+	if (resultStatus == "ready" || resultStatus == "completed") && validCloudCompletionSHA256(resultSHA256) {
+		return "completed"
+	}
+	providerStatus, _ := manifest["status"].(string)
+	if resultStatus == "failed" || providerStatus == "failed" || providerStatus == "canceled" || providerStatus == "completed" && deliverableStatus != "ready" {
+		return "failed"
+	}
+	return ""
 }
 
 // cloudCollaborationContinueChat performs the conservative recovery action for
@@ -1077,7 +1108,7 @@ func (s *Service) cloudCollaborationContinueChat(ctx context.Context, ownerID st
 		return nil, err
 	}
 	providerStatus := cloudCollaborationSessionStatus(statusResult)
-	if providerStatus != "running" {
+	if providerStatus != "running" && providerStatus != "unknown" {
 		out := base()
 		out["providerStatus"] = providerStatus
 		switch providerStatus {

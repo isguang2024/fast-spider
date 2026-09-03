@@ -96,6 +96,9 @@ func TestChatGPTCloudLatestAssistantFollowsCurrentNodeAndIsBounded(t *testing.T)
 	if status := chatgptCloudConversationStatus(map[string]any{"mapping": map[string]any{}}); status != "unknown" {
 		t.Fatalf("status without terminal proof=%q", status)
 	}
+	if status := chatgptCloudConversationStatus(map[string]any{"currentNode": "assistant", "mapping": map[string]any{"assistant": map[string]any{"message": map[string]any{"status": "finished_successfully"}}}}); status != "completed" {
+		t.Fatalf("finished_successfully status=%q", status)
+	}
 }
 
 func TestChatGPTCloudResultManifestPublishesCompletedResultForPollingRecovery(t *testing.T) {
@@ -172,7 +175,7 @@ func TestChatGPTCloudResultManifestRetriesFailedCallbackPublication(t *testing.T
 
 func TestChatGPTCloudResultManifestInspectsAssignedDeliverable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		writeChatGPTCloudTestJSON(t, w, map[string]any{"conversation_id": "cloud-file", "async_status": "completed", "mapping": map[string]any{}})
+		writeChatGPTCloudTestJSON(t, w, map[string]any{"conversation_id": "cloud-file", "mapping": map[string]any{}})
 	}))
 	defer server.Close()
 	deliverable := filepath.Join(t.TempDir(), "report.md")
@@ -194,7 +197,7 @@ func TestChatGPTCloudResultManifestInspectsAssignedDeliverable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result["resultStatus"] != "ready" || result["deliverableStatus"] != "ready" || result["deliverablePath"] != deliverable || result["resultSHA256"] == "" {
+	if result["status"] != "completed" || result["resultStatus"] != "ready" || result["deliverableStatus"] != "ready" || result["deliverablePath"] != deliverable || result["resultSHA256"] == "" {
 		t.Fatalf("deliverable manifest=%#v", result)
 	}
 }

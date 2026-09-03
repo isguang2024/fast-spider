@@ -1219,7 +1219,7 @@ func chatgptCloudStatusValue(value any) string {
 		switch status {
 		case "running", "in_progress", "in-progress", "queued", "pending", "processing", "generating", "active", "started":
 			return "running"
-		case "completed", "complete", "success", "succeeded", "done", "finished":
+		case "completed", "complete", "success", "succeeded", "done", "finished", "finished_successfully":
 			return "completed"
 		case "failed", "failure", "error", "errored":
 			return "failed"
