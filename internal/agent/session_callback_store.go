@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -376,7 +377,7 @@ func (s *sessionCallbackStore) register(request sessionCallbackRegistration) (se
 	}
 	current, exists := s.registrations[request.SourceSessionID]
 	if exists {
-		if current.TargetSessionID != request.TargetSessionID || current.MissionID != request.MissionID || current.TaskID != request.TaskID || current.DeliverablePath != request.DeliverablePath {
+		if current.TargetSessionID != request.TargetSessionID || current.MissionID != request.MissionID || current.TaskID != request.TaskID || !callbackDeliverablePathEqual(current.DeliverablePath, request.DeliverablePath) {
 			return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "CALLBACK_OWNER_CONFLICT", message: "source session already has a different callback owner"}
 		}
 		if request.Generation < current.Generation {
@@ -407,6 +408,18 @@ func (s *sessionCallbackStore) register(request sessionCallbackRegistration) (se
 		return sessionCallbackRegistration{}, false, err
 	}
 	return request, false, nil
+}
+
+func callbackDeliverablePathEqual(left, right string) bool {
+	left, right = strings.TrimSpace(left), strings.TrimSpace(right)
+	if left == "" || right == "" {
+		return left == right
+	}
+	left, right = filepath.Clean(left), filepath.Clean(right)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }
 
 func (s *sessionCallbackStore) unregister(sourceSessionID string, generation int64) (bool, error) {

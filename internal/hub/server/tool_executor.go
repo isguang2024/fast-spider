@@ -204,6 +204,32 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 		if err := json.Unmarshal(rawParams, &params); err != nil {
 			return nil, &toolRequestError{message: "invalid cloud collaboration params"}
 		}
+		if strings.HasPrefix(input.Action, "completion.") {
+			completionInput := cloudCompletionInput{
+				Action: strings.TrimPrefix(input.Action, "completion."), CollaborationID: params.CollaborationID, TaskID: params.TaskID,
+				ActorSessionID: params.ActorSessionID, SourceSessionID: params.SourceSessionID, Outcome: params.Outcome,
+				ClaimID: params.ClaimID, Limit: params.Limit, Acknowledgements: params.Acknowledgements,
+			}
+			if err := validateCloudCompletionToolInput(completionInput); err != nil {
+				return nil, err
+			}
+			acknowledgements := make([]core.CloudCompletionAckItem, 0, len(completionInput.Acknowledgements))
+			for _, item := range completionInput.Acknowledgements {
+				acknowledgements = append(acknowledgements, core.CloudCompletionAckItem{
+					NotificationID: item.NotificationID, ResultID: item.ResultID, ResultStatus: item.ResultStatus,
+					ResultBytes: item.ResultBytes, ResultSHA256: item.ResultSHA256, DeliverableStatus: item.DeliverableStatus,
+				})
+			}
+			result, err := e.service.CloudCompletion(ctx, ownerID, core.CloudCompletionRequest{
+				Action: completionInput.Action, CollaborationID: completionInput.CollaborationID, TaskID: completionInput.TaskID,
+				ActorSessionID: completionInput.ActorSessionID, SourceSessionID: completionInput.SourceSessionID, Outcome: completionInput.Outcome,
+				ClaimID: completionInput.ClaimID, Limit: completionInput.Limit, Acknowledgements: acknowledgements,
+			})
+			if err != nil {
+				return nil, err
+			}
+			return genericCapabilityOutput{Result: result}, nil
+		}
 		var deadline time.Time
 		if strings.TrimSpace(params.Deadline) != "" {
 			deadline, err = time.Parse(time.RFC3339, params.Deadline)

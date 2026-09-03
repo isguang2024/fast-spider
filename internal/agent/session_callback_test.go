@@ -36,6 +36,17 @@ func testCallbackEvent(source string, sequence int64) chatgptCloudEvent {
 	}
 }
 
+func TestCallbackDeliverablePathEqualityUsesPlatformPathSemantics(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "results", "final.md")
+	if !callbackDeliverablePathEqual(path, filepath.Clean(path)) {
+		t.Fatalf("equivalent callback paths were not equal: %q", path)
+	}
+	if callbackDeliverablePathEqual(path, filepath.Join(root, "results", "other.md")) {
+		t.Fatal("different callback paths were treated as equal")
+	}
+}
+
 type testCloudResultPublisher struct {
 	called bool
 	text   string
