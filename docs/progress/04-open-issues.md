@@ -16,7 +16,7 @@
 
 - Node 0.4.41 generation 239 is online and ready.
 - The original create key cc-e2e-0439-selfcb-20260903-2359-01 successfully created collaboration collab_8Wz2kbkbcnmrOvtTdBJPzjtuXQD09gVt. This proves create can reuse the same app-server generation readiness even when the immediately preceding explicit safe readiness reports SESSION_BACKEND_UNAVAILABLE.
-- Goal goal-e2e-0439-selfcb-20260903-2359 and task task-e2e-0439-selfcb-20260903-2359 were added successfully.
+- The matching goal and task records were added successfully.
 - task.dispatch repeatedly times out. Read-only reconciliation remains revision 4 with createCount 0, no chats, and task queued. The audit log contains no new agent.control.session.create entry, so no visible ChatGPT CHAT creation side effect occurred.
 - Dispatch preflight should use the same generation-scoped successful readiness contract as collaboration create and surface the real failure reason instead of a generic timeout.
 
