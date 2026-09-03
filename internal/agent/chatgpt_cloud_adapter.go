@@ -33,6 +33,7 @@ const (
 	chatgptListRequestTimeout   = 8 * time.Second
 	chatgptReconcileListLimit   = 12
 	chatgptReconcileReadTimeout = 2 * time.Second
+	chatgptTokenCacheTTL        = 30 * time.Second
 )
 
 // ChatGPTCloudAdapter drives ChatGPT cloud conversations through the same
@@ -43,6 +44,9 @@ type ChatGPTCloudAdapter struct {
 	baseURL            string
 	http               *http.Client
 	tokenSource        func(ctx context.Context) (string, error)
+	tokenMu            sync.Mutex
+	cachedToken        string
+	cachedTokenUntil   time.Time
 	realtime           *chatgptCloudRealtime
 	listAuthTimeout    time.Duration
 	listRequestTimeout time.Duration
@@ -196,6 +200,14 @@ func newChatGPTCloudHTTPClient() *http.Client {
 
 // token resolves the desktop-app ChatGPT access token.
 func (a *ChatGPTCloudAdapter) token(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	a.tokenMu.Lock()
+	defer a.tokenMu.Unlock()
+	if a.cachedToken != "" && time.Now().Before(a.cachedTokenUntil) {
+		return a.cachedToken, nil
+	}
 	if a.tokenSource == nil {
 		return "", fmt.Errorf("chatgpt_cloud token source is unavailable")
 	}
@@ -206,6 +218,8 @@ func (a *ChatGPTCloudAdapter) token(ctx context.Context) (string, error) {
 	if token == "" {
 		return "", fmt.Errorf("chatgpt_cloud requires a ChatGPT-authenticated Codex app-server")
 	}
+	a.cachedToken = token
+	a.cachedTokenUntil = time.Now().Add(chatgptTokenCacheTTL)
 	return token, nil
 }
 

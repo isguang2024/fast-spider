@@ -73,6 +73,42 @@ func TestChatGPTCloudHTTPClientDoesNotCutOffBoundedStream(t *testing.T) {
 	}
 }
 
+func TestChatGPTCloudTokenReusesRecentSuccessfulReadinessToken(t *testing.T) {
+	calls := 0
+	adapter := NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) {
+		calls++
+		return "shared-token", nil
+	})
+	first, err := adapter.token(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := adapter.token(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != "shared-token" || second != first || calls != 1 {
+		t.Fatalf("tokens=(%q, %q) source calls=%d", first, second, calls)
+	}
+}
+
+func TestChatGPTCloudTokenDoesNotCacheFailures(t *testing.T) {
+	calls := 0
+	adapter := NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) {
+		calls++
+		if calls == 1 {
+			return "", errors.New("temporary auth RPC failure")
+		}
+		return "recovered-token", nil
+	})
+	if _, err := adapter.token(t.Context()); err == nil {
+		t.Fatal("first token request unexpectedly succeeded")
+	}
+	if token, err := adapter.token(t.Context()); err != nil || token != "recovered-token" || calls != 2 {
+		t.Fatalf("second token=(%q, %v), source calls=%d", token, err, calls)
+	}
+}
+
 func TestChatGPTCloudListBoundsAuthAndProviderStages(t *testing.T) {
 	t.Run("auth", func(t *testing.T) {
 		adapter := NewChatGPTCloudAdapter(nil, func(ctx context.Context) (string, error) {
