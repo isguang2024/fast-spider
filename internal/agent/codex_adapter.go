@@ -28,6 +28,8 @@ const (
 	codexAppServerSocketEnv = "FAST_SPIDER_CODEX_APP_SERVER_SOCKET"
 	codexDesktopBridgeEnv   = "FAST_SPIDER_CODEX_DESKTOP_BRIDGE"
 	codexAppServerStopWait  = 5 * time.Second
+	codexInterruptRetryWait = 50 * time.Millisecond
+	codexInterruptAttempts  = 5
 )
 
 type codexRPCError struct {
@@ -2131,8 +2133,25 @@ func (a *CodexAdapter) InterruptTurn(ctx context.Context, sessionID, turnID stri
 	if turnID != activeTurnID {
 		return node.ErrAgentSessionNotFound
 	}
-	_, err := a.request(ctx, "turn/interrupt", map[string]any{"threadId": sessionID, "turnId": turnID})
-	return err
+	params := map[string]any{"threadId": sessionID, "turnId": turnID}
+	for attempt := 0; attempt < codexInterruptAttempts; attempt++ {
+		_, err := a.request(ctx, "turn/interrupt", params)
+		if err == nil {
+			return nil
+		}
+		var responseErr *codexRPCResponseError
+		if !errors.As(err, &responseErr) || responseErr.code != -32600 || attempt == codexInterruptAttempts-1 || a.ActiveTurn(sessionID) != turnID {
+			return err
+		}
+		timer := time.NewTimer(codexInterruptRetryWait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil
 }
 
 func (a *CodexAdapter) RenameThread(ctx context.Context, sessionID, name string) error {

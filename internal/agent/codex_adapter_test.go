@@ -738,6 +738,31 @@ func TestCodexInterruptRejectsInactiveOrMismatchedTurnWithoutRPC(t *testing.T) {
 	}
 }
 
+func TestCodexInterruptRetriesTurnMaterializationRace(t *testing.T) {
+	adapter := NewCodexAdapter(nil)
+	adapter.eventMu.Lock()
+	adapter.activeTurns["session-1"] = "active-turn"
+	adapter.eventMu.Unlock()
+	calls := 0
+	adapter.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
+		calls++
+		if method != "turn/interrupt" || params["threadId"] != "session-1" || params["turnId"] != "active-turn" {
+			t.Fatalf("unexpected request method=%s params=%#v", method, params)
+		}
+		if calls == 1 {
+			return nil, &codexRPCResponseError{ExecutionError: newExecutionError("codex", method, "turn is not ready"), code: -32600}
+		}
+		return map[string]any{}, nil
+	}
+
+	if err := adapter.InterruptTurn(context.Background(), "session-1", "active-turn"); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("request calls=%d want=2", calls)
+	}
+}
+
 func TestCodexThreadStartParamsUsesProjectRootWithoutLosingWorktree(t *testing.T) {
 	projectDirectory := filepath.Join(string(filepath.Separator), "repos", "project")
 	workingDirectory := filepath.Join(string(filepath.Separator), "worktrees", "feature")
