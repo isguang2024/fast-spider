@@ -32,6 +32,8 @@ const (
 	codexInterruptAttempts  = 5
 )
 
+var errCodexChatGPTNotAuthenticated = errors.New("Codex app-server is not authenticated with ChatGPT")
+
 type codexRPCError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
@@ -397,14 +399,7 @@ func (a *CodexAdapter) AuthToken(ctx context.Context) (string, error) {
 	}
 	token, _ := result["authToken"].(string)
 	if token == "" {
-		result, err = a.request(ctx, "getAuthStatus", map[string]any{"includeToken": true, "refreshToken": true})
-		if err != nil {
-			return "", err
-		}
-		token, _ = result["authToken"].(string)
-	}
-	if token == "" {
-		return "", fmt.Errorf("Codex app-server is not authenticated with ChatGPT (getAuthStatus returned no token)")
+		return "", errCodexChatGPTNotAuthenticated
 	}
 	return token, nil
 }

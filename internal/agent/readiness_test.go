@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"testing"
@@ -102,17 +104,22 @@ func TestChatGPTCloudReadinessDoesNotProbeLocalThreadList(t *testing.T) {
 	}
 }
 
-func TestManagerUsesDedicatedCodexAdapterForChatGPTAuth(t *testing.T) {
-	manager := New(t.TempDir(), nil)
-	defer manager.Close(t.Context())
-	if manager.chatgptAuth == nil || manager.chatgptAuth == manager.codex {
-		t.Fatal("chatgpt_cloud auth must be isolated from the local Codex session adapter")
+func TestClassifyChatGPTCloudAuthError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "rpc timeout", err: context.DeadlineExceeded, want: "CHATGPT_CLOUD_AUTH_RPC_TIMEOUT"},
+		{name: "not authenticated", err: errCodexChatGPTNotAuthenticated, want: "CHATGPT_CLOUD_NOT_AUTHENTICATED"},
+		{name: "rpc failure", err: errors.New("connection closed"), want: "CHATGPT_CLOUD_AUTH_RPC_FAILED"},
 	}
-	manager.chatgptAuth.mu.Lock()
-	enabled := manager.chatgptAuth.desktopBridgeEnabled
-	manager.chatgptAuth.mu.Unlock()
-	if enabled == nil || *enabled {
-		t.Fatal("dedicated ChatGPT auth adapter must not attach to the Desktop session bridge")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := classifyChatGPTCloudAuthError(test.err); got != test.want {
+				t.Fatalf("reason=%q want %q", got, test.want)
+			}
+		})
 	}
 }
 

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -108,7 +109,7 @@ func (m *AgentManager) providerReadiness(ctx context.Context, input agentControl
 			checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
 			if _, err := m.chatgptCloud.token(checkCtx); err != nil {
-				return "blocked", "CHATGPT_CLOUD_NOT_AUTHENTICATED"
+				return "blocked", classifyChatGPTCloudAuthError(err)
 			}
 			return "ready", "OK"
 		})
@@ -127,6 +128,17 @@ func (m *AgentManager) providerReadiness(ctx context.Context, input agentControl
 		m.rememberProviderReadiness(providerID, mode, backend, result)
 	}
 	return result, nil
+}
+
+func classifyChatGPTCloudAuthError(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "CHATGPT_CLOUD_AUTH_RPC_TIMEOUT"
+	case errors.Is(err, errCodexChatGPTNotAuthenticated):
+		return "CHATGPT_CLOUD_NOT_AUTHENTICATED"
+	default:
+		return "CHATGPT_CLOUD_AUTH_RPC_FAILED"
+	}
 }
 
 func requiresSessionBackendProbe(backend string) bool {
