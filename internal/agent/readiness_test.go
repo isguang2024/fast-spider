@@ -102,6 +102,20 @@ func TestChatGPTCloudReadinessDoesNotProbeLocalThreadList(t *testing.T) {
 	}
 }
 
+func TestManagerUsesDedicatedCodexAdapterForChatGPTAuth(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(t.Context())
+	if manager.chatgptAuth == nil || manager.chatgptAuth == manager.codex {
+		t.Fatal("chatgpt_cloud auth must be isolated from the local Codex session adapter")
+	}
+	manager.chatgptAuth.mu.Lock()
+	enabled := manager.chatgptAuth.desktopBridgeEnabled
+	manager.chatgptAuth.mu.Unlock()
+	if enabled == nil || *enabled {
+		t.Fatal("dedicated ChatGPT auth adapter must not attach to the Desktop session bridge")
+	}
+}
+
 func TestClassifyRouteReadinessUsesInspectedRouteFacts(t *testing.T) {
 	tests := []struct {
 		name, state, reason string
