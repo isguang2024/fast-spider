@@ -66,6 +66,9 @@ func TestMCPDiagnosticsNormalizeClientsAndStableErrors(t *testing.T) {
 			t.Fatalf("normalize %q=%q want=%q", input, got, want)
 		}
 	}
+	if got := stableMCPErrorCode(&toolRequestError{message: "bad input"}); got != "INVALID_REQUEST" {
+		t.Fatalf("tool request error code=%s", got)
+	}
 	for _, code := range []string{"INVALID_REQUEST", "NOT_FOUND", "CONNECTION_LOST", "MACHINE_OFFLINE", "DEADLINE_EXCEEDED", "ABSOLUTE_PATH_REQUIRED", "BROWSER_REF_STALE", "NODE_UPDATING", "RUNTIME_UNAVAILABLE", "WSL_CWD_UNMAPPABLE", "JOB_NOT_FOUND"} {
 		if got := stableMCPErrorCode(errors.New(code + ": redacted detail")); got != code {
 			t.Fatalf("stable code %s=%s", code, got)

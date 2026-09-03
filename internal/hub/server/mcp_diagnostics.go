@@ -272,6 +272,10 @@ func stableMCPErrorCode(err error) string {
 	if err == nil {
 		return ""
 	}
+	var requestErr *toolRequestError
+	if errors.As(err, &requestErr) {
+		return "INVALID_REQUEST"
+	}
 	code := core.ErrorCode(err)
 	if code != "INTERNAL" {
 		return code

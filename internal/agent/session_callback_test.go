@@ -67,7 +67,7 @@ func TestCloudCallbackUsesLocalDeliverableWithoutReadingCHAT(t *testing.T) {
 		t.Fatalf("deliverable pending=%#v err=%v", grouped, err)
 	}
 	prompt := buildSessionCallbackEnvelope("env-file", grouped["target-file"])
-	if !strings.Contains(prompt, "deliverable_path="+path) || !strings.Contains(prompt, "codex_cloud_collaboration") || strings.Contains(prompt, string(content)) {
+	if !strings.Contains(prompt, "deliverable_path="+path) || !strings.Contains(prompt, "codex_cloud_completion") || strings.Contains(prompt, string(content)) {
 		t.Fatalf("deliverable envelope=%q", prompt)
 	}
 
@@ -106,17 +106,17 @@ func TestSessionCallbackStorePersistsCoalescesAndFencesGeneration(t *testing.T) 
 	if queued, err := store.enqueue(testCallbackEvent("source-1", 10)); err != nil || queued {
 		t.Fatalf("duplicate queued=%v err=%v", queued, err)
 	}
-	if queued, err := store.enqueue(testCallbackEvent("source-1", 11)); err != nil || !queued {
-		t.Fatalf("coalesced newer queued=%v err=%v", queued, err)
+	if queued, err := store.enqueue(testCallbackEvent("source-1", 11)); err != nil || queued {
+		t.Fatalf("duplicate terminal notification queued=%v err=%v", queued, err)
 	}
 
 	reloaded := newSessionCallbackStore(dataDir)
 	items, pendingCounts, err := reloaded.registrationsSnapshot("source-1", "")
-	if err != nil || len(items) != 1 || pendingCounts["source-1"] != 1 || items[0].LastEventSequence != 11 {
+	if err != nil || len(items) != 1 || pendingCounts["source-1"] != 1 || items[0].LastEventSequence != 10 {
 		t.Fatalf("reloaded items=%#v pending=%#v err=%v", items, pendingCounts, err)
 	}
 	grouped, err := reloaded.pendingByTarget()
-	if err != nil || len(grouped["target-1"]) != 1 || grouped["target-1"][0].EventSequence != 11 {
+	if err != nil || len(grouped["target-1"]) != 1 || grouped["target-1"][0].EventSequence != 10 {
 		t.Fatalf("pending=%#v err=%v", grouped, err)
 	}
 	if _, _, err := reloaded.register(testCallbackRegistration("source-1", "target-1", "task-1", 0)); err == nil {
@@ -211,20 +211,15 @@ func TestSessionCallbackStoreFailsClosedWhenPendingSequenceDisagrees(t *testing.
 	}
 }
 
-func TestSessionCallbackStoreDoesNotPersistFallbackIdentityForever(t *testing.T) {
+func TestSessionCallbackStorePersistsCanonicalCompletionIdentityAcrossRestart(t *testing.T) {
 	dataDir := t.TempDir()
 	store := newSessionCallbackStore(dataDir)
 	if _, _, err := store.register(testCallbackRegistration("source-1", "target-1", "task-1", 1)); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
-	payload := map[string]any{"conversation_id": "source-1", "type": "conversation-turn-complete"}
-	firstKey := chatgptRealtimeEventKeyAt("source-1", "conversation-turn-complete", payload, now)
-	laterKey := chatgptRealtimeEventKeyAt("source-1", "conversation-turn-complete", payload, now.Add(chatgptRealtimeFallbackDedupWindow+time.Second))
 	first := testCallbackEvent("source-1", 1)
-	first.EventKey = firstKey
 	if queued, err := store.enqueue(first); err != nil || !queued {
-		t.Fatalf("first fallback queued=%v err=%v", queued, err)
+		t.Fatalf("first completion queued=%v err=%v", queued, err)
 	}
 	grouped, err := store.pendingByTarget()
 	if err != nil {
@@ -235,18 +230,12 @@ func TestSessionCallbackStoreDoesNotPersistFallbackIdentityForever(t *testing.T)
 	}
 	reloaded := newSessionCallbackStore(dataDir)
 	items, _, err := reloaded.registrationsSnapshot("source-1", "")
-	if err != nil || len(items) != 1 || len(items[0].RecentEventKeys) != 0 {
-		t.Fatalf("fallback identity became permanent: items=%#v err=%v", items, err)
+	if err != nil || len(items) != 1 || len(items[0].RecentEventKeys) != 1 || !strings.HasPrefix(items[0].RecentEventKeys[0], "completion_") {
+		t.Fatalf("canonical completion identity was not retained: items=%#v err=%v", items, err)
 	}
 	duplicate := testCallbackEvent("source-1", 2)
-	duplicate.EventKey = firstKey
 	if queued, err := reloaded.enqueue(duplicate); err != nil || queued {
-		t.Fatalf("fallback duplicate after restart queued=%v err=%v", queued, err)
-	}
-	later := testCallbackEvent("source-1", 2)
-	later.EventKey = laterKey
-	if queued, err := reloaded.enqueue(later); err != nil || !queued {
-		t.Fatalf("fallback event after window queued=%v err=%v", queued, err)
+		t.Fatalf("completion duplicate after restart queued=%v err=%v", queued, err)
 	}
 }
 
@@ -352,7 +341,7 @@ func TestSessionCallbackManagerObserverInboxDispatchesAfterCoordinatorIdle(t *te
 	}
 }
 
-func TestSessionCallbackCompletionPublishesBoundedResultMetadata(t *testing.T) {
+func TestSessionCallbackCompletionQueuesNotificationWithoutReadingOrPublishingResult(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/backend-api/conversation/source-publish" {
 			http.NotFound(w, r)
@@ -381,7 +370,7 @@ func TestSessionCallbackCompletionPublishesBoundedResultMetadata(t *testing.T) {
 	}
 	event := testCallbackEvent("source-publish", 1)
 	manager.handleChatGPTCloudCallbackEvent(event)
-	if !publisher.called || publisher.text != "final callback text" {
+	if publisher.called || publisher.text != "" {
 		t.Fatalf("publisher called=%v text=%q", publisher.called, publisher.text)
 	}
 	grouped, err := manager.callbackStore.pendingByTarget()
@@ -389,11 +378,11 @@ func TestSessionCallbackCompletionPublishesBoundedResultMetadata(t *testing.T) {
 		t.Fatalf("pending=%#v err=%v", grouped, err)
 	}
 	pending := grouped["target"][0]
-	if pending.ResultID != "res_callback_1" || pending.ResultStatus != "ready" || pending.ResultPageCount != 1 {
+	if pending.ResultID != "" || pending.ResultStatus != "" || pending.ResultPageCount != 0 || !strings.HasPrefix(pending.EventKey, "completion_") {
 		t.Fatalf("pending result metadata=%#v", pending)
 	}
 	envelope := buildSessionCallbackEnvelope(sessionCallbackEnvelopeID("target", grouped["target"]), grouped["target"])
-	if strings.Contains(envelope, "final callback text") || strings.Contains(envelope, "artifactId") || !strings.Contains(envelope, "result_id=res_callback_1") {
+	if strings.Contains(envelope, "final callback text") || strings.Contains(envelope, "artifactId") || strings.Contains(envelope, "result_id=") || !strings.Contains(envelope, "codex_cloud_completion") {
 		t.Fatalf("unsafe callback envelope=%q", envelope)
 	}
 }
@@ -543,7 +532,7 @@ func TestSessionCallbackStoreConcurrentEventsCoalescePerSource(t *testing.T) {
 	}
 }
 
-func TestSessionCallbackStoreRetainsProviderReplayFenceBeyondThirtyTwoEvents(t *testing.T) {
+func TestSessionCallbackStoreCoalescesProviderEventsToCanonicalCompletion(t *testing.T) {
 	store := newSessionCallbackStore(t.TempDir())
 	if _, _, err := store.register(testCallbackRegistration("source-replay", "target-1", "task-1", 1)); err != nil {
 		t.Fatal(err)
@@ -551,7 +540,7 @@ func TestSessionCallbackStoreRetainsProviderReplayFenceBeyondThirtyTwoEvents(t *
 	for sequence := int64(1); sequence <= 64; sequence++ {
 		event := testCallbackEvent("source-replay", sequence)
 		event.EventKey = fmt.Sprintf("provider_evt_replay_%d", sequence)
-		if queued, err := store.enqueue(event); err != nil || !queued {
+		if queued, err := store.enqueue(event); err != nil || queued != (sequence == 1) {
 			t.Fatalf("enqueue sequence=%d queued=%v err=%v", sequence, queued, err)
 		}
 	}
@@ -561,12 +550,12 @@ func TestSessionCallbackStoreRetainsProviderReplayFenceBeyondThirtyTwoEvents(t *
 		t.Fatalf("old provider replay queued=%v err=%v", queued, err)
 	}
 	grouped, err := store.pendingByTarget()
-	if err != nil || len(grouped["target-1"]) != 1 || grouped["target-1"][0].EventSequence != 64 {
+	if err != nil || len(grouped["target-1"]) != 1 || grouped["target-1"][0].EventSequence != 1 || !strings.HasPrefix(grouped["target-1"][0].EventKey, "completion_") {
 		t.Fatalf("old replay replaced newer pending=%#v err=%v", grouped, err)
 	}
 }
 
-func TestSessionCallbackEnvelopeChangesAfterProviderFenceEviction(t *testing.T) {
+func TestSessionCallbackEnvelopeRemainsStableForCanonicalCompletion(t *testing.T) {
 	store := newSessionCallbackStore(t.TempDir())
 	if _, _, err := store.register(testCallbackRegistration("source-envelope", "target-1", "task-1", 1)); err != nil {
 		t.Fatal(err)
@@ -574,7 +563,7 @@ func TestSessionCallbackEnvelopeChangesAfterProviderFenceEviction(t *testing.T) 
 	for sequence := int64(1); sequence <= maxRecentCallbackEventKeys+1; sequence++ {
 		event := testCallbackEvent("source-envelope", sequence)
 		event.EventKey = fmt.Sprintf("provider_evt_envelope_%d", sequence)
-		if queued, err := store.enqueue(event); err != nil || !queued {
+		if queued, err := store.enqueue(event); err != nil || queued != (sequence == 1) {
 			t.Fatalf("enqueue sequence=%d queued=%v err=%v", sequence, queued, err)
 		}
 	}
@@ -586,8 +575,8 @@ func TestSessionCallbackEnvelopeChangesAfterProviderFenceEviction(t *testing.T) 
 	firstEnvelope := sessionCallbackEnvelopeID("target-1", []sessionCallbackEvent{first})
 	oldReplay := testCallbackEvent("source-envelope", maxRecentCallbackEventKeys+2)
 	oldReplay.EventKey = "provider_evt_envelope_1"
-	if queued, err := store.enqueue(oldReplay); err != nil || !queued {
-		t.Fatalf("evicted provider replay queued=%v err=%v", queued, err)
+	if queued, err := store.enqueue(oldReplay); err != nil || queued {
+		t.Fatalf("provider replay queued=%v err=%v", queued, err)
 	}
 	grouped, err = store.pendingByTarget()
 	if err != nil || len(grouped["target-1"]) != 1 {
@@ -595,8 +584,8 @@ func TestSessionCallbackEnvelopeChangesAfterProviderFenceEviction(t *testing.T) 
 	}
 	second := grouped["target-1"][0]
 	secondEnvelope := sessionCallbackEnvelopeID("target-1", []sessionCallbackEvent{second})
-	if firstEnvelope == secondEnvelope || second.EventSequence != maxRecentCallbackEventKeys+2 {
-		t.Fatalf("replayed event reused envelope or lost sequence: first=%q second=%q event=%#v", firstEnvelope, secondEnvelope, second)
+	if firstEnvelope != secondEnvelope || second.EventSequence != 1 {
+		t.Fatalf("canonical event changed envelope: first=%q second=%q event=%#v", firstEnvelope, secondEnvelope, second)
 	}
 }
 
@@ -608,7 +597,7 @@ func TestSessionCallbackProviderReplayCannotReplaceInFlightPendingEnvelope(t *te
 	for sequence := int64(1); sequence <= 64; sequence++ {
 		event := testCallbackEvent("source-inflight", sequence)
 		event.EventKey = fmt.Sprintf("provider_evt_inflight_%d", sequence)
-		if queued, err := store.enqueue(event); err != nil || !queued {
+		if queued, err := store.enqueue(event); err != nil || queued != (sequence == 1) {
 			t.Fatalf("enqueue sequence=%d queued=%v err=%v", sequence, queued, err)
 		}
 	}
@@ -868,11 +857,11 @@ func TestSessionCallbackRegisterReconcilesAlreadyCompletedCloudTurn(t *testing.T
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		metadata, ok, err := manager.callbackStore.resultFor("source-completed")
+		pending, err := manager.callbackStore.pendingSnapshot("source-completed", "coordinator-local")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if ok && metadata.Status == "ready" && metadata.SHA256 != "" {
+		if len(pending) == 1 && strings.HasPrefix(pending[0].EventKey, "completion_") && pending[0].ResultStatus == "" {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -911,7 +900,7 @@ func TestSessionCallbackFallbackStatusReadSynthesizesMissedCompletion(t *testing
 		t.Fatalf("fallback pending=%#v err=%v", grouped, err)
 	}
 	event := grouped["target-fallback"][0]
-	if !strings.HasPrefix(event.EventKey, "provider_evt_fallback_") || event.EventSequence != 1 || event.ResultStatus != "unknown" {
+	if !strings.HasPrefix(event.EventKey, "completion_") || event.EventSequence != 1 || event.ResultStatus != "" {
 		t.Fatalf("fallback event=%#v", event)
 	}
 }
@@ -1004,7 +993,7 @@ func TestAuthorizedThreadFallbackRequiresRegisteredDesktopThreadAndNotFoundError
 	}
 }
 
-func TestSessionCallbackRegisterKeepsDurableOwnerWhenWatcherFails(t *testing.T) {
+func TestSessionCallbackRegisterReturnsAfterDurableWriteWhenWatcherFails(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/backend-api/conversation/source-cloud" {
 			http.NotFound(w, r)
@@ -1034,12 +1023,13 @@ func TestSessionCallbackRegisterKeepsDurableOwnerWhenWatcherFails(t *testing.T) 
 		}
 		return map[string]any{"thread": map[string]any{"id": "coordinator-local", "cwd": t.TempDir()}}, nil
 	}
-	if _, err := manager.Control(context.Background(), "session.callback.register", map[string]any{
+	registered, err := manager.Control(context.Background(), "session.callback.register", map[string]any{
 		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
 		"sessionId": "source-cloud", "callbackTargetSessionId": "coordinator-local",
 		"callbackMissionId": "mission-1", "callbackTaskId": "task-1", "callbackGeneration": 1,
-	}); err == nil {
-		t.Fatal("watcher failure was reported as a successful registration")
+	})
+	if err != nil || registered["watcherState"] != "pending" {
+		t.Fatalf("registration=%#v err=%v", registered, err)
 	}
 	store := newSessionCallbackStore(dataDir)
 	items, _, err := store.registrationsSnapshot("source-cloud", "")

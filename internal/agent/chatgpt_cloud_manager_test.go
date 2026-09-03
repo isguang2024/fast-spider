@@ -825,6 +825,97 @@ func TestChatGPTCloudSessionGetAutoRoutesFromStoredBackend(t *testing.T) {
 	}
 }
 
+func TestChatGPTCloudSessionGetAppTypeRoutesAndOmitsLargeRepeatedHistory(t *testing.T) {
+	var reads int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/conversation/cloud-bounded" {
+			t.Fatalf("unexpected request path %s", r.URL.Path)
+		}
+		reads++
+		mapping := map[string]any{
+			"root": map[string]any{"id": "root", "parent": nil, "message": nil},
+			"user-1": map[string]any{"id": "user-1", "parent": "root", "message": map[string]any{
+				"id": "user-1", "author": map[string]any{"role": "user"}, "content": map[string]any{"parts": []any{strings.Repeat("old-history-", 200000)}},
+			}},
+			"assistant-1": map[string]any{"id": "assistant-1", "parent": "user-1", "message": map[string]any{
+				"id": "assistant-1", "author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"first answer"}},
+			}},
+		}
+		current := "assistant-1"
+		if reads > 1 {
+			mapping["user-2"] = map[string]any{"id": "user-2", "parent": "assistant-1", "message": map[string]any{
+				"id": "user-2", "author": map[string]any{"role": "user"}, "content": map[string]any{"parts": []any{"new question"}},
+			}}
+			mapping["assistant-2"] = map[string]any{"id": "assistant-2", "parent": "user-2", "message": map[string]any{
+				"id": "assistant-2", "author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"new answer"}},
+			}}
+			current = "assistant-2"
+		}
+		writeChatGPTCloudTestJSON(t, w, map[string]any{
+			"conversation_id": "cloud-bounded", "title": "Bounded", "current_node": current, "mapping": mapping,
+		})
+	}))
+	defer server.Close()
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	manager.chatgptCloud.baseURL = server.URL
+	manager.chatgptCloud.http = server.Client()
+	manager.chatgptCloud.tokenSource = func(context.Context) (string, error) { return "token", nil }
+
+	first, err := manager.Control(context.Background(), "session.get", map[string]any{
+		"appType": "chatgpt", "sessionId": "cloud-bounded",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := first["session"].(map[string]any)
+	if _, leaked := session["mapping"]; leaked {
+		t.Fatal("session.get leaked the full provider mapping")
+	}
+	messages, _ := session["messages"].([]map[string]any)
+	if len(messages) != 2 || messages[0]["textTruncated"] != true {
+		t.Fatalf("messages=%#v", messages)
+	}
+	raw, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) >= 128<<10 {
+		t.Fatalf("bounded session.get response is too large: %d bytes", len(raw))
+	}
+	cursor, _ := first["nextCursor"].(string)
+	if cursor != "assistant-1" {
+		t.Fatalf("nextCursor=%q", cursor)
+	}
+
+	second, err := manager.Control(context.Background(), "session.get", map[string]any{
+		"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": "cloud-bounded", "pageCursor": cursor,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondSession, _ := second["session"].(map[string]any)
+	delta, _ := secondSession["messages"].([]map[string]any)
+	if len(delta) != 2 || delta[0]["id"] != "user-2" || delta[1]["id"] != "assistant-2" {
+		t.Fatalf("delta=%#v", delta)
+	}
+	if second["nextCursor"] != "assistant-2" {
+		t.Fatalf("second nextCursor=%#v", second["nextCursor"])
+	}
+
+	third, err := manager.Control(context.Background(), "session.get", map[string]any{
+		"appType": "chatgpt", "sessionId": "cloud-bounded", "pageCursor": "assistant-2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdSession, _ := third["session"].(map[string]any)
+	unchanged, _ := thirdSession["messages"].([]map[string]any)
+	if len(unchanged) != 0 || third["nextCursor"] != "assistant-2" {
+		t.Fatalf("unchanged delta=%#v nextCursor=%#v", unchanged, third["nextCursor"])
+	}
+}
+
 func TestDefaultCodexSessionListIncludesManagedCloudSessions(t *testing.T) {
 	manager := New(t.TempDir(), nil)
 	defer manager.Close(context.Background())

@@ -134,7 +134,7 @@ Git 子目录和 linked worktree 会解析到主工作树对应的 Codex Desktop
 Fast Spider 用 Codex app-server 的 ChatGPT 登录态（`getAuthStatus`）配合自解 Sentinel（PoW + turnstile token）走官方
 `/backend-api/f/conversation` 流创建会话，`externalIdType=chatgpt_conversation`，会话出现在账号的 ChatGPT 聊天列表。
 `chatgpt_cloud` 必须 `visibility=visible`（云端会话天然对外可见），`ephemeral=true` 不支持；首次消息必须随
-`session.create` 提供（ChatGPT 无空会话创建接口）。依赖本机 Codex app-server 已登录 ChatGPT，否则返回明确错误。创建成功后 Fast Spider 在 sidecar 中保存 `sessionId → backend=chatgpt_cloud + workingDirectory`，因此后续 `session.get/send/watch/result/rename/delete/cancel/steer` 只需 `sessionId`，不必重复声明 backend。普通 Codex `session.list` 会合并 FS 自己管理过的 Cloud 会话；显式 `backend=chatgpt_cloud` 的 `session.list` 才访问 `/backend-api/conversations`。Provider 读取失败时返回带 `source=fast_spider_sidecar`、`incomplete=true`、`authoritative=false` 的本地已知项，而不是伪造空的完整云列表。
+`session.create` 提供（ChatGPT 无空会话创建接口）。依赖本机 Codex app-server 已登录 ChatGPT，否则返回明确错误。创建成功后 Fast Spider 在 sidecar 中保存 `sessionId → backend=chatgpt_cloud + workingDirectory`，因此受管会话后续 `session.get/send/watch/result/rename/delete/cancel/steer` 只需 `sessionId`，不必重复声明 backend。对于用户直接提供的现有 `chatgpt.com/c/<conversation-id>`，调用方使用该 conversation ID，并显式传 `backend=chatgpt_cloud`，也可用 `appType=chatgpt` 作为等价入口。普通 Codex `session.list` 会合并 FS 自己管理过的 Cloud 会话；显式 `backend=chatgpt_cloud` 的 `session.list` 才访问 `/backend-api/conversations`。Provider 读取失败时返回带 `source=fast_spider_sidecar`、`incomplete=true`、`authoritative=false` 的本地已知项，而不是伪造空的完整云列表。
 
 Cloud 只有一个创建入口 `session.create`，用 `mode=quick_chat|complete` 切换两种模式。Node 本地 `config.json` 可设置省略 `mode/model/thinking` 时采用的默认值；未配置的旧客户端仍为 `complete` + Auto 模型 + Auto 思考。请求明确传入的值（包括以空字符串表示 Auto）优先。`complete` 保留 prepare + 完整 SSE 等待；`quick_chat` 与 Codex Quick chat 一样不请求 `/f/conversation/prepare`，最终模型为空时发送 `model=auto`，收到首个真实 conversation ID 就返回 `phase=running`、`createMode=quick_chat`、`completionPending=true`。同一 `idempotencyKey` 不能在两种 mode 或不同 model/thinking 之间复用；幂等匹配使用应用本机默认值后的最终参数，旧版未记录 mode/thinking 的默认完整创建仍可按原 key 重放并迁移。
 
@@ -147,7 +147,7 @@ Cloud 只有一个创建入口 `session.create`，用 `mode=quick_chat|complete`
 | `models.list` | `GET /backend-api/models`；返回实时 presets/thinking，加上 Node 本机配置的 `advancedModels`，与 Codex/工作模型分开 |
 | `session.create` | `mode=complete`：prepare 后等待完整 `POST /backend-api/f/conversation`；`mode=quick_chat`：跳过 prepare，拿到 conversation UUID 即返回，后台排空流 |
 | `session.send` | follow-up（`conversation_id` + `parent_message_id`=最后 assistant 消息，自动解析） |
-| `session.get` | `GET /backend-api/conversation/{id}`（mapping 全量消息） |
+| `session.get` | `GET /backend-api/conversation/{id}`；完整 mapping 只留在 Node，默认返回活动分支最近 8 条有界文本。响应的 `nextCursor` 可作为下一次 `pageCursor`，只取得更新消息，不重复注入历史；单次 `limit` 最大 32 |
 | `session.result` | 同上，按 async/terminal 事实返回 `running|completed|failed|canceled|unknown`；旧调用返回有界（64 KiB）`finalAgentMessage`，`resultMode=manifest|result-id` 用于只取 Result 元数据 |
 | `session.list` | 显式 `backend=chatgpt_cloud` 时有界调用 `GET /backend-api/conversations`；Provider 失败时只返回标记为不完整、非权威的 FS sidecar 已知项。省略 backend 的普通 Codex 列表仅合并受管 Cloud 会话，不扫描整个账号历史 |
 | `session.rename` | `POST /conversation/id/{id}/rename` |
@@ -179,6 +179,8 @@ Cloud 的 `conversation.turn.complete` 会先写入 Node data-dir 下的 `agent/
 只能向空闲 Thread 启动下一 Turn。若 Codex 已有 active Turn，返回 `AGENT_SESSION_BUSY`，Fast Spider 不把第二条 send 暗中转换成 steer。
 
 `session.send` 可以覆盖同一项目内的 `workingDirectory`、model、reasoning effort、personality、serviceTier 与 reasoning summary；跨项目目录被拒绝。
+
+对于普通 ChatGPT 会话，续聊使用 `providerId=codex + backend=chatgpt_cloud + session.send`；也可用 `appType=chatgpt` 选择相同后端。用户已给出准确 conversation ID 且目标只是继续时，不需要先读取完整历史；`session.send` 会在 Node 内部解析 parent/model/thinking，只把小型启动结果返回调用方。若确实需要观察新内容，保存 `session.get` 的 `nextCursor`，后续作为 `pageCursor` 只读取增量消息。
 
 ### `session.steer`
 

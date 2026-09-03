@@ -12,7 +12,7 @@ import (
 
 func TestMCPGuideCatalogMatchesRegisteredToolsAndDocumentation(t *testing.T) {
 	guideNames := mcpRegisteredGuideNames()
-	if len(guideNames) != 21 {
+	if len(guideNames) != 22 {
 		t.Fatalf("guide tool count=%d names=%v", len(guideNames), guideNames)
 	}
 	var discoveryMarkers []string
@@ -75,9 +75,17 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		}
 		if name == "codex_cloud_collaboration" {
 			guideText := strings.Join(append(append(append([]string{guide.Summary}, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
-			for _, needle := range []string{"existing Cloud CHAT", "actorSessionId=$self", "event.ingest", "event.ack", "resultMode=manifest", "Node session.callback", "new Cloud Worker/CHAT", "status.poll", "chat.continue", "controller decision", "plan.init", "initializeMarkdown=true", "docs/progress/04-open-issues.md"} {
+			for _, needle := range []string{"existing Cloud CHAT", "actorSessionId=$self", "codex_cloud_completion", "notify", "Node session.callback", "new Cloud Worker/CHAT", "status.poll", "chat.continue", "controller decision", "plan.init", "initializeMarkdown=true", "docs/progress/04-open-issues.md"} {
 				if !strings.Contains(guideText, needle) {
 					t.Fatalf("codex_cloud_collaboration guide missing %q: %+v", needle, guide)
+				}
+			}
+		}
+		if name == "codex_cloud_completion" {
+			guideText := strings.Join(append(append(append([]string{guide.Summary}, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
+			for _, needle := range []string{"notification", "actorSessionId=$self", "64", "five-minute", "verifies", "ack", "Node fallback", "result bodies"} {
+				if !strings.Contains(guideText, needle) {
+					t.Fatalf("codex_cloud_completion guide missing %q: %+v", needle, guide)
 				}
 			}
 		}
@@ -239,9 +247,9 @@ func TestMCPServerInstructionsStayBoundedAndCoverCapabilityMap(t *testing.T) {
 	for _, needle := range []string{
 		"@FastSpider_FS", "capability_list", "machine_list", "machine_get", "audit_log", "operation_log", "file_read", "file_edit", "code_search",
 		"shell_run", "build_control", "job_watch", "job_cancel", "git_control", "browser_control", "screenshot_take",
-		"ai_control", "codex_cloud_collaboration", "working_context", "thinking_team", "artifact_get", "session.list", "view=tool|workflow|error", "view=capability",
-		`query="fsprobe"`, "Never load all 21 schemas", "powershell.exe", "tzutil /g", "not a separate PowerShell tool", "backend=chatgpt_cloud", "ChatGPT CHAT",
-		"desktopBridge", "nativeConversationStreaming=unsupported", "Desktop owner/control bridge", "event.ingest", "event.ack", "new Cloud Worker/CHAT", "Node callback delivery",
+		"ai_control", "codex_cloud_collaboration", "codex_cloud_completion", "working_context", "thinking_team", "artifact_get", "session.list", "view=tool|workflow|error", "view=capability",
+		`query="fsprobe"`, "Never load all 22 schemas", "powershell.exe", "tzutil /g", "not a separate PowerShell tool", "backend=chatgpt_cloud", "ChatGPT CHAT",
+		"desktopBridge", "nativeConversationStreaming=unsupported", "Desktop owner/control bridge", "writes its result first", "claims up to 64", "new Cloud Worker/CHAT", "Node callback delivery",
 	} {
 		if !strings.Contains(mcpServerInstructions, needle) {
 			t.Fatalf("instructions missing %q", needle)
@@ -262,7 +270,7 @@ func assertMCPGuideSize(t *testing.T, guide *mcpGuide, limit int) {
 
 func documentedMCPToolNames(t *testing.T, document string) []string {
 	t.Helper()
-	anchor := strings.Index(document, "当前固定 21 个工具")
+	anchor := strings.Index(document, "当前固定 22 个工具")
 	if anchor < 0 {
 		t.Fatal("MCP tool-list anchor missing from documentation")
 	}

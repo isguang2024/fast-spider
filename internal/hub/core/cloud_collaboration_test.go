@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -26,6 +27,7 @@ type cloudCollaborationTestNode struct {
 	calls     []protocolv1.CapabilityRequest
 	onCall    func(protocolv1.CapabilityRequest)
 	responses map[string]map[string]any
+	creates   int
 }
 
 func (n *cloudCollaborationTestNode) respond(req protocolv1.CapabilityRequest) map[string]any {
@@ -47,7 +49,11 @@ func (n *cloudCollaborationTestNode) respond(req protocolv1.CapabilityRequest) m
 	case "session.get":
 		return map[string]any{"session": map[string]any{"sessionId": req.Params["sessionId"], "providerId": "codex", "backend": "codex_local"}}
 	case "session.create":
-		return map[string]any{"sessionId": "cloud-chat-1", "backend": "chatgpt_cloud", "visibility": "visible", "externalIdType": "chatgpt_conversation"}
+		n.mu.Lock()
+		n.creates++
+		created := n.creates
+		n.mu.Unlock()
+		return map[string]any{"sessionId": fmt.Sprintf("cloud-chat-%d", created), "backend": "chatgpt_cloud", "visibility": "visible", "externalIdType": "chatgpt_conversation"}
 	case "session.callback.register":
 		return map[string]any{"registered": true}
 	case "session.watch":
@@ -226,17 +232,14 @@ func TestCodexCloudCollaborationRequiresLocalCodexAndUsesDeliverableCallback(t *
 	if numberField(dispatched, "revision") < 6 {
 		t.Fatalf("dispatch=%#v", dispatched)
 	}
-	var createPrompt, callbackPath string
+	var createPrompt string
 	for _, call := range node.snapshotCalls() {
 		if call.Action == "session.create" {
 			createPrompt, _ = call.Params["prompt"].(string)
 		}
-		if call.Action == "session.callback.register" {
-			callbackPath, _ = call.Params["callbackDeliverablePath"].(string)
-		}
 	}
-	if callbackPath != output || !strings.Contains(createPrompt, output) || !strings.Contains(createPrompt, "codex_cloud_collaboration") || !strings.Contains(createPrompt, "plan.init") || !strings.Contains(createPrompt, "initializeMarkdown=true") {
-		t.Fatalf("prompt/path prompt=%q callbackPath=%q", createPrompt, callbackPath)
+	if !strings.Contains(createPrompt, output) || !strings.Contains(createPrompt, "codex_cloud_completion") || !strings.Contains(createPrompt, "action=notify") || strings.Contains(createPrompt, "action=event.ingest") || !strings.Contains(createPrompt, "plan.init") || !strings.Contains(createPrompt, "initializeMarkdown=true") {
+		t.Fatalf("prompt=%q", createPrompt)
 	}
 	goalCounts, _ := dispatched["goalCounts"].(map[string]int)
 	if goalCounts["queued"] != 1 {
@@ -345,29 +348,28 @@ func TestCodexCloudCollaborationPollRecoversMissedCallbackAndCloses(t *testing.T
 		"cursor": int64(7),
 		"events": []any{map[string]any{"sequence": int64(7), "type": "conversation.turn.complete", "eventKey": "provider_evt_recovery", "sessionId": "cloud-chat-1"}},
 	})
-	node.setResponse("session.result", map[string]any{
-		"sessionId": "cloud-chat-1", "status": "completed", "resultStatus": "ready", "resultId": "result-recovery", "resultBytes": int64(19), "resultSHA256": "sha256:" + strings.Repeat("c", 64),
-	})
 	recovered, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "status.poll", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(missed, "revision"), TaskID: "task-recovery"})
-	if err != nil || recovered["status"] != "completed" {
+	if err != nil || recovered["status"] != "active" {
 		t.Fatalf("recovered=%#v err=%v dispatched=%#v", recovered, err, dispatched)
 	}
 	tasks, _ := recovered["tasks"].([]cloudCollaborationTask)
-	events, _ := recovered["events"].([]cloudCollaborationEvent)
-	if len(tasks) != 1 || tasks[0].Status != "done" || len(events) != 1 || events[0].ID != "provider_evt_recovery" || events[0].Status != "acked" {
-		t.Fatalf("recovered tasks=%#v events=%#v", tasks, events)
+	if len(tasks) != 1 || tasks[0].Status != "active" || recovered["completionNotification"] == nil {
+		t.Fatalf("recovered=%#v tasks=%#v", recovered, tasks)
 	}
-	var manifestCall protocolv1.CapabilityRequest
-	for _, call := range node.snapshotCalls() {
-		if call.Action == "session.result" {
-			manifestCall = call
-		}
+	if countCloudCollaborationCalls(node.snapshotCalls(), "session.result") != 0 {
+		t.Fatalf("status poll used the heavy result path: %#v", node.snapshotCalls())
 	}
-	if manifestCall.Params["resultMode"] != "manifest" || len(manifestCall.Params["idempotencyKey"].(string)) < 12 {
-		t.Fatalf("manifest call=%#v", manifestCall)
+	claim, err := service.CloudCompletion(context.Background(), ownerID, CloudCompletionRequest{Action: "claim", ActorSessionID: "codex-dispatcher", ClaimID: "claim-recovery"})
+	if err != nil || claim["claimedCount"] != 1 {
+		t.Fatalf("claim=%#v err=%v", claim, err)
 	}
-	if countCloudCollaborationCalls(node.snapshotCalls(), "session.archive") != 1 {
-		t.Fatalf("poll recovery did not archive Cloud CHAT: %#v", node.snapshotCalls())
+	claimed := claim["claimed"].([]map[string]any)
+	acked, err := service.CloudCompletion(context.Background(), ownerID, CloudCompletionRequest{
+		Action: "ack", ActorSessionID: "codex-dispatcher", ClaimID: "claim-recovery",
+		Acknowledgements: []CloudCompletionAckItem{{NotificationID: claimed[0]["notificationId"].(string), ResultStatus: "ready", ResultBytes: 19, ResultSHA256: "sha256:" + strings.Repeat("c", 64), DeliverableStatus: "ready"}},
+	})
+	if err != nil || acked["ackedCount"] != 1 {
+		t.Fatalf("ack=%#v err=%v", acked, err)
 	}
 }
 

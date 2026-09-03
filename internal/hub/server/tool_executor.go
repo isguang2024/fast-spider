@@ -225,6 +225,31 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 		}
 		return genericCapabilityOutput{Result: result}, nil
 
+	case "codex_cloud_completion":
+		input, err := toolInput[cloudCompletionInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		if err := validateCloudCompletionToolInput(input); err != nil {
+			return nil, err
+		}
+		acknowledgements := make([]core.CloudCompletionAckItem, 0, len(input.Acknowledgements))
+		for _, item := range input.Acknowledgements {
+			acknowledgements = append(acknowledgements, core.CloudCompletionAckItem{
+				NotificationID: item.NotificationID, ResultID: item.ResultID, ResultStatus: item.ResultStatus,
+				ResultBytes: item.ResultBytes, ResultSHA256: item.ResultSHA256, DeliverableStatus: item.DeliverableStatus,
+			})
+		}
+		result, err := e.service.CloudCompletion(ctx, ownerID, core.CloudCompletionRequest{
+			Action: input.Action, CollaborationID: input.CollaborationID, TaskID: input.TaskID,
+			ActorSessionID: input.ActorSessionID, SourceSessionID: input.SourceSessionID, Outcome: input.Outcome,
+			ClaimID: input.ClaimID, Limit: input.Limit, Acknowledgements: acknowledgements,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return genericCapabilityOutput{Result: result}, nil
+
 	case "file_read":
 		input, err := toolInput[fileReadInput](tool, rawInput)
 		if err != nil {
@@ -528,4 +553,55 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 	default:
 		return nil, fmt.Errorf("unknown tool %q", tool)
 	}
+}
+
+func validateCloudCompletionToolInput(input cloudCompletionInput) error {
+	action := strings.TrimSpace(input.Action)
+	if !validCloudCompletionToolID(input.ActorSessionID) {
+		return &toolRequestError{message: "actorSessionId is required and must be a bounded opaque ID"}
+	}
+	switch action {
+	case "notify":
+		if strings.TrimSpace(input.CollaborationID) == "" || strings.TrimSpace(input.TaskID) == "" {
+			return &toolRequestError{message: "collaborationId and taskId are required for notify"}
+		}
+		if input.Outcome != "completed" && input.Outcome != "blocked" && input.Outcome != "failed" {
+			return &toolRequestError{message: "outcome must be completed, blocked, or failed for notify"}
+		}
+		if input.ActorSessionID == "$self" {
+			if strings.TrimSpace(input.SourceSessionID) != "" {
+				return &toolRequestError{message: "sourceSessionId must be omitted when actorSessionId is $self"}
+			}
+		} else if !validCloudCompletionToolID(input.SourceSessionID) {
+			return &toolRequestError{message: "sourceSessionId is required for dispatcher fallback notify"}
+		}
+	case "claim":
+		if input.ActorSessionID == "$self" {
+			return &toolRequestError{message: "claim requires the dispatcher actorSessionId"}
+		}
+		if strings.TrimSpace(input.ClaimID) != "" && !validCloudCompletionToolID(input.ClaimID) {
+			return &toolRequestError{message: "claimId must be a bounded opaque ID"}
+		}
+		if input.Limit < 0 || input.Limit > 64 {
+			return &toolRequestError{message: "limit must be between 1 and 64 when provided"}
+		}
+	case "ack":
+		if input.ActorSessionID == "$self" {
+			return &toolRequestError{message: "ack requires the dispatcher actorSessionId"}
+		}
+		if !validCloudCompletionToolID(input.ClaimID) {
+			return &toolRequestError{message: "claimId is required and must be a bounded opaque ID for ack"}
+		}
+		if len(input.Acknowledgements) > 64 {
+			return &toolRequestError{message: "acknowledgements may contain at most 64 items"}
+		}
+	default:
+		return &toolRequestError{message: "action must be notify, claim, or ack"}
+	}
+	return nil
+}
+
+func validCloudCompletionToolID(value string) bool {
+	value = strings.TrimSpace(value)
+	return value != "" && len(value) <= 256 && !strings.ContainsAny(value, "\x00\r\n\t ")
 }

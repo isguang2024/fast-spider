@@ -198,7 +198,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		t.Fatalf("MCP tool %s grew beyond 8 KiB individual budget: %d", largestToolName, largestToolBytes)
 	}
 	sort.Strings(names)
-	want := []string{"ai_control", "artifact_get", "audit_log", "browser_control", "build_control", "capability_list", "code_search", "codex_cloud_collaboration", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "operation_log", "result_get", "screenshot_take", "shell_run", "thinking_team", "working_context"}
+	want := []string{"ai_control", "artifact_get", "audit_log", "browser_control", "build_control", "capability_list", "code_search", "codex_cloud_collaboration", "codex_cloud_completion", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "operation_log", "result_get", "screenshot_take", "shell_run", "thinking_team", "working_context"}
 	if stringJSON(names) != stringJSON(want) {
 		t.Fatalf("tools=%v want=%v", names, want)
 	}
@@ -263,7 +263,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(defaultGuideRaw, &defaultGuidePayload); err != nil {
 		t.Fatal(err)
 	}
-	if defaultGuide.IsError || !strings.Contains(string(defaultGuideRaw), `"capabilities"`) || !strings.Contains(string(defaultGuideRaw), `"view":"overview"`) || len(defaultGuidePayload.Guide.ToolSummaries) != 21 || len(defaultGuidePayload.CapabilitySummaries) == 0 {
+	if defaultGuide.IsError || !strings.Contains(string(defaultGuideRaw), `"capabilities"`) || !strings.Contains(string(defaultGuideRaw), `"view":"overview"`) || len(defaultGuidePayload.Guide.ToolSummaries) != 22 || len(defaultGuidePayload.CapabilitySummaries) == 0 {
 		t.Fatalf("default capability_list=%s", defaultGuideRaw)
 	}
 	if len(defaultGuide.Content) != 0 {
@@ -296,6 +296,11 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		if result := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "capability_list", arguments); !result.IsError {
 			t.Fatalf("invalid capability_list args=%v result=%+v", arguments, result)
 		}
+	}
+	if result := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "codex_cloud_completion", map[string]any{
+		"action": "ack", "actorSessionId": "bad actor", "claimId": "claim-1",
+	}); !result.IsError {
+		t.Fatalf("invalid codex_cloud_completion input was accepted: %+v", result)
 	}
 
 	webSession, err := service.CreateWebSession(ctx, account.OwnerID)

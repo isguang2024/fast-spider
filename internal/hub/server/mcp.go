@@ -248,6 +248,27 @@ type cloudCollaborationParams struct {
 	InactiveVerified    bool     `json:"inactiveVerified,omitempty"`
 }
 
+type cloudCompletionInput struct {
+	Action           string                        `json:"action"`
+	CollaborationID  string                        `json:"collaborationId,omitempty"`
+	TaskID           string                        `json:"taskId,omitempty"`
+	ActorSessionID   string                        `json:"actorSessionId"`
+	SourceSessionID  string                        `json:"sourceSessionId,omitempty"`
+	Outcome          string                        `json:"outcome,omitempty"`
+	ClaimID          string                        `json:"claimId,omitempty"`
+	Limit            int                           `json:"limit,omitempty"`
+	Acknowledgements []cloudCompletionAckItemInput `json:"acknowledgements,omitempty"`
+}
+
+type cloudCompletionAckItemInput struct {
+	NotificationID    string `json:"notificationId"`
+	ResultID          string `json:"resultId,omitempty"`
+	ResultStatus      string `json:"resultStatus,omitempty"`
+	ResultBytes       int64  `json:"resultBytes,omitempty"`
+	ResultSHA256      string `json:"resultSHA256,omitempty"`
+	DeliverableStatus string `json:"deliverableStatus,omitempty"`
+}
+
 type workingContextInput struct {
 	MCPResponseOptions
 	MachineID            string           `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
@@ -343,7 +364,7 @@ type aiControlInput struct {
 	MachineID               string              `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
 	Action                  string              `json:"action" jsonschema:"session.create: providerId=codex, backend=chatgpt_cloud, visibility=visible, mode=quick_chat|complete; callback fallback: session.callback.list/claim/ack; see capability_list"`
 	ProviderID              string              `json:"providerId,omitempty" jsonschema:"AI harness provider ID; defaults to codex"`
-	AppType                 string              `json:"appType,omitempty" jsonschema:"routing.status app scope: claude,codex,or claude-desktop; omit to inspect all supported CC Switch routes"`
+	AppType                 string              `json:"appType,omitempty" jsonschema:"chatgpt selects ChatGPT cloud sessions; otherwise routing.status scope"`
 	SessionID               string              `json:"sessionId,omitempty" jsonschema:"opaque provider session ID; optional thread scope for mcp.status.list"`
 	TurnID                  string              `json:"turnId,omitempty" jsonschema:"active turn ID for cancel and required expected active turn ID for session.steer"`
 	AsyncTaskID             string              `json:"asyncTaskId,omitempty" jsonschema:"ChatGPT cloud active task ID for session.steer"`
@@ -384,7 +405,7 @@ type aiControlInput struct {
 	Decision                string              `json:"decision,omitempty" jsonschema:"session.respond decision or session.delete reconciliation"`
 	Answers                 map[string][]string `json:"answers,omitempty" jsonschema:"session.respond answers keyed by Codex request_user_input question ID"`
 	ResponseContent         map[string]any      `json:"responseContent,omitempty" jsonschema:"session.respond structured content when accepting an MCP elicitation"`
-	PageCursor              string              `json:"pageCursor,omitempty" jsonschema:"opaque pagination cursor for permissions.list or mcp.status.list"`
+	PageCursor              string              `json:"pageCursor,omitempty" jsonschema:"session.get delta cursor or list pagination cursor"`
 	MCPDetail               string              `json:"mcpDetail,omitempty" jsonschema:"mcp.status.list detail: full or toolsAndAuthOnly"`
 	Effort                  string              `json:"effort,omitempty" jsonschema:"session.settings.update reasoning effort: low,medium,high,xhigh"`
 	Permissions             string              `json:"permissions,omitempty" jsonschema:"session.settings.update named Codex permission profile ID"`
@@ -632,9 +653,9 @@ func (s *Server) newMCPHandler() http.Handler {
 
 const mcpServerInstructions = `FastSpider_FS is a remote development control plane. When selected as @FastSpider_FS, try a real read-only tool before judging UI text.
 
-Tools may be lazy. If absent, use api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Never load all 21 schemas or request login before a real connection check.
+Tools may be lazy. If absent, use api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Never load all 22 schemas or request login before a real connection check.
 
-Map: connection=capability_list,machine_list,machine_get; audit=audit_log,operation_log; files=code_search,file_read,file_edit; jobs=shell_run,build_control,job_watch,job_cancel; Git=git_control; browser=browser_control,screenshot_take; AI=ai_control; cloud=codex_cloud_collaboration; context=working_context; roles=thinking_team; artifacts=artifact_get. Cloud collaboration uses an existing visible ChatGPT CHAT (backend=chatgpt_cloud): it calls event.ingest then event.ack before final output and must not create a new Cloud Worker/CHAT. Node callback delivery is fallback only. Local Codex may report desktopBridge, nativeConversationStreaming=unsupported, and Desktop owner/control bridge.
+	Map: connection=capability_list,machine_list,machine_get; audit=audit_log,operation_log; files=code_search,file_read,file_edit; jobs=shell_run,build_control,job_watch,job_cancel; Git=git_control; browser=browser_control,screenshot_take; AI=ai_control; cloud=codex_cloud_collaboration,codex_cloud_completion; context=working_context; roles=thinking_team; artifacts=artifact_get. Cloud collaboration uses an existing visible ChatGPT CHAT (backend=chatgpt_cloud): it writes its result first, then calls codex_cloud_completion notify before final output and must not create a new Cloud Worker/CHAT. The dispatcher claims up to 64 durable notifications, verifies fixed results, and acknowledges the batch. Node callback delivery is fallback only. Local Codex may report desktopBridge, nativeConversationStreaming=unsupported, and Desktop owner/control bridge.
 
 Rules: Unknown machineId -> machine_list. Check with capability_list(view=overview)+machine_list. Load only one view=capability or view=tool|workflow|error guide. Codex history starts at ai_control(action=session.list), then get/watch/result. Callback fallback is list->claim->ack; stalled CHAT recovery sends “请继续” after status check; issue logging uses working_context plan.init initializeMarkdown=true on NOT_FOUND, then read/CAS append. Every shell/build jobId reaches terminal through job_watch; remove only caller-owned temporary outputs. File edits use read/SHA/preview/CAS. Close each browser session. On Windows shell_run names powershell.exe or cmd.exe in argv (for example tzutil /g), not a separate PowerShell tool. Attachments expire within 48h.`
 
@@ -736,6 +757,10 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, mcpToolDefinition("codex_cloud_collaboration", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input cloudCollaborationInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		return executeMCPStructuredTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "codex_cloud_collaboration", input)
+	})
+
+	mcp.AddTool(server, mcpToolDefinition("codex_cloud_completion", toolAnnotations(false, true, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input cloudCompletionInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+		return executeMCPStructuredTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "codex_cloud_completion", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("working_context", toolAnnotations(false, false, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input workingContextInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {

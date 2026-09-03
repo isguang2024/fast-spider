@@ -198,6 +198,25 @@ type CloudCollaborationRecord struct {
 	UpdatedAt       time.Time
 }
 
+type CloudCompletionNotificationRecord struct {
+	NotificationID   string
+	OwnerID          string
+	CollaborationID  string
+	TaskID           string
+	Generation       int64
+	NotificationKind string
+	Outcome          string
+	SourceSessionID  string
+	TargetSessionID  string
+	DeliverablePath  string
+	State            string
+	ClaimID          string
+	ClaimedAt        *time.Time
+	AckedAt          *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
 func Open(ctx context.Context, path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create database directory: %w", err)
@@ -1229,6 +1248,206 @@ func (s *Store) UpdateCloudCollaboration(ctx context.Context, ownerID, collabora
 		return CloudCollaborationRecord{}, ErrConflict
 	}
 	return s.GetCloudCollaboration(ctx, ownerID, collaborationID)
+}
+
+const cloudCompletionNotificationColumns = `notification_id, owner_id, collaboration_id, task_id, generation,
+		notification_kind, outcome, source_session_id, target_session_id, COALESCE(deliverable_path,''), state,
+		COALESCE(claim_id,''), claimed_at, acked_at, created_at, updated_at`
+
+func scanCloudCompletionNotification(scanner interface{ Scan(...any) error }) (CloudCompletionNotificationRecord, error) {
+	var rec CloudCompletionNotificationRecord
+	var claimedAt, ackedAt sql.NullInt64
+	var createdAt, updatedAt int64
+	if err := scanner.Scan(
+		&rec.NotificationID, &rec.OwnerID, &rec.CollaborationID, &rec.TaskID, &rec.Generation,
+		&rec.NotificationKind, &rec.Outcome, &rec.SourceSessionID, &rec.TargetSessionID, &rec.DeliverablePath, &rec.State,
+		&rec.ClaimID, &claimedAt, &ackedAt, &createdAt, &updatedAt,
+	); err != nil {
+		return CloudCompletionNotificationRecord{}, err
+	}
+	rec.CreatedAt = time.Unix(createdAt, 0).UTC()
+	rec.UpdatedAt = time.Unix(updatedAt, 0).UTC()
+	if claimedAt.Valid {
+		value := time.Unix(claimedAt.Int64, 0).UTC()
+		rec.ClaimedAt = &value
+	}
+	if ackedAt.Valid {
+		value := time.Unix(ackedAt.Int64, 0).UTC()
+		rec.AckedAt = &value
+	}
+	return rec, nil
+}
+
+func (s *Store) EnqueueCloudCompletionNotification(ctx context.Context, rec CloudCompletionNotificationRecord) (CloudCompletionNotificationRecord, bool, error) {
+	result, err := s.db.ExecContext(ctx, `INSERT INTO cloud_completion_notifications(
+		notification_id,owner_id,collaboration_id,task_id,generation,notification_kind,outcome,
+		source_session_id,target_session_id,deliverable_path,state,created_at,updated_at
+	) VALUES(?,?,?,?,?,?,?,?,?,?, 'pending',?,?)
+	ON CONFLICT(owner_id,collaboration_id,task_id,generation,notification_kind) DO NOTHING`,
+		rec.NotificationID, rec.OwnerID, rec.CollaborationID, rec.TaskID, rec.Generation, rec.NotificationKind, rec.Outcome,
+		rec.SourceSessionID, rec.TargetSessionID, rec.DeliverablePath, rec.CreatedAt.Unix(), rec.UpdatedAt.Unix())
+	if err != nil {
+		return CloudCompletionNotificationRecord{}, false, err
+	}
+	inserted, err := result.RowsAffected()
+	if err != nil {
+		return CloudCompletionNotificationRecord{}, false, err
+	}
+	stored, err := s.getCloudCompletionNotificationByTask(ctx, rec.OwnerID, rec.CollaborationID, rec.TaskID, rec.Generation, rec.NotificationKind)
+	if err != nil {
+		return CloudCompletionNotificationRecord{}, false, err
+	}
+	if stored.NotificationID != rec.NotificationID || stored.Outcome != rec.Outcome || stored.SourceSessionID != rec.SourceSessionID || stored.TargetSessionID != rec.TargetSessionID || stored.DeliverablePath != rec.DeliverablePath {
+		return CloudCompletionNotificationRecord{}, false, ErrConflict
+	}
+	return stored, inserted == 0, nil
+}
+
+func (s *Store) getCloudCompletionNotificationByTask(ctx context.Context, ownerID, collaborationID, taskID string, generation int64, kind string) (CloudCompletionNotificationRecord, error) {
+	rec, err := scanCloudCompletionNotification(s.db.QueryRowContext(ctx, "SELECT "+cloudCompletionNotificationColumns+` FROM cloud_completion_notifications
+		WHERE owner_id=? AND collaboration_id=? AND task_id=? AND generation=? AND notification_kind=?`, ownerID, collaborationID, taskID, generation, kind))
+	if errors.Is(err, sql.ErrNoRows) {
+		return CloudCompletionNotificationRecord{}, ErrNotFound
+	}
+	return rec, err
+}
+
+func (s *Store) ClaimCloudCompletionNotifications(ctx context.Context, ownerID, targetSessionID, claimID string, limit int, now time.Time, lease time.Duration) ([]CloudCompletionNotificationRecord, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	cutoff := now.UTC().Add(-lease).Unix()
+	if _, err := tx.ExecContext(ctx, `UPDATE cloud_completion_notifications
+		SET state='pending',claim_id=NULL,claimed_at=NULL,updated_at=?
+		WHERE owner_id=? AND target_session_id=? AND state='claimed' AND claimed_at<=?`, now.Unix(), ownerID, targetSessionID, cutoff); err != nil {
+		return nil, err
+	}
+	existing, err := queryCloudCompletionNotifications(ctx, tx, "SELECT "+cloudCompletionNotificationColumns+` FROM cloud_completion_notifications
+		WHERE owner_id=? AND target_session_id=? AND claim_id=? AND state='claimed' ORDER BY created_at,notification_id`, ownerID, targetSessionID, claimID)
+	if err != nil {
+		return nil, err
+	}
+	if len(existing) > 0 {
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return existing, nil
+	}
+	var acknowledged int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM cloud_completion_notifications
+		WHERE owner_id=? AND target_session_id=? AND claim_id=? AND state='acked'`, ownerID, targetSessionID, claimID).Scan(&acknowledged); err != nil {
+		return nil, err
+	}
+	if acknowledged > 0 {
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return []CloudCompletionNotificationRecord{}, nil
+	}
+	available, err := queryCloudCompletionNotifications(ctx, tx, "SELECT "+cloudCompletionNotificationColumns+` FROM cloud_completion_notifications
+		WHERE owner_id=? AND target_session_id=? AND state='pending' ORDER BY created_at,notification_id LIMIT ?`, ownerID, targetSessionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	for i := range available {
+		result, updateErr := tx.ExecContext(ctx, `UPDATE cloud_completion_notifications SET state='claimed',claim_id=?,claimed_at=?,updated_at=?
+			WHERE notification_id=? AND owner_id=? AND state='pending'`, claimID, now.Unix(), now.Unix(), available[i].NotificationID, ownerID)
+		if updateErr != nil {
+			return nil, updateErr
+		}
+		affected, updateErr := result.RowsAffected()
+		if updateErr != nil || affected != 1 {
+			if updateErr != nil {
+				return nil, updateErr
+			}
+			return nil, ErrConflict
+		}
+		claimedAt := now.UTC()
+		available[i].State = "claimed"
+		available[i].ClaimID = claimID
+		available[i].ClaimedAt = &claimedAt
+		available[i].UpdatedAt = claimedAt
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return available, nil
+}
+
+func (s *Store) GetCloudCompletionClaim(ctx context.Context, ownerID, targetSessionID, claimID string, now time.Time, lease time.Duration) ([]CloudCompletionNotificationRecord, bool, error) {
+	rows, err := queryCloudCompletionNotifications(ctx, s.db, "SELECT "+cloudCompletionNotificationColumns+` FROM cloud_completion_notifications
+		WHERE owner_id=? AND target_session_id=? AND claim_id=? ORDER BY created_at,notification_id`, ownerID, targetSessionID, claimID)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(rows) == 0 {
+		return nil, false, ErrNotFound
+	}
+	allAcked := true
+	for _, rec := range rows {
+		if rec.State == "acked" {
+			continue
+		}
+		allAcked = false
+		if rec.State != "claimed" || rec.ClaimedAt == nil || !rec.ClaimedAt.Add(lease).After(now.UTC()) {
+			return nil, false, ErrExpired
+		}
+	}
+	return rows, allAcked, nil
+}
+
+func (s *Store) AcknowledgeCloudCompletionClaim(ctx context.Context, ownerID, targetSessionID, claimID string, now time.Time, lease time.Duration) (int, error) {
+	cutoff := now.UTC().Add(-lease).Unix()
+	result, err := s.db.ExecContext(ctx, `UPDATE cloud_completion_notifications
+		SET state='acked',acked_at=?,updated_at=?
+		WHERE owner_id=? AND target_session_id=? AND claim_id=? AND state='claimed' AND claimed_at>?`, now.Unix(), now.Unix(), ownerID, targetSessionID, claimID, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	acked, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if acked > 0 {
+		return int(acked), nil
+	}
+	var alreadyAcked, expired int
+	if err := s.db.QueryRowContext(ctx, `SELECT
+		COALESCE(SUM(CASE WHEN state='acked' THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN state='claimed' AND claimed_at<=? THEN 1 ELSE 0 END),0)
+		FROM cloud_completion_notifications WHERE owner_id=? AND target_session_id=? AND claim_id=?`, cutoff, ownerID, targetSessionID, claimID).Scan(&alreadyAcked, &expired); err != nil {
+		return 0, err
+	}
+	if alreadyAcked > 0 {
+		return 0, nil
+	}
+	if expired > 0 {
+		return 0, ErrExpired
+	}
+	return 0, ErrNotFound
+}
+
+type cloudCompletionQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func queryCloudCompletionNotifications(ctx context.Context, queryer cloudCompletionQueryer, query string, args ...any) ([]CloudCompletionNotificationRecord, error) {
+	rows, err := queryer.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]CloudCompletionNotificationRecord, 0)
+	for rows.Next() {
+		rec, scanErr := scanCloudCompletionNotification(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) CleanupResults(ctx context.Context, now time.Time, limit int) error {

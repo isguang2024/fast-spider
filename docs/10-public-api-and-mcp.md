@@ -2,7 +2,7 @@
 
 ## 公网 MCP
 
-Fast Spider MCP 通过 `/mcp` 提供 Streamable HTTP，使用标准 OAuth Authorization Code + PKCE。当前固定 21 个工具：
+Fast Spider MCP 通过 `/mcp` 提供 Streamable HTTP，使用标准 OAuth Authorization Code + PKCE。当前固定 22 个工具：
 
 ```text
 machine_list
@@ -23,6 +23,7 @@ screenshot_take
 thinking_team
 ai_control
 codex_cloud_collaboration
+codex_cloud_completion
 artifact_get
 result_get
 working_context
@@ -53,7 +54,7 @@ Hub 的 MCP `initialize` 会返回不超过 2 KiB 的常驻能力地图，并把
 - 省略 `machineId` 和 `view`：兼容返回 Hub Capability Catalog，并附带精简 overview。
 - 提供 `machineId`、省略 `view`：保持旧行为，只返回该 Machine 的能力目录。
 - `view=catalog`：显式返回 Hub 或指定 Machine 的能力目录。
-- `view=overview`：返回能力分类、21 个 MCP 工具的一句话 `toolSummaries`、底层 `capabilitySummaries`、黄金规则和推荐下一步；摘要足够选择入口，不复制完整 capability actions 或 Schema。
+- `view=overview`：返回能力分类、22 个 MCP 工具的一句话 `toolSummaries`、底层 `capabilitySummaries`、黄金规则和推荐下一步；摘要足够选择入口，不复制完整 capability actions 或 Schema。
 - `view=catalog` 或省略 view 的兼容入口保留原始 `capabilities` 完整 actions；`view=overview` 的 `capabilities` 为空数组，以避免把同一目录重复塞进上下文。
 - `view=capability`：必须提供底层 `capabilityId`（例如 `shell.exec`），返回该 capability 的 actions、语义和对应 MCP 工具。
 - `view=tool|workflow|error`：必须提供 `name`，一次只返回一个工具、流程或真实稳定错误码的有界指南；未知 view/name 明确拒绝。
@@ -62,9 +63,9 @@ Hub 的 MCP `initialize` 会返回不超过 2 KiB 的常驻能力地图，并把
 
 Codex/Claude Code 的会话能力不是独立顶层工具；统一位于 `ai_control`。查询 Codex 会话列表使用 `action=session.list`，后续读取使用 `session.get/session.watch/session.result`。`ai_control` 的 `session.create` 已支持 Codex 的 visible ChatGPT cloud CHAT 会话：传 `providerId=codex`、`backend=chatgpt_cloud`、`visibility=visible`、首条 `prompt`、绝对 `workingDirectory` 和 `idempotencyKey`，要求本机 Codex app-server 已登录 ChatGPT。创建返回模式只有两个：`quick_chat` 跳过 prepare，拿到真实 `sessionId` 即返回；`complete` 等待首个回答。Cloud 创建会在副作用前保存 Provider message ID，在首次观察到 conversation ID 时立即保存；传输断开后仍在原 deadline 内收口，同一原 key 可安全重放或精确对账，不按 Prompt 猜测。省略 mode/model/thinking 时使用 Node 本地配置中的默认值，旧配置保持 complete + Auto + Auto；请求明确传入的值优先。模型配置与返回模式正交：预设配置从实时 `modelPresets` 选择组合，高级配置从 Node 本机 `chatgpt-advanced-models.json` 形成的 `advancedModels` 选择模型；`thinkingOptions` 每次从实时 ChatGPT 模型目录提取，两者均可搭配 quick_chat/complete。`session.result` 支持 `resultMode=manifest|result-id`，只返回 Result 状态、ID、大小和 SHA-256，不回传 Cloud CHAT 正文。FS 创建后的 cloud conversation 会保存 backend sidecar，后续按 `sessionId` 自动路由，不需要调用方反复携带 `backend=chatgpt_cloud`。因此 ChatGPT App 工具页只显示 `Ai control` 属于正常设计。
 
-长任务可用同一个 `ai_control` 为普通可见 ChatGPT Cloud CHAT 注册主动完成通知：传 `sessionId + callbackTargetSessionId + callbackMissionId + callbackTaskId + callbackGeneration`。在 `codex_cloud_collaboration` 中，现有 Cloud CHAT 是主回调方：先通过同一对话中的 `FastSpider_FS` 调用 `codex_cloud_collaboration(action=get, actorSessionId=$self, taskId=...)` 取得当前 revision，再调用 `event.ingest`，使用 ingest 返回的 revision 调用 `event.ack`，最后才发送业务完成消息。Node 的 `session.callback` 队列、`tick/status.poll` 只作为断线、漏通知或 Cloud CHAT 无法回调时的恢复兜底。多个 Cloud CHAT 的结果可在同一目标队列中通过 `session.callback.claim` 一次领取最多 64 条，5 分钟租约超时自动释放，处理后以 `session.callback.ack` 批量确认。Node 约每 30 秒只检查本地队列/租约；pending 约 5 分钟后才首次 nudge，重复 nudge 间隔约 10 分钟；对 Cloud CHAT Provider 状态的兜底查询约每 10 分钟一次。稳定 event/turn/message ID 最近 256 个跨重连、重启去重；队列不携带回答正文，只带结果引用和有界元数据。重复事件、claim 或已 ack 事件必须按幂等已处理。
+长任务可用同一个 `ai_control` 为普通可见 ChatGPT Cloud CHAT 注册 Node 兜底观察：传 `sessionId + callbackTargetSessionId + callbackMissionId + callbackTaskId + callbackGeneration`。注册先持久化并立即返回，目标 Codex 查询、Provider 状态读取和 realtime watcher 建立全部退出同步分派链路。在 `codex_cloud_collaboration` 中，现有 Cloud CHAT 是主回调方：先把完整结果写到任务预登记的本地 `resultPath`，再调用强类型 `codex_cloud_completion(action=notify, collaborationId, taskId, actorSessionId=$self, outcome)`；通知不携带正文、路径、hash、Result ID、revision、generation 或 event ID。Hub 从已登记任务派生这些事实并写入 SQLite 持久队列。Dispatcher 通过同一工具 `claim` 一次领取最多 64 条，5 分钟租约超时自动释放；验收固定本地结果或兼容 Result Pool manifest 后，以 `ack` 一次确认整批。通知、claim、ack 在 Hub/Node/进程或整机正常重启后均可恢复。Node 的 `session.callback` 队列、`tick/status.poll` 只作为断线、漏通知或 Cloud CHAT 无法回调时的恢复兜底，并使用与 Hub 相同的 canonical notification ID；约每 30 秒只维护本地队列/租约，pending 约 5 分钟后才首次 nudge，重复 nudge 与 Provider 补漏查询间隔约 10 分钟。重复 notify、claim 或 ack 必须按幂等已处理。
 
-`codex_cloud_collaboration`（“Codex 云端协作”）是显式启用的 Hub 原生持久协作面，与普通 Chat 直接使用 FS 文件、Shell、Git、浏览器或 `ai_control` 完全分开。新建协作时必须验证两个不同的本地 Codex 主控/调度会话，并确认本机 Codex app-server 可用且已登录 ChatGPT；每次分派子 CHAT 前再次预检，失败时不会回退到 Claude 或其它 AI。它保存目标、任务、父子 Cloud CHAT、事件、决策、租约、预算、调度时间和换代摘要，并允许已登记 Cloud CHAT 在父级授权交集内创建子 Cloud CHAT。服务端强制调度租约、深度、并发、创建预算、截止时间、允许动作和写入范围；`task.dispatch` 固定创建 `backend=chatgpt_cloud + visibility=visible + externalIdType=chatgpt_conversation` 的账号级普通 ChatGPT conversation。现有 Cloud CHAT 必须在本对话中通过 FastSpider_FS 完成回调，禁止创建新的 Cloud Worker/CHAT、Fork 或额外 Codex 会话。回调前先用 `actorSessionId=$self` + `taskId` 获取当前 task/revision；写任务直接用普通 FS 文件工具生成交付物，再用 `file_read(statOnly=true)` 取得路径、状态、大小和 `fileSha256`；无本地交付路径时用 `ai_control session.result(resultMode=manifest)` 取得 Result Pool 的 `resultId/resultStatus/resultBytes/resultSHA256`。随后调用 `event.ingest`，再用返回 revision 调 `event.ack`，最后才输出业务完成消息。对疑似卡住的 CHAT，调度先 `status.poll`；若仍在运行则 `chat.continue` 发送固定“请继续”，在观察到新进展前不重复发送；仍卡住时由主控决定是否人工接手或换代，服务不自动新建替代 CHAT。回调、状态检查或继续过程暴露的问题应通过 `working_context markdown.append` 以 CAS 写入 `docs/progress/04-open-issues.md`；若读取返回 `NOT_FOUND`，先调用 `plan.init` 并设置 `initializeMarkdown=true`。不得保存密钥、原始 payload 或完整聊天记录。完成默认归档；删除必须先有绑定精确任务的批准决定。
+`codex_cloud_collaboration`（“Codex 云端协作”）是显式启用的 Hub 原生持久协作面，与普通 Chat 直接使用 FS 文件、Shell、Git、浏览器或 `ai_control` 完全分开。新建协作时必须验证两个不同的本地 Codex 主控/调度会话，并确认本机 Codex app-server 可用且已登录 ChatGPT；每次分派子 CHAT 前再次预检，失败时不会回退到 Claude 或其它 AI。它保存目标、任务、父子 Cloud CHAT、事件、决策、租约、预算、调度时间和换代摘要，并允许已登记 Cloud CHAT 在父级授权交集内创建子 Cloud CHAT。服务端强制调度租约、深度、并发、创建预算、截止时间、允许动作和写入范围；`task.dispatch` 固定创建 `backend=chatgpt_cloud + visibility=visible + externalIdType=chatgpt_conversation` 的账号级普通 ChatGPT conversation。每个任务都有固定本地 `resultPath`；已有业务交付路径时复用该路径，否则使用工作目录内 FS 管理的隐藏结果文件。该受管结果文件是只读任务唯一允许的控制面写入，不会扩大其对其它项目文件的权限。现有 Cloud CHAT 完成后只调用 `codex_cloud_completion notify`，Hub 持久入队后即返回；它不受 collaboration 全局 revision、Dispatcher lease 或最长任务时长影响。Dispatcher 批量 claim 后负责 `file_read(statOnly=true)` 或兼容 Result Pool 验收，再 ack；ack 先持久完成状态，归档作为独立异步恢复动作，不会拖慢或撤销确认。对疑似卡住的 CHAT，调度先 `status.poll`；若仍在运行则 `chat.continue` 发送固定“请继续”，在观察到新进展前不重复发送；仍卡住时由主控决定是否人工接手或换代，服务不自动新建替代 CHAT。回调、状态检查或继续过程暴露的问题应通过 `working_context markdown.append` 以 CAS 写入 `docs/progress/04-open-issues.md`；若读取返回 `NOT_FOUND`，先调用 `plan.init` 并设置 `initializeMarkdown=true`。不得保存密钥、原始 payload 或完整聊天记录。完成默认归档；删除必须先有绑定精确任务的批准决定。
 
 ChatGPT 对已发布 MCP App 的工具/输入定义可能使用经批准的快照；当 FS 修改工具名、Schema 或工具描述后，需要在 ChatGPT App/Action 管理中执行 Refresh/重新批准才能取得新的定义。纯服务可用性仍以真实 MCP initialize/tools/list 和只读调用结果为准。仓库没有独立 ChatGPT App manifest 或第二套 Plugin metadata，第一层事实源继续是 MCP initialize、工具描述和 `capability_list`。
 
@@ -77,7 +78,9 @@ ChatGPT 对已发布 MCP App 的工具/输入定义可能使用经批准的快�
 - shell_run/build_control: `cwd`
 - git_control: `repositoryPath`；`fetch/pull/push` 的 `remote` 可省略，Node 按“当前分支 upstream remote → origin → 唯一 remote”顺序解析，多个非 origin remote 时 fail-closed 要求显式指定
 - ai_control session.create: `providerId + workingDirectory`; 可选 `visibility=visible|internal`、`backend=codex_local|claude_local|chatgpt_cloud`、`visibilityTarget=codex_local|claude_local|chatgpt_cloud|none`、`ephemeral`，以及 ChatGPT Cloud 的 `mode=complete|quick_chat`、`model`、`thinking`; `session.result` 另支持 `resultMode=manifest|result-id`; 高级配置不会新增第三种 mode
-- ai_control session.callback.register: ChatGPT Cloud source `sessionId` + 本机 Codex `callbackTargetSessionId` + `callbackMissionId/callbackTaskId/callbackGeneration`; `codex_cloud_collaboration` 的现有 Cloud CHAT 回调使用 `actorSessionId=$self + taskId`，由 Hub 绑定到该任务已登记的会话
+- codex_cloud_completion notify: `collaborationId + taskId + actorSessionId=$self + outcome`；Hub 绑定任务、CHAT、generation、固定结果路径和 canonical notification ID
+- codex_cloud_completion claim/ack: Dispatcher `actorSessionId`；claim 可选 `limit<=64/claimId`，ack 使用同一 `claimId` 并为每条通知提供验收元数据
+- ai_control session.callback.register: ChatGPT Cloud source `sessionId` + 本机 Codex `callbackTargetSessionId` + `callbackMissionId/callbackTaskId/callbackGeneration`，仅为低频 Node 兜底
 - ai_control session.callback.claim/ack: `callbackTargetSessionId`; claim 可选 `callbackClaimLimit<=64` 或原 `callbackClaimId` 幂等续领，ack 使用返回的 `callbackClaimId`
 - ai_control routing.status: 可选 `appType=claude|codex|claude-desktop`，只读 CC Switch 路由事实
 - working_context: `projectPath`

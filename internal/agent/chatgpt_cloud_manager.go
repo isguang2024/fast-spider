@@ -15,6 +15,12 @@ import (
 
 const chatgptCreateReconcileTimeout = 30 * time.Second
 
+const (
+	chatgptSessionGetDefaultLimit = 8
+	chatgptSessionGetMaxLimit     = 32
+	chatgptSessionMessageTextMax  = 8 << 10
+)
+
 type chatgptCloudSessionPluginBindingError struct{}
 
 func (chatgptCloudSessionPluginBindingError) Error() string {
@@ -423,6 +429,16 @@ func (m *AgentManager) chatgptCloudGet(ctx context.Context, input agentControlPa
 	if strings.TrimSpace(input.SessionID) == "" {
 		return nil, fmt.Errorf("sessionId is required")
 	}
+	limit := input.Limit
+	if limit == 0 {
+		limit = chatgptSessionGetDefaultLimit
+	}
+	if limit < 1 || limit > chatgptSessionGetMaxLimit {
+		return nil, fmt.Errorf("backend=chatgpt_cloud session.get limit must be between 1 and %d", chatgptSessionGetMaxLimit)
+	}
+	if len(input.PageCursor) > 256 {
+		return nil, fmt.Errorf("backend=chatgpt_cloud session.get pageCursor must be at most 256 characters")
+	}
 	detail, err := m.chatgptCloud.Read(ctx, input.SessionID)
 	if err != nil {
 		return nil, err
@@ -437,7 +453,125 @@ func (m *AgentManager) chatgptCloudGet(ctx context.Context, input agentControlPa
 	} else {
 		defaultChatGPTCloudVisibilityRecord(input.SessionID).applyToResult(detail)
 	}
-	return map[string]any{"session": detail, "pendingRequests": []map[string]any{}}, nil
+	session, messages, nextCursor, hasMore, hasEarlier, err := chatgptCloudBoundedSessionView(detail, input.PageCursor, limit)
+	if err != nil {
+		return nil, err
+	}
+	session["messages"] = messages
+	session["historyMode"] = "bounded_delta"
+	session["historyCursor"] = nextCursor
+	session["historyHasMore"] = hasMore
+	session["historyHasEarlier"] = hasEarlier
+	session["historyMessageLimit"] = limit
+	session["fullMappingOmitted"] = true
+	return map[string]any{"session": session, "nextCursor": nextCursor, "pendingRequests": []map[string]any{}}, nil
+}
+
+// chatgptCloudBoundedSessionView keeps the provider's full mapping inside the
+// Node. The public session.get response contains only a bounded slice of the
+// active branch. Passing the previous nextCursor returns only newer nodes, so
+// callers do not repeatedly inject the same long conversation into AI context.
+func chatgptCloudBoundedSessionView(detail map[string]any, afterCursor string, limit int) (map[string]any, []map[string]any, string, bool, bool, error) {
+	session := cloneAgentMap(detail)
+	delete(session, "mapping")
+	mapping, _ := detail["mapping"].(map[string]any)
+	path := chatgptCloudActiveBranch(detail, mapping)
+	start := 0
+	if afterCursor != "" {
+		start = -1
+		for i, nodeID := range path {
+			if nodeID == afterCursor {
+				start = i + 1
+				break
+			}
+		}
+		if start < 0 {
+			return nil, nil, "", false, false, fmt.Errorf("backend=chatgpt_cloud session.get pageCursor is not on the current conversation branch")
+		}
+	} else if len(path) > limit {
+		start = len(path) - limit
+	}
+	end := len(path)
+	if afterCursor != "" && end-start > limit {
+		end = start + limit
+	}
+	messages := make([]map[string]any, 0, end-start)
+	for _, nodeID := range path[start:end] {
+		node, _ := mapping[nodeID].(map[string]any)
+		if message, ok := chatgptCloudBoundedMessage(nodeID, node); ok {
+			messages = append(messages, message)
+		}
+	}
+	nextCursor := afterCursor
+	if end > start {
+		nextCursor = path[end-1]
+	}
+	return session, messages, nextCursor, end < len(path), afterCursor == "" && start > 0, nil
+}
+
+func chatgptCloudActiveBranch(detail map[string]any, mapping map[string]any) []string {
+	current := mapString(detail, "currentNode")
+	if current == "" {
+		current = chatgptCloudLastMessageID(detail)
+	}
+	seen := map[string]bool{}
+	reversed := make([]string, 0, len(mapping))
+	for current != "" && !seen[current] {
+		seen[current] = true
+		reversed = append(reversed, current)
+		node, _ := mapping[current].(map[string]any)
+		current = mapString(node, "parent")
+	}
+	path := make([]string, len(reversed))
+	for i := range reversed {
+		path[len(reversed)-1-i] = reversed[i]
+	}
+	return path
+}
+
+func chatgptCloudBoundedMessage(nodeID string, node map[string]any) (map[string]any, bool) {
+	message, _ := node["message"].(map[string]any)
+	if message == nil {
+		return nil, false
+	}
+	out := map[string]any{"id": firstNonEmptyString(mapString(message, "id"), nodeID)}
+	if role := chatgptCloudMessageRole(message); role != "" {
+		out["role"] = role
+	}
+	if status := mapString(message, "status"); status != "" {
+		out["status"] = status
+	}
+	if created := message["create_time"]; created != nil {
+		out["createTime"] = created
+	}
+	content, _ := message["content"].(map[string]any)
+	var builder strings.Builder
+	appendPart := func(part string) {
+		if builder.Len() > 0 {
+			builder.WriteByte('\n')
+		}
+		builder.WriteString(part)
+	}
+	switch parts := content["parts"].(type) {
+	case []any:
+		for _, raw := range parts {
+			if part, ok := raw.(string); ok {
+				appendPart(part)
+			}
+		}
+	case []string:
+		for _, part := range parts {
+			appendPart(part)
+		}
+	}
+	text := builder.String()
+	if text != "" {
+		out["text"] = boundedAgentText(text, chatgptSessionMessageTextMax)
+		if len(text) > chatgptSessionMessageTextMax {
+			out["textTruncated"] = true
+		}
+	}
+	return out, true
 }
 
 func (m *AgentManager) chatgptCloudList(ctx context.Context, input agentControlParams) (map[string]any, error) {

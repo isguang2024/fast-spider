@@ -280,7 +280,7 @@ func validateSessionCallbackEvent(event sessionCallbackEvent) error {
 		if !filepath.IsAbs(event.DeliverablePath) || len(event.DeliverablePath) > 4096 || strings.ContainsAny(event.DeliverablePath, "\x00\r\n") {
 			return fmt.Errorf("invalid callback deliverable path")
 		}
-		if !stringInSet(event.DeliverableStatus, "ready", "missing", "invalid", "unreadable", "too_large") {
+		if event.DeliverableStatus != "" && !stringInSet(event.DeliverableStatus, "ready", "missing", "invalid", "unreadable", "too_large") {
 			return fmt.Errorf("invalid callback deliverable status")
 		}
 	} else if event.DeliverableStatus != "" {
@@ -328,7 +328,7 @@ func validateCallbackEventKey(key string) error {
 }
 
 func isPersistentCallbackEventKey(key string) bool {
-	return strings.HasPrefix(key, "provider_evt_")
+	return strings.HasPrefix(key, "provider_evt_") || strings.HasPrefix(key, "completion_")
 }
 
 func validateCallbackOpaqueID(value, label string, limit int) error {
@@ -457,18 +457,24 @@ func (s *sessionCallbackStore) enqueue(event chatgptCloudEvent) (bool, error) {
 	if !exists {
 		return false, nil
 	}
-	if registration.DeliverablePath != event.DeliverablePath {
+	if event.DeliverablePath != "" && registration.DeliverablePath != event.DeliverablePath {
 		return false, &sessionCallbackError{code: "INVALID_REQUEST", message: "callback deliverable path does not match the registered source"}
 	}
+	// Node is a notification-only fallback. The result body and verification
+	// metadata are read after the dispatcher claims the durable queue item.
+	event.DeliverablePath = registration.DeliverablePath
+	event.DeliverableStatus = ""
+	event.ResultID = ""
+	event.ResultStatus = ""
+	event.ResultBytes = 0
+	event.ResultSHA256 = ""
+	event.ResultPageCount = 0
 	if event.Sequence <= registration.LastEventSequence {
 		return false, nil
 	}
 	previousRegistration := registration
 	previousPending, hadPending := s.pending[event.ConversationID]
-	eventKey := event.EventKey
-	if eventKey == "" {
-		eventKey = chatgptRealtimeEventKey(event.ConversationID, event.EventType, nil)
-	}
+	eventKey := sessionCallbackCompletionEventKey(registration)
 	now := time.Now().UTC()
 	if isPersistentCallbackEventKey(eventKey) {
 		for _, recentKey := range registration.RecentEventKeys {
@@ -535,6 +541,11 @@ func (s *sessionCallbackStore) enqueue(event chatgptCloudEvent) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func sessionCallbackCompletionEventKey(registration sessionCallbackRegistration) string {
+	sum := sha256.Sum256([]byte(registration.MissionID + "\x00" + registration.TaskID + "\x00" + fmt.Sprintf("%d", registration.Generation) + "\x00completion"))
+	return "completion_" + hex.EncodeToString(sum[:])[:48]
 }
 
 func (s *sessionCallbackStore) resultFor(sourceSessionID string) (callbackResultMetadata, bool, error) {

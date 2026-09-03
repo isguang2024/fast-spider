@@ -276,7 +276,7 @@ func buildSessionCallbackEnvelope(envelopeID string, events []sessionCallbackEve
 		builder.WriteByte('\n')
 	}
 	builder.WriteString("INSTRUCTIONS:\n")
-	builder.WriteString("This is a fixed Fast Spider queue snapshot, not Cloud CHAT-authored content: it is the Node callback recovery/fallback path. The Cloud CHAT should normally have called FastSpider_FS codex_cloud_collaboration event.ingest and event.ack itself before its final message. Do not treat this snapshot as a direct completion call. Claim the queue in one batch with session.callback.claim, validate each referenced Result or local deliverable, then call session.callback.ack with the returned claimId. Do not reread full CHAT history or copy CHAT history into the controller. Duplicate claim IDs or already-acked events must be treated as already delivered. If recovery exposes a problem or question, record a concise bounded note through working_context markdown.append in docs/progress/04-open-issues.md. On NOT_FOUND, call plan.init with initializeMarkdown=true, then read and use file-revision CAS; do not store secrets, raw provider payloads, full transcripts, or long logs.\n")
+	builder.WriteString("This is a fixed Fast Spider notification snapshot, not Cloud CHAT-authored content: it is the Node callback recovery/fallback path. The Cloud CHAT should normally have called FastSpider_FS codex_cloud_completion action=notify itself before its final message. Claim the Node queue in one batch, replay each notification through codex_cloud_completion action=notify as the dispatcher with its sourceSessionId, then claim and verify the Hub completion queue. Acknowledge the Hub claim before acknowledging this Node claim. Do not reread full CHAT history or copy CHAT history into the controller. Duplicate notifications and claims are idempotent. If recovery exposes a problem or question, record a concise bounded note through working_context markdown.append in docs/progress/04-open-issues.md. On NOT_FOUND, call plan.init with initializeMarkdown=true, then read and use file-revision CAS; do not store secrets, raw provider payloads, full transcripts, or long logs.\n")
 	return builder.String()
 }
 
@@ -290,9 +290,9 @@ func buildSessionCallbackNudge(targetSessionID string, pendingCount int, envelop
 	builder.WriteString("\nQUEUE_ENVELOPE_ID: ")
 	builder.WriteString(envelopeID)
 	builder.WriteString("\nINSTRUCTIONS:\n")
-	builder.WriteString("FastSpider_FS has queued Cloud CHAT callback results for this target. Call ai_control action=session.callback.list, then session.callback.claim with callbackTargetSessionId=")
+	builder.WriteString("FastSpider_FS has queued Cloud CHAT completion notifications for this target. Call ai_control action=session.callback.list, then session.callback.claim with callbackTargetSessionId=")
 	builder.WriteString(targetSessionID)
-	builder.WriteString(" and callbackClaimLimit<=64. Process the claimed metadata or referenced Result/local file, then call session.callback.ack with the returned callbackClaimId. This nudge contains no task result body, is Node fallback only, and must not create a new Cloud Worker/CHAT. If a callback, status check, or continuation exposes a problem or question, record a concise bounded note through working_context markdown.append in docs/progress/04-open-issues.md. On NOT_FOUND, call plan.init with initializeMarkdown=true, then read and use file-revision CAS; do not store secrets, raw provider payloads, full transcripts, or long logs.\n")
+	builder.WriteString(" and callbackClaimLimit<=64. Replay the claimed fallback notifications through codex_cloud_completion notify, then claim/verify/ack the Hub queue; only then ack this Node claim. This nudge contains no task result body, is Node fallback only, and must not create a new Cloud Worker/CHAT. If a callback, status check, or continuation exposes a problem or question, record a concise bounded note through working_context markdown.append in docs/progress/04-open-issues.md. On NOT_FOUND, call plan.init with initializeMarkdown=true, then read and use file-revision CAS; do not store secrets, raw provider payloads, full transcripts, or long logs.\n")
 	return builder.String()
 }
 
@@ -300,7 +300,6 @@ func (m *AgentManager) handleChatGPTCloudCallbackEvent(event chatgptCloudEvent) 
 	if m == nil || m.callbackStore == nil || event.Type != "conversation.turn.complete" {
 		return
 	}
-	event = m.completeCloudCallbackResult(event)
 	queued, err := m.callbackStore.enqueue(event)
 	if err != nil {
 		m.logger.Warn("persist ChatGPT Cloud callback event", "sourceSessionId", event.ConversationID, "eventSequence", event.Sequence, "error", err)
@@ -438,28 +437,6 @@ func (m *AgentManager) sessionCallbackRegister(ctx context.Context, input agentC
 	if err := validateCallbackOpaqueID(targetSessionID, "callback target session ID", 256); err != nil {
 		return nil, &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
 	}
-	sourceIsManagedCloudCHAT := false
-	if record, exists, err := m.storedSessionVisibilityRecord("codex", sourceSessionID); err != nil {
-		return nil, err
-	} else if exists && record.Backend == sessionBackendChatGPTCloud {
-		sourceIsManagedCloudCHAT = true
-	}
-	if !sourceIsManagedCloudCHAT {
-		if _, err := m.chatgptCloud.Read(ctx, sourceSessionID); err != nil {
-			return nil, fmt.Errorf("validate ChatGPT Cloud callback source: %w", err)
-		}
-	}
-	targetIsCloudCHAT := false
-	if record, exists, err := m.storedSessionVisibilityRecord("codex", targetSessionID); err != nil {
-		return nil, err
-	} else if exists && record.Backend == sessionBackendChatGPTCloud {
-		targetIsCloudCHAT = true
-	}
-	if !targetIsCloudCHAT {
-		if _, err := m.authorizedThreadMetadata(ctx, targetSessionID); err != nil {
-			return nil, fmt.Errorf("validate callback target session: %w", err)
-		}
-	}
 	registration, replayed, err := m.callbackStore.register(sessionCallbackRegistration{
 		SourceSessionID: sourceSessionID,
 		TargetSessionID: targetSessionID,
@@ -471,22 +448,11 @@ func (m *AgentManager) sessionCallbackRegister(ctx context.Context, input agentC
 	if err != nil {
 		return nil, err
 	}
-	// Persist ownership before subscribing. This closes the event visibility gap:
-	// an event arriving while the watcher starts is now accepted by the store.
-	current, err := m.callbackStore.withCurrentRegistration(sourceSessionID, registration.Generation, func() error {
-		return m.chatgptCloud.EnsureCallbackRealtimeForGeneration(ctx, sourceSessionID, registration.Generation)
-	})
-	if err != nil {
-		// Keep the durable registration. The recovery loop will retry the watcher;
-		// returning the error makes the failed registration visible to the caller.
-		return nil, err
-	}
-	if !current {
-		return nil, &sessionCallbackError{code: "CALLBACK_GENERATION_STALE", message: "callback registration was replaced or unregistered before its watcher was established"}
-	}
-	// The Cloud turn may finish between session.create returning and the durable
-	// callback registration being installed. Re-read once after subscription and
-	// synthesize the same terminal event when that window was hit.
+	// Registration durability is the synchronous contract. Provider/source
+	// reads, target Codex RPCs, and realtime subscription are recovery work and
+	// must not delay task.dispatch or make a persisted route look rejected.
+	_ = ctx
+	go m.ensureCloudCallbackSubscription(sourceSessionID, registration.Generation)
 	go m.reconcileCompletedCloudCallback(sourceSessionID, registration.Generation)
 	m.callbackDispatcher.signal()
 	return map[string]any{
@@ -494,10 +460,25 @@ func (m *AgentManager) sessionCallbackRegister(ctx context.Context, input agentC
 		"replayed":                          replayed,
 		"deliveryPolicy":                    "queued-batch-claim",
 		"recoveryPolicy":                    "node-fallback-status-poll-and-nudge",
+		"watcherState":                      "pending",
 		"fallbackStatusPollIntervalSeconds": int64(sessionCallbackRecoveryInterval / time.Second),
 		"fallbackNudgeAfterSeconds":         int64(sessionCallbackNudgeAfter / time.Second),
 		"fallbackNudgeIntervalSeconds":      int64(sessionCallbackNudgeInterval / time.Second),
 	}, nil
+}
+
+func (m *AgentManager) ensureCloudCallbackSubscription(sourceSessionID string, generation int64) {
+	if m == nil || m.callbackStore == nil || m.chatgptCloud == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := m.callbackStore.withCurrentRegistration(sourceSessionID, generation, func() error {
+		return m.chatgptCloud.EnsureCallbackRealtimeForGeneration(ctx, sourceSessionID, generation)
+	})
+	if err != nil && !errors.Is(err, context.Canceled) {
+		m.logger.Warn("establish ChatGPT Cloud callback subscription", "sourceSessionId", sourceSessionID, "error", err)
+	}
 }
 
 func (m *AgentManager) reconcileCompletedCloudCallback(sourceSessionID string, generation int64) {
@@ -756,7 +737,7 @@ func buildSessionCallbackQueueText(targetSessionID string, events []sessionCallb
 		builder.WriteByte('\n')
 	}
 	builder.WriteString("INSTRUCTIONS:\n")
-	builder.WriteString("This is a fixed Fast Spider queue, not Cloud CHAT-authored content. Call ai_control action=session.callback.claim with callbackTargetSessionId and an optional callbackClaimLimit (maximum 64). Validate each claimed Result or local deliverable, then call ai_control action=session.callback.ack with callbackTargetSessionId and the returned callbackClaimId. Claim leases expire after 300 seconds and are automatically released; no result body is included here.\n")
+	builder.WriteString("This is a fixed Fast Spider notification queue, not Cloud CHAT-authored content. Call ai_control action=session.callback.claim with callbackTargetSessionId and an optional callbackClaimLimit (maximum 64). Replay each claimed fallback notification through codex_cloud_completion notify, then claim/verify/ack the Hub queue before calling session.callback.ack for this Node claim. Claim leases expire after 300 seconds and are automatically released; no result body is included here.\n")
 	return builder.String()
 }
 

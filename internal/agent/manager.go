@@ -287,6 +287,19 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 	if _, ok := m.registry.get(providerID); !ok {
 		return nil, fmt.Errorf("unsupported providerId %q", providerID)
 	}
+	// appType=chatgpt is the user-facing selector for an ordinary visible
+	// ChatGPT conversation. Keep routing.status semantics unchanged, but make
+	// session actions select the cloud backend instead of silently falling back
+	// to a local Codex thread with the same opaque ID.
+	if strings.EqualFold(strings.TrimSpace(input.AppType), "chatgpt") {
+		if providerID != "codex" {
+			return nil, fmt.Errorf("appType=chatgpt requires providerId=codex")
+		}
+		if backend := strings.TrimSpace(input.Backend); backend != "" && !strings.EqualFold(backend, sessionBackendChatGPTCloud) {
+			return nil, fmt.Errorf("appType=chatgpt conflicts with backend=%s", backend)
+		}
+		input.Backend = sessionBackendChatGPTCloud
+	}
 	// Callback queue actions are Node-owned state operations. Route them through
 	// the Cloud callback manager even when the caller omits backend=chatgpt_cloud
 	// (the target session is normally a local Codex dispatcher).

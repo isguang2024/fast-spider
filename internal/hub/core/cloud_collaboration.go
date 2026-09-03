@@ -129,6 +129,7 @@ type cloudCollaborationTask struct {
 	AccessMode      string   `json:"accessMode"`
 	WriteScope      string   `json:"writeScope,omitempty"`
 	DeliverablePath string   `json:"deliverablePath,omitempty"`
+	ResultPath      string   `json:"resultPath,omitempty"`
 	AllowedActions  []string `json:"allowedActions"`
 	IdempotencyKey  string   `json:"idempotencyKey"`
 	ChatSessionID   string   `json:"chatSessionId,omitempty"`
@@ -443,6 +444,17 @@ func (s *Service) loadCloudCollaboration(ctx context.Context, ownerID, id string
 	if err := json.Unmarshal([]byte(rec.StateJSON), &state); err != nil || state.Version != cloudCollaborationStateVersion {
 		return store.CloudCollaborationRecord{}, cloudCollaborationState{}, store.ErrConflict
 	}
+	// Version-1 collaborations created before durable completion notifications
+	// have no resultPath. Derive the same stable path on every load so an
+	// in-flight CHAT remains recoverable across a Hub upgrade or restart.
+	for i := range state.Tasks {
+		if strings.TrimSpace(state.Tasks[i].ResultPath) == "" {
+			state.Tasks[i].ResultPath = state.Tasks[i].DeliverablePath
+			if state.Tasks[i].ResultPath == "" {
+				state.Tasks[i].ResultPath = cloudCollaborationManagedResultPath(state.WorkingDirectory, rec.CollaborationID, state.Tasks[i].ID, state.Tasks[i].Generation)
+			}
+		}
+	}
 	return rec, state, nil
 }
 
@@ -752,7 +764,11 @@ func cloudCollaborationAddTask(state *cloudCollaborationState, req CloudCollabor
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	idemSum := sha256.Sum256([]byte(id + "\x00" + fmt.Sprintf("%d", state.Generation)))
-	state.Tasks = append(state.Tasks, cloudCollaborationTask{ID: id, Title: boundedCollaborationText(req.Title, 500), Prompt: boundedCollaborationText(req.Prompt, 12000), Status: "queued", ParentSession: parent, Depth: depth, Generation: state.Generation, AccessMode: access, WriteScope: writeScope, DeliverablePath: deliverablePath, AllowedActions: actions, IdempotencyKey: "collab_chat_" + hex.EncodeToString(idemSum[:])[:40], CreatedAt: now, UpdatedAt: now})
+	resultPath := deliverablePath
+	if resultPath == "" {
+		resultPath = cloudCollaborationManagedResultPath(state.WorkingDirectory, req.CollaborationID, id, state.Generation)
+	}
+	state.Tasks = append(state.Tasks, cloudCollaborationTask{ID: id, Title: boundedCollaborationText(req.Title, 500), Prompt: boundedCollaborationText(req.Prompt, 12000), Status: "queued", ParentSession: parent, Depth: depth, Generation: state.Generation, AccessMode: access, WriteScope: writeScope, DeliverablePath: deliverablePath, ResultPath: resultPath, AllowedActions: actions, IdempotencyKey: "collab_chat_" + hex.EncodeToString(idemSum[:])[:40], CreatedAt: now, UpdatedAt: now})
 	if state.Tasks[len(state.Tasks)-1].Title == "" || state.Tasks[len(state.Tasks)-1].Prompt == "" {
 		return store.ErrConflict
 	}
@@ -816,13 +832,10 @@ func (s *Service) cloudCollaborationDispatchTask(ctx context.Context, ownerID st
 		if state.Chats[chatIdx].CallbackRegistered {
 			return cloudCollaborationView(rec, state, "dispatcher"), nil
 		}
-		if _, err := s.registerCloudCollaborationCallback(ctx, ownerID, rec, state, *task); err != nil {
-			out := cloudCollaborationView(rec, state, "dispatcher")
-			out["callbackPending"] = true
-			return out, nil
-		}
-		state.Chats[chatIdx].CallbackRegistered = true
-		return s.saveCloudCollaboration(ctx, ownerID, rec, state)
+		s.registerCloudCollaborationCallbackAsync(ownerID, rec.CollaborationID, task.ID, task.Generation)
+		out := cloudCollaborationView(rec, state, "dispatcher")
+		out["callbackPending"] = true
+		return out, nil
 	}
 	if task.Status != "queued" && task.Status != "create_in_doubt" {
 		return nil, store.ErrConflict
@@ -876,11 +889,7 @@ func (s *Service) cloudCollaborationDispatchTask(ctx context.Context, ownerID st
 	rec, state = updatedRec, updatedState
 	idx = taskIndex(state, req.TaskID)
 	task = &state.Tasks[idx]
-	_, callbackErr := s.registerCloudCollaborationCallback(ctx, ownerID, rec, state, *task)
-	if callbackErr == nil {
-		state.Chats[chatIndex(state, task.ChatSessionID)].CallbackRegistered = true
-		return s.saveCloudCollaboration(ctx, ownerID, rec, state)
-	}
+	s.registerCloudCollaborationCallbackAsync(ownerID, rec.CollaborationID, task.ID, task.Generation)
 	updated["callbackPending"] = true
 	return updated, nil
 }
@@ -926,7 +935,23 @@ func (s *Service) persistCloudCollaborationCreatedChat(ctx context.Context, owne
 }
 
 func (s *Service) registerCloudCollaborationCallback(ctx context.Context, ownerID string, rec store.CloudCollaborationRecord, state cloudCollaborationState, task cloudCollaborationTask) (map[string]any, error) {
-	return s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.callback.register", map[string]any{"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": task.ChatSessionID, "callbackTargetSessionId": state.DispatcherSessionID, "callbackMissionId": rec.CollaborationID, "callbackTaskId": task.ID, "callbackGeneration": task.Generation, "callbackDeliverablePath": task.DeliverablePath})
+	return s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.callback.register", map[string]any{"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": task.ChatSessionID, "callbackTargetSessionId": state.DispatcherSessionID, "callbackMissionId": rec.CollaborationID, "callbackTaskId": task.ID, "callbackGeneration": task.Generation, "callbackDeliverablePath": cloudCollaborationTaskResultPath(task)})
+}
+
+func (s *Service) registerCloudCollaborationCallbackAsync(ownerID, collaborationID, taskID string, generation int64) {
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		rec, state, err := s.loadCloudCollaboration(ctx, ownerID, collaborationID)
+		if err != nil {
+			return
+		}
+		idx := taskIndex(state, taskID)
+		if idx < 0 || state.Tasks[idx].Generation != generation || state.Tasks[idx].ChatSessionID == "" {
+			return
+		}
+		_, _ = s.registerCloudCollaborationCallback(ctx, ownerID, rec, state, state.Tasks[idx])
+	}()
 }
 
 func (s *Service) cloudCollaborationPollStatus(ctx context.Context, ownerID string, rec store.CloudCollaborationRecord, state cloudCollaborationState, req CloudCollaborationRequest) (map[string]any, error) {
@@ -965,30 +990,11 @@ func (s *Service) cloudCollaborationPollStatus(ctx context.Context, ownerID stri
 	if newlyStalled {
 		chat.StalledNotified = true
 	}
-	recoveryPending := false
 	providerStatus := ""
-	if task.Status == "active" || task.Status == "result_available" {
-		manifestKey := cloudCollaborationResultIdempotencyKey(rec.CollaborationID, *task)
-		manifest, resultErr := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.result", map[string]any{
-			"providerId": "codex", "sessionId": chat.SessionID, "resultMode": "manifest", "idempotencyKey": manifestKey, "callbackDeliverablePath": task.DeliverablePath,
-		})
-		if resultErr != nil {
-			recoveryPending = true
-		} else {
-			providerStatus, _ = manifest["status"].(string)
-			if recoveryReq, ok := cloudCollaborationRecoveryEventRequest(rec.CollaborationID, state, *task, result, manifest); ok {
-				if err := cloudCollaborationIngestEvent(&state, recoveryReq); err != nil {
-					return nil, err
-				}
-				if err := cloudCollaborationAckEvent(&state, recoveryReq); err != nil {
-					return nil, err
-				}
-				cloudCollaborationAdvanceAcknowledgedEvent(&state, recoveryReq.EventID, now)
-				if cloudCollaborationReadyToClose(state) {
-					return s.cloudCollaborationClose(ctx, ownerID, rec, state)
-				}
-			}
-		}
+	terminalEventID, _ := cloudCollaborationTerminalWatchEvent(result, task.ChatSessionID)
+	recoveryNotify := terminalEventID != "" && (task.Status == "active" || task.Status == "result_available" || task.Status == "completion_reported")
+	if recoveryNotify {
+		providerStatus = "completed"
 	}
 	out, saveErr := s.saveCloudCollaboration(ctx, ownerID, rec, state)
 	if saveErr != nil {
@@ -1004,8 +1010,24 @@ func (s *Service) cloudCollaborationPollStatus(ctx context.Context, ownerID stri
 	} else if chat.StalledNotified && chat.ContinueAttempts > 0 {
 		out["recoveryAction"] = "controller_decision"
 	}
-	if recoveryPending {
-		out["recoveryPending"] = true
+	if recoveryNotify {
+		notification, notifyErr := s.notifyCloudCompletion(ctx, ownerID, CloudCompletionRequest{
+			Action: "notify", CollaborationID: rec.CollaborationID, TaskID: task.ID,
+			ActorSessionID: state.DispatcherSessionID, SourceSessionID: task.ChatSessionID, Outcome: "completed",
+		})
+		if notifyErr != nil {
+			out["recoveryPending"] = true
+		} else {
+			out["completionNotification"] = notification["notification"]
+			if latestRec, latestState, loadErr := s.loadCloudCollaboration(ctx, ownerID, rec.CollaborationID); loadErr == nil {
+				latest := cloudCollaborationView(latestRec, latestState, "dispatcher")
+				latest["progressed"], latest["newlyStalled"] = progressed, newlyStalled
+				latest["providerStatus"] = providerStatus
+				latest["completionNotification"] = notification["notification"]
+				latest["recordIssuesTo"] = cloudCollaborationIssueMarkdownPath
+				out = latest
+			}
+		}
 	}
 	return out, nil
 }
@@ -1141,6 +1163,18 @@ func cloudCollaborationSessionStatus(result map[string]any) string {
 func cloudCollaborationResultIdempotencyKey(collaborationID string, task cloudCollaborationTask) string {
 	sum := sha256.Sum256([]byte(collaborationID + "\x00" + task.ID + "\x00" + fmt.Sprintf("%d", task.Generation)))
 	return "collab_result_" + hex.EncodeToString(sum[:])[:48]
+}
+
+func cloudCollaborationManagedResultPath(workingDirectory, collaborationID, taskID string, generation int64) string {
+	sum := sha256.Sum256([]byte(collaborationID + "\x00" + taskID + "\x00" + fmt.Sprintf("%d", generation)))
+	return strings.TrimRight(workingDirectory, "\\/") + "/.fast-spider-result-" + hex.EncodeToString(sum[:])[:24] + ".md"
+}
+
+func cloudCollaborationTaskResultPath(task cloudCollaborationTask) string {
+	if strings.TrimSpace(task.DeliverablePath) != "" {
+		return task.DeliverablePath
+	}
+	return task.ResultPath
 }
 
 func cloudCollaborationRecoveryEventRequest(collaborationID string, state cloudCollaborationState, task cloudCollaborationTask, watch, manifest map[string]any) (CloudCollaborationRequest, bool) {
@@ -1519,11 +1553,11 @@ func (s *Service) cloudCollaborationClose(ctx context.Context, ownerID string, r
 }
 
 func cloudCollaborationBootstrap(collaborationID string, state cloudCollaborationState, task cloudCollaborationTask) string {
-	deliverable := "No local deliverable path is assigned. After completing the task, use FastSpider_FS ai_control action=session.result with resultMode=manifest for the current Cloud CHAT and use its Result Pool manifest metadata for the callback. Never paste the CHAT body into the callback. If you encounter a blocker, unclear requirement, or tool defect, leave a concise bounded note through FastSpider_FS working_context markdown.append in docs/progress/04-open-issues.md. If markdown.read returns NOT_FOUND, first call plan.init with initializeMarkdown=true, then read the file and use file-revision CAS; omit secrets, raw provider payloads, full transcripts, and long logs."
+	deliverable := fmt.Sprintf("Write the complete final result to the fixed local path %s through FastSpider_FS file tools before notifying completion. This FS-managed control-plane result record is the task's only permitted write even when accessMode=read_only; it does not grant permission to modify any other project file. The completion notification must not contain its body or metadata. If you encounter a blocker, unclear requirement, or tool defect, leave a concise bounded note through FastSpider_FS working_context markdown.append in docs/progress/04-open-issues.md. If markdown.read returns NOT_FOUND, first call plan.init with initializeMarkdown=true, then read the file and use file-revision CAS; omit secrets, raw provider payloads, full transcripts, and long logs.", cloudCollaborationTaskResultPath(task))
 	if task.DeliverablePath != "" {
-		deliverable = fmt.Sprintf("Write the final deliverable directly to %s through FastSpider_FS file tools. Before callback, call file_read with statOnly=true for that exact path and use its size and fileSha256; do not create a Result Pool entry or repeat the deliverable body in CHAT. If you encounter a blocker, unclear requirement, or tool defect, leave a concise bounded note through FastSpider_FS working_context markdown.append in docs/progress/04-open-issues.md. If markdown.read returns NOT_FOUND, first call plan.init with initializeMarkdown=true, then read the file and use file-revision CAS; omit secrets, raw provider payloads, full transcripts, and long logs.", task.DeliverablePath)
+		deliverable = fmt.Sprintf("Write the complete final deliverable directly to the fixed local path %s through FastSpider_FS file tools before notifying completion. The notification contains no body, path, hash, or Result ID; the dispatcher verifies this registered path after claiming it. If you encounter a blocker, unclear requirement, or tool defect, leave a concise bounded note through FastSpider_FS working_context markdown.append in docs/progress/04-open-issues.md. If markdown.read returns NOT_FOUND, first call plan.init with initializeMarkdown=true, then read the file and use file-revision CAS; omit secrets, raw provider payloads, full transcripts, and long logs.", task.DeliverablePath)
 	}
-	return fmt.Sprintf("FAST_SPIDER_CODEX_CLOUD_COLLABORATION_V2\ncollaboration_id=%s task_id=%s generation=%d depth=%d\nYou are the existing normal visible ChatGPT Cloud CHAT assigned to this task. Complete only this bounded task in this CHAT. Do not create a new Cloud Worker, Cloud CHAT, Codex session, fork, or child conversation; do not call session.create, session.send, or fork; do not invoke another AI provider, expand permissions, or delete sessions. The FastSpider_FS MCP plugin in this same conversation is the primary completion callback channel. Node callback delivery is only a recovery fallback; do not wait for Node and do not treat its callback as the normal completion path.\n\nBefore doing work, call FastSpider_FS codex_cloud_collaboration with action=get and params {collaborationId=%q, taskId=%q, actorSessionId=%q, actorRole=%q}. The $self actor marker binds to this task's currently registered Cloud CHAT. Use the returned current task, revision, generation, machineId, workingDirectory, allowedActions, accessMode, and writeScope; do not use stale values.\n\n%s\n\nCALLBACK REQUIRED BEFORE YOUR FINAL CHAT MESSAGE:\n1. Finish the task inside the inherited scope and verify the actual result.\n2. Call FastSpider_FS codex_cloud_collaboration action=event.ingest with the same collaborationId/taskId, actorSessionId=$self, actorRole=chat, the latest expectedRevision from get, eventType=conversation.turn.complete, the current generation, a stable no-space eventId, and eventSequence=1 for this task generation. For a write task use deliverableStatus=ready, the exact deliverablePath, resultStatus=ready, and resultBytes/resultSHA256 from file_read. For a task without a deliverable use resultId/resultStatus/resultBytes/resultSHA256 from the session.result manifest. Never invent a hash or claim ready without the verified metadata.\n3. Read the revision returned by event.ingest, then call FastSpider_FS codex_cloud_collaboration action=event.ack with the same eventId, taskId, actorSessionId=$self, actorRole=chat, that returned expectedRevision, and the same resultSHA256 when present. If a revision conflict occurs, call action=get again and retry the same event; do not repeat the task.\n4. Only after event.ack succeeds, return a short business receipt. If the FS callback cannot be completed, report that callback failure and do not claim the collaboration task is done; the Node fallback may recover it.\n\nTASK:\n%s", collaborationID, task.ID, task.Generation, task.Depth, collaborationID, task.ID, cloudCollaborationSelfActor, "chat", deliverable, task.Prompt)
+	return fmt.Sprintf("FAST_SPIDER_CODEX_CLOUD_COLLABORATION_V3\ncollaboration_id=%s task_id=%s generation=%d depth=%d\nYou are the existing normal visible ChatGPT Cloud CHAT assigned to this task. Complete only this bounded task in this CHAT. Do not create a new Cloud Worker, Cloud CHAT, Codex session, fork, or child conversation; do not call session.create, session.send, or fork; do not invoke another AI provider, expand permissions, or delete sessions. The FastSpider_FS MCP plugin in this same conversation is the primary completion callback channel. Node callback delivery is only a recovery fallback; do not wait for Node and do not treat its callback as the normal completion path.\n\nBefore doing work, call FastSpider_FS codex_cloud_collaboration with action=get and params {collaborationId=%q, taskId=%q, actorSessionId=%q, actorRole=%q}. The $self actor marker binds to this task's currently registered Cloud CHAT. Use the returned current task, generation, machineId, workingDirectory, allowedActions, accessMode, writeScope, and resultPath; do not use stale values.\n\n%s\n\nCALLBACK REQUIRED BEFORE YOUR FINAL CHAT MESSAGE:\n1. Finish the task inside the inherited scope and write the complete result to the fixed local result path above.\n2. Call FastSpider_FS codex_cloud_completion exactly once with action=notify, the same collaborationId/taskId, actorSessionId=$self, and outcome=completed|blocked|failed. Do not include result text, path, hash, Result ID, revision, generation, event ID, or sequence; the Hub derives and persists them.\n3. Retry the identical notify call if transport is uncertain; it is idempotent. Do not call event.ingest, event.ack, or session.result on the normal completion path.\n4. Only after notify succeeds, return a short business receipt. If the FS notification cannot be persisted, report that failure and do not claim the collaboration task is done; the Node fallback may recover it.\n\nTASK:\n%s", collaborationID, task.ID, task.Generation, task.Depth, collaborationID, task.ID, cloudCollaborationSelfActor, "chat", deliverable, task.Prompt)
 }
 
 func (s *Service) ensureCodexCloudCollaborationReady(ctx context.Context, ownerID, machineID string) error {
