@@ -470,12 +470,20 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 		if input.Action == "session.create" && (len(input.IdempotencyKey) < 12 || len(input.IdempotencyKey) > 128) {
 			return nil, &toolRequestError{message: "idempotencyKey is required for session.create and must be 12 to 128 characters"}
 		}
+		callbackClaimID := input.CallbackClaimID
+		if callbackClaimID == "" && (input.Action == "session.callback.claim" || input.Action == "session.callback.ack") {
+			callbackClaimID = input.IdempotencyKey
+		}
+		callbackClaimLimit := input.CallbackClaimLimit
+		if callbackClaimLimit == 0 && input.Action == "session.callback.claim" {
+			callbackClaimLimit = input.Limit
+		}
 		params := map[string]any{
 			"providerId": input.ProviderID, "appType": input.AppType, "sessionId": input.SessionID, "turnId": input.TurnID, "requestId": input.RequestID,
 			"idempotencyKey": input.IdempotencyKey, "mode": input.Mode,
 			"visibility": input.Visibility, "backend": input.Backend, "visibilityTarget": input.VisibilityTarget, "ephemeral": input.Ephemeral,
 			"prompt": input.Prompt, "workingDirectory": input.WorkingDirectory, "model": input.Model,
-			"thinking": input.Thinking, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds,
+			"thinking": input.Thinking, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds, "resultMode": input.ResultMode, "resultId": input.ResultID,
 			"limit": input.Limit, "pageCursor": input.PageCursor, "mcpDetail": input.MCPDetail, "name": input.Name, "forceReload": input.ForceReload,
 			"marketplaceKinds": input.MarketplaceKinds, "pluginName": input.PluginName, "marketplacePath": input.MarketplacePath,
 			"remoteMarketplaceName": input.RemoteMarketplaceName, "remotePluginId": input.RemotePluginID, "skillName": input.SkillName,
@@ -487,7 +495,7 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 			"reviewSha": input.ReviewSHA, "reviewTitle": input.ReviewTitle, "reviewInstructions": input.ReviewInstructions,
 			"callbackTargetSessionId": input.CallbackTargetSessionID, "callbackMissionId": input.CallbackMissionID,
 			"callbackTaskId": input.CallbackTaskID, "callbackGeneration": input.CallbackGeneration, "callbackDeliverablePath": input.CallbackDeliverablePath,
-			"callbackClaimId": input.CallbackClaimID, "callbackClaimLimit": input.CallbackClaimLimit,
+			"callbackClaimId": callbackClaimID, "callbackClaimLimit": callbackClaimLimit,
 		}
 		if len(input.Skills) > 0 {
 			converted := make([]map[string]any, len(input.Skills))
