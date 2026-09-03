@@ -591,6 +591,9 @@ func (s *Service) StartMaintenance(ctx context.Context) {
 			if err := s.store.CleanupExpired(ctx, now.UTC()); err != nil {
 				slog.Error("hub maintenance cleanup failed", "operation", "expired_metadata", "error", err)
 			}
+			if err := s.store.CleanupResults(ctx, now.UTC(), 128); err != nil {
+				slog.Error("hub maintenance cleanup failed", "operation", "result_pool", "error", err)
+			}
 			if err := s.cleanupArtifacts(ctx, now.UTC()); err != nil {
 				slog.Error("hub maintenance cleanup failed", "operation", "artifact_files", "error", err)
 			}

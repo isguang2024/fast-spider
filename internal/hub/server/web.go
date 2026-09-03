@@ -683,6 +683,7 @@ func directScopeWebLabel(scopes []string) string {
 		core.DirectScopeFilesWrite: "文件写入", core.DirectScopeShell: "Shell / Build", core.DirectScopeJobs: "任务取消",
 		core.DirectScopeGit: "Git 写入", core.DirectScopeBrowser: "浏览器 / 截图", core.DirectScopeAI: "AI 控制",
 		core.DirectScopeContextWrite: "上下文写入", core.DirectScopeArtifactWrite: "文件上传 / 发布",
+		core.DirectScopeResultWrite: "Result 写入", core.DirectScopePagesRead: "Result 分页读取",
 	}
 	items := []string{"只读"}
 	for _, scope := range scopes {

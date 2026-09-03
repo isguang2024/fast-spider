@@ -37,6 +37,38 @@ type chatgptSentinelChallenge struct {
 	} `json:"turnstile"`
 }
 
+// chatgptCloudCapabilityError is the public, sanitized error boundary for
+// failures while preparing the Sentinel proof.  Do not include provider
+// response bodies, challenge values, or credentials in Error: capability
+// errors are also written to the local operation log.
+type chatgptCloudCapabilityError struct {
+	code      string
+	message   string
+	retryable bool
+}
+
+func (e *chatgptCloudCapabilityError) Error() string {
+	if e == nil {
+		return "ChatGPT Cloud Sentinel request failed"
+	}
+	return e.message
+}
+
+func (e *chatgptCloudCapabilityError) CapabilityError() (string, string, bool) {
+	if e == nil {
+		return "AGENT_CLOUD_SENTINEL_FAILED", "ChatGPT Cloud Sentinel request failed", true
+	}
+	return e.code, e.message, e.retryable
+}
+
+func newChatGPTSentinelError(message string, retryable bool) error {
+	return &chatgptCloudCapabilityError{
+		code:      "AGENT_CLOUD_SENTINEL_FAILED",
+		message:   message,
+		retryable: retryable,
+	}
+}
+
 // chatgptFingerprint mirrors the official conversation-client jn(): a 25-slot
 // client fingerprint. The server does not validate slot content (the PoW is
 // self-consistent against it); slots just need to be plausible and stable enough
@@ -69,6 +101,17 @@ func chatgptFingerprint(now time.Time) []any {
 	}
 }
 
+func cloneChatgptFingerprint(input []any) []any {
+	return append([]any(nil), input...)
+}
+
+// chatgptRequirementsFingerprint is generated once for a prepare/proof pair.
+// The official client reuses this fingerprint while changing only the nonce
+// and elapsed-time slots for each PoW attempt.
+func chatgptRequirementsFingerprint(now time.Time) []any {
+	return chatgptFingerprint(now)
+}
+
 // chatgptSentinelY mirrors Y(): btoa(UTF8(JSON.stringify(v))).
 func chatgptSentinelY(value any) string {
 	raw, err := json.Marshal(value)
@@ -95,57 +138,88 @@ func chatgptSentinelHash(input string) string {
 
 // chatgptRequirementsKey mirrors Dn(): gAAAAAC + base64(fingerprint with slot[3]=1).
 func chatgptRequirementsKey(now time.Time) string {
-	fp := chatgptFingerprint(now)
+	return chatgptRequirementsKeyForFingerprint(chatgptRequirementsFingerprint(now))
+}
+
+func chatgptRequirementsKeyForFingerprint(fingerprint []any) string {
+	fp := cloneChatgptFingerprint(fingerprint)
 	fp[3] = float64(1)
 	fp[9] = float64(0)
 	return "gAAAAAC" + chatgptSentinelY(fp)
 }
 
 // chatgptSolvePoW mirrors En/kn(): find nonce where FNV(seed+payload) prefix <= difficulty.
+// It remains as a compatibility wrapper for existing package-local callers.
 func chatgptSolvePoW(seed, difficulty string, now time.Time) string {
+	proof, _ := chatgptSolvePoWContext(context.Background(), chatgptRequirementsFingerprint(now), seed, difficulty, now)
+	return proof
+}
+
+func chatgptSolvePoWContext(ctx context.Context, fingerprint []any, seed, difficulty string, now time.Time) (string, error) {
+	difficulty = strings.ToLower(strings.TrimSpace(difficulty))
+	if difficulty == "" || len(difficulty) > 8 {
+		return "", newChatGPTSentinelError("ChatGPT Cloud returned an invalid Sentinel proof difficulty", false)
+	}
+	for _, digit := range difficulty {
+		if (digit < '0' || digit > '9') && (digit < 'a' || digit > 'f') {
+			return "", newChatGPTSentinelError("ChatGPT Cloud returned an invalid Sentinel proof difficulty", false)
+		}
+	}
 	start := now
 	for i := 0; i < chatgptPowMaxIterations; i++ {
-		fp := chatgptFingerprint(now)
+		if i&255 == 0 {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+		}
+		fp := cloneChatgptFingerprint(fingerprint)
 		fp[3] = float64(i)
 		fp[9] = float64(time.Since(start).Milliseconds())
 		payload := chatgptSentinelY(fp)
 		hash := chatgptSentinelHash(seed + payload)
 		if len(difficulty) <= len(hash) && hash[:len(difficulty)] <= difficulty {
-			return payload + "~S"
+			return payload + "~S", nil
 		}
 	}
-	fallback := chatgptSentinelY("e")
-	return "wQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D" + fallback
+	return "", newChatGPTSentinelError("ChatGPT Cloud could not solve the Sentinel proof challenge", true)
 }
 
 // chatgptSentinelHeaders solves the Sentinel challenge for a token and returns the
 // three request headers required by POST /backend-api/f/conversation.
 func chatgptSentinelHeaders(ctx context.Context, client *http.Client, baseURL, token string) (map[string]string, error) {
-	key := chatgptRequirementsKey(time.Now())
+	fingerprint := chatgptRequirementsFingerprint(time.Now())
+	key := chatgptRequirementsKeyForFingerprint(fingerprint)
 	body := strings.NewReader(`{"p":` + strconvQuote(key) + `}`)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+chatgptSentinelPreparePath, body)
 	if err != nil {
-		return nil, err
+		return nil, newChatGPTSentinelError("ChatGPT Cloud Sentinel request could not be created", false)
 	}
 	chatgptApplyCloudHeaders(req, token)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, newChatGPTSentinelError("ChatGPT Cloud Sentinel preparation request failed", true)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("sentinel prepare returned %s", resp.Status)
+		return nil, newChatGPTSentinelError("ChatGPT Cloud Sentinel preparation was rejected", resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests)
 	}
 	var challenge chatgptSentinelChallenge
 	if err := json.NewDecoder(resp.Body).Decode(&challenge); err != nil {
-		return nil, fmt.Errorf("decode sentinel challenge: %w", err)
+		return nil, newChatGPTSentinelError("ChatGPT Cloud returned an unreadable Sentinel challenge", false)
 	}
 	if !challenge.ProofOfWork.Required || challenge.ProofOfWork.Seed == "" || challenge.ProofOfWork.Difficulty == "" {
-		return nil, fmt.Errorf("sentinel did not return a proof of work challenge")
+		return nil, newChatGPTSentinelError("ChatGPT Cloud did not return a usable Sentinel proof challenge", false)
 	}
-	proof := "gAAAAAB" + chatgptSolvePoW(challenge.ProofOfWork.Seed, challenge.ProofOfWork.Difficulty, time.Now())
+	proofPayload, err := chatgptSolvePoWContext(ctx, fingerprint, challenge.ProofOfWork.Seed, challenge.ProofOfWork.Difficulty, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	proof := "gAAAAAB" + proofPayload
 	return map[string]string{
 		"OpenAI-Sentinel-Chat-Requirements-Prepare-Token": challenge.PrepareToken,
 		"OpenAI-Sentinel-Proof-Token":                     proof,

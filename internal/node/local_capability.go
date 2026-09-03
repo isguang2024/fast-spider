@@ -23,6 +23,9 @@ func NewLocalCapabilityClient(cfg Config) *Client {
 		operationLog:  cfg.OperationLog,
 	}
 	client.browser = NewBrowserManager(cfg.DataDir, cfg.BrowserSidecarDir, cfg.Logger)
+	if setter, ok := cfg.Agent.(interface{ SetCloudResultPublisher(any) }); ok {
+		setter.SetCloudResultPublisher(client)
+	}
 	return client
 }
 

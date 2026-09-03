@@ -114,7 +114,7 @@ Model Mapping 目前识别 Claude 的 `ANTHROPIC_MODEL` / Sonnet / Opus / Haiku 
 
 ### `session.create`
 
-公网 MCP 必需：绝对 `workingDirectory` 与 12-128 字符 `idempotencyKey`。可选：`model`、`thinking`，以及首个 Turn 的输入。Node 对 Codex 与 Claude Code 均持久保存 key/spec hash/小型结果；同 key 同 spec 在进程重启后仍重放同一 Session，同 key 不同 spec（包括可见性语义、ChatGPT Cloud create mode、model 与 thinking）返回冲突，中间态不确定时不重复创建。索引采用严格全量校验，任何损坏或语义不完整记录均 fail-closed；记录不按时间自动过期。ChatGPT Cloud 默认 `mode=complete`，HTTP Client 不设置短于 SSE 流的全局 60 秒超时；若流尾异常但已观察到 conversation ID，则记录为已创建并返回 `phase=created_execution_unknown`，不会诱导重复建会话。`mode=quick_chat` 跳过 conversation prepare，默认 `model=auto`，拿到真实 conversation ID 后立即返回并在后台排空 SSE。已知 Session 经 `session.delete` 明确删除后回收；无已知 Session 的 `in_doubt` Cloud 记录须先用 `backend=chatgpt_cloud` 的 `session.list` 检查完整云列表，确认没有创建后调用 `session.delete`，省略 `sessionId` 并传原 `idempotencyKey` 与 `decision=confirm_not_created` 显式释放。Claude 原生 history 仍由 Claude 自身保存。
+公网 MCP 必需：绝对 `workingDirectory` 与 12-128 字符 `idempotencyKey`。可选：`model`、`thinking`，以及首个 Turn 的输入。Node 对 Codex 与 Claude Code 均持久保存 key/spec hash/小型结果；同 key 同 spec 在进程重启后仍重放同一 Session，同 key 不同 spec（包括可见性语义、ChatGPT Cloud create mode、model 与 thinking）返回冲突，中间态不确定时不重复创建。索引采用严格全量校验，任何损坏或语义不完整记录均 fail-closed；记录不按时间自动过期。ChatGPT Cloud 在发出创建副作用前先保存 Provider 可见的首条 message ID；完整模式一旦从 SSE 观察到 conversation ID 就立即保存，不等待整段回答结束。Hub/WebSocket 断开不会取消已开始的创建，Node 仍在原执行 deadline 内完成对账和落盘。同一原 key 遇到 `in_doubt` 时会用精确 message ID 自动查找 Provider 会话，绝不按 Prompt、标题或时间猜测。`mode=quick_chat` 跳过 conversation prepare，默认 `model=auto`，拿到真实 conversation ID 后立即返回并在后台排空 SSE。显式 Cloud `session.list` 的登录态和 Provider GET 分别有界；失败时只返回 `incomplete=true`、`authoritative=false` 的 FS sidecar 已知列表，不能据此确认未创建。只有权威对账明确确认没有创建后，才可用原 `idempotencyKey` 与 `decision=confirm_not_created` 显式释放无 ID 的旧 `in_doubt` 记录。Claude 原生 history 仍由 Claude 自身保存。
 
 `session.delete` 使用持久 delete intent：先把与 Session 关联的 create 记录标为 deleting，再删除 Provider Session，最后回收记录。若 Provider 已删除但最终落盘失败，重试同一删除会把 Provider not-found 视为已完成并续做回收，不会留下无法清理的容量占用。
 
@@ -132,7 +132,7 @@ Git 子目录和 linked worktree 会解析到主工作树对应的 Codex Desktop
 Fast Spider 用 Codex app-server 的 ChatGPT 登录态（`getAuthStatus`）配合自解 Sentinel（PoW + turnstile token）走官方
 `/backend-api/f/conversation` 流创建会话，`externalIdType=chatgpt_conversation`，会话出现在账号的 ChatGPT 聊天列表。
 `chatgpt_cloud` 必须 `visibility=visible`（云端会话天然对外可见），`ephemeral=true` 不支持；首次消息必须随
-`session.create` 提供（ChatGPT 无空会话创建接口）。依赖本机 Codex app-server 已登录 ChatGPT，否则返回明确错误。创建成功后 Fast Spider 在 sidecar 中保存 `sessionId → backend=chatgpt_cloud + workingDirectory`，因此后续 `session.get/send/watch/result/rename/delete/cancel/steer` 只需 `sessionId`，不必重复声明 backend。普通 Codex `session.list` 会合并 FS 自己管理过的 Cloud 会话；显式 `backend=chatgpt_cloud` 的 `session.list` 才访问 `/backend-api/conversations` 并返回账号云端列表。
+`session.create` 提供（ChatGPT 无空会话创建接口）。依赖本机 Codex app-server 已登录 ChatGPT，否则返回明确错误。创建成功后 Fast Spider 在 sidecar 中保存 `sessionId → backend=chatgpt_cloud + workingDirectory`，因此后续 `session.get/send/watch/result/rename/delete/cancel/steer` 只需 `sessionId`，不必重复声明 backend。普通 Codex `session.list` 会合并 FS 自己管理过的 Cloud 会话；显式 `backend=chatgpt_cloud` 的 `session.list` 才访问 `/backend-api/conversations`。Provider 读取失败时返回带 `source=fast_spider_sidecar`、`incomplete=true`、`authoritative=false` 的本地已知项，而不是伪造空的完整云列表。
 
 Cloud 只有一个创建入口 `session.create`，用 `mode=quick_chat|complete` 切换两种模式。Node 本地 `config.json` 可设置省略 `mode/model/thinking` 时采用的默认值；未配置的旧客户端仍为 `complete` + Auto 模型 + Auto 思考。请求明确传入的值（包括以空字符串表示 Auto）优先。`complete` 保留 prepare + 完整 SSE 等待；`quick_chat` 与 Codex Quick chat 一样不请求 `/f/conversation/prepare`，最终模型为空时发送 `model=auto`，收到首个真实 conversation ID 就返回 `phase=running`、`createMode=quick_chat`、`completionPending=true`。同一 `idempotencyKey` 不能在两种 mode 或不同 model/thinking 之间复用；幂等匹配使用应用本机默认值后的最终参数，旧版未记录 mode/thinking 的默认完整创建仍可按原 key 重放并迁移。
 
@@ -146,13 +146,13 @@ Cloud 只有一个创建入口 `session.create`，用 `mode=quick_chat|complete`
 | `session.create` | `mode=complete`：prepare 后等待完整 `POST /backend-api/f/conversation`；`mode=quick_chat`：跳过 prepare，拿到 conversation UUID 即返回，后台排空流 |
 | `session.send` | follow-up（`conversation_id` + `parent_message_id`=最后 assistant 消息，自动解析） |
 | `session.get` | `GET /backend-api/conversation/{id}`（mapping 全量消息） |
-| `session.result` | 同上，返回最新 `finalAgentMessage` |
-| `session.list` | 显式 `backend=chatgpt_cloud` 时 `GET /backend-api/conversations`；省略 backend 的普通 Codex 列表仅合并 FS sidecar 中受管 Cloud 会话，不扫描整个账号历史 |
+| `session.result` | 同上，按 async/terminal 事实返回 `running|completed|failed|canceled|unknown`；旧调用返回有界（64 KiB）`finalAgentMessage`，`resultMode=manifest|result-id` 用于只取 Result 元数据 |
+| `session.list` | 显式 `backend=chatgpt_cloud` 时有界调用 `GET /backend-api/conversations`；Provider 失败时只返回标记为不完整、非权威的 FS sidecar 已知项。省略 backend 的普通 Codex 列表仅合并受管 Cloud 会话，不扫描整个账号历史 |
 | `session.rename` | `POST /conversation/id/{id}/rename` |
 | `session.delete` | `DELETE /conversation/id/{id}` |
 | `session.cancel` | `POST /stop_conversation`（无活动轮时幂等返回） |
 | `session.watch` | `/celsius/ws/user` pubsub 订阅 `conversations` + `conversation-{uuid}`；`conversation-turn-complete` 等事件 → `session.watch` 事件（提示 refetch `session.get` 取内容） |
-| `session.callback.register` | 为一个 ChatGPT Cloud Worker 注册唯一的本机 Codex 协调会话；持久保存 mission/task/generation，并建立不会被普通 watch 空闲淘汰的订阅 |
+| `session.callback.register` | 为一个 ChatGPT Cloud CHAT 注册唯一的本机 Codex 协调会话；持久保存 mission/task/generation/可选本地交付路径，并建立不会被普通 watch 空闲淘汰的订阅 |
 | `session.callback.unregister` | 按 source session + generation 撤销回调 owner，同时清除该来源尚未投递的事件 |
 | `session.callback.list` | 只读列出注册、最后事件序号、最后已投递信封和 pending 数量；可按 source 或 target 过滤 |
 | `session.steer` | 活动兼容 TPP 轮：`POST /f/steer_turn`（`asyncTaskId` 映射为 `async_task_id`；普通已完成聊天无可 steer 的活动轮时明确报错） |
@@ -162,11 +162,11 @@ Cloud 只有一个创建入口 `session.create`，用 `mode=quick_chat|complete`
 
 ### `session.callback.*`
 
-`session.callback.register` 只支持 `providerId=codex + backend=chatgpt_cloud`。调用方提供 Worker 的 `sessionId`、本机 Codex 协调/调度会话的 `callbackTargetSessionId`、`callbackMissionId`、`callbackTaskId` 和正整数 `callbackGeneration`。默认 target 不是用户正在对话的主控；协调会话负责并发批次、`session.result`、任务账本和有界摘要，主控只接收真正需要裁决的结果。一个 source Worker 同时只能有一个 callback owner；相同 owner/代次可幂等重放，更旧代次拒绝，更高代次会替换旧代并清除旧 pending。`session.callback.unregister` 必须携带当前 generation；`session.callback.list` 是可安全重试的只读查询。
+`session.callback.register` 只支持 `providerId=codex + backend=chatgpt_cloud`。调用方提供 Cloud CHAT 的 `sessionId`、本机 Codex 协调/调度会话的 `callbackTargetSessionId`、`callbackMissionId`、`callbackTaskId` 和正整数 `callbackGeneration`。可选 `callbackDeliverablePath` 必须是 Node 本机绝对路径：终态回调直接验证该普通文件并返回路径、状态、大小和 SHA-256，不读取 CHAT 正文；未指定时才把最新 assistant 结果写入 Result Pool。默认 target 不是用户正在对话的主控；协调会话负责并发批次、任务账本和有界摘要，主控只接收真正需要裁决的结果。一个 source Cloud CHAT 同时只能有一个 callback owner；相同 owner/代次/交付路径可幂等重放，更旧代次拒绝，更高代次会替换旧代并清除旧 pending。`session.callback.unregister` 必须携带当前 generation；`session.callback.list` 是可安全重试的只读查询。
 
-Cloud 的 `conversation.turn.complete` 会先写入 Node data-dir 下的 `agent/session-callbacks.json`，再尝试唤醒协调会话。持久索引损坏或 pending/registration 序列不一致时回调读写 fail-closed，不会用空状态覆盖。注册会先落盘再在同一 owner/generation 临界区建立持久订阅；并发注销不能在快照后留下 orphan watcher。订阅建立失败时 durable registration 保留并由恢复循环续做。事件按 `generation + event key` 去重：优先使用 Provider payload 中真实存在的 event/turn/message ID，并持久保留最近 256 个稳定身份用于跨重连、跨重启去重；超过该有界历史的极旧重放允许按至少一次语义再次投递。缺少稳定 ID 时，Node 对 payload 派生键只做 15 秒短窗口重复抑制，不写入永久 recent-event 集合；短窗口可抑制双 topic 或紧邻重放，但相同 payload 在后续合法 Turn 会生成新的 key，极端窗口边界也允许重复而不允许漏掉合法完成事件。一个 Worker 只保留最新 pending，同一协调会话的多个 Worker 会合并成一个稳定 `FAST_SPIDER_SESSION_CALLBACK_V1` 信封。信封包含 mission、task、generation、source session、event sequence/key/type 和固定控制说明；`event_sequence` 始终参与 envelope ID，使有界窗口外的重放不会复用旧 envelope，而同一 pending 的崩溃重发保持相同 ID。信封不携带 Worker 原文、Prompt、Provider payload、Token 或原始错误。
+Cloud 的 `conversation.turn.complete` 会先写入 Node data-dir 下的 `agent/session-callbacks.json`，再尝试唤醒协调会话。持久索引损坏或 pending/registration 序列不一致时回调读写 fail-closed，不会用空状态覆盖。注册会先落盘再在同一 owner/generation 临界区建立持久订阅；并发注销不能在快照后留下 orphan watcher。订阅建立失败时 durable registration 保留并由恢复循环续做。事件按 `generation + event key` 去重：优先使用 Provider payload 中真实存在的 event/turn/message ID，并持久保留最近 256 个稳定身份用于跨重连、跨重启去重；超过该有界历史的极旧重放允许按至少一次语义再次投递。缺少稳定 ID 时，Node 对 payload 派生键只做 15 秒短窗口重复抑制，不写入永久 recent-event 集合；短窗口可抑制双 topic 或紧邻重放，但相同 payload 在后续合法 Turn 会生成新的 key，极端窗口边界也允许重复而不允许漏掉合法完成事件。指定本地交付路径时，terminal 回调只检查文件并计算元数据；否则才重新读取最新 assistant，按最多 8 MiB 来源拆成不超过 1 MiB 的 Artifact 页，创建/attach/commit 一个 Result。信封只携带可选的 Result 或交付文件元数据，不携带正文、artifactId、Prompt、Provider payload、Token 或原始错误。Result 创建/提交响应丢失时用 lookup 对账，旧 generation 拒绝；捕获或发布失败仍投递安全错误状态元数据，绝不降级为整段正文。一个 Cloud CHAT 只保留最新 pending，同一协调会话的多个 Cloud CHAT 会合并成一个稳定 `FAST_SPIDER_SESSION_CALLBACK_V1` 信封。信封包含 mission、task、generation、source session、event sequence/key/type 和固定控制说明；`event_sequence` 始终参与 envelope ID，使有界窗口外的重放不会复用旧 envelope，而同一 pending 的崩溃重发保持相同 ID。
 
-投递策略是 `callback-first / heartbeat-fallback`：协调会话存在活动 Turn 或底层 `session.send` 返回 busy 时继续保留 pending；该 Turn 完成、失败或中断后立即重试。Node 重启后恢复持久订阅和 pending；五分钟检查仅用于断线、重启或漏通知恢复，不是主要轮询路径。注册和注销的 watcher 生命周期带 generation 围栏，旧代注销不会关闭新 owner 的订阅。成功 send 后才按稳定 envelope ID 清除当时投递的事件；并发到达的新事件保留给下一批。调用方仍应把重复 envelope ID 视为已投递，因为进程可能在发送成功、确认落盘前退出。协调会话只读最终 CHAT 回复和必要增量元数据，不抓取完整会话网页；实际业务网页仍由对应 Worker 读取和操作。
+投递策略是 `callback-first / heartbeat-fallback`：协调会话存在活动 Turn 或底层 `session.send` 返回 busy 时继续保留 pending；该 Turn 完成、失败或中断后立即重试。Node 重启后恢复持久订阅和 pending；五分钟检查仅用于断线、重启或漏通知恢复，不是主要轮询路径。注册和注销的 watcher 生命周期带 generation 围栏，旧代注销不会关闭新 owner 的订阅。成功 send 后才按稳定 envelope ID 清除当时投递的事件；并发到达的新事件保留给下一批。调用方仍应把重复 envelope ID 视为已投递，因为进程可能在发送成功、确认落盘前退出。协调会话只读最终 CHAT 回复或本地交付物的必要增量元数据，不抓取完整会话网页；实际业务网页仍由对应 Cloud CHAT 读取和操作。
 
 ### `session.send`
 
@@ -198,7 +198,7 @@ Codex app-server 可以在 Turn 中主动发送 Server Request。Fast Spider 当
 
 Codex 的 resume/unsubscribe/start-turn/archive/delete 只按同一 `sessionId` 串行；不同 Session 使用独立短生命周期锁，可以并发推进。最后一个持有者/等待者退出后锁项立即删除，不形成随历史 Session 数量增长的常驻锁表。
 
-`session.result` 读取 Codex 持久 Thread 的最新 Turn 事实，返回真实 status 与 `finalAgentMessage`。即使 Turn 使用了 `outputSchema`，Fast Spider 仍保留 raw final message，不宣称已经变成强类型对象；调用方可在需要时自行 JSON decode。
+`session.result` 读取 Codex 持久 Thread 的最新 Turn 事实，返回真实 status 与 `finalAgentMessage`。Cloud `session.result` 不把缺失 async/terminal 事实默认为 completed，而是返回 `unknown`；旧调用的正文最多 64 KiB。传 `resultMode=manifest` 或 `resultMode=result-id` 时仅返回 Result 状态/ID/大小/hash/页数，便于手动对账，不回传正文或 artifact ID。即使 Turn 使用了 `outputSchema`，Fast Spider 仍保留 raw final message，不宣称已经变成强类型对象；调用方可在需要时自行 JSON decode。
 
 ### `session.cancel`
 

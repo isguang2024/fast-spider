@@ -8,6 +8,24 @@ semantic versioning for public releases.
 - Add public CI, governance, support and maintainer workflow documentation.
 - Document the current early-stage public project status and contribution path.
 
+## 0.4.35 - 2026-09-03
+
+- Add the Hub MCP-only `codex_cloud_collaboration` control plane for persistent,
+  bounded coordination of ordinary visible ChatGPT Cloud CHAT conversations;
+  require two existing local Codex sessions plus local ChatGPT readiness, use
+  callback-delivered local artifacts or Result Pool metadata, and archive by
+  default without falling back to another AI provider.
+- Add a durable Cloud Result Pool with bounded, paginated result pages and
+  idempotent generation-isolated storage for coordinator follow-up reads.
+- Include only a `result_id` and bounded manifest metadata in Cloud completion
+  callbacks, while preserving concurrent callback delivery and recovery.
+- Derive Cloud session terminal status from provider async/terminal facts instead
+  of treating any observed assistant message as completed.
+- Keep MCP result access manifest-only for controller-facing flows; allow Direct
+  API `pages.read` only within the owning result scope and machine isolation.
+- Persist result metadata and callback recovery state without copying Cloud
+  conversation bodies into coordinator envelopes.
+
 ## 0.4.34 - 2026-09-02
 
 - Add durable ChatGPT Cloud completion callbacks to a dedicated local Codex

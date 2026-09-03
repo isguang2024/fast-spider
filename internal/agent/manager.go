@@ -58,6 +58,8 @@ type agentControlParams struct {
 	Decision                string              `json:"decision,omitempty"`
 	Answers                 map[string][]string `json:"answers,omitempty"`
 	ResponseContent         map[string]any      `json:"responseContent,omitempty"`
+	ResultMode              string              `json:"resultMode,omitempty"`
+	ResultID                string              `json:"resultId,omitempty"`
 	PageCursor              string              `json:"pageCursor,omitempty"`
 	MCPDetail               string              `json:"mcpDetail,omitempty"`
 	Effort                  string              `json:"effort,omitempty"`
@@ -75,6 +77,7 @@ type agentControlParams struct {
 	CallbackMissionID       string              `json:"callbackMissionId,omitempty"`
 	CallbackTaskID          string              `json:"callbackTaskId,omitempty"`
 	CallbackGeneration      int64               `json:"callbackGeneration,omitempty"`
+	CallbackDeliverablePath string              `json:"callbackDeliverablePath,omitempty"`
 	modelProvided           bool
 	thinkingProvided        bool
 }
@@ -101,8 +104,27 @@ type AgentManager struct {
 	visibilityStore    *sessionVisibilityStore
 	callbackStore      *sessionCallbackStore
 	callbackDispatcher *sessionCallbackDispatcher
-	chatgptDefaultsMu  sync.RWMutex
-	chatgptDefaults    chatGPTCloudCreateDefaults
+	resultPublisher    interface {
+		PublishCloudResult(context.Context, string, string, string) (map[string]any, error)
+	}
+	chatgptDefaultsMu sync.RWMutex
+	chatgptDefaults   chatGPTCloudCreateDefaults
+}
+
+// SetCloudResultPublisher connects the Cloud callback path to the Node's
+// authenticated Result Pool client. It accepts any implementation of the
+// narrow method so the agent package remains independent of internal/node.
+func (m *AgentManager) SetCloudResultPublisher(p any) {
+	if m == nil {
+		return
+	}
+	if publisher, ok := p.(interface {
+		PublishCloudResult(context.Context, string, string, string) (map[string]any, error)
+	}); ok {
+		m.resultPublisher = publisher
+	} else {
+		m.resultPublisher = nil
+	}
 }
 
 type chatGPTCloudCreateDefaults struct {

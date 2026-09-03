@@ -19,12 +19,19 @@ import (
 // conversation-created / conversation-update(s) signals (which tell a client to
 // refetch the conversation for new content).
 type chatgptCloudEvent struct {
-	Sequence       int64
-	EventKey       string // stable provider identity, or a short-window fallback key; never a local cursor
-	Type           string // normalized: conversation.turn.complete / conversation.created / conversation.updated
-	ConversationID string
-	EventType      string // raw pubsub payload type
-	Timestamp      time.Time
+	Sequence          int64
+	EventKey          string // stable provider identity, or a short-window fallback key; never a local cursor
+	Type              string // normalized: conversation.turn.complete / conversation.created / conversation.updated
+	ConversationID    string
+	EventType         string // raw pubsub payload type
+	Timestamp         time.Time
+	ResultID          string
+	ResultStatus      string
+	ResultBytes       int64
+	ResultSHA256      string
+	ResultPageCount   int
+	DeliverablePath   string
+	DeliverableStatus string
 }
 
 const chatgptRealtimeFallbackDedupWindow = 15 * time.Second

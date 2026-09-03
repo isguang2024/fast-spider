@@ -614,3 +614,27 @@ func TestSessionCreateStoreMarksInterruptedReservationInDoubt(t *testing.T) {
 		t.Fatalf("restart code=%s", code)
 	}
 }
+
+func TestSessionCreateStorePersistsCloudReconciliationAttemptAcrossRestart(t *testing.T) {
+	dataDir := t.TempDir()
+	store := newSessionCreateStore(dataDir)
+	key := "create-cloud-attempt-01"
+	hash := sessionCreateSpecHash("cloud-attempt")
+	if _, _, err := store.begin(key, hash); err != nil {
+		t.Fatal(err)
+	}
+	attempt := sessionCreateAttempt{
+		Backend: sessionBackendChatGPTCloud, RequestMessageID: "provider-message-attempt-01", StartedAt: time.Now().UTC(),
+	}
+	if err := store.setAttempt(key, attempt); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := newSessionCreateStore(dataDir)
+	got, ok := reloaded.attempt(key)
+	if !ok || got != attempt {
+		t.Fatalf("attempt=%#v ok=%v", got, ok)
+	}
+	if state := reloaded.records[key].State; state != "in_doubt" {
+		t.Fatalf("reloaded state=%q want in_doubt", state)
+	}
+}

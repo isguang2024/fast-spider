@@ -121,6 +121,14 @@ func New(service *core.Service, cfg Config) *Server {
 	mux.HandleFunc("PUT /node/v1/artifacts/{uploadId}/chunk", s.handleArtifactChunk)
 	mux.HandleFunc("POST /node/v1/artifacts/{uploadId}/complete", s.handleArtifactComplete)
 	mux.HandleFunc("DELETE /node/v1/artifacts/{uploadId}", s.handleArtifactAbort)
+	mux.HandleFunc("POST /node/v1/results", s.handleResultCreate)
+	mux.HandleFunc("GET /node/v1/results/lookup", s.handleResultLookup)
+	mux.HandleFunc("POST /node/v1/results/{resultId}/pages", s.handleResultAttachPage)
+	mux.HandleFunc("POST /node/v1/results/{resultId}/commit", s.handleResultCommit)
+	mux.HandleFunc("GET /node/v1/results/{resultId}/manifest", s.handleResultManifest)
+	mux.HandleFunc("GET /node/v1/results/{resultId}/pages/{pageNo}", s.handleResultReadPage)
+	mux.HandleFunc("DELETE /node/v1/results/{resultId}", s.handleResultAbort)
+	mux.HandleFunc("POST /node/v1/results/{resultId}/fail", s.handleResultFail)
 	s.http = &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           s.securityHeaders(s.hostGuard(mux)),

@@ -188,8 +188,8 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		}
 	}
 	t.Logf("MCP tool catalog bytes=%d connection=%d largest=%s/%d", toolCatalogBytes, connectionToolBytes, largestToolName, largestToolBytes)
-	if toolCatalogBytes > 48<<10 {
-		t.Fatalf("MCP tool catalog grew beyond 48 KiB context budget: %d", toolCatalogBytes)
+	if toolCatalogBytes > 50<<10 {
+		t.Fatalf("MCP tool catalog grew beyond 50 KiB context budget: %d", toolCatalogBytes)
 	}
 	if connectionToolBytes > 8<<10 {
 		t.Fatalf("MCP connection discovery tools grew beyond 8 KiB budget: %d", connectionToolBytes)
@@ -198,7 +198,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		t.Fatalf("MCP tool %s grew beyond 8 KiB individual budget: %d", largestToolName, largestToolBytes)
 	}
 	sort.Strings(names)
-	want := []string{"ai_control", "artifact_get", "audit_log", "browser_control", "build_control", "capability_list", "code_search", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "operation_log", "screenshot_take", "shell_run", "thinking_team", "working_context"}
+	want := []string{"ai_control", "artifact_get", "audit_log", "browser_control", "build_control", "capability_list", "code_search", "codex_cloud_collaboration", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "operation_log", "result_get", "screenshot_take", "shell_run", "thinking_team", "working_context"}
 	if stringJSON(names) != stringJSON(want) {
 		t.Fatalf("tools=%v want=%v", names, want)
 	}
@@ -263,7 +263,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(defaultGuideRaw, &defaultGuidePayload); err != nil {
 		t.Fatal(err)
 	}
-	if defaultGuide.IsError || !strings.Contains(string(defaultGuideRaw), `"capabilities"`) || !strings.Contains(string(defaultGuideRaw), `"view":"overview"`) || len(defaultGuidePayload.Guide.ToolSummaries) != 19 || len(defaultGuidePayload.CapabilitySummaries) == 0 {
+	if defaultGuide.IsError || !strings.Contains(string(defaultGuideRaw), `"capabilities"`) || !strings.Contains(string(defaultGuideRaw), `"view":"overview"`) || len(defaultGuidePayload.Guide.ToolSummaries) != 21 || len(defaultGuidePayload.CapabilitySummaries) == 0 {
 		t.Fatalf("default capability_list=%s", defaultGuideRaw)
 	}
 	if len(defaultGuide.Content) != 0 {

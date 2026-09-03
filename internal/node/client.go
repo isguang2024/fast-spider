@@ -122,6 +122,9 @@ func New(cfg Config) (*Client, error) {
 		projectPolicy:  projectPolicy,
 	}
 	client.browser = NewBrowserManager(cfg.DataDir, cfg.BrowserSidecarDir, cfg.Logger)
+	if setter, ok := cfg.Agent.(interface{ SetCloudResultPublisher(any) }); ok {
+		setter.SetCloudResultPublisher(client)
+	}
 	return client, nil
 }
 

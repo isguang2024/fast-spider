@@ -32,6 +32,14 @@ var ScreenshotCapability = CapabilityDescriptor{
 	Actions: []string{"listDisplays", "desktop", "display", "listWindows", "window"},
 }
 
+// ResultPoolCapability describes the Hub-managed Result Pool HTTP API. It is
+// intentionally not part of NodeCapabilities: nodes publish through the Hub
+// result endpoints and do not execute these actions via capability.request.
+var ResultPoolCapability = CapabilityDescriptor{
+	CapabilityId: "result.pool", Version: "1.0",
+	Actions: []string{"create", "attachPage", "commit", "getManifest", "readPage", "lookup", "abort", "fail"},
+}
+
 var AgentCapability = CapabilityDescriptor{
 	CapabilityId: "agent.control", Version: "1.3",
 	Actions: []string{"routing.status", "providers.list", "provider.readiness", "models.list", "provider.capabilities", "projects.list", "skills.list", "hooks.list", "permissions.list", "plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list", "session.list", "session.get", "session.create", "session.send", "session.steer", "session.respond", "session.watch", "session.callback.register", "session.callback.unregister", "session.callback.list", "session.cancel", "session.result", "session.rename", "session.archive", "session.unarchive", "session.delete", "session.fork", "session.compact", "session.rollback", "session.goal.get", "session.goal.set", "session.goal.clear", "session.settings.update", "session.review"},

@@ -79,7 +79,7 @@ func TestDirectAccessAPIIsIndependentAndScopeBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if tools.APIVersion != "v1" || len(tools.Tools) != 17 {
+	if tools.APIVersion != "v1" || len(tools.Tools) != 19 {
 		t.Fatalf("direct tools response version=%q count=%d", tools.APIVersion, len(tools.Tools))
 	}
 	seen := map[string]bool{}

@@ -21,25 +21,31 @@ import (
 )
 
 const (
-	chatgptCloudBaseURL        = "https://chatgpt.com"
-	chatgptConversationPath    = "/backend-api/f/conversation"
-	chatgptConversationPrepare = "/backend-api/f/conversation/prepare"
-	chatgptConversationDetail  = "/backend-api/conversation/{id}"
-	chatgptConversationsList   = "/backend-api/conversations"
-	chatgptSteerTurnPath       = "/backend-api/f/steer_turn"
-	chatgptStopPath            = "/backend-api/stop_conversation"
-	chatgptStreamTimeout       = 120 * time.Second
+	chatgptCloudBaseURL         = "https://chatgpt.com"
+	chatgptConversationPath     = "/backend-api/f/conversation"
+	chatgptConversationPrepare  = "/backend-api/f/conversation/prepare"
+	chatgptConversationDetail   = "/backend-api/conversation/{id}"
+	chatgptConversationsList    = "/backend-api/conversations"
+	chatgptSteerTurnPath        = "/backend-api/f/steer_turn"
+	chatgptStopPath             = "/backend-api/stop_conversation"
+	chatgptStreamTimeout        = 120 * time.Second
+	chatgptListAuthTimeout      = 6 * time.Second
+	chatgptListRequestTimeout   = 8 * time.Second
+	chatgptReconcileListLimit   = 12
+	chatgptReconcileReadTimeout = 2 * time.Second
 )
 
 // ChatGPTCloudAdapter drives ChatGPT cloud conversations through the same
 // /backend-api/f/conversation flow the official client uses, authenticating with
 // the Codex app-server's ChatGPT token and solving the Sentinel challenge itself.
 type ChatGPTCloudAdapter struct {
-	logger      *slog.Logger
-	baseURL     string
-	http        *http.Client
-	tokenSource func(ctx context.Context) (string, error)
-	realtime    *chatgptCloudRealtime
+	logger             *slog.Logger
+	baseURL            string
+	http               *http.Client
+	tokenSource        func(ctx context.Context) (string, error)
+	realtime           *chatgptCloudRealtime
+	listAuthTimeout    time.Duration
+	listRequestTimeout time.Duration
 
 	conduitMu             sync.Mutex
 	conduitByConversation map[string]string
@@ -74,6 +80,8 @@ func NewChatGPTCloudAdapter(logger *slog.Logger, tokenSource func(ctx context.Co
 		baseURL:               chatgptCloudBaseURL,
 		http:                  newChatGPTCloudHTTPClient(),
 		tokenSource:           tokenSource,
+		listAuthTimeout:       chatgptListAuthTimeout,
+		listRequestTimeout:    chatgptListRequestTimeout,
 		conduitByConversation: map[string]string{},
 	}
 	adapter.realtime = newChatGPTCloudRealtime(logger, adapter.baseURL, adapter.http, tokenSource)
@@ -221,6 +229,15 @@ func chatgptNewChatBodyWithThinking(prompt, model, thinking string) map[string]a
 	return body
 }
 
+func chatgptCloudRequestMessageID(body map[string]any) string {
+	messages, _ := body["messages"].([]any)
+	if len(messages) == 0 {
+		return ""
+	}
+	message, _ := messages[0].(map[string]any)
+	return strings.TrimSpace(mapString(message, "id"))
+}
+
 // chatgptQuickChatBody mirrors the Codex Quick chat composer: it does not use
 // /f/conversation/prepare, reports client_prepare_state=none, and lets ChatGPT
 // choose the model through the "auto" route unless the caller selected one.
@@ -288,10 +305,14 @@ func chatgptConversationBody(prompt, model, conversationID, parentMessageID, pre
 
 // sendTurn runs one full /f turn: solve sentinel, prepare (conduit), stream.
 func (a *ChatGPTCloudAdapter) sendTurn(ctx context.Context, body map[string]any) (chatgptCloudTurnResult, error) {
-	return a.sendTurnTo(ctx, chatgptConversationPath, body)
+	return a.sendTurnToObserved(ctx, chatgptConversationPath, body, nil)
 }
 
 func (a *ChatGPTCloudAdapter) sendTurnTo(ctx context.Context, path string, body map[string]any) (chatgptCloudTurnResult, error) {
+	return a.sendTurnToObserved(ctx, path, body, nil)
+}
+
+func (a *ChatGPTCloudAdapter) sendTurnToObserved(ctx context.Context, path string, body map[string]any, onConversationID func(chatgptCloudTurnResult) error) (chatgptCloudTurnResult, error) {
 	token, err := a.token(ctx)
 	if err != nil {
 		return chatgptCloudTurnResult{}, err
@@ -304,7 +325,7 @@ func (a *ChatGPTCloudAdapter) sendTurnTo(ctx context.Context, path string, body 
 	if err != nil {
 		return chatgptCloudTurnResult{}, err
 	}
-	result, err := a.streamPath(ctx, path, token, conduit, body, sentinel)
+	result, err := a.streamPathObserved(ctx, path, token, conduit, body, sentinel, onConversationID)
 	if result.ConversationID != "" {
 		a.cacheConduit(result.ConversationID, conduit)
 	}
@@ -344,10 +365,14 @@ func (a *ChatGPTCloudAdapter) prepare(ctx context.Context, token string, body ma
 }
 
 func (a *ChatGPTCloudAdapter) stream(ctx context.Context, token, conduit string, body map[string]any, sentinel map[string]string) (chatgptCloudTurnResult, error) {
-	return a.streamPath(ctx, chatgptConversationPath, token, conduit, body, sentinel)
+	return a.streamPathObserved(ctx, chatgptConversationPath, token, conduit, body, sentinel, nil)
 }
 
 func (a *ChatGPTCloudAdapter) streamPath(ctx context.Context, path, token, conduit string, body map[string]any, sentinel map[string]string) (chatgptCloudTurnResult, error) {
+	return a.streamPathObserved(ctx, path, token, conduit, body, sentinel, nil)
+}
+
+func (a *ChatGPTCloudAdapter) streamPathObserved(ctx context.Context, path, token, conduit string, body map[string]any, sentinel map[string]string, onConversationID func(chatgptCloudTurnResult) error) (chatgptCloudTurnResult, error) {
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return chatgptCloudTurnResult{}, err
@@ -380,7 +405,7 @@ func (a *ChatGPTCloudAdapter) streamPath(ctx context.Context, path, token, condu
 		}
 		return chatgptCloudTurnResult{}, fmt.Errorf("%s returned %s: %s", label, resp.Status, strings.TrimSpace(string(rawBody)))
 	}
-	return chatgptParseStream(resp.Body, 20000)
+	return chatgptParseStreamObserved(resp.Body, 20000, onConversationID)
 }
 
 type chatgptCloudTurnOutcome struct {
@@ -439,12 +464,13 @@ func (a *ChatGPTCloudAdapter) streamQuick(ctx context.Context, token string, bod
 		defer cancelStream()
 		defer resp.Body.Close()
 		announced := false
-		result, parseErr := chatgptParseStreamObserved(resp.Body, 20000, func(observed chatgptCloudTurnResult) {
+		result, parseErr := chatgptParseStreamObserved(resp.Body, 20000, func(observed chatgptCloudTurnResult) error {
 			if announced {
-				return
+				return nil
 			}
 			announced = true
 			firstResult <- chatgptCloudTurnOutcome{Result: observed}
+			return nil
 		})
 		if !announced {
 			firstResult <- chatgptCloudTurnOutcome{Result: result, Err: parseErr}
@@ -470,8 +496,9 @@ func chatgptParseStream(reader io.Reader, maxEvents int) (chatgptCloudTurnResult
 	return chatgptParseStreamObserved(reader, maxEvents, nil)
 }
 
-func chatgptParseStreamObserved(reader io.Reader, maxEvents int, onConversationID func(chatgptCloudTurnResult)) (chatgptCloudTurnResult, error) {
+func chatgptParseStreamObserved(reader io.Reader, maxEvents int, onConversationID func(chatgptCloudTurnResult) error) (chatgptCloudTurnResult, error) {
 	result := chatgptCloudTurnResult{}
+	var observedErr error
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 4<<20)
 	var dataLines []string
@@ -504,7 +531,10 @@ func chatgptParseStreamObserved(reader io.Reader, maxEvents int, onConversationI
 				chatgptCloudCaptureTurnMetadata(&result, input)
 			}
 			if observedConversationID && onConversationID != nil {
-				onConversationID(result)
+				if err := onConversationID(result); err != nil {
+					observedErr = err
+					return true
+				}
 			}
 			if data["type"] == "message_stream_complete" || data["type"] == "complete" {
 				return true // complete: stop
@@ -521,12 +551,15 @@ func chatgptParseStreamObserved(reader io.Reader, maxEvents int, onConversationI
 		case line == "":
 			done := flush()
 			if done || events > maxEvents {
-				return result, nil
+				return result, observedErr
 			}
 		}
 	}
 	if len(dataLines) > 0 {
 		flush()
+	}
+	if observedErr != nil {
+		return result, observedErr
 	}
 	return result, scanner.Err()
 }
@@ -556,6 +589,10 @@ func (a *ChatGPTCloudAdapter) Create(ctx context.Context, prompt, model string) 
 }
 
 func (a *ChatGPTCloudAdapter) CreateWithThinking(ctx context.Context, prompt, model, thinking string) (chatgptCloudTurnResult, error) {
+	return a.CreateWithThinkingObserved(ctx, prompt, model, thinking, nil)
+}
+
+func (a *ChatGPTCloudAdapter) CreateWithThinkingObserved(ctx context.Context, prompt, model, thinking string, onConversationID func(chatgptCloudTurnResult) error) (chatgptCloudTurnResult, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return chatgptCloudTurnResult{}, fmt.Errorf("creating a ChatGPT cloud conversation requires a first message")
@@ -563,7 +600,11 @@ func (a *ChatGPTCloudAdapter) CreateWithThinking(ctx context.Context, prompt, mo
 	if a.createOverride != nil {
 		return a.createOverride(ctx, prompt, model)
 	}
-	return a.sendTurn(ctx, chatgptNewChatBodyWithThinking(prompt, model, thinking))
+	return a.createBodyObserved(ctx, chatgptNewChatBodyWithThinking(prompt, model, thinking), onConversationID)
+}
+
+func (a *ChatGPTCloudAdapter) createBodyObserved(ctx context.Context, body map[string]any, onConversationID func(chatgptCloudTurnResult) error) (chatgptCloudTurnResult, error) {
+	return a.sendTurnToObserved(ctx, chatgptConversationPath, body, onConversationID)
 }
 
 // CreateQuick starts a new cloud conversation with Codex Quick chat semantics:
@@ -580,6 +621,10 @@ func (a *ChatGPTCloudAdapter) CreateQuickWithThinking(ctx context.Context, promp
 	if a.createOverride != nil {
 		return a.createOverride(ctx, prompt, firstNonEmptyString(model, "auto"))
 	}
+	return a.createQuickBody(ctx, chatgptQuickChatBodyWithThinking(prompt, model, thinking))
+}
+
+func (a *ChatGPTCloudAdapter) createQuickBody(ctx context.Context, body map[string]any) (chatgptCloudTurnResult, error) {
 	token, err := a.token(ctx)
 	if err != nil {
 		return chatgptCloudTurnResult{}, err
@@ -588,7 +633,7 @@ func (a *ChatGPTCloudAdapter) CreateQuickWithThinking(ctx context.Context, promp
 	if err != nil {
 		return chatgptCloudTurnResult{}, err
 	}
-	return a.streamQuick(ctx, token, chatgptQuickChatBodyWithThinking(prompt, model, thinking), sentinel)
+	return a.streamQuick(ctx, token, body, sentinel)
 }
 
 // Send appends a follow-up message to an existing conversation. If parentMessageID
@@ -856,18 +901,30 @@ func (a *ChatGPTCloudAdapter) List(ctx context.Context, limit int) ([]map[string
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
-	token, err := a.token(ctx)
-	if err != nil {
-		return nil, err
+	authTimeout := a.listAuthTimeout
+	if authTimeout <= 0 {
+		authTimeout = chatgptListAuthTimeout
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.baseURL+chatgptConversationsList+"?limit="+fmt.Sprintf("%d", limit)+"&order=updated", nil)
+	authCtx, cancelAuth := context.WithTimeout(ctx, authTimeout)
+	token, err := a.token(authCtx)
+	cancelAuth()
+	if err != nil {
+		return nil, fmt.Errorf("list conversations auth: %w", err)
+	}
+	requestTimeout := a.listRequestTimeout
+	if requestTimeout <= 0 {
+		requestTimeout = chatgptListRequestTimeout
+	}
+	requestCtx, cancelRequest := context.WithTimeout(ctx, requestTimeout)
+	defer cancelRequest()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, a.baseURL+chatgptConversationsList+"?limit="+fmt.Sprintf("%d", limit)+"&order=updated", nil)
 	if err != nil {
 		return nil, err
 	}
 	chatgptApplyCloudHeaders(req, token)
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list conversations provider request: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -887,7 +944,63 @@ func (a *ChatGPTCloudAdapter) List(ctx context.Context, limit int) ([]map[string
 	if err := json.Unmarshal(rawBody, &plain); err == nil {
 		return plain, nil
 	}
-	return []map[string]any{}, nil
+	return nil, fmt.Errorf("list conversations returned an unsupported response shape")
+}
+
+func (a *ChatGPTCloudAdapter) FindConversationByMessageID(ctx context.Context, requestMessageID string) (string, bool, error) {
+	requestMessageID = strings.TrimSpace(requestMessageID)
+	if requestMessageID == "" {
+		return "", false, fmt.Errorf("request message id is required")
+	}
+	items, err := a.List(ctx, chatgptReconcileListLimit)
+	if err != nil {
+		return "", false, err
+	}
+	matches := map[string]struct{}{}
+	for _, item := range items {
+		sessionID := chatgptCloudListSessionID(item)
+		if sessionID == "" {
+			continue
+		}
+		if chatgptCloudContainsMessageID(item, requestMessageID) {
+			matches[sessionID] = struct{}{}
+			continue
+		}
+		readCtx, cancel := context.WithTimeout(ctx, chatgptReconcileReadTimeout)
+		detail, readErr := a.Read(readCtx, sessionID)
+		cancel()
+		if readErr == nil && chatgptCloudContainsMessageID(detail, requestMessageID) {
+			matches[sessionID] = struct{}{}
+		}
+	}
+	if len(matches) > 1 {
+		return "", false, fmt.Errorf("multiple ChatGPT cloud conversations contain the same request message id")
+	}
+	for sessionID := range matches {
+		return sessionID, true, nil
+	}
+	return "", false, nil
+}
+
+func chatgptCloudContainsMessageID(value map[string]any, requestMessageID string) bool {
+	mapping, _ := value["mapping"].(map[string]any)
+	if _, ok := mapping[requestMessageID]; ok {
+		return true
+	}
+	for key, raw := range mapping {
+		if key == requestMessageID {
+			return true
+		}
+		node, _ := raw.(map[string]any)
+		if mapString(node, "id") == requestMessageID {
+			return true
+		}
+		message, _ := node["message"].(map[string]any)
+		if mapString(message, "id") == requestMessageID {
+			return true
+		}
+	}
+	return false
 }
 
 // Rename sets a conversation title.
@@ -1033,7 +1146,6 @@ func chatgptNormalizeDetail(detail map[string]any) map[string]any {
 		"sessionId":   detail["conversation_id"],
 		"title":       detail["title"],
 		"model":       detail["default_model_slug"],
-		"status":      "completed",
 		"mapping":     detail["mapping"],
 		"currentNode": detail["current_node"],
 	}
@@ -1052,7 +1164,64 @@ func chatgptNormalizeDetail(detail map[string]any) map[string]any {
 	if chimeVersion := chatgptCloudDetailValue(detail, "chime_version", "chimeVersion"); chimeVersion != nil {
 		out["chimeVersion"] = chimeVersion
 	}
+	if status := chatgptCloudConversationStatus(detail); status != "" {
+		out["status"] = status
+	}
 	return out
+}
+
+// chatgptCloudConversationStatus maps provider async/terminal facts to the
+// provider-neutral session status vocabulary. Absence of a terminal fact is
+// intentionally unknown; an existing assistant message alone is not proof
+// that the latest turn completed.
+func chatgptCloudConversationStatus(detail map[string]any) string {
+	for _, key := range []string{"async_status", "asyncStatus", "conversation_async_status", "conversationAsyncStatus", "status"} {
+		if value, ok := detail[key]; ok {
+			if status := chatgptCloudStatusValue(value); status != "" {
+				return status
+			}
+		}
+	}
+	mapping, _ := detail["mapping"].(map[string]any)
+	if current := chatgptCloudCurrentNodeID(detail); current != "" {
+		seen := map[string]bool{}
+		for current != "" && !seen[current] {
+			seen[current] = true
+			node, _ := mapping[current].(map[string]any)
+			message, _ := node["message"].(map[string]any)
+			if status := chatgptCloudStatusValue(mapString(message, "status")); status != "" {
+				return status
+			}
+			current = mapString(node, "parent")
+		}
+	}
+	return "unknown"
+}
+
+func chatgptCloudStatusValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		status := strings.ToLower(strings.TrimSpace(typed))
+		switch status {
+		case "running", "in_progress", "in-progress", "queued", "pending", "processing", "generating", "active", "started":
+			return "running"
+		case "completed", "complete", "success", "succeeded", "done", "finished":
+			return "completed"
+		case "failed", "failure", "error", "errored":
+			return "failed"
+		case "canceled", "cancelled", "stopped", "aborted", "interrupted":
+			return "canceled"
+		}
+	case map[string]any:
+		for _, key := range []string{"status", "state", "phase", "turn_status", "turnStatus"} {
+			if child, ok := typed[key]; ok {
+				if status := chatgptCloudStatusValue(child); status != "" {
+					return status
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func chatgptCloudInitialSelection(detail map[string]any) (string, string) {

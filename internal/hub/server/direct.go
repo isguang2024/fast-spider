@@ -205,6 +205,12 @@ func buildDirectToolsCatalog() ([]directToolDescriptor, error) {
 	if err := appendDirectTool[artifactGetInput](&tools, "artifact_get", "get is read-only; upload/publish require scope: artifacts.write"); err != nil {
 		return nil, err
 	}
+	if err := appendDirectTool[resultGetInput](&tools, "result_get", "getManifest is read-only; readPage requires scope: pages.read"); err != nil {
+		return nil, err
+	}
+	if err := appendDirectTool[resultWriteInput](&tools, "result_write", "all Result Pool mutations require scope: results.write"); err != nil {
+		return nil, err
+	}
 	if err := appendDirectTool[browserControlInput](&tools, "browser_control", "scope: browser"); err != nil {
 		return nil, err
 	}
@@ -229,11 +235,20 @@ func appendDirectTool[T any](tools *[]directToolDescriptor, name, authorization 
 		return fmt.Errorf("infer direct schema for %s: %w", name, err)
 	}
 	entry, ok := mcpToolGuides[name]
-	if !ok {
+	description := ""
+	if ok {
+		description = entry.Description
+	} else if directDescription, known := directOnlyToolDescriptions[name]; known {
+		description = directDescription
+	} else {
 		return fmt.Errorf("missing tool guide for %s", name)
 	}
-	*tools = append(*tools, directToolDescriptor{Name: name, Description: entry.Description, InputSchema: schema, Authorization: authorization})
+	*tools = append(*tools, directToolDescriptor{Name: name, Description: description, InputSchema: schema, Authorization: authorization})
 	return nil
+}
+
+var directOnlyToolDescriptions = map[string]string{
+	"result_write": "Create and finalize Result Pool records with CAS; requires scope: results.write.",
 }
 
 func decodeDirectArguments[T any](raw json.RawMessage) (T, error) {
@@ -551,6 +566,104 @@ func (s *Server) executeDirectTool(ctx context.Context, key store.DirectAccessKe
 			}
 		}
 		return out, nil
+
+	case "result_get":
+		input, err := decodeDirectArguments[resultGetInput](raw)
+		if err != nil {
+			return nil, err
+		}
+		if input.Action != "getManifest" && input.Action != "readPage" {
+			return nil, &directProtocolError{status: http.StatusBadRequest, code: "INVALID_REQUEST", message: "unsupported result action"}
+		}
+		if input.Action == "readPage" {
+			if err := directRequireScope(key, core.DirectScopePagesRead); err != nil {
+				return nil, err
+			}
+		}
+		if key.MachineID != "" {
+			rec, getErr := s.service.GetResultManifest(ctx, ownerID, input.ResultID)
+			if getErr != nil {
+				return nil, getErr
+			}
+			if err := directRequireMachine(key, rec.MachineID); err != nil {
+				return nil, err
+			}
+		}
+		if input.ResultID == "" || input.PageNo < 0 {
+			return nil, &directProtocolError{status: http.StatusBadRequest, code: "INVALID_REQUEST", message: "resultId and valid pageNo are required"}
+		}
+		if input.Action == "getManifest" {
+			rec, getErr := s.service.GetResultManifest(ctx, ownerID, input.ResultID)
+			if getErr != nil {
+				return nil, getErr
+			}
+			return map[string]any{"resultId": rec.ResultID, "status": rec.Status, "revision": rec.Revision, "manifest": json.RawMessage(rec.ManifestJSON), "createdAt": rec.CreatedAt, "committedAt": rec.CommittedAt, "expiresAt": rec.ExpiresAt}, nil
+		}
+		page, file, getErr := s.service.ReadResultPage(ctx, ownerID, input.ResultID, input.PageNo)
+		if getErr != nil {
+			return nil, getErr
+		}
+		defer file.Close()
+		content, readErr := io.ReadAll(io.LimitReader(file, core.MaxResultPageBytes+1))
+		if readErr != nil {
+			return nil, readErr
+		}
+		if int64(len(content)) > core.MaxResultPageBytes {
+			return nil, store.ErrConflict
+		}
+		return map[string]any{"resultId": page.ResultID, "pageNo": page.PageNo, "contentType": page.Artifact.ContentType, "sizeBytes": page.Artifact.SizeBytes, "content": content}, nil
+
+	case "result_write":
+		input, err := decodeDirectArguments[resultWriteInput](raw)
+		if err != nil {
+			return nil, err
+		}
+		if err := directRequireScope(key, core.DirectScopeResultWrite); err != nil {
+			return nil, err
+		}
+		if input.Action == "" {
+			return nil, &directProtocolError{status: http.StatusBadRequest, code: "INVALID_REQUEST", message: "result action is required"}
+		}
+		if input.MachineID != "" {
+			if err := directRequireMachine(key, input.MachineID); err != nil {
+				return nil, err
+			}
+		}
+		session := store.DeviceSession{OwnerID: ownerID, MachineID: input.MachineID}
+		var output any
+		switch input.Action {
+		case "create":
+			if input.MachineID == "" {
+				return nil, &directProtocolError{status: http.StatusBadRequest, code: "INVALID_REQUEST", message: "machineId is required for create"}
+			}
+			output, err = s.service.CreateResult(ctx, session, core.ResultCreateRequest{IdempotencyKey: input.IdempotencyKey, RequestHash: input.RequestHash})
+		case "attachPage":
+			if input.MachineID == "" {
+				return nil, &directProtocolError{status: http.StatusBadRequest, code: "INVALID_REQUEST", message: "machineId is required for attachPage"}
+			}
+			output, err = s.service.AttachResultPage(ctx, session, input.ResultID, core.ResultAttachPageRequest{PageNo: input.PageNo, ArtifactID: input.ArtifactID, ExpectedRevision: input.ExpectedRevision})
+		case "commit":
+			if input.MachineID == "" {
+				return nil, &directProtocolError{status: http.StatusBadRequest, code: "INVALID_REQUEST", message: "machineId is required for commit"}
+			}
+			output, err = s.service.CommitResult(ctx, session, input.ResultID, core.ResultCommitRequest{Manifest: input.Manifest, ExpectedRevision: input.ExpectedRevision})
+		case "abort":
+			if input.MachineID == "" {
+				return nil, &directProtocolError{status: http.StatusBadRequest, code: "INVALID_REQUEST", message: "machineId is required for abort"}
+			}
+			output, err = s.service.AbortResult(ctx, session, input.ResultID, input.ExpectedRevision)
+		case "fail":
+			if input.MachineID == "" {
+				return nil, &directProtocolError{status: http.StatusBadRequest, code: "INVALID_REQUEST", message: "machineId is required for fail"}
+			}
+			output, err = s.service.FailResult(ctx, session, input.ResultID, core.ResultFailRequest{Code: input.Code, Message: input.Message, ExpectedRevision: input.ExpectedRevision})
+		default:
+			return nil, &directProtocolError{status: http.StatusBadRequest, code: "INVALID_REQUEST", message: "unsupported result action"}
+		}
+		if err != nil {
+			return nil, err
+		}
+		return output, nil
 
 	default:
 		return nil, &directProtocolError{status: http.StatusNotFound, code: "TOOL_NOT_FOUND", message: "unknown direct tool"}

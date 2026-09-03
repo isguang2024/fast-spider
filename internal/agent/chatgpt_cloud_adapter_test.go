@@ -73,6 +73,71 @@ func TestChatGPTCloudHTTPClientDoesNotCutOffBoundedStream(t *testing.T) {
 	}
 }
 
+func TestChatGPTCloudListBoundsAuthAndProviderStages(t *testing.T) {
+	t.Run("auth", func(t *testing.T) {
+		adapter := NewChatGPTCloudAdapter(nil, func(ctx context.Context) (string, error) {
+			<-ctx.Done()
+			return "", ctx.Err()
+		})
+		adapter.listAuthTimeout = 20 * time.Millisecond
+		started := time.Now()
+		if _, err := adapter.List(context.Background(), 20); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("auth timeout error=%v", err)
+		}
+		if elapsed := time.Since(started); elapsed > time.Second {
+			t.Fatalf("auth stage was not bounded: %s", elapsed)
+		}
+	})
+
+	t.Run("provider", func(t *testing.T) {
+		adapter := NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token", nil })
+		adapter.listRequestTimeout = 20 * time.Millisecond
+		adapter.http = &http.Client{Transport: chatgptRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			<-req.Context().Done()
+			return nil, req.Context().Err()
+		})}
+		started := time.Now()
+		if _, err := adapter.List(context.Background(), 20); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("provider timeout error=%v", err)
+		}
+		if elapsed := time.Since(started); elapsed > time.Second {
+			t.Fatalf("provider stage was not bounded: %s", elapsed)
+		}
+	})
+}
+
+func TestChatGPTCloudCompleteCreateReportsConversationBeforeStreamEnds(t *testing.T) {
+	observed := errors.New("observed conversation")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case chatgptSentinelPreparePath:
+			writeChatGPTCloudTestJSON(t, w, map[string]any{
+				"prepare_token": "sentinel-observed",
+				"proofofwork":   map[string]any{"required": true, "seed": "seed", "difficulty": "ffffffff"},
+			})
+		case chatgptConversationPrepare:
+			writeChatGPTCloudTestJSON(t, w, map[string]any{"status": "success", "conduit_token": "conduit-observed"})
+		case chatgptConversationPath:
+			fmt.Fprint(w, "data: {\"conversation_id\":\"cloud-observed-early\",\"type\":\"message\"}\n\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	adapter := NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token", nil })
+	adapter.baseURL = server.URL
+	adapter.http = server.Client()
+	result, err := adapter.CreateWithThinkingObserved(context.Background(), "hello", "gpt-test", "", func(got chatgptCloudTurnResult) error {
+		if got.ConversationID != "cloud-observed-early" {
+			t.Fatalf("observed=%+v", got)
+		}
+		return observed
+	})
+	if !errors.Is(err, observed) || result.ConversationID != "cloud-observed-early" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
 func TestChatGPTCloudStreamKeepsConversationIDWhenTailTimesOut(t *testing.T) {
 	stream := io.MultiReader(
 		strings.NewReader("data: {\"conversation_id\":\"cloud-created-before-timeout\",\"type\":\"message\"}\n\n"),

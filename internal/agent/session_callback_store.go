@@ -37,6 +37,7 @@ type sessionCallbackRegistration struct {
 	MissionID             string    `json:"missionId"`
 	TaskID                string    `json:"taskId"`
 	Generation            int64     `json:"generation"`
+	DeliverablePath       string    `json:"deliverablePath,omitempty"`
 	LastEventSequence     int64     `json:"lastEventSequence,omitempty"`
 	LastEventKey          string    `json:"lastEventKey,omitempty"`
 	RecentEventKeys       []string  `json:"recentEventKeys,omitempty"`
@@ -44,20 +45,40 @@ type sessionCallbackRegistration struct {
 	LastFallbackEventAt   time.Time `json:"lastFallbackEventAt,omitempty"`
 	LastDeliveredAt       time.Time `json:"lastDeliveredAt,omitempty"`
 	LastDeliveredEnvelope string    `json:"lastDeliveredEnvelope,omitempty"`
+	LastResultID          string    `json:"lastResultId,omitempty"`
+	LastResultStatus      string    `json:"lastResultStatus,omitempty"`
+	LastResultBytes       int64     `json:"lastResultBytes,omitempty"`
+	LastResultSHA256      string    `json:"lastResultSHA256,omitempty"`
+	LastResultPageCount   int       `json:"lastResultPageCount,omitempty"`
 	RegisteredAt          time.Time `json:"registeredAt"`
 	UpdatedAt             time.Time `json:"updatedAt"`
 }
 
 type sessionCallbackEvent struct {
-	SourceSessionID string    `json:"sourceSessionId"`
-	TargetSessionID string    `json:"targetSessionId"`
-	MissionID       string    `json:"missionId"`
-	TaskID          string    `json:"taskId"`
-	Generation      int64     `json:"generation"`
-	EventSequence   int64     `json:"eventSequence"`
-	EventKey        string    `json:"eventKey"`
-	EventType       string    `json:"eventType"`
-	OccurredAt      time.Time `json:"occurredAt"`
+	SourceSessionID   string    `json:"sourceSessionId"`
+	TargetSessionID   string    `json:"targetSessionId"`
+	MissionID         string    `json:"missionId"`
+	TaskID            string    `json:"taskId"`
+	Generation        int64     `json:"generation"`
+	EventSequence     int64     `json:"eventSequence"`
+	EventKey          string    `json:"eventKey"`
+	EventType         string    `json:"eventType"`
+	OccurredAt        time.Time `json:"occurredAt"`
+	ResultID          string    `json:"resultId,omitempty"`
+	ResultStatus      string    `json:"resultStatus,omitempty"`
+	ResultBytes       int64     `json:"resultBytes,omitempty"`
+	ResultSHA256      string    `json:"resultSHA256,omitempty"`
+	ResultPageCount   int       `json:"resultPageCount,omitempty"`
+	DeliverablePath   string    `json:"deliverablePath,omitempty"`
+	DeliverableStatus string    `json:"deliverableStatus,omitempty"`
+}
+
+type callbackResultMetadata struct {
+	ResultID  string
+	Status    string
+	Bytes     int64
+	SHA256    string
+	PageCount int
 }
 
 type sessionCallbackIndex struct {
@@ -141,7 +162,7 @@ func (s *sessionCallbackStore) load() error {
 			return fmt.Errorf("invalid session callback index: %w", err)
 		}
 		registration, exists := s.registrations[event.SourceSessionID]
-		if !exists || registration.TargetSessionID != event.TargetSessionID || registration.MissionID != event.MissionID || registration.TaskID != event.TaskID || registration.Generation != event.Generation {
+		if !exists || registration.TargetSessionID != event.TargetSessionID || registration.MissionID != event.MissionID || registration.TaskID != event.TaskID || registration.Generation != event.Generation || registration.DeliverablePath != event.DeliverablePath {
 			return fmt.Errorf("invalid session callback index: pending event has no matching registration")
 		}
 		if event.EventSequence != registration.LastEventSequence {
@@ -174,6 +195,11 @@ func validateSessionCallbackRegistration(registration sessionCallbackRegistratio
 	if registration.Generation <= 0 {
 		return fmt.Errorf("generation must be positive")
 	}
+	if registration.DeliverablePath != "" {
+		if !filepath.IsAbs(registration.DeliverablePath) || len(registration.DeliverablePath) > 4096 || strings.ContainsAny(registration.DeliverablePath, "\x00\r\n") {
+			return fmt.Errorf("deliverable path must be an absolute local path")
+		}
+	}
 	if registration.LastEventSequence < 0 {
 		return fmt.Errorf("last event sequence cannot be negative")
 	}
@@ -199,6 +225,9 @@ func validateSessionCallbackRegistration(registration sessionCallbackRegistratio
 	}
 	if len(registration.LastDeliveredEnvelope) > 128 || strings.ContainsAny(registration.LastDeliveredEnvelope, "\x00\r\n") {
 		return fmt.Errorf("invalid delivered envelope ID")
+	}
+	if err := validateCallbackResultMetadata(callbackResultMetadata{registration.LastResultID, registration.LastResultStatus, registration.LastResultBytes, registration.LastResultSHA256, registration.LastResultPageCount}); err != nil {
+		return err
 	}
 	return nil
 }
@@ -229,6 +258,37 @@ func validateSessionCallbackEvent(event sessionCallbackEvent) error {
 	}
 	if event.OccurredAt.IsZero() {
 		return fmt.Errorf("callback event timestamp is required")
+	}
+	if err := validateCallbackResultMetadata(callbackResultMetadata{event.ResultID, event.ResultStatus, event.ResultBytes, event.ResultSHA256, event.ResultPageCount}); err != nil {
+		return err
+	}
+	if event.DeliverablePath != "" {
+		if !filepath.IsAbs(event.DeliverablePath) || len(event.DeliverablePath) > 4096 || strings.ContainsAny(event.DeliverablePath, "\x00\r\n") {
+			return fmt.Errorf("invalid callback deliverable path")
+		}
+		if !stringInSet(event.DeliverableStatus, "ready", "missing", "invalid", "unreadable", "too_large") {
+			return fmt.Errorf("invalid callback deliverable status")
+		}
+	} else if event.DeliverableStatus != "" {
+		return fmt.Errorf("callback deliverable status has no path")
+	}
+	return nil
+}
+
+func validateCallbackResultMetadata(metadata callbackResultMetadata) error {
+	if metadata.ResultID != "" {
+		if err := validateCallbackOpaqueID(metadata.ResultID, "result ID", 256); err != nil {
+			return err
+		}
+	}
+	if metadata.Status != "" && !stringInSet(metadata.Status, "open", "ready", "failed", "aborted", "running", "completed", "canceled", "unknown") {
+		return fmt.Errorf("invalid callback result status")
+	}
+	if metadata.Bytes < 0 || metadata.Bytes > 256<<20 || metadata.PageCount < 0 || metadata.PageCount > 8 {
+		return fmt.Errorf("invalid callback result bounds")
+	}
+	if metadata.SHA256 != "" && (len(metadata.SHA256) != len("sha256:")+64 || !strings.HasPrefix(metadata.SHA256, "sha256:")) {
+		return fmt.Errorf("invalid callback result sha256")
 	}
 	return nil
 }
@@ -281,7 +341,7 @@ func (s *sessionCallbackStore) register(request sessionCallbackRegistration) (se
 	}
 	current, exists := s.registrations[request.SourceSessionID]
 	if exists {
-		if current.TargetSessionID != request.TargetSessionID || current.MissionID != request.MissionID || current.TaskID != request.TaskID {
+		if current.TargetSessionID != request.TargetSessionID || current.MissionID != request.MissionID || current.TaskID != request.TaskID || current.DeliverablePath != request.DeliverablePath {
 			return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "CALLBACK_OWNER_CONFLICT", message: "source session already has a different callback owner"}
 		}
 		if request.Generation < current.Generation {
@@ -362,6 +422,9 @@ func (s *sessionCallbackStore) enqueue(event chatgptCloudEvent) (bool, error) {
 	if !exists {
 		return false, nil
 	}
+	if registration.DeliverablePath != event.DeliverablePath {
+		return false, &sessionCallbackError{code: "INVALID_REQUEST", message: "callback deliverable path does not match the registered source"}
+	}
 	if event.Sequence <= registration.LastEventSequence {
 		return false, nil
 	}
@@ -397,19 +460,32 @@ func (s *sessionCallbackStore) enqueue(event chatgptCloudEvent) (bool, error) {
 	}
 	registration.UpdatedAt = now
 	pending := sessionCallbackEvent{
-		SourceSessionID: registration.SourceSessionID,
-		TargetSessionID: registration.TargetSessionID,
-		MissionID:       registration.MissionID,
-		TaskID:          registration.TaskID,
-		Generation:      registration.Generation,
-		EventSequence:   event.Sequence,
-		EventKey:        eventKey,
-		EventType:       event.Type,
-		OccurredAt:      event.Timestamp.UTC(),
+		SourceSessionID:   registration.SourceSessionID,
+		TargetSessionID:   registration.TargetSessionID,
+		MissionID:         registration.MissionID,
+		TaskID:            registration.TaskID,
+		Generation:        registration.Generation,
+		EventSequence:     event.Sequence,
+		EventKey:          eventKey,
+		EventType:         event.Type,
+		OccurredAt:        event.Timestamp.UTC(),
+		ResultID:          event.ResultID,
+		ResultStatus:      event.ResultStatus,
+		ResultBytes:       event.ResultBytes,
+		ResultSHA256:      event.ResultSHA256,
+		ResultPageCount:   event.ResultPageCount,
+		DeliverablePath:   event.DeliverablePath,
+		DeliverableStatus: event.DeliverableStatus,
 	}
 	if err := validateSessionCallbackEvent(pending); err != nil {
 		return false, err
 	}
+	s.registrations[event.ConversationID] = registration
+	registration.LastResultID = pending.ResultID
+	registration.LastResultStatus = pending.ResultStatus
+	registration.LastResultBytes = pending.ResultBytes
+	registration.LastResultSHA256 = pending.ResultSHA256
+	registration.LastResultPageCount = pending.ResultPageCount
 	s.registrations[event.ConversationID] = registration
 	s.pending[event.ConversationID] = pending
 	if committed, err := s.saveLocked(); err != nil {
@@ -424,6 +500,29 @@ func (s *sessionCallbackStore) enqueue(event chatgptCloudEvent) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func (s *sessionCallbackStore) resultFor(sourceSessionID string) (callbackResultMetadata, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return callbackResultMetadata{}, false, callbackStoreUnavailableError()
+	}
+	registration, ok := s.registrations[strings.TrimSpace(sourceSessionID)]
+	if !ok || (registration.LastResultID == "" && registration.LastResultStatus == "") {
+		return callbackResultMetadata{}, false, nil
+	}
+	return callbackResultMetadata{registration.LastResultID, registration.LastResultStatus, registration.LastResultBytes, registration.LastResultSHA256, registration.LastResultPageCount}, true, nil
+}
+
+func (s *sessionCallbackStore) registrationFor(sourceSessionID string) (sessionCallbackRegistration, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return sessionCallbackRegistration{}, false, callbackStoreUnavailableError()
+	}
+	registration, ok := s.registrations[strings.TrimSpace(sourceSessionID)]
+	return registration, ok, nil
 }
 
 func (s *sessionCallbackStore) registrationsSnapshot(sourceSessionID, targetSessionID string) ([]sessionCallbackRegistration, map[string]int, error) {

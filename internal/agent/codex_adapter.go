@@ -27,6 +27,7 @@ const (
 	codexEventLimit         = 1000
 	codexAppServerSocketEnv = "FAST_SPIDER_CODEX_APP_SERVER_SOCKET"
 	codexDesktopBridgeEnv   = "FAST_SPIDER_CODEX_DESKTOP_BRIDGE"
+	codexAppServerStopWait  = 5 * time.Second
 )
 
 type codexRPCError struct {
@@ -59,6 +60,17 @@ type codexPending struct {
 	generation uint64
 }
 
+// codexProcess is an immutable snapshot of one app-server generation.  Stop
+// and reader paths must operate on this snapshot rather than looking up the
+// adapter's currently active resources after a replacement has started.
+type codexProcess struct {
+	cmd        *exec.Cmd
+	stdin      io.WriteCloser
+	wsConn     *websocket.Conn
+	done       chan struct{}
+	generation uint64
+}
+
 type codexServerRequest struct {
 	RawID      json.RawMessage
 	RequestID  string
@@ -68,6 +80,7 @@ type codexServerRequest struct {
 	Params     map[string]any
 	ReceivedAt time.Time
 	Responding bool
+	generation uint64
 }
 
 type codexSessionLock struct {
@@ -82,33 +95,43 @@ type CodexAdapter struct {
 	executable   string
 	configErr    *ExecutionError
 
-	startMu     sync.Mutex
-	loadLocksMu sync.Mutex
-	loadLocks   map[string]*codexSessionLock
-	mu          sync.Mutex
-	rpcWriteMu  sync.Mutex
-	cmd         *exec.Cmd
-	stdin       io.WriteCloser
-	wsConn      *websocket.Conn
-	pending     map[int64]codexPending
-	nextID      int64
-	closed      bool
-	processDone chan struct{}
-	generation  uint64
-	loaded      map[string]struct{}
+	startGateMu      sync.Mutex
+	startGate        chan struct{}
+	lifecycleMu      sync.Mutex
+	loadLocksMu      sync.Mutex
+	loadLocks        map[string]*codexSessionLock
+	mu               sync.Mutex
+	rpcWriteMu       sync.Mutex
+	cmd              *exec.Cmd
+	stdin            io.WriteCloser
+	wsConn           *websocket.Conn
+	pending          map[int64]codexPending
+	nextID           int64
+	closed           bool
+	quarantined      bool
+	processDone      chan struct{}
+	generation       uint64
+	loaded           map[string]struct{}
+	loadedGeneration map[string]uint64
 
-	eventMu       sync.Mutex
-	events        []AgentEvent
-	nextEvent     int64
-	eventNotify   chan struct{}
-	activeTurns   map[string]string
-	eventObserver func(AgentEvent)
+	eventMu              sync.Mutex
+	events               []AgentEvent
+	nextEvent            int64
+	eventNotify          chan struct{}
+	activeTurns          map[string]string
+	activeTurnGeneration map[string]uint64
+	eventObserver        func(AgentEvent)
 
-	serverMu             sync.Mutex
-	serverRequests       map[string]codexServerRequest
-	requestOverride      func(context.Context, string, map[string]any) (map[string]any, error)
-	desktopBridge        *codexDesktopBridge
-	desktopBridgeEnabled *bool
+	serverMu                 sync.Mutex
+	serverRequests           map[string]codexServerRequest
+	requestOverride          func(context.Context, string, map[string]any) (map[string]any, error)
+	stopProcessOverride      func(context.Context, *exec.Cmd) error
+	stopTargetOverride       func(context.Context, codexProcess) error
+	unloadThreadOverride     func(context.Context, string) error
+	unloadBeforeSend         func(codexProcess)
+	notificationBeforeCommit func(uint64)
+	desktopBridge            *codexDesktopBridge
+	desktopBridgeEnabled     *bool
 }
 
 func NewCodexAdapter(logger *slog.Logger) *CodexAdapter {
@@ -116,14 +139,16 @@ func NewCodexAdapter(logger *slog.Logger) *CodexAdapter {
 		logger = slog.Default()
 	}
 	return &CodexAdapter{
-		logger:         logger,
-		versionCache:   newTTLCache[versionProbe](cliProbeTTL, 1, nil),
-		modelsCache:    newTTLCache[map[string]any](modelsTTL, 1, cloneAgentMap),
-		pending:        make(map[int64]codexPending),
-		loaded:         make(map[string]struct{}),
-		eventNotify:    make(chan struct{}),
-		activeTurns:    make(map[string]string),
-		serverRequests: make(map[string]codexServerRequest),
+		logger:               logger,
+		versionCache:         newTTLCache[versionProbe](cliProbeTTL, 1, nil),
+		modelsCache:          newTTLCache[map[string]any](modelsTTL, 1, cloneAgentMap),
+		pending:              make(map[int64]codexPending),
+		loaded:               make(map[string]struct{}),
+		loadedGeneration:     make(map[string]uint64),
+		eventNotify:          make(chan struct{}),
+		activeTurns:          make(map[string]string),
+		activeTurnGeneration: make(map[string]uint64),
+		serverRequests:       make(map[string]codexServerRequest),
 	}
 }
 
@@ -238,15 +263,18 @@ func codexExecutableCandidates() []string {
 }
 
 func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
-	a.startMu.Lock()
-	defer a.startMu.Unlock()
+	release, err := a.acquireStartGate(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	for {
 		a.mu.Lock()
 		if a.closed {
 			a.mu.Unlock()
 			return fmt.Errorf("%w: adapter is closed", node.ErrAgentProviderUnavailable)
 		}
-		if a.cmd != nil && a.cmd.Process != nil && a.cmd.ProcessState == nil {
+		if a.cmd != nil && a.cmd.Process != nil && a.cmd.ProcessState == nil && !a.quarantined {
 			a.mu.Unlock()
 			return nil
 		}
@@ -255,10 +283,16 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 		if previousDone == nil {
 			break
 		}
+		waitCtx, cancel := context.WithTimeout(ctx, codexAppServerStopWait)
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-waitCtx.Done():
+			cancel()
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("%w: quarantined Codex app-server did not exit", node.ErrAgentProviderUnavailable)
 		case <-previousDone:
+			cancel()
 		}
 	}
 
@@ -297,30 +331,26 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 		return fmt.Errorf("start Codex app-server: %w", err)
 	}
 
-	a.mu.Lock()
-	a.generation++
-	generation := a.generation
 	done := make(chan struct{})
-	a.cmd = cmd
-	a.stdin = stdin
-	a.wsConn = nil
-	a.processDone = done
-	a.configErr = nil
-	a.mu.Unlock()
+	generation, published := a.publishStartedProcess(cmd, stdin, done)
+	if !published {
+		_ = a.stopProcessTarget(context.Background(), codexProcess{cmd: cmd, stdin: stdin})
+		return fmt.Errorf("%w: adapter is closed", node.ErrAgentProviderUnavailable)
+	}
 	go a.stderrLoop(stderr)
 	go a.waitLoop(cmd, generation, done)
 	if socketPath != "" {
 		wsConn, dialErr := dialCodexAppServerProxy(ctx, stdin, stdout)
 		if dialErr != nil {
-			_ = a.stopProcess(context.Background(), cmd)
+			_ = a.stopProcessTarget(context.Background(), codexProcess{cmd: cmd, stdin: stdin, done: done, generation: generation})
 			return fmt.Errorf("connect Codex app-server proxy: %w", dialErr)
 		}
 		a.mu.Lock()
 		a.wsConn = wsConn
 		a.mu.Unlock()
-		go a.readWebSocketLoop(wsConn)
+		go a.readWebSocketLoop(wsConn, generation)
 	} else {
-		go a.readLoop(stdout)
+		go a.readLoop(stdout, generation)
 	}
 
 	initCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
@@ -352,7 +382,7 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 func (a *CodexAdapter) IsStarted() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return !a.closed && a.cmd != nil && a.cmd.Process != nil && a.cmd.ProcessState == nil && a.stdin != nil && a.configErr == nil
+	return !a.closed && a.cmd != nil && a.cmd.Process != nil && a.cmd.ProcessState == nil && a.stdin != nil && !a.quarantined && a.configErr == nil
 }
 
 // AuthToken returns the ChatGPT access token the Codex app-server is logged in
@@ -371,12 +401,14 @@ func (a *CodexAdapter) AuthToken(ctx context.Context) (string, error) {
 }
 
 func (a *CodexAdapter) Close(ctx context.Context) error {
+	a.lifecycleMu.Lock()
 	a.mu.Lock()
 	a.closed = true
 	cmd := a.cmd
 	desktopBridge := a.desktopBridge
 	a.desktopBridge = nil
 	a.mu.Unlock()
+	a.lifecycleMu.Unlock()
 	if desktopBridge != nil {
 		desktopBridge.Close()
 	}
@@ -386,32 +418,111 @@ func (a *CodexAdapter) Close(ctx context.Context) error {
 	return a.stopProcess(ctx, cmd)
 }
 
+func (a *CodexAdapter) publishStartedProcess(cmd *exec.Cmd, stdin io.WriteCloser, done chan struct{}) (uint64, bool) {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed {
+		return 0, false
+	}
+	a.generation++
+	generation := a.generation
+	a.cmd = cmd
+	a.stdin = stdin
+	a.wsConn = nil
+	a.processDone = done
+	a.quarantined = false
+	a.configErr = nil
+	return generation, true
+}
+
 func (a *CodexAdapter) stopProcess(ctx context.Context, cmd *exec.Cmd) error {
 	a.mu.Lock()
-	stdin := a.stdin
-	wsConn := a.wsConn
-	done := a.processDone
-	a.mu.Unlock()
-	if wsConn != nil {
-		_ = wsConn.Close(websocket.StatusNormalClosure, "Fast Spider stopping")
-	}
-	if stdin != nil {
-		_ = stdin.Close()
-	}
-	if cmd.Process == nil || cmd.ProcessState != nil || done == nil {
+	if a.cmd != cmd {
+		a.mu.Unlock()
 		return nil
+	}
+	target := codexProcess{cmd: cmd, stdin: a.stdin, wsConn: a.wsConn, done: a.processDone, generation: a.generation}
+	a.mu.Unlock()
+	return a.stopProcessTarget(ctx, target)
+}
+
+func (a *CodexAdapter) stopProcessTarget(ctx context.Context, target codexProcess) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	stopCtx, cancel := context.WithTimeout(ctx, codexAppServerStopWait)
+	defer cancel()
+	cmd := target.cmd
+	if cmd == nil {
+		return nil
+	}
+	if target.wsConn != nil {
+		_ = target.wsConn.Close(websocket.StatusNormalClosure, "Fast Spider stopping")
+	}
+	if target.stdin != nil {
+		_ = target.stdin.Close()
+	}
+	if cmd.Process == nil || cmd.ProcessState != nil {
+		return nil
+	}
+	if target.done == nil {
+		killDone := make(chan error, 1)
+		go func() { killDone <- node.KillProcessTree(cmd) }()
+		select {
+		case <-killDone:
+			return nil
+		case <-stopCtx.Done():
+			return stopCtx.Err()
+		}
+	}
+	grace := time.NewTimer(time.Second)
+	defer grace.Stop()
+	select {
+	case <-target.done:
+		return nil
+	case <-stopCtx.Done():
+		return stopCtx.Err()
+	case <-grace.C:
+	}
+
+	// Keep this adapter's single stop budget authoritative even when the
+	// platform process-tree command has a longer internal timeout. The command
+	// is an immutable snapshot, so a late kill cannot touch a replacement.
+	killDone := make(chan error, 1)
+	go func() { killDone <- node.KillProcessTree(cmd) }()
+	select {
+	case <-target.done:
+		return nil
+	case <-killDone:
+	case <-stopCtx.Done():
+		return stopCtx.Err()
 	}
 	select {
-	case <-done:
+	case <-target.done:
 		return nil
+	case <-stopCtx.Done():
+		return stopCtx.Err()
+	}
+}
+
+func (a *CodexAdapter) acquireStartGate(ctx context.Context) (func(), error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	a.startGateMu.Lock()
+	if a.startGate == nil {
+		a.startGate = make(chan struct{}, 1)
+		a.startGate <- struct{}{}
+	}
+	gate := a.startGate
+	a.startGateMu.Unlock()
+	select {
+	case <-gate:
+		return func() { gate <- struct{}{} }, nil
 	case <-ctx.Done():
-		_ = node.KillProcessTree(cmd)
-		<-done
-		return ctx.Err()
-	case <-time.After(time.Second):
-		_ = node.KillProcessTree(cmd)
-		<-done
-		return nil
+		return nil, ctx.Err()
 	}
 }
 
@@ -436,7 +547,8 @@ func (a *CodexAdapter) request(ctx context.Context, method string, params map[st
 	}
 	a.nextID++
 	id := a.nextID
-	pending := codexPending{ch: make(chan codexRPCMessage, 1), generation: a.generation}
+	generation := a.generation
+	pending := codexPending{ch: make(chan codexRPCMessage, 1), generation: generation}
 	a.pending[id] = pending
 	stdin := a.stdin
 	wsConn := a.wsConn
@@ -453,6 +565,9 @@ func (a *CodexAdapter) request(ctx context.Context, method string, params map[st
 	select {
 	case <-ctx.Done():
 		a.removePending(id)
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			a.quarantineProcess(generation)
+		}
 		return nil, ctx.Err()
 	case response := <-pending.ch:
 		if response.Error != nil {
@@ -474,6 +589,96 @@ func (a *CodexAdapter) request(ctx context.Context, method string, params map[st
 		}
 		return result, nil
 	}
+}
+
+// requestOnTarget sends an RPC only through the immutable process snapshot
+// captured by the originating generation. The lifecycle lock is held only
+// while validating/capturing pending state; all I/O and waiting happen after
+// it is released.
+func (a *CodexAdapter) requestOnTarget(ctx context.Context, target codexProcess, method string, params map[string]any) (map[string]any, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	a.lifecycleMu.Lock()
+	a.mu.Lock()
+	if !a.isCurrentGenerationLocked(target.generation) || a.cmd != target.cmd || a.stdin != target.stdin || a.wsConn != target.wsConn || a.processDone != target.done {
+		a.mu.Unlock()
+		a.lifecycleMu.Unlock()
+		return nil, node.ErrAgentProviderUnavailable
+	}
+	a.nextID++
+	id := a.nextID
+	pending := codexPending{ch: make(chan codexRPCMessage, 1), generation: target.generation}
+	a.pending[id] = pending
+	a.mu.Unlock()
+	a.lifecycleMu.Unlock()
+
+	message := map[string]any{"id": id, "method": method}
+	if params != nil {
+		message["params"] = params
+	}
+	if err := a.writeMessage(ctx, target.wsConn, target.stdin, message); err != nil {
+		a.removePending(id)
+		return nil, err
+	}
+	select {
+	case <-ctx.Done():
+		a.removePending(id)
+		return nil, ctx.Err()
+	case response := <-pending.ch:
+		if response.Error != nil {
+			return nil, &codexRPCResponseError{ExecutionError: newExecutionError("codex", method, response.Error.Message), code: response.Error.Code}
+		}
+		if len(response.Result) == 0 || string(response.Result) == "null" {
+			return map[string]any{}, nil
+		}
+		var result map[string]any
+		if err := json.Unmarshal(response.Result, &result); err != nil {
+			return nil, fmt.Errorf("decode Codex %s result: %w", method, err)
+		}
+		return result, nil
+	}
+}
+
+// quarantineProcess fences a timed-out RPC's app-server generation before the
+// next request can reuse its stdio pipe. The process is owned by this adapter's
+// Node; the desktop app-server is never reachable through this command.
+func (a *CodexAdapter) quarantineProcess(generation uint64) {
+	a.lifecycleMu.Lock()
+	a.mu.Lock()
+	if a.closed || !a.isCurrentGenerationLocked(generation) || a.cmd == nil || a.processDone == nil {
+		a.mu.Unlock()
+		a.lifecycleMu.Unlock()
+		return
+	}
+	a.quarantined = true
+	target := codexProcess{cmd: a.cmd, stdin: a.stdin, wsConn: a.wsConn, done: a.processDone, generation: generation}
+	stopOverride := a.stopProcessOverride
+	stopTargetOverride := a.stopTargetOverride
+	a.mu.Unlock()
+	a.lifecycleMu.Unlock()
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), codexAppServerStopWait)
+	defer cancel()
+	if stopTargetOverride != nil {
+		stopDone := make(chan error, 1)
+		go func() { stopDone <- stopTargetOverride(stopCtx, target) }()
+		select {
+		case <-stopDone:
+		case <-stopCtx.Done():
+		}
+		return
+	}
+	if stopOverride != nil {
+		stopDone := make(chan error, 1)
+		go func() { stopDone <- stopOverride(stopCtx, target.cmd) }()
+		select {
+		case <-stopDone:
+		case <-stopCtx.Done():
+		}
+		return
+	}
+	_ = a.stopProcessTarget(stopCtx, target)
 }
 
 func (a *CodexAdapter) notify(method string, params map[string]any) error {
@@ -535,18 +740,26 @@ func (a *CodexAdapter) removePending(id int64) {
 	a.mu.Unlock()
 }
 
-func (a *CodexAdapter) readLoop(reader io.Reader) {
+func (a *CodexAdapter) readLoop(reader io.Reader, generation ...uint64) {
+	gen := a.currentGeneration()
+	if len(generation) > 0 {
+		gen = generation[0]
+	}
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), codexRPCLineLimit)
 	for scanner.Scan() {
-		a.handleRPCMessage(scanner.Bytes())
+		a.handleRPCMessageForGeneration(gen, scanner.Bytes())
 	}
 	if err := scanner.Err(); err != nil {
 		a.logger.Debug("Codex app-server stdout ended", "error", err)
 	}
 }
 
-func (a *CodexAdapter) readWebSocketLoop(conn *websocket.Conn) {
+func (a *CodexAdapter) readWebSocketLoop(conn *websocket.Conn, generation ...uint64) {
+	gen := a.currentGeneration()
+	if len(generation) > 0 {
+		gen = generation[0]
+	}
 	for {
 		messageType, reader, err := conn.Reader(context.Background())
 		if err != nil {
@@ -566,11 +779,18 @@ func (a *CodexAdapter) readWebSocketLoop(conn *websocket.Conn) {
 			a.logger.Debug("Codex app-server websocket message exceeds limit")
 			return
 		}
-		a.handleRPCMessage(raw)
+		a.handleRPCMessageForGeneration(gen, raw)
 	}
 }
 
 func (a *CodexAdapter) handleRPCMessage(raw []byte) {
+	a.handleRPCMessageForGeneration(a.currentGeneration(), raw)
+}
+
+func (a *CodexAdapter) handleRPCMessageForGeneration(generation uint64, raw []byte) {
+	if !a.isCurrentGeneration(generation) {
+		return
+	}
 	var message codexRPCMessage
 	if err := json.Unmarshal(raw, &message); err != nil {
 		a.logger.Debug("invalid Codex app-server message", "error", err)
@@ -583,22 +803,38 @@ func (a *CodexAdapter) handleRPCMessage(raw []byte) {
 		}
 		a.mu.Lock()
 		pending, ok := a.pending[id]
-		if ok {
+		if ok && pending.generation == generation {
 			delete(a.pending, id)
 		}
 		a.mu.Unlock()
-		if ok {
+		if ok && pending.generation == generation {
 			pending.ch <- message
 		}
 		return
 	}
 	if len(message.ID) > 0 && message.Method != "" {
-		a.handleServerRequest(message.ID, message.Method, message.Params)
+		a.handleServerRequestForGeneration(generation, message.ID, message.Method, message.Params)
 		return
 	}
 	if message.Method != "" {
-		a.handleNotification(message.Method, message.Params)
+		a.handleNotificationForGeneration(generation, message.Method, message.Params)
 	}
+}
+
+func (a *CodexAdapter) currentGeneration() uint64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.generation
+}
+
+func (a *CodexAdapter) isCurrentGeneration(generation uint64) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.isCurrentGenerationLocked(generation)
+}
+
+func (a *CodexAdapter) isCurrentGenerationLocked(generation uint64) bool {
+	return a.generation == generation && !a.quarantined && (generation == 0 || a.cmd != nil)
 }
 
 func codexResponseID(raw json.RawMessage) (int64, error) {
@@ -614,15 +850,26 @@ func codexResponseID(raw json.RawMessage) (int64, error) {
 }
 
 func (a *CodexAdapter) handleServerRequest(id json.RawMessage, method string, rawParams json.RawMessage) {
+	a.handleServerRequestForGeneration(a.currentGeneration(), id, method, rawParams)
+}
+
+func (a *CodexAdapter) handleServerRequestForGeneration(generation uint64, id json.RawMessage, method string, rawParams json.RawMessage) {
+	if !a.isCurrentGeneration(generation) {
+		return
+	}
 	requestID, err := codexRequestIDString(id)
 	if err != nil {
-		a.replyServerRequestError(id, -32600, "invalid Codex server request id")
+		if target, ok := a.captureProcessForGeneration(generation); ok {
+			a.replyServerRequestErrorTarget(target, id, -32600, "invalid Codex server request id")
+		}
 		return
 	}
 	var params map[string]any
 	if len(rawParams) > 0 && string(rawParams) != "null" {
 		if err := json.Unmarshal(rawParams, &params); err != nil {
-			a.replyServerRequestError(id, -32602, "invalid Codex server request params")
+			if target, ok := a.captureProcessForGeneration(generation); ok {
+				a.replyServerRequestErrorTarget(target, id, -32602, "invalid Codex server request params")
+			}
 			return
 		}
 	}
@@ -633,6 +880,12 @@ func (a *CodexAdapter) handleServerRequest(id json.RawMessage, method string, ra
 	turnID := mapString(params, "turnId")
 	requestType, respondable := codexServerRequestType(method)
 	if !respondable {
+		a.lifecycleMu.Lock()
+		target, ok := a.captureProcessForGenerationLocked(generation)
+		if !ok {
+			a.lifecycleMu.Unlock()
+			return
+		}
 		event := AgentEvent{
 			Type:        requestType,
 			SessionID:   sessionID,
@@ -643,20 +896,36 @@ func (a *CodexAdapter) handleServerRequest(id json.RawMessage, method string, ra
 			Detail:      codexServerRequestDetail(method, params),
 			Timestamp:   protocolTimestampNow(),
 		}
-		a.recordEvent(event)
-		a.replyServerRequestError(id, -32601, "Fast Spider bridge does not expose this Codex server request: "+method)
+		observer := a.appendEvent(event)
+		a.lifecycleMu.Unlock()
+		if observer != nil {
+			observer(event)
+		}
+		a.replyServerRequestErrorTarget(target, id, -32601, "Fast Spider bridge does not expose this Codex server request: "+method)
 		return
 	}
 
+	a.lifecycleMu.Lock()
+	a.mu.Lock()
+	if !a.isCurrentGenerationLocked(generation) {
+		a.mu.Unlock()
+		a.lifecycleMu.Unlock()
+		return
+	}
+	target := codexProcess{cmd: a.cmd, stdin: a.stdin, wsConn: a.wsConn, done: a.processDone, generation: generation}
 	a.serverMu.Lock()
 	if _, duplicate := a.serverRequests[requestID]; duplicate {
 		a.serverMu.Unlock()
-		a.replyServerRequestError(id, -32600, "duplicate pending Codex server request id")
+		a.mu.Unlock()
+		a.lifecycleMu.Unlock()
+		a.replyServerRequestErrorTarget(target, id, -32600, "duplicate pending Codex server request id")
 		return
 	}
 	if len(a.serverRequests) >= 64 {
 		a.serverMu.Unlock()
-		a.replyServerRequestError(id, -32000, "too many pending Codex server requests")
+		a.mu.Unlock()
+		a.lifecycleMu.Unlock()
+		a.replyServerRequestErrorTarget(target, id, -32000, "too many pending Codex server requests")
 		return
 	}
 	a.serverRequests[requestID] = codexServerRequest{
@@ -667,10 +936,11 @@ func (a *CodexAdapter) handleServerRequest(id json.RawMessage, method string, ra
 		TurnID:     turnID,
 		Params:     params,
 		ReceivedAt: time.Now().UTC(),
+		generation: generation,
 	}
 	a.serverMu.Unlock()
-
-	a.recordEvent(AgentEvent{
+	a.mu.Unlock()
+	event := AgentEvent{
 		Type:        requestType,
 		SessionID:   sessionID,
 		TurnID:      turnID,
@@ -679,7 +949,12 @@ func (a *CodexAdapter) handleServerRequest(id json.RawMessage, method string, ra
 		State:       "pending",
 		Detail:      codexServerRequestDetail(method, params),
 		Timestamp:   protocolTimestampNow(),
-	})
+	}
+	observer := a.appendEvent(event)
+	a.lifecycleMu.Unlock()
+	if observer != nil {
+		observer(event)
+	}
 }
 
 func anyRequestIDString(value any) string {
@@ -767,10 +1042,38 @@ func boundedAgentMap(value map[string]any, maxBytes int) map[string]any {
 }
 
 func (a *CodexAdapter) replyServerRequestError(id json.RawMessage, code int, message string) {
+	a.replyServerRequestErrorForGeneration(a.currentGeneration(), id, code, message)
+}
+
+func (a *CodexAdapter) replyServerRequestErrorForGeneration(generation uint64, id json.RawMessage, code int, message string) {
 	a.mu.Lock()
-	stdin := a.stdin
-	wsConn := a.wsConn
+	if !a.isCurrentGenerationLocked(generation) {
+		a.mu.Unlock()
+		return
+	}
+	target := codexProcess{cmd: a.cmd, stdin: a.stdin, wsConn: a.wsConn, done: a.processDone, generation: generation}
 	a.mu.Unlock()
+	a.replyServerRequestErrorTarget(target, id, code, message)
+}
+
+func (a *CodexAdapter) captureProcessForGeneration(generation uint64) (codexProcess, bool) {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	return a.captureProcessForGenerationLocked(generation)
+}
+
+func (a *CodexAdapter) captureProcessForGenerationLocked(generation uint64) (codexProcess, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.isCurrentGenerationLocked(generation) {
+		return codexProcess{}, false
+	}
+	return codexProcess{cmd: a.cmd, stdin: a.stdin, wsConn: a.wsConn, done: a.processDone, generation: generation}, true
+}
+
+func (a *CodexAdapter) replyServerRequestErrorTarget(target codexProcess, id json.RawMessage, code int, message string) {
+	stdin := target.stdin
+	wsConn := target.wsConn
 	if stdin == nil && wsConn == nil {
 		return
 	}
@@ -803,6 +1106,7 @@ func (a *CodexAdapter) waitLoop(cmd *exec.Cmd, generation uint64, done chan stru
 }
 
 func (a *CodexAdapter) finishProcess(cmd *exec.Cmd, generation uint64, done chan struct{}, err error) {
+	a.lifecycleMu.Lock()
 	a.mu.Lock()
 	isCurrent := a.cmd == cmd && a.generation == generation
 	if isCurrent {
@@ -810,6 +1114,7 @@ func (a *CodexAdapter) finishProcess(cmd *exec.Cmd, generation uint64, done chan
 		a.stdin = nil
 		a.wsConn = nil
 		a.processDone = nil
+		a.quarantined = false
 		a.configErr = nil
 	}
 	pending := make([]codexPending, 0)
@@ -821,27 +1126,57 @@ func (a *CodexAdapter) finishProcess(cmd *exec.Cmd, generation uint64, done chan
 	}
 	if isCurrent {
 		a.loaded = make(map[string]struct{})
+		a.loadedGeneration = make(map[string]uint64)
 	}
 	closed := a.closed
 	a.mu.Unlock()
+	a.serverMu.Lock()
 	if isCurrent {
-		a.serverMu.Lock()
 		a.serverRequests = make(map[string]codexServerRequest)
-		a.serverMu.Unlock()
-		a.eventMu.Lock()
-		activeTurns := a.activeTurns
+	} else {
+		for id, request := range a.serverRequests {
+			if request.generation == generation {
+				delete(a.serverRequests, id)
+			}
+		}
+	}
+	a.serverMu.Unlock()
+	a.eventMu.Lock()
+	activeTurns := make(map[string]string)
+	for sessionID, turnID := range a.activeTurns {
+		trackedGeneration := a.activeTurnGeneration[sessionID]
+		if isCurrent || trackedGeneration == generation || trackedGeneration == 0 && isCurrent {
+			activeTurns[sessionID] = turnID
+			delete(a.activeTurns, sessionID)
+			delete(a.activeTurnGeneration, sessionID)
+		}
+	}
+	if isCurrent {
 		a.activeTurns = make(map[string]string)
-		a.eventMu.Unlock()
-		for sessionID, turnID := range activeTurns {
-			a.recordEvent(AgentEvent{
-				Type:      "turn.failed",
-				SessionID: sessionID,
-				TurnID:    turnID,
-				State:     "failed",
-				Text:      publicErrorMessage(ErrorRuntimeUnavailable),
-				Detail:    map[string]any{"errorClass": ErrorRuntimeUnavailable},
-				Timestamp: protocolTimestampNow(),
-			})
+		a.activeTurnGeneration = make(map[string]uint64)
+	}
+	a.eventMu.Unlock()
+	type pendingEvent struct {
+		event    AgentEvent
+		observer func(AgentEvent)
+	}
+	failedEvents := make([]pendingEvent, 0, len(activeTurns))
+	for sessionID, turnID := range activeTurns {
+		event := AgentEvent{
+			Type:      "turn.failed",
+			SessionID: sessionID,
+			TurnID:    turnID,
+			State:     "failed",
+			Text:      publicErrorMessage(ErrorRuntimeUnavailable),
+			Detail:    map[string]any{"errorClass": ErrorRuntimeUnavailable},
+			Timestamp: protocolTimestampNow(),
+		}
+		failedEvents = append(failedEvents, pendingEvent{event: event, observer: a.appendEvent(event)})
+	}
+	a.lifecycleMu.Unlock()
+	for _, item := range failedEvents {
+		if item.observer != nil {
+			item.observer(item.event)
 		}
 	}
 	if done != nil {
@@ -856,6 +1191,25 @@ func (a *CodexAdapter) finishProcess(cmd *exec.Cmd, generation uint64, done chan
 }
 
 func (a *CodexAdapter) handleNotification(method string, raw json.RawMessage) {
+	a.handleNotificationForGeneration(a.currentGeneration(), method, raw)
+}
+
+func (a *CodexAdapter) handleNotificationForGeneration(generation uint64, method string, raw json.RawMessage) {
+	if !a.isCurrentGeneration(generation) {
+		return
+	}
+	if beforeCommit := a.notificationBeforeCommit; beforeCommit != nil {
+		beforeCommit(generation)
+	}
+	a.lifecycleMu.Lock()
+	a.mu.Lock()
+	if !a.isCurrentGenerationLocked(generation) {
+		a.mu.Unlock()
+		a.lifecycleMu.Unlock()
+		return
+	}
+	target := codexProcess{cmd: a.cmd, stdin: a.stdin, wsConn: a.wsConn, done: a.processDone, generation: generation}
+	a.mu.Unlock()
 	var params map[string]any
 	_ = json.Unmarshal(raw, &params)
 	sessionID := mapString(params, "threadId")
@@ -874,11 +1228,13 @@ func (a *CodexAdapter) handleNotification(method string, raw json.RawMessage) {
 		class := classifyExecutionText(string(raw))
 		if class == ErrorConfigInvalid {
 			a.mu.Lock()
-			a.configErr = &ExecutionError{
-				Class:     ErrorConfigInvalid,
-				Provider:  "codex",
-				Operation: "configuration",
-				debugText: "Codex reported an incompatible configuration",
+			if a.generation == generation && (generation == 0 || a.cmd != nil) {
+				a.configErr = &ExecutionError{
+					Class:     ErrorConfigInvalid,
+					Provider:  "codex",
+					Operation: "configuration",
+					debugText: "Codex reported an incompatible configuration",
+				}
 			}
 			a.mu.Unlock()
 		}
@@ -890,7 +1246,14 @@ func (a *CodexAdapter) handleNotification(method string, raw json.RawMessage) {
 		event.State = "running"
 		if sessionID != "" && turnID != "" {
 			a.eventMu.Lock()
+			if a.activeTurnGeneration == nil {
+				a.activeTurnGeneration = make(map[string]uint64)
+			}
+			if a.activeTurns == nil {
+				a.activeTurns = make(map[string]string)
+			}
 			a.activeTurns[sessionID] = turnID
+			a.activeTurnGeneration[sessionID] = generation
 			a.eventMu.Unlock()
 		}
 	case "turn/completed":
@@ -904,7 +1267,10 @@ func (a *CodexAdapter) handleNotification(method string, raw json.RawMessage) {
 		}
 		if sessionID != "" {
 			a.eventMu.Lock()
-			delete(a.activeTurns, sessionID)
+			if trackedGeneration := a.activeTurnGeneration[sessionID]; trackedGeneration == generation || generation == 0 {
+				delete(a.activeTurns, sessionID)
+				delete(a.activeTurnGeneration, sessionID)
+			}
 			a.eventMu.Unlock()
 		}
 	case "item/agentMessage/delta":
@@ -927,7 +1293,9 @@ func (a *CodexAdapter) handleNotification(method string, raw json.RawMessage) {
 		event.RequestID = anyRequestIDString(params["requestId"])
 		if event.RequestID != "" {
 			a.serverMu.Lock()
-			delete(a.serverRequests, event.RequestID)
+			if request, ok := a.serverRequests[event.RequestID]; ok && (request.generation == generation || generation == 0) {
+				delete(a.serverRequests, event.RequestID)
+			}
 			a.serverMu.Unlock()
 		}
 	case "warning", "error":
@@ -941,12 +1309,18 @@ func (a *CodexAdapter) handleNotification(method string, raw json.RawMessage) {
 		event.Text = publicErrorMessage(class)
 		event.Detail = map[string]any{"errorClass": class}
 	}
-	a.recordEvent(event)
-	if method == "turn/completed" && sessionID != "" {
+	observer := a.appendEvent(event)
+	shouldUnload := method == "turn/completed" && sessionID != ""
+	a.lifecycleMu.Unlock()
+	if observer != nil {
+		observer(event)
+	}
+	if shouldUnload {
+		targetForUnload := target
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if err := a.unloadThread(ctx, sessionID); err != nil {
+			if err := a.unloadThreadForGeneration(ctx, targetForUnload, sessionID); err != nil {
 				a.logger.Debug("unload completed Codex thread", "sessionId", sessionID, "error", err)
 			}
 		}()
@@ -954,6 +1328,15 @@ func (a *CodexAdapter) handleNotification(method string, raw json.RawMessage) {
 }
 
 func (a *CodexAdapter) recordEvent(event AgentEvent) {
+	observer := a.appendEvent(event)
+	if observer != nil {
+		observer(event)
+	}
+}
+
+// appendEvent mutates the event stream and returns the observer callback for
+// the caller to invoke after releasing any lifecycle locks.
+func (a *CodexAdapter) appendEvent(event AgentEvent) func(AgentEvent) {
 	a.eventMu.Lock()
 	a.nextEvent++
 	event.Sequence = a.nextEvent
@@ -968,9 +1351,7 @@ func (a *CodexAdapter) recordEvent(event AgentEvent) {
 	a.eventNotify = make(chan struct{})
 	observer := a.eventObserver
 	a.eventMu.Unlock()
-	if observer != nil {
-		observer(event)
-	}
+	return observer
 }
 
 func (a *CodexAdapter) Watch(ctx context.Context, sessionID string, cursor int64, wait time.Duration) ([]AgentEvent, int64, int64, error) {
@@ -1163,7 +1544,14 @@ func (a *CodexAdapter) markThreadLoaded(sessionID string) {
 		return
 	}
 	a.mu.Lock()
+	if a.loaded == nil {
+		a.loaded = make(map[string]struct{})
+	}
+	if a.loadedGeneration == nil {
+		a.loadedGeneration = make(map[string]uint64)
+	}
 	a.loaded[sessionID] = struct{}{}
+	a.loadedGeneration[sessionID] = a.generation
 	a.mu.Unlock()
 }
 
@@ -1178,7 +1566,7 @@ func (a *CodexAdapter) ensureThreadLoaded(ctx context.Context, sessionID string)
 
 func (a *CodexAdapter) ensureThreadLoadedLocked(ctx context.Context, sessionID string) error {
 	a.mu.Lock()
-	_, loaded := a.loaded[sessionID]
+	loaded := a.loadedForGenerationLocked(sessionID, a.generation)
 	a.mu.Unlock()
 	if loaded {
 		return nil
@@ -1191,6 +1579,9 @@ func (a *CodexAdapter) ensureThreadLoadedLocked(ctx context.Context, sessionID s
 }
 
 func (a *CodexAdapter) unloadThread(ctx context.Context, sessionID string) error {
+	if override := a.unloadThreadOverride; override != nil {
+		return override(ctx, sessionID)
+	}
 	if strings.TrimSpace(sessionID) == "" {
 		return fmt.Errorf("sessionId is required")
 	}
@@ -1199,12 +1590,55 @@ func (a *CodexAdapter) unloadThread(ctx context.Context, sessionID string) error
 	return a.unloadThreadLocked(ctx, sessionID)
 }
 
+func (a *CodexAdapter) unloadThreadForGeneration(ctx context.Context, target codexProcess, sessionID string) error {
+	if strings.TrimSpace(sessionID) == "" {
+		return fmt.Errorf("sessionId is required")
+	}
+	unlock := a.lockSessionLoad(sessionID)
+	defer unlock()
+	if a.unloadBeforeSend != nil {
+		a.unloadBeforeSend(target)
+	}
+	a.lifecycleMu.Lock()
+	a.mu.Lock()
+	valid := a.isCurrentGenerationLocked(target.generation) && a.cmd == target.cmd && a.stdin == target.stdin && a.wsConn == target.wsConn && a.processDone == target.done && a.loadedForGenerationLocked(sessionID, target.generation)
+	a.mu.Unlock()
+	a.lifecycleMu.Unlock()
+	if !valid {
+		return nil
+	}
+	if a.ActiveTurn(sessionID) != "" {
+		return nil
+	}
+	if override := a.unloadThreadOverride; override != nil {
+		if err := override(ctx, sessionID); err != nil {
+			return err
+		}
+	} else if override := a.requestOverride; override != nil {
+		if _, err := override(ctx, "thread/unsubscribe", map[string]any{"threadId": sessionID}); err != nil && !isCodexThreadAlreadyUnsubscribed(err) {
+			return err
+		}
+	} else if _, err := a.requestOnTarget(ctx, target, "thread/unsubscribe", map[string]any{"threadId": sessionID}); err != nil && !isCodexThreadAlreadyUnsubscribed(err) {
+		return err
+	}
+	a.lifecycleMu.Lock()
+	a.mu.Lock()
+	if a.generation == target.generation && a.cmd == target.cmd && a.loadedForGenerationLocked(sessionID, target.generation) {
+		delete(a.loaded, sessionID)
+		delete(a.loadedGeneration, sessionID)
+	}
+	a.mu.Unlock()
+	a.lifecycleMu.Unlock()
+	return nil
+}
+
 func (a *CodexAdapter) unloadThreadLocked(ctx context.Context, sessionID string) error {
 	if a.ActiveTurn(sessionID) != "" {
 		return nil
 	}
 	a.mu.Lock()
-	_, loaded := a.loaded[sessionID]
+	targetGeneration := a.generation
+	loaded := a.loadedForGenerationLocked(sessionID, targetGeneration)
 	a.mu.Unlock()
 	if !loaded {
 		return nil
@@ -1215,8 +1649,17 @@ func (a *CodexAdapter) unloadThreadLocked(ctx context.Context, sessionID string)
 	}
 	a.mu.Lock()
 	delete(a.loaded, sessionID)
+	delete(a.loadedGeneration, sessionID)
 	a.mu.Unlock()
 	return nil
+}
+
+func (a *CodexAdapter) loadedForGenerationLocked(sessionID string, generation uint64) bool {
+	if _, loaded := a.loaded[sessionID]; !loaded {
+		return false
+	}
+	loadedGeneration, tracked := a.loadedGeneration[sessionID]
+	return loadedGeneration == generation || !tracked && generation == 0
 }
 
 func isCodexThreadAlreadyUnsubscribed(err error) bool {
@@ -1367,8 +1810,21 @@ func (a *CodexAdapter) StartTurnWithOptions(ctx context.Context, sessionID strin
 	}
 	turnID := mapNestedString(result, "turn", "id")
 	if turnID != "" {
+		generation := a.currentGeneration()
+		a.lifecycleMu.Lock()
+		defer a.lifecycleMu.Unlock()
+		a.mu.Lock()
+		if !a.isCurrentGenerationLocked(generation) {
+			a.mu.Unlock()
+			return nil, node.ErrAgentProviderUnavailable
+		}
+		a.mu.Unlock()
 		a.eventMu.Lock()
+		if a.activeTurnGeneration == nil {
+			a.activeTurnGeneration = make(map[string]uint64)
+		}
 		a.activeTurns[sessionID] = turnID
+		a.activeTurnGeneration[sessionID] = generation
 		a.eventMu.Unlock()
 	}
 	return result, nil
@@ -1416,6 +1872,7 @@ func (a *CodexAdapter) RespondPendingRequest(ctx context.Context, sessionID, req
 	pending.Responding = true
 	a.serverRequests[requestID] = pending
 	a.serverMu.Unlock()
+	generation := pending.generation
 	responded := false
 	defer func() {
 		if responded {
@@ -1433,6 +1890,10 @@ func (a *CodexAdapter) RespondPendingRequest(ctx context.Context, sessionID, req
 		return nil, err
 	}
 	a.mu.Lock()
+	if generation != a.generation || (generation != 0 && (a.cmd == nil || a.processDone == nil)) {
+		a.mu.Unlock()
+		return nil, node.ErrAgentProviderUnavailable
+	}
 	stdin := a.stdin
 	wsConn := a.wsConn
 	a.mu.Unlock()

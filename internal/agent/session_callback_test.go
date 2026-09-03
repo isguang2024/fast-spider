@@ -36,6 +36,58 @@ func testCallbackEvent(source string, sequence int64) chatgptCloudEvent {
 	}
 }
 
+type testCloudResultPublisher struct {
+	called bool
+	text   string
+}
+
+func TestCloudCallbackUsesLocalDeliverableWithoutReadingCHAT(t *testing.T) {
+	dataDir := t.TempDir()
+	store := newSessionCallbackStore(dataDir)
+	path := filepath.Join(dataDir, "deliverable.md")
+	content := []byte("# complete\n")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registration := testCallbackRegistration("source-file", "target-file", "task-file", 1)
+	registration.DeliverablePath = path
+	if _, _, err := store.register(registration); err != nil {
+		t.Fatal(err)
+	}
+	manager := &AgentManager{callbackStore: store}
+	event := manager.completeCloudCallbackResult(testCallbackEvent("source-file", 1))
+	if event.ResultStatus != "ready" || event.DeliverableStatus != "ready" || event.DeliverablePath != path || event.ResultBytes != int64(len(content)) || event.ResultSHA256 == "" {
+		t.Fatalf("deliverable event=%#v", event)
+	}
+	if queued, err := store.enqueue(event); err != nil || !queued {
+		t.Fatalf("enqueue deliverable queued=%v err=%v", queued, err)
+	}
+	grouped, err := store.pendingByTarget()
+	if err != nil || len(grouped["target-file"]) != 1 {
+		t.Fatalf("deliverable pending=%#v err=%v", grouped, err)
+	}
+	prompt := buildSessionCallbackEnvelope("env-file", grouped["target-file"])
+	if !strings.Contains(prompt, "deliverable_path="+path) || !strings.Contains(prompt, "codex_cloud_collaboration") || strings.Contains(prompt, string(content)) {
+		t.Fatalf("deliverable envelope=%q", prompt)
+	}
+
+	missing := testCallbackRegistration("source-missing", "target-file", "task-missing", 1)
+	missing.DeliverablePath = filepath.Join(dataDir, "missing.md")
+	if _, _, err := store.register(missing); err != nil {
+		t.Fatal(err)
+	}
+	event = manager.completeCloudCallbackResult(testCallbackEvent("source-missing", 2))
+	if event.ResultStatus != "failed" || event.DeliverableStatus != "missing" || event.ResultID != "" {
+		t.Fatalf("missing deliverable event=%#v", event)
+	}
+}
+
+func (p *testCloudResultPublisher) PublishCloudResult(_ context.Context, _, _ string, text string) (map[string]any, error) {
+	p.called = true
+	p.text = text
+	return map[string]any{"resultId": "res_callback_1", "status": "ready", "bytes": int64(len(text)), "sha256": "sha256:" + strings.Repeat("a", 64), "pageCount": int64(1)}, nil
+}
+
 func TestSessionCallbackStorePersistsCoalescesAndFencesGeneration(t *testing.T) {
 	dataDir := t.TempDir()
 	store := newSessionCallbackStore(dataDir)
@@ -209,7 +261,7 @@ func TestSessionCallbackManagerObserverInboxDispatchesAfterCoordinatorIdle(t *te
 	manager.handleCodexCallbackEvent(AgentEvent{Type: "turn.completed", SessionID: "coordinator-local"})
 	select {
 	case prompt := <-sent:
-		if !strings.Contains(prompt, "FAST_SPIDER_SESSION_CALLBACK_V1") || !strings.Contains(prompt, "source_session=source-integration") || strings.Contains(prompt, "Worker-authored content:") {
+		if !strings.Contains(prompt, "FAST_SPIDER_SESSION_CALLBACK_V1") || !strings.Contains(prompt, "source_session=source-integration") || strings.Contains(prompt, "authored content:") {
 			t.Fatalf("unexpected callback envelope=%q", prompt)
 		}
 	case <-time.After(2 * time.Second):
@@ -218,6 +270,52 @@ func TestSessionCallbackManagerObserverInboxDispatchesAfterCoordinatorIdle(t *te
 	grouped, err = manager.callbackStore.pendingByTarget()
 	if err != nil || len(grouped) != 0 {
 		t.Fatalf("durable inbox not acknowledged: pending=%#v err=%v", grouped, err)
+	}
+}
+
+func TestSessionCallbackCompletionPublishesBoundedResultMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/conversation/source-publish" {
+			http.NotFound(w, r)
+			return
+		}
+		writeChatGPTCloudTestJSON(t, w, map[string]any{
+			"conversation_id": "source-publish",
+			"current_node":    "assistant-final",
+			"mapping": map[string]any{
+				"assistant-final": map[string]any{"parent": "user-1", "message": map[string]any{
+					"id": "assistant-final", "author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"final callback text"}},
+				}},
+			},
+		})
+	}))
+	defer server.Close()
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	manager.chatgptCloud.baseURL = server.URL
+	manager.chatgptCloud.http = server.Client()
+	manager.chatgptCloud.tokenSource = func(context.Context) (string, error) { return "token", nil }
+	publisher := &testCloudResultPublisher{}
+	manager.SetCloudResultPublisher(publisher)
+	if _, _, err := manager.callbackStore.register(testCallbackRegistration("source-publish", "target", "task", 2)); err != nil {
+		t.Fatal(err)
+	}
+	event := testCallbackEvent("source-publish", 1)
+	manager.handleChatGPTCloudCallbackEvent(event)
+	if !publisher.called || publisher.text != "final callback text" {
+		t.Fatalf("publisher called=%v text=%q", publisher.called, publisher.text)
+	}
+	grouped, err := manager.callbackStore.pendingByTarget()
+	if err != nil || len(grouped["target"]) != 1 {
+		t.Fatalf("pending=%#v err=%v", grouped, err)
+	}
+	pending := grouped["target"][0]
+	if pending.ResultID != "res_callback_1" || pending.ResultStatus != "ready" || pending.ResultPageCount != 1 {
+		t.Fatalf("pending result metadata=%#v", pending)
+	}
+	envelope := buildSessionCallbackEnvelope(sessionCallbackEnvelopeID("target", grouped["target"]), grouped["target"])
+	if strings.Contains(envelope, "final callback text") || strings.Contains(envelope, "artifactId") || !strings.Contains(envelope, "result_id=res_callback_1") {
+		t.Fatalf("unsafe callback envelope=%q", envelope)
 	}
 }
 
@@ -280,7 +378,7 @@ func TestSessionCallbackDispatcherBatchesAndWaitsForIdleTarget(t *testing.T) {
 	if len(prompts) != 1 || !strings.Contains(prompts[0], "source_session=source-a") || !strings.Contains(prompts[0], "source_session=source-b") {
 		t.Fatalf("batched prompt=%q", prompts)
 	}
-	if strings.Contains(prompts[0], "Worker-authored content:") || !strings.Contains(prompts[0], "not Worker-authored content") {
+	if strings.Contains(prompts[0], "Cloud CHAT-authored content:") || !strings.Contains(prompts[0], "not Cloud CHAT-authored content") {
 		t.Fatalf("callback envelope did not keep the fixed trust boundary: %q", prompts[0])
 	}
 	grouped, err := store.pendingByTarget()

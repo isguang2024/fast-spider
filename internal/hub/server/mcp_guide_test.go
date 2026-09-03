@@ -12,7 +12,7 @@ import (
 
 func TestMCPGuideCatalogMatchesRegisteredToolsAndDocumentation(t *testing.T) {
 	guideNames := mcpRegisteredGuideNames()
-	if len(guideNames) != 19 {
+	if len(guideNames) != 21 {
 		t.Fatalf("guide tool count=%d names=%v", len(guideNames), guideNames)
 	}
 	var discoveryMarkers []string
@@ -48,7 +48,7 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(overview.Categories) != 10 || len(overview.ToolSummaries) != len(mcpToolGuides) || len(overview.GoldenRules) == 0 || len(overview.RecommendedNext) == 0 {
+	if len(overview.Categories) != 11 || len(overview.ToolSummaries) != len(mcpToolGuides) || len(overview.GoldenRules) == 0 || len(overview.RecommendedNext) == 0 {
 		t.Fatalf("overview incomplete: %+v", overview)
 	}
 	assertMCPGuideSize(t, overview, 8<<10)
@@ -64,7 +64,7 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		assertMCPGuideSize(t, guide, 12<<10)
 		if name == "ai_control" {
 			guideText := strings.Join(append(append(append(guide.WhenToUse, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
-			for _, needle := range []string{"session.create", "providerId=codex", "backend=chatgpt_cloud", "mode=quick_chat", "CHAT", "externalIdType=chatgpt_conversation", "completionPending=true"} {
+			for _, needle := range []string{"session.create", "providerId=codex", "backend=chatgpt_cloud", "mode=quick_chat", "CHAT", "externalIdType=chatgpt_conversation", "completionPending=true", "pluginName", "UNSUPPORTED_SESSION_PLUGIN_BINDING"} {
 				if !strings.Contains(guideText, needle) {
 					t.Fatalf("ai_control guide missing %q: %+v", needle, guide)
 				}
@@ -231,8 +231,8 @@ func TestMCPServerInstructionsStayBoundedAndCoverCapabilityMap(t *testing.T) {
 	for _, needle := range []string{
 		"@FastSpider_FS", "capability_list", "machine_list", "machine_get", "audit_log", "operation_log", "file_read", "file_edit", "code_search",
 		"shell_run", "build_control", "job_watch", "job_cancel", "git_control", "browser_control", "screenshot_take",
-		"ai_control", "working_context", "thinking_team", "artifact_get", "session.list", "view=tool|workflow|error", "view=capability",
-		`query="fsprobe"`, "Never load all 19 schemas", "powershell.exe", "tzutil /g", "not a separate PowerShell tool", "backend=chatgpt_cloud", "ChatGPT CHAT",
+		"ai_control", "codex_cloud_collaboration", "working_context", "thinking_team", "artifact_get", "session.list", "view=tool|workflow|error", "view=capability",
+		`query="fsprobe"`, "Never load all 21 schemas", "powershell.exe", "tzutil /g", "not a separate PowerShell tool", "backend=chatgpt_cloud", "ChatGPT CHAT",
 		"desktopBridge", "nativeConversationStreaming=unsupported", "Desktop owner/control bridge",
 	} {
 		if !strings.Contains(mcpServerInstructions, needle) {
@@ -254,7 +254,7 @@ func assertMCPGuideSize(t *testing.T, guide *mcpGuide, limit int) {
 
 func documentedMCPToolNames(t *testing.T, document string) []string {
 	t.Helper()
-	anchor := strings.Index(document, "当前固定 19 个工具")
+	anchor := strings.Index(document, "当前固定 21 个工具")
 	if anchor < 0 {
 		t.Fatal("MCP tool-list anchor missing from documentation")
 	}

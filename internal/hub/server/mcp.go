@@ -171,6 +171,83 @@ type artifactGetInput struct {
 	ContentType string `json:"contentType,omitempty" jsonschema:"optional MIME type for uploadFile or publishFile"`
 }
 
+type resultGetInput struct {
+	MCPResponseOptions
+	Action   string `json:"action" jsonschema:"getManifest or readPage"`
+	ResultID string `json:"resultId" jsonschema:"opaque Result Pool result ID"`
+	PageNo   int    `json:"pageNo,omitempty" jsonschema:"zero-based page number for readPage"`
+}
+
+type resultWriteInput struct {
+	MCPResponseOptions
+	Action           string          `json:"action" jsonschema:"create,attachPage,commit,abort,or fail"`
+	MachineID        string          `json:"machineId,omitempty" jsonschema:"machine ID for create"`
+	ResultID         string          `json:"resultId,omitempty"`
+	IdempotencyKey   string          `json:"idempotencyKey,omitempty"`
+	RequestHash      string          `json:"requestHash,omitempty"`
+	PageNo           int             `json:"pageNo,omitempty"`
+	ArtifactID       string          `json:"artifactId,omitempty"`
+	ExpectedRevision int64           `json:"expectedRevision,omitempty"`
+	Manifest         json.RawMessage `json:"manifest,omitempty"`
+	Code             string          `json:"code,omitempty"`
+	Message          string          `json:"message,omitempty"`
+}
+
+type cloudCollaborationInput struct {
+	Action string         `json:"action"`
+	Params map[string]any `json:"params,omitempty"`
+}
+
+type cloudCollaborationParams struct {
+	CollaborationID     string   `json:"collaborationId,omitempty"`
+	ActorSessionID      string   `json:"actorSessionId,omitempty"`
+	ActorRole           string   `json:"actorRole,omitempty"`
+	ExpectedRevision    int64    `json:"expectedRevision,omitempty"`
+	MachineID           string   `json:"machineId,omitempty"`
+	IdempotencyKey      string   `json:"idempotencyKey,omitempty"`
+	RequestHash         string   `json:"requestHash,omitempty"`
+	ControllerSessionID string   `json:"controllerSessionId,omitempty"`
+	DispatcherSessionID string   `json:"dispatcherSessionId,omitempty"`
+	Title               string   `json:"title,omitempty"`
+	Goal                string   `json:"goal,omitempty"`
+	Scope               string   `json:"scope,omitempty"`
+	DoneWhen            string   `json:"doneWhen,omitempty"`
+	WorkingDirectory    string   `json:"workingDirectory,omitempty"`
+	Deadline            string   `json:"deadline,omitempty"`
+	AllowedActions      []string `json:"allowedActions,omitempty"`
+	MaxDepth            int      `json:"maxDepth,omitempty"`
+	MaxActiveChats      int      `json:"maxActiveChats,omitempty"`
+	MaxCreates          int      `json:"maxCreates,omitempty"`
+	HeartbeatMinutes    int      `json:"heartbeatMinutes,omitempty"`
+	StallMinutes        int      `json:"stallMinutes,omitempty"`
+	Limit               int      `json:"limit,omitempty"`
+	GoalID              string   `json:"goalId,omitempty"`
+	GoalStatus          string   `json:"goalStatus,omitempty"`
+	TaskID              string   `json:"taskId,omitempty"`
+	TaskStatus          string   `json:"taskStatus,omitempty"`
+	ParentSessionID     string   `json:"parentSessionId,omitempty"`
+	Prompt              string   `json:"prompt,omitempty"`
+	AccessMode          string   `json:"accessMode,omitempty"`
+	WriteScope          string   `json:"writeScope,omitempty"`
+	DeliverablePath     string   `json:"deliverablePath,omitempty"`
+	EventID             string   `json:"eventId,omitempty"`
+	EventType           string   `json:"eventType,omitempty"`
+	ResultID            string   `json:"resultId,omitempty"`
+	ResultStatus        string   `json:"resultStatus,omitempty"`
+	ResultSHA256        string   `json:"resultSHA256,omitempty"`
+	DeliverableStatus   string   `json:"deliverableStatus,omitempty"`
+	EventSequence       int64    `json:"eventSequence,omitempty"`
+	EventGeneration     int64    `json:"eventGeneration,omitempty"`
+	ResultBytes         int64    `json:"resultBytes,omitempty"`
+	DecisionID          string   `json:"decisionId,omitempty"`
+	DecisionStatus      string   `json:"decisionStatus,omitempty"`
+	Question            string   `json:"question,omitempty"`
+	Recommendation      string   `json:"recommendation,omitempty"`
+	Checkpoint          string   `json:"checkpoint,omitempty"`
+	Options             []string `json:"options,omitempty"`
+	InactiveVerified    bool     `json:"inactiveVerified,omitempty"`
+}
+
 type workingContextInput struct {
 	MCPResponseOptions
 	MachineID            string           `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
@@ -287,7 +364,7 @@ type aiControlInput struct {
 	Name                    string              `json:"name,omitempty" jsonschema:"new session name for session.rename"`
 	ForceReload             bool                `json:"forceReload,omitempty" jsonschema:"skills.list only; bypass the local Codex skill cache"`
 	MarketplaceKinds        []string            `json:"marketplaceKinds,omitempty" jsonschema:"plugins.list filter: local,vertical,workspace-directory,shared-with-me,created-by-me-remote"`
-	PluginName              string              `json:"pluginName,omitempty" jsonschema:"plugin name required for plugins.get"`
+	PluginName              string              `json:"pluginName,omitempty" jsonschema:"plugin name required for plugins.get; unsupported for chatgpt_cloud session.create because Cloud has no per-session plugin binding"`
 	MarketplacePath         string              `json:"marketplacePath,omitempty" jsonschema:"optional absolute local marketplace path for plugins.get"`
 	RemoteMarketplaceName   string              `json:"remoteMarketplaceName,omitempty" jsonschema:"remote marketplace name for plugins.get or plugin.skill.read"`
 	RemotePluginID          string              `json:"remotePluginId,omitempty" jsonschema:"remote plugin identifier required for plugin.skill.read"`
@@ -322,6 +399,7 @@ type aiControlInput struct {
 	CallbackMissionID       string              `json:"callbackMissionId,omitempty" jsonschema:"callback mission ID"`
 	CallbackTaskID          string              `json:"callbackTaskId,omitempty" jsonschema:"callback task ID"`
 	CallbackGeneration      int64               `json:"callbackGeneration,omitempty" jsonschema:"positive callback generation"`
+	CallbackDeliverablePath string              `json:"callbackDeliverablePath,omitempty" jsonschema:"absolute callback output file"`
 }
 
 type genericCapabilityOutput struct {
@@ -548,13 +626,13 @@ func (s *Server) newMCPHandler() http.Handler {
 	})
 }
 
-const mcpServerInstructions = `FastSpider_FS is the remote development control plane. When selected or mentioned as @FastSpider_FS, try a real read-only tool before judging UI text.
+const mcpServerInstructions = `FastSpider_FS is a remote development control plane. When selected as @FastSpider_FS, try a real read-only tool before judging UI text.
 
-ChatGPT tools may be lazy/evicted. If the namespace is absent, use filtered discovery, e.g. api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Never load all 19 schemas for health or request login unless discovery and a real connection check fail.
+Tools may be lazy. If absent, use api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Never load all 21 schemas for health or request login before a real connection check.
 
-Capability map: connection = capability_list, machine_list, machine_get; audit = audit_log, operation_log; files = code_search, file_read, file_edit; jobs = shell_run, build_control, job_watch, job_cancel; Git = git_control; browser = browser_control, screenshot_take; AI = ai_control; context = working_context; roles = thinking_team; artifacts = artifact_get. Codex session.create supports providerId=codex, backend=chatgpt_cloud for a visible ChatGPT CHAT when app-server is logged in. On Windows, local Codex uses the Desktop owner/control bridge by default; ai_control providers.list/provider.readiness/provider.capabilities and local session results expose desktopBridge state, but nativeConversationStreaming=unsupported does not prove live Desktop history.
+Map: connection = capability_list, machine_list, machine_get; audit = audit_log, operation_log; files = code_search, file_read, file_edit; jobs = shell_run, build_control, job_watch, job_cancel; Git = git_control; browser = browser_control, screenshot_take; AI = ai_control; Codex cloud collaboration = codex_cloud_collaboration; context = working_context; roles = thinking_team; artifacts = artifact_get. codex_cloud_collaboration requires local Codex + ChatGPT auth, creates backend=chatgpt_cloud visible ChatGPT CHAT sessions, and never falls back to another AI. Local Codex may report desktopBridge and nativeConversationStreaming=unsupported while using the Desktop owner/control bridge.
 
-Rules: compact; diagnostics=true adds timing/trace. Unknown machineId -> machine_list. Connection check = capability_list(view=overview) + machine_list. Map unclear capability IDs with view=capability; load one view=tool|workflow|error guide when needed. Codex history starts at ai_control(action=session.list), then get/watch/result. Every shell/build jobId must reach terminal via job_watch; then delete caller-created temporary test/build outputs, never unknown paths or user outputs. File edits use search/read -> SHA -> preview -> CAS write -> read. Browser: one verification/session; close in finally/defer deletes its directory. shell_run is the host/WSL process entry; on Windows use powershell.exe or cmd.exe in argv (e.g. tzutil /g), not a separate PowerShell tool. Screenshots and publishFile return URL-only attachments, max 48h.`
+Rules: be compact; diagnostics=true adds timing/trace. Unknown machineId -> machine_list. Check connection with capability_list(view=overview) + machine_list. Use view=capability or one view=tool|workflow|error guide only when needed. Codex history starts at ai_control(action=session.list), then get/watch/result. Every shell/build jobId reaches terminal via job_watch; remove only caller-owned temporary outputs. File edits use read/SHA/preview/CAS. Close each browser session. shell_run is the host/WSL entry; on Windows put powershell.exe or cmd.exe in argv (e.g. tzutil /g), not a separate PowerShell tool. Attachments expire within 48h.`
 
 func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	server := mcp.NewServer(
@@ -652,6 +730,10 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 		return executeMCPTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "ai_control", input)
 	})
 
+	mcp.AddTool(server, mcpToolDefinition("codex_cloud_collaboration", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input cloudCollaborationInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+		return executeMCPStructuredTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "codex_cloud_collaboration", input)
+	})
+
 	mcp.AddTool(server, mcpToolDefinition("working_context", toolAnnotations(false, false, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input workingContextInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		return executeMCPTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "working_context", input)
 	})
@@ -681,6 +763,19 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 			return mergeMCPToolResults(s.artifactNativeToolResult(ctx, artifact), diagnosticResult), out, nil
 		}
 		return diagnosticResult, out, nil
+	})
+	mcp.AddTool(server, mcpToolDefinition("result_get", toolAnnotations(true, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input resultGetInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+		if input.Action != "getManifest" {
+			return nil, genericCapabilityOutput{}, &core.CapabilityCallError{Code: "PAGES_READ_REQUIRED", Message: "MCP credentials do not grant pages.read", Retryable: false}
+		}
+		if input.ResultID == "" {
+			return nil, genericCapabilityOutput{}, &toolRequestError{message: "resultId and valid action parameters are required"}
+		}
+		rec, err := s.service.GetResultManifest(ctx, ownerID, input.ResultID)
+		if err != nil {
+			return nil, genericCapabilityOutput{}, err
+		}
+		return nil, genericCapabilityOutput{Result: map[string]any{"resultId": rec.ResultID, "status": rec.Status, "revision": rec.Revision, "manifest": json.RawMessage(rec.ManifestJSON), "createdAt": rec.CreatedAt, "committedAt": rec.CommittedAt, "expiresAt": rec.ExpiresAt}}, nil
 	})
 
 	return server

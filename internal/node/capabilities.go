@@ -124,8 +124,15 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 			response.Error = protocolError("DEADLINE_EXCEEDED", "request deadline exceeded", false)
 			return response
 		}
+		deadlineParent := ctx
+		if req.Capability == "agent.control" && req.Action == "session.create" {
+			// A transport disconnect must not cancel an already-started external
+			// create before its idempotency ledger can record the provider ID.
+			// The provider operation remains bounded by the Hub-supplied deadline.
+			deadlineParent = context.WithoutCancel(ctx)
+		}
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithDeadline(ctx, deadline)
+		ctx, cancel = context.WithDeadline(deadlineParent, deadline)
 		defer cancel()
 	}
 	if err := c.projectPolicy.validate(req.Capability, req.Action, req.Params); err != nil {

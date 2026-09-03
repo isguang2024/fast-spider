@@ -185,7 +185,45 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 		if err != nil {
 			return nil, err
 		}
-		return capabilityListOutput{Capabilities: capabilities, CapabilitySummaries: mcpCapabilitySummaries(capabilities), Guide: guide}, nil
+		outputCapabilities := capabilities
+		if view == "overview" {
+			outputCapabilities = []protocolv1.CapabilityDescriptor{}
+		}
+		return capabilityListOutput{Capabilities: outputCapabilities, CapabilitySummaries: mcpCapabilitySummaries(capabilities), Guide: guide}, nil
+
+	case "codex_cloud_collaboration":
+		input, err := toolInput[cloudCollaborationInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		rawParams, err := json.Marshal(input.Params)
+		if err != nil {
+			return nil, &toolRequestError{message: "params must be a JSON object"}
+		}
+		var params cloudCollaborationParams
+		if err := json.Unmarshal(rawParams, &params); err != nil {
+			return nil, &toolRequestError{message: "invalid cloud collaboration params"}
+		}
+		var deadline time.Time
+		if strings.TrimSpace(params.Deadline) != "" {
+			deadline, err = time.Parse(time.RFC3339, params.Deadline)
+			if err != nil {
+				return nil, &toolRequestError{message: "deadline must be RFC3339"}
+			}
+		}
+		result, err := e.service.CloudCollaboration(ctx, ownerID, core.CloudCollaborationRequest{
+			Action: input.Action, CollaborationID: params.CollaborationID, ExpectedRevision: params.ExpectedRevision, ActorSessionID: params.ActorSessionID, ActorRole: params.ActorRole,
+			MachineID: params.MachineID, IdempotencyKey: params.IdempotencyKey, RequestHash: params.RequestHash, ControllerSessionID: params.ControllerSessionID, DispatcherSessionID: params.DispatcherSessionID,
+			Title: params.Title, Goal: params.Goal, Scope: params.Scope, DoneWhen: params.DoneWhen, WorkingDirectory: params.WorkingDirectory, AllowedActions: params.AllowedActions,
+			MaxDepth: params.MaxDepth, MaxActiveChats: params.MaxActiveChats, MaxCreates: params.MaxCreates, HeartbeatMinutes: params.HeartbeatMinutes, StallMinutes: params.StallMinutes, Deadline: deadline,
+			GoalID: params.GoalID, GoalStatus: params.GoalStatus, TaskID: params.TaskID, TaskStatus: params.TaskStatus, ParentSessionID: params.ParentSessionID, Prompt: params.Prompt, AccessMode: params.AccessMode, WriteScope: params.WriteScope,
+			DeliverablePath: params.DeliverablePath, EventID: params.EventID, EventSequence: params.EventSequence, EventType: params.EventType, EventGeneration: params.EventGeneration, ResultID: params.ResultID, ResultStatus: params.ResultStatus, ResultBytes: params.ResultBytes, ResultSHA256: params.ResultSHA256, DeliverableStatus: params.DeliverableStatus,
+			DecisionID: params.DecisionID, DecisionStatus: params.DecisionStatus, Question: params.Question, Options: params.Options, Recommendation: params.Recommendation, Checkpoint: params.Checkpoint, InactiveVerified: params.InactiveVerified, Limit: params.Limit,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return genericCapabilityOutput{Result: result}, nil
 
 	case "file_read":
 		input, err := toolInput[fileReadInput](tool, rawInput)
@@ -397,7 +435,7 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 			"reviewType": input.ReviewType, "reviewDelivery": input.ReviewDelivery, "reviewBranch": input.ReviewBranch,
 			"reviewSha": input.ReviewSHA, "reviewTitle": input.ReviewTitle, "reviewInstructions": input.ReviewInstructions,
 			"callbackTargetSessionId": input.CallbackTargetSessionID, "callbackMissionId": input.CallbackMissionID,
-			"callbackTaskId": input.CallbackTaskID, "callbackGeneration": input.CallbackGeneration,
+			"callbackTaskId": input.CallbackTaskID, "callbackGeneration": input.CallbackGeneration, "callbackDeliverablePath": input.CallbackDeliverablePath,
 		}
 		if len(input.Skills) > 0 {
 			converted := make([]map[string]any, len(input.Skills))

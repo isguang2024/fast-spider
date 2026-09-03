@@ -160,6 +160,44 @@ type ArtifactFileDeletion struct {
 	Attempts int
 }
 
+type ResultRecord struct {
+	ResultID       string
+	OwnerID        string
+	MachineID      string
+	IdempotencyKey string
+	RequestHash    string
+	Status         string
+	ManifestJSON   string
+	Revision       int64
+	ErrorCode      string
+	ErrorMessage   string
+	CreatedAt      time.Time
+	CommittedAt    *time.Time
+	ExpiresAt      time.Time
+}
+
+type ResultPageRecord struct {
+	ResultID   string
+	PageNo     int
+	OwnerID    string
+	ArtifactID string
+	CreatedAt  time.Time
+	Artifact   ArtifactRecord
+}
+
+type CloudCollaborationRecord struct {
+	CollaborationID string
+	OwnerID         string
+	MachineID       string
+	IdempotencyKey  string
+	RequestHash     string
+	Status          string
+	StateJSON       string
+	Revision        int64
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 func Open(ctx context.Context, path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("create database directory: %w", err)
@@ -902,6 +940,331 @@ func (s *Store) getArtifact(ctx context.Context, scopeColumn, scopeID, artifactI
 	return rec, nil
 }
 
+func scanResultRecord(scanner interface{ Scan(...any) error }) (ResultRecord, error) {
+	var rec ResultRecord
+	var created, expires int64
+	var committed sql.NullInt64
+	if err := scanner.Scan(&rec.ResultID, &rec.OwnerID, &rec.MachineID, &rec.IdempotencyKey, &rec.RequestHash,
+		&rec.Status, &rec.ManifestJSON, &rec.Revision, &rec.ErrorCode, &rec.ErrorMessage, &created, &committed, &expires); err != nil {
+		return ResultRecord{}, err
+	}
+	rec.CreatedAt = time.Unix(created, 0).UTC()
+	rec.ExpiresAt = time.Unix(expires, 0).UTC()
+	if committed.Valid {
+		t := time.Unix(committed.Int64, 0).UTC()
+		rec.CommittedAt = &t
+	}
+	return rec, nil
+}
+
+const resultRecordColumns = `result_id, owner_id, machine_id, idempotency_key, request_hash,
+	status, COALESCE(manifest_json,''), revision, COALESCE(error_code,''), COALESCE(error_message,''),
+	created_at, committed_at, expires_at`
+
+func (s *Store) CreateResult(ctx context.Context, rec ResultRecord) (ResultRecord, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ResultRecord{}, err
+	}
+	defer tx.Rollback()
+	var machineOwner, machineStatus string
+	if err := tx.QueryRowContext(ctx, "SELECT owner_id, status FROM machines WHERE id = ?", rec.MachineID).Scan(&machineOwner, &machineStatus); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ResultRecord{}, ErrNotFound
+		}
+		return ResultRecord{}, err
+	}
+	if machineOwner != rec.OwnerID || machineStatus != "active" {
+		return ResultRecord{}, ErrUnauthorized
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO result_records(
+		result_id, owner_id, machine_id, idempotency_key, request_hash, status, revision, created_at, expires_at
+	) VALUES(?,?,?,?,?,'open',1,?,?)`, rec.ResultID, rec.OwnerID, rec.MachineID, rec.IdempotencyKey, rec.RequestHash, rec.CreatedAt.Unix(), rec.ExpiresAt.Unix())
+	if err != nil {
+		// A retry with the same owner/key is resolved by the caller using the
+		// request hash; a different owner/key remains an ordinary conflict.
+		return ResultRecord{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return ResultRecord{}, err
+	}
+	return s.GetResult(ctx, rec.OwnerID, rec.ResultID)
+}
+
+func (s *Store) GetResult(ctx context.Context, ownerID, resultID string) (ResultRecord, error) {
+	row := s.db.QueryRowContext(ctx, "SELECT "+resultRecordColumns+" FROM result_records WHERE result_id = ? AND owner_id = ?", resultID, ownerID)
+	rec, err := scanResultRecord(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ResultRecord{}, ErrNotFound
+	}
+	return rec, err
+}
+
+func (s *Store) LookupResult(ctx context.Context, ownerID, idempotencyKey string) (ResultRecord, error) {
+	row := s.db.QueryRowContext(ctx, "SELECT "+resultRecordColumns+" FROM result_records WHERE owner_id = ? AND idempotency_key = ?", ownerID, idempotencyKey)
+	rec, err := scanResultRecord(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ResultRecord{}, ErrNotFound
+	}
+	return rec, err
+}
+
+func (s *Store) AttachResultPage(ctx context.Context, ownerID, resultID string, pageNo int, artifactID string, expectedRevision int64, now time.Time) (ResultRecord, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ResultRecord{}, err
+	}
+	defer tx.Rollback()
+	var currentOwner, status string
+	var revision, expires int64
+	if err := tx.QueryRowContext(ctx, "SELECT owner_id, status, revision, expires_at FROM result_records WHERE result_id = ?", resultID).Scan(&currentOwner, &status, &revision, &expires); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ResultRecord{}, ErrNotFound
+		}
+		return ResultRecord{}, err
+	}
+	if currentOwner != ownerID {
+		return ResultRecord{}, ErrUnauthorized
+	}
+	if status != "open" || revision != expectedRevision || expires <= now.Unix() {
+		return ResultRecord{}, ErrConflict
+	}
+	var artifactOwner, artifactStatus, storageKey string
+	var artifactExpires int64
+	if err := tx.QueryRowContext(ctx, `SELECT owner_id, status, COALESCE(storage_key,''), expires_at FROM artifacts WHERE id = ?`, artifactID).Scan(&artifactOwner, &artifactStatus, &storageKey, &artifactExpires); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ResultRecord{}, ErrNotFound
+		}
+		return ResultRecord{}, err
+	}
+	if artifactOwner != ownerID || artifactStatus != "complete" || storageKey == "" || artifactExpires <= now.Unix() {
+		return ResultRecord{}, ErrConflict
+	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO result_pages(result_id, page_no, owner_id, artifact_id, created_at) VALUES(?,?,?,?,?)", resultID, pageNo, ownerID, artifactID, now.Unix()); err != nil {
+		return ResultRecord{}, err
+	}
+	result, err := tx.ExecContext(ctx, "UPDATE result_records SET revision = revision + 1 WHERE result_id = ? AND owner_id = ? AND status = 'open' AND revision = ?", resultID, ownerID, expectedRevision)
+	if err != nil {
+		return ResultRecord{}, err
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		if err != nil {
+			return ResultRecord{}, err
+		}
+		return ResultRecord{}, ErrConflict
+	}
+	if err := tx.Commit(); err != nil {
+		return ResultRecord{}, err
+	}
+	return s.GetResult(ctx, ownerID, resultID)
+}
+
+func (s *Store) CommitResult(ctx context.Context, ownerID, resultID string, manifestJSON string, expectedRevision int64, now time.Time) (ResultRecord, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE result_records SET status = 'ready', manifest_json = ?, committed_at = ?, revision = revision + 1
+		WHERE result_id = ? AND owner_id = ? AND status = 'open' AND revision = ? AND expires_at > ?`, manifestJSON, now.Unix(), resultID, ownerID, expectedRevision, now.Unix())
+	if err != nil {
+		return ResultRecord{}, err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return ResultRecord{}, err
+	} else if affected != 1 {
+		return ResultRecord{}, ErrConflict
+	}
+	return s.GetResult(ctx, ownerID, resultID)
+}
+
+func (s *Store) AbortResult(ctx context.Context, ownerID, resultID string, expectedRevision int64, now time.Time) (ResultRecord, error) {
+	return s.transitionResult(ctx, ownerID, resultID, "aborted", "", "", expectedRevision, now)
+}
+
+func (s *Store) FailResult(ctx context.Context, ownerID, resultID, code, message string, expectedRevision int64, now time.Time) (ResultRecord, error) {
+	return s.transitionResult(ctx, ownerID, resultID, "failed", code, message, expectedRevision, now)
+}
+
+func (s *Store) transitionResult(ctx context.Context, ownerID, resultID, status, code, message string, expectedRevision int64, now time.Time) (ResultRecord, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE result_records SET status = ?, error_code = NULLIF(?, ''), error_message = NULLIF(?, ''), revision = revision + 1
+		WHERE result_id = ? AND owner_id = ? AND status = 'open' AND revision = ? AND expires_at > ?`, status, code, message, resultID, ownerID, expectedRevision, now.Unix())
+	if err != nil {
+		return ResultRecord{}, err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return ResultRecord{}, err
+	} else if affected != 1 {
+		return ResultRecord{}, ErrConflict
+	}
+	return s.GetResult(ctx, ownerID, resultID)
+}
+
+func (s *Store) GetResultPage(ctx context.Context, ownerID, resultID string, pageNo int, now time.Time) (ResultPageRecord, error) {
+	var page ResultPageRecord
+	var created, artifactCreated, artifactExpires int64
+	var artifactCompleted sql.NullInt64
+	var artifactStorage string
+	err := s.db.QueryRowContext(ctx, `SELECT p.result_id, p.page_no, p.owner_id, p.artifact_id, p.created_at,
+		a.owner_id, a.machine_id, COALESCE(a.job_id,''), a.logical_name, a.content_type, a.size_bytes, a.sha256,
+		COALESCE(a.storage_key,''), a.status, a.created_at, a.completed_at, a.expires_at
+		FROM result_pages p JOIN result_records r ON r.result_id = p.result_id
+		JOIN artifacts a ON a.id = p.artifact_id
+		WHERE p.result_id = ? AND p.page_no = ? AND p.owner_id = ? AND r.status = 'ready' AND r.expires_at > ?`, resultID, pageNo, ownerID, now.Unix()).Scan(
+		&page.ResultID, &page.PageNo, &page.OwnerID, &page.ArtifactID, &created,
+		&page.Artifact.OwnerID, &page.Artifact.MachineID, &page.Artifact.JobID, &page.Artifact.LogicalName, &page.Artifact.ContentType, &page.Artifact.SizeBytes, &page.Artifact.SHA256,
+		&artifactStorage, &page.Artifact.Status, &artifactCreated, &artifactCompleted, &artifactExpires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ResultPageRecord{}, ErrNotFound
+	}
+	if err != nil {
+		return ResultPageRecord{}, err
+	}
+	if page.Artifact.OwnerID != ownerID || page.Artifact.Status != "complete" || artifactStorage == "" || artifactExpires <= now.Unix() {
+		return ResultPageRecord{}, ErrNotFound
+	}
+	page.CreatedAt = time.Unix(created, 0).UTC()
+	page.Artifact.ID = page.ArtifactID
+	page.Artifact.StorageKey = artifactStorage
+	page.Artifact.CreatedAt = time.Unix(artifactCreated, 0).UTC()
+	page.Artifact.ExpiresAt = time.Unix(artifactExpires, 0).UTC()
+	if artifactCompleted.Valid {
+		t := time.Unix(artifactCompleted.Int64, 0).UTC()
+		page.Artifact.CompletedAt = &t
+	}
+	return page, nil
+}
+
+func (s *Store) ResultPageBytes(ctx context.Context, ownerID, resultID string) (int64, error) {
+	var total int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(a.size_bytes), 0)
+		FROM result_pages p JOIN artifacts a ON a.id = p.artifact_id
+		WHERE p.result_id = ? AND p.owner_id = ?`, resultID, ownerID).Scan(&total); err != nil {
+		return 0, err
+	}
+	return total, nil
+}
+
+const cloudCollaborationColumns = `collaboration_id, owner_id, machine_id, idempotency_key, request_hash,
+	status, state_json, revision, created_at, updated_at`
+
+func scanCloudCollaboration(scanner interface{ Scan(...any) error }) (CloudCollaborationRecord, error) {
+	var rec CloudCollaborationRecord
+	var created, updated int64
+	if err := scanner.Scan(&rec.CollaborationID, &rec.OwnerID, &rec.MachineID, &rec.IdempotencyKey, &rec.RequestHash,
+		&rec.Status, &rec.StateJSON, &rec.Revision, &created, &updated); err != nil {
+		return CloudCollaborationRecord{}, err
+	}
+	rec.CreatedAt = time.Unix(created, 0).UTC()
+	rec.UpdatedAt = time.Unix(updated, 0).UTC()
+	return rec, nil
+}
+
+func (s *Store) CreateCloudCollaboration(ctx context.Context, rec CloudCollaborationRecord) (CloudCollaborationRecord, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return CloudCollaborationRecord{}, err
+	}
+	defer tx.Rollback()
+	var machineOwner, machineStatus string
+	if err := tx.QueryRowContext(ctx, "SELECT owner_id,status FROM machines WHERE id=?", rec.MachineID).Scan(&machineOwner, &machineStatus); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return CloudCollaborationRecord{}, ErrNotFound
+		}
+		return CloudCollaborationRecord{}, err
+	}
+	if machineOwner != rec.OwnerID || machineStatus != "active" {
+		return CloudCollaborationRecord{}, ErrUnauthorized
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO cloud_collaborations(
+		collaboration_id,owner_id,machine_id,idempotency_key,request_hash,status,state_json,revision,created_at,updated_at
+	) VALUES(?,?,?,?,?,?,?,?,?,?)`, rec.CollaborationID, rec.OwnerID, rec.MachineID, rec.IdempotencyKey, rec.RequestHash,
+		rec.Status, rec.StateJSON, rec.Revision, rec.CreatedAt.Unix(), rec.UpdatedAt.Unix())
+	if err != nil {
+		return CloudCollaborationRecord{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return CloudCollaborationRecord{}, err
+	}
+	return s.GetCloudCollaboration(ctx, rec.OwnerID, rec.CollaborationID)
+}
+
+func (s *Store) GetCloudCollaboration(ctx context.Context, ownerID, collaborationID string) (CloudCollaborationRecord, error) {
+	rec, err := scanCloudCollaboration(s.db.QueryRowContext(ctx, "SELECT "+cloudCollaborationColumns+" FROM cloud_collaborations WHERE collaboration_id=? AND owner_id=?", collaborationID, ownerID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return CloudCollaborationRecord{}, ErrNotFound
+	}
+	return rec, err
+}
+
+func (s *Store) LookupCloudCollaboration(ctx context.Context, ownerID, idempotencyKey string) (CloudCollaborationRecord, error) {
+	rec, err := scanCloudCollaboration(s.db.QueryRowContext(ctx, "SELECT "+cloudCollaborationColumns+" FROM cloud_collaborations WHERE owner_id=? AND idempotency_key=?", ownerID, idempotencyKey))
+	if errors.Is(err, sql.ErrNoRows) {
+		return CloudCollaborationRecord{}, ErrNotFound
+	}
+	return rec, err
+}
+
+func (s *Store) ListCloudCollaborations(ctx context.Context, ownerID string, limit int) ([]CloudCollaborationRecord, error) {
+	rows, err := s.db.QueryContext(ctx, "SELECT "+cloudCollaborationColumns+" FROM cloud_collaborations WHERE owner_id=? ORDER BY updated_at DESC,collaboration_id LIMIT ?", ownerID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]CloudCollaborationRecord, 0)
+	for rows.Next() {
+		rec, scanErr := scanCloudCollaboration(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		out = append(out, rec)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) UpdateCloudCollaboration(ctx context.Context, ownerID, collaborationID, status, stateJSON string, expectedRevision int64, now time.Time) (CloudCollaborationRecord, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE cloud_collaborations SET status=?,state_json=?,revision=revision+1,updated_at=?
+		WHERE collaboration_id=? AND owner_id=? AND revision=?`, status, stateJSON, now.Unix(), collaborationID, ownerID, expectedRevision)
+	if err != nil {
+		return CloudCollaborationRecord{}, err
+	}
+	if affected, err := result.RowsAffected(); err != nil {
+		return CloudCollaborationRecord{}, err
+	} else if affected != 1 {
+		return CloudCollaborationRecord{}, ErrConflict
+	}
+	return s.GetCloudCollaboration(ctx, ownerID, collaborationID)
+}
+
+func (s *Store) CleanupResults(ctx context.Context, now time.Time, limit int) error {
+	if limit <= 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, "SELECT result_id FROM result_records WHERE expires_at <= ? ORDER BY expires_at, result_id LIMIT ?", now.Unix(), limit)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return tx.Commit()
+	}
+	if err := deleteByIDs(ctx, tx, "result_records", ids); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) CleanupArtifacts(ctx context.Context, now time.Time, limit int) ([]ArtifactFileDeletion, error) {
 	if limit <= 0 {
 		return nil, nil
@@ -953,8 +1316,8 @@ func (s *Store) CleanupArtifacts(ctx context.Context, now time.Time, limit int) 
 	}
 
 	artifactRows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(storage_key,'') FROM artifacts a
-		WHERE (a.status = 'complete' AND a.expires_at <= ?)
-		OR (a.status <> 'complete' AND NOT EXISTS (SELECT 1 FROM artifact_uploads u WHERE u.artifact_id = a.id))
+			WHERE (a.status = 'complete' AND a.expires_at <= ? AND NOT EXISTS (SELECT 1 FROM result_pages rp WHERE rp.artifact_id = a.id))
+			OR (a.status <> 'complete' AND NOT EXISTS (SELECT 1 FROM artifact_uploads u WHERE u.artifact_id = a.id))
 		ORDER BY a.expires_at, a.id LIMIT ?`, now.Unix(), limit)
 	if err != nil {
 		return nil, err
@@ -1086,7 +1449,7 @@ func deleteByIDs(ctx context.Context, tx *sql.Tx, table string, ids []string) er
 	if len(ids) == 0 {
 		return nil
 	}
-	if table != "artifact_uploads" {
+	if table != "artifact_uploads" && table != "result_records" {
 		return ErrUnauthorized
 	}
 	args := stringsToAny(ids)

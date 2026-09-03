@@ -18,10 +18,47 @@ func (testAgentCapabilityError) CapabilityError() (string, string, bool) {
 	return "AGENT_CONFIG_INVALID", "AI runtime configuration is incompatible", false
 }
 
+type disconnectedCreateTestAgent struct {
+	contextError error
+	hasDeadline  bool
+}
+
+func (a *disconnectedCreateTestAgent) Control(ctx context.Context, _ string, _ map[string]any) (map[string]any, error) {
+	a.contextError = ctx.Err()
+	_, a.hasDeadline = ctx.Deadline()
+	return map[string]any{"sessionId": "cloud-after-disconnect"}, nil
+}
+
+func (*disconnectedCreateTestAgent) Close(context.Context) error { return nil }
+
 func TestCapabilityErrorPreservesSanitizedAgentClassification(t *testing.T) {
 	err := capabilityError(testAgentCapabilityError{})
 	if err.Code != "AGENT_CONFIG_INVALID" || err.Message != "AI runtime configuration is incompatible" || err.Retryable {
 		t.Fatalf("protocol error=%+v", err)
+	}
+}
+
+func TestSessionCreateSurvivesTransportCancellationWithinOperationDeadline(t *testing.T) {
+	agent := &disconnectedCreateTestAgent{}
+	client, err := New(Config{DataDir: t.TempDir(), Version: "disconnect-test", Agent: agent, AgentCallerOwned: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	response := client.handleCapabilityRequest(parent, protocolv1.CapabilityRequest{
+		MessageType: protocolv1.MessageCapabilityRequest,
+		RequestId:   "req_disconnect_create_01",
+		Capability:  "agent.control",
+		Action:      "session.create",
+		Params:      map[string]any{},
+		Deadline:    protocolv1.Timestamp(time.Now().Add(time.Second)),
+	})
+	if response.Error != nil || response.Result["sessionId"] != "cloud-after-disconnect" {
+		t.Fatalf("response=%+v", response)
+	}
+	if agent.contextError != nil || !agent.hasDeadline {
+		t.Fatalf("agent context error=%v hasDeadline=%v", agent.contextError, agent.hasDeadline)
 	}
 }
 

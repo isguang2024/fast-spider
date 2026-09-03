@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -39,6 +40,59 @@ func TestChatGPTCloudSessionCreateReplaysThePersistedResult(t *testing.T) {
 	}
 	if second["idempotencyStatus"] != "replayed" || second["externalConversationId"] != "cloud-conversation-1" {
 		t.Fatalf("replay metadata=%#v", second)
+	}
+}
+
+func TestChatGPTCloudSessionCreateRejectsPluginBindingBeforeReservation(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	providerCalls := 0
+	manager.chatgptCloud.createOverride = func(context.Context, string, string) (chatgptCloudTurnResult, error) {
+		providerCalls++
+		return chatgptCloudTurnResult{ConversationID: "must-not-create"}, nil
+	}
+	params := map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
+		"prompt": "plugin binding must fail closed", "pluginName": "fast-spider FS",
+		"idempotencyKey": "cloud-plugin-binding-01", "workingDirectory": t.TempDir(),
+	}
+	_, err := manager.Control(context.Background(), "session.create", params)
+	if err == nil {
+		t.Fatal("Cloud session.create accepted unsupported per-session plugin binding")
+	}
+	var capabilityErr interface{ CapabilityError() (string, string, bool) }
+	if !errors.As(err, &capabilityErr) {
+		t.Fatalf("error=%T does not expose capability classification: %v", err, err)
+	}
+	code, message, retryable := capabilityErr.CapabilityError()
+	if code != "UNSUPPORTED_SESSION_PLUGIN_BINDING" || message == "" || retryable {
+		t.Fatalf("classification=%q %q %v", code, message, retryable)
+	}
+	if providerCalls != 0 {
+		t.Fatalf("provider calls=%d, want 0", providerCalls)
+	}
+	if len(manager.createStore.records) != 0 {
+		t.Fatalf("unsupported plugin request changed idempotency records: %#v", manager.createStore.records)
+	}
+	if strings.Contains(message, "fast-spider FS") || strings.Contains(err.Error(), "fast-spider FS") {
+		t.Fatalf("plugin input leaked into error: %v", err)
+	}
+}
+
+func TestChatGPTCloudLatestAssistantFollowsCurrentNodeAndIsBounded(t *testing.T) {
+	detail := map[string]any{
+		"currentNode": "user-2",
+		"mapping": map[string]any{
+			"assistant-old": map[string]any{"parent": "user-1", "message": map[string]any{"id": "assistant-old", "author": map[string]any{"role": "assistant"}, "create_time": 10.0, "content": map[string]any{"parts": []any{"old"}}}},
+			"user-2":        map[string]any{"parent": "assistant-new", "message": map[string]any{"id": "user-2", "author": map[string]any{"role": "user"}}},
+			"assistant-new": map[string]any{"parent": "user-1", "message": map[string]any{"id": "assistant-new", "author": map[string]any{"role": "assistant"}, "create_time": 20.0, "content": map[string]any{"parts": []any{"new"}}}},
+		},
+	}
+	if got := chatgptCloudLatestAssistantText(detail); got != "new" {
+		t.Fatalf("latest assistant=%q", got)
+	}
+	if status := chatgptCloudConversationStatus(map[string]any{"mapping": map[string]any{}}); status != "unknown" {
+		t.Fatalf("status without terminal proof=%q", status)
 	}
 }
 
@@ -75,6 +129,48 @@ func TestChatGPTCloudSessionCreateFailsClosedAfterAmbiguousError(t *testing.T) {
 	}
 	if creates != 1 {
 		t.Fatalf("cloud creates=%d want 1", creates)
+	}
+}
+
+func TestChatGPTCloudSessionCreatePersistsProviderVisibleRequestIDBeforeSideEffect(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	var providerMessageID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case chatgptSentinelPreparePath:
+			writeChatGPTCloudTestJSON(t, w, map[string]any{
+				"prepare_token": "sentinel-attempt",
+				"proofofwork":   map[string]any{"required": true, "seed": "seed", "difficulty": "ffffffff"},
+			})
+		case chatgptConversationPrepare:
+			writeChatGPTCloudTestJSON(t, w, map[string]any{"status": "success", "conduit_token": "conduit-attempt"})
+		case chatgptConversationPath:
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode create body: %v", err)
+			}
+			providerMessageID = chatgptCloudRequestMessageID(body)
+			http.Error(w, "provider unavailable", http.StatusBadGateway)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	manager.chatgptCloud.baseURL = server.URL
+	manager.chatgptCloud.http = server.Client()
+	manager.chatgptCloud.tokenSource = func(context.Context) (string, error) { return "token", nil }
+	params := map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "mode": "complete",
+		"prompt": "persist exact provider request", "model": "gpt-test",
+		"idempotencyKey": "cloud-provider-request-01", "workingDirectory": t.TempDir(),
+	}
+	if _, err := manager.Control(context.Background(), "session.create", params); err == nil {
+		t.Fatal("provider failure was reported as success")
+	}
+	record := manager.createStore.records["codex:cloud-provider-request-01"]
+	if record.State != "in_doubt" || record.Attempt == nil || record.Attempt.RequestMessageID == "" || record.Attempt.RequestMessageID != providerMessageID {
+		t.Fatalf("record=%#v providerMessageID=%q", record, providerMessageID)
 	}
 }
 
@@ -120,6 +216,143 @@ func TestChatGPTCloudSessionCreateKeepsKnownConversationAfterStreamError(t *test
 	}
 	if creates != 1 || replayed["sessionId"] != first["sessionId"] || replayed["idempotencyStatus"] != "replayed" {
 		t.Fatalf("restart creates=%d replay=%#v", creates, replayed)
+	}
+}
+
+func TestChatGPTCloudSessionCreateReplaysConversationPersistedBeforeCompletion(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	workingDirectory := t.TempDir()
+	storeKey := "codex:cloud-observed-before-complete-01"
+	observed := make(chan struct{})
+	release := make(chan struct{})
+	creates := 0
+	manager.chatgptCloud.createOverride = func(context.Context, string, string) (chatgptCloudTurnResult, error) {
+		creates++
+		if err := manager.createStore.update(storeKey, "thread_created", map[string]any{
+			"sessionId": "cloud-observed-before-complete", "creationConfirmed": true,
+			"phase": "created_execution_unknown", "completionPending": true,
+		}); err != nil {
+			t.Errorf("persist observed conversation: %v", err)
+		}
+		close(observed)
+		<-release
+		return chatgptCloudTurnResult{ConversationID: "cloud-observed-before-complete"}, context.DeadlineExceeded
+	}
+	params := map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
+		"prompt": "persist before completion", "idempotencyKey": "cloud-observed-before-complete-01", "workingDirectory": workingDirectory,
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := manager.Control(context.Background(), "session.create", params)
+		firstDone <- err
+	}()
+	<-observed
+	replayed, err := manager.Control(context.Background(), "session.create", params)
+	if err != nil {
+		t.Fatalf("replay observed conversation: %v", err)
+	}
+	if replayed["sessionId"] != "cloud-observed-before-complete" || replayed["idempotencyStatus"] != "replayed" || creates != 1 {
+		t.Fatalf("replayed=%#v creates=%d", replayed, creates)
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("original create completion: %v", err)
+	}
+}
+
+func TestChatGPTCloudSessionCreateReconcilesExactProviderMessageID(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	workingDirectory := t.TempDir()
+	input := agentControlParams{
+		Backend: sessionBackendChatGPTCloud, Mode: "complete", Prompt: "reconcile exact request",
+		Model: "gpt-test", IdempotencyKey: "cloud-exact-reconcile-01", WorkingDirectory: workingDirectory,
+		modelProvided: true,
+	}
+	spec, err := resolveSessionVisibility("codex", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalizedDirectory, err := requiredAgentDirectory(workingDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	specValue := map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "prompt": input.Prompt,
+		"model": input.Model, "workingDirectory": normalizedDirectory, "mode": "complete", "thinking": "",
+	}
+	for key, value := range spec.hashFields() {
+		specValue[key] = value
+	}
+	storeKey := "codex:" + input.IdempotencyKey
+	requestMessageID := "request-message-exact-01"
+	manager.createStore.records[storeKey] = sessionCreateRecord{
+		Key: storeKey, SpecHash: sessionCreateSpecHash(specValue), State: "in_doubt",
+		Attempt:   &sessionCreateAttempt{Backend: sessionBackendChatGPTCloud, RequestMessageID: requestMessageID, StartedAt: time.Now().UTC()},
+		UpdatedAt: time.Now().UTC(),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case chatgptConversationsList:
+			writeChatGPTCloudTestJSON(t, w, map[string]any{"items": []any{map[string]any{"id": "cloud-reconciled-exact"}}})
+		case "/backend-api/conversation/cloud-reconciled-exact":
+			writeChatGPTCloudTestJSON(t, w, map[string]any{
+				"conversation_id": "cloud-reconciled-exact",
+				"mapping":         map[string]any{"request-node": map[string]any{"id": "request-node", "message": map[string]any{"id": requestMessageID}}},
+			})
+		default:
+			t.Fatalf("unexpected provider request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	manager.chatgptCloud.baseURL = server.URL
+	manager.chatgptCloud.http = server.Client()
+	manager.chatgptCloud.tokenSource = func(context.Context) (string, error) { return "token", nil }
+	result, err := manager.Control(context.Background(), "session.create", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "mode": "complete",
+		"prompt": input.Prompt, "model": input.Model, "idempotencyKey": input.IdempotencyKey, "workingDirectory": workingDirectory,
+	})
+	if err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+	if result["sessionId"] != "cloud-reconciled-exact" || result["creationReconciled"] != true || result["idempotencyStatus"] != "replayed" {
+		t.Fatalf("result=%#v", result)
+	}
+	if record := manager.createStore.records[storeKey]; record.State != "succeeded" || record.Result["sessionId"] != "cloud-reconciled-exact" {
+		t.Fatalf("record=%#v", record)
+	}
+}
+
+func TestChatGPTCloudListReturnsMarkedSidecarFallbackOnProviderTimeout(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	workingDirectory := t.TempDir()
+	spec, err := resolveSessionVisibility("codex", agentControlParams{Backend: sessionBackendChatGPTCloud, Visibility: sessionVisibilityVisible})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.persistSessionVisibility(spec.recordForDirectory("codex", "cloud-sidecar-fallback", workingDirectory, time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+	manager.chatgptCloud.listAuthTimeout = 20 * time.Millisecond
+	manager.chatgptCloud.tokenSource = func(ctx context.Context) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	result, err := manager.Control(context.Background(), "session.list", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "limit": 20,
+	})
+	if err != nil {
+		t.Fatalf("partial list: %v", err)
+	}
+	sessions, _ := result["sessions"].([]map[string]any)
+	if len(sessions) != 1 || sessions[0]["sessionId"] != "cloud-sidecar-fallback" {
+		t.Fatalf("sessions=%#v", sessions)
+	}
+	if result["incomplete"] != true || result["authoritative"] != false || result["reconciliationRequired"] != true || result["providerStatus"] != "timeout" {
+		t.Fatalf("fallback metadata=%#v", result)
 	}
 }
 

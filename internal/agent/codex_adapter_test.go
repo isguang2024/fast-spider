@@ -209,6 +209,445 @@ func TestCodexWaitLoopClearsActiveTurnsForExitedProcess(t *testing.T) {
 	}
 }
 
+func TestCodexRequestTimeoutQuarantinesGeneration(t *testing.T) {
+	adapter := NewCodexAdapter(nil)
+	cmd := &exec.Cmd{Process: &os.Process{Pid: 9001}}
+	done := make(chan struct{})
+	writer := &bufferWriteCloser{}
+	adapter.mu.Lock()
+	adapter.cmd = cmd
+	adapter.stdin = writer
+	adapter.processDone = done
+	adapter.generation = 1
+	adapter.mu.Unlock()
+	adapter.stopProcessOverride = func(_ context.Context, got *exec.Cmd) error {
+		if got != cmd {
+			t.Fatalf("quarantine stopped a different process: %p != %p", got, cmd)
+		}
+		adapter.finishProcess(cmd, 1, done, errors.New("injected app-server timeout"))
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, err := adapter.request(ctx, "getAuthStatus", nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timed out RPC error=%v", err)
+	}
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	if adapter.cmd != nil || adapter.stdin != nil || adapter.processDone != nil || adapter.quarantined {
+		t.Fatalf("timed out generation remained reusable: cmd=%p stdin=%p done=%p quarantined=%v", adapter.cmd, adapter.stdin, adapter.processDone, adapter.quarantined)
+	}
+	if len(adapter.pending) != 0 {
+		t.Fatalf("timed out RPC remained pending: %#v", adapter.pending)
+	}
+}
+
+func TestCodexEnsureStartedBoundsQuarantinedGenerationWait(t *testing.T) {
+	adapter := NewCodexAdapter(nil)
+	adapter.mu.Lock()
+	adapter.cmd = &exec.Cmd{Process: &os.Process{Pid: 9002}}
+	adapter.processDone = make(chan struct{})
+	adapter.generation = 1
+	adapter.quarantined = true
+	adapter.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := adapter.ensureStarted(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("quarantined generation error=%v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("quarantined generation wait was unbounded: %s", elapsed)
+	}
+}
+
+func TestCodexEnsureStartedHonorsContextWhileWaitingForStartGate(t *testing.T) {
+	adapter := NewCodexAdapter(nil)
+	release, err := adapter.acquireStartGate(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := adapter.ensureStarted(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("start gate wait error=%v", err)
+	}
+}
+
+func TestCodexCloseSynchronizesWithStartPublish(t *testing.T) {
+	if os.Getenv("FAST_SPIDER_CODEX_CLOSE_HELPER") == "1" {
+		select {}
+	}
+	adapter := NewCodexAdapter(nil)
+	cmd := exec.Command(os.Args[0], "-test.run=TestCodexCloseSynchronizesWithStartPublish")
+	cmd.Env = append(os.Environ(), "FAST_SPIDER_CODEX_CLOSE_HELPER=1")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go adapter.waitLoop(cmd, 1, done)
+	adapter.lifecycleMu.Lock()
+	publishDone := make(chan bool, 1)
+	go func() {
+		_, published := adapter.publishStartedProcess(cmd, stdin, done)
+		publishDone <- published
+	}()
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- adapter.Close(context.Background()) }()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close returned before start publish barrier: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	adapter.lifecycleMu.Unlock()
+	select {
+	case <-publishDone:
+	case <-time.After(time.Second):
+		t.Fatal("start publish did not finish")
+	}
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close error=%v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close did not finish after start publish")
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("started child process remained active after Close")
+	}
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	if adapter.cmd != nil || adapter.processDone != nil || !adapter.closed {
+		t.Fatalf("Close left adapter state: cmd=%p done=%p closed=%v", adapter.cmd, adapter.processDone, adapter.closed)
+	}
+}
+
+func TestCodexQuarantineStopStaysBoundToOldGeneration(t *testing.T) {
+	adapter := NewCodexAdapter(nil)
+	oldCmd := &exec.Cmd{Process: &os.Process{Pid: 9101}}
+	oldDone := make(chan struct{})
+	oldStdin := &trackingWriteCloser{written: make(chan struct{})}
+	newCmd := &exec.Cmd{Process: &os.Process{Pid: 9102}}
+	newDone := make(chan struct{})
+	newStdin := &trackingWriteCloser{written: make(chan struct{})}
+	stopEntered := make(chan codexProcess, 1)
+	releaseStop := make(chan struct{})
+	adapter.mu.Lock()
+	adapter.cmd = oldCmd
+	adapter.stdin = oldStdin
+	adapter.processDone = oldDone
+	adapter.generation = 1
+	adapter.mu.Unlock()
+	adapter.stopTargetOverride = func(_ context.Context, target codexProcess) error {
+		stopEntered <- target
+		<-releaseStop
+		_ = target.stdin.Close()
+		return nil
+	}
+	quarantineDone := make(chan struct{})
+	go func() {
+		adapter.quarantineProcess(1)
+		close(quarantineDone)
+	}()
+	var target codexProcess
+	select {
+	case target = <-stopEntered:
+	case <-time.After(time.Second):
+		t.Fatal("old generation stop did not start")
+	}
+	if target.cmd != oldCmd || target.stdin != oldStdin || target.done != oldDone || target.generation != 1 {
+		t.Fatalf("stop target=%#v", target)
+	}
+
+	adapter.mu.Lock()
+	adapter.cmd = newCmd
+	adapter.stdin = newStdin
+	adapter.processDone = newDone
+	adapter.generation = 2
+	adapter.quarantined = false
+	adapter.mu.Unlock()
+	adapter.finishProcess(oldCmd, 1, oldDone, errors.New("old generation exited"))
+	close(releaseStop)
+	select {
+	case <-quarantineDone:
+	case <-time.After(time.Second):
+		t.Fatal("old generation stop did not finish")
+	}
+	if got := atomic.LoadInt32(&oldStdin.closes); got != 1 {
+		t.Fatalf("old stdin closes=%d want 1", got)
+	}
+	if got := atomic.LoadInt32(&newStdin.closes); got != 0 {
+		t.Fatalf("replacement stdin was closed by old stop: %d", got)
+	}
+	select {
+	case <-newDone:
+		t.Fatal("old stop closed replacement processDone")
+	default:
+	}
+
+	requestDone := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_, err := adapter.request(ctx, "getAuthStatus", nil)
+		requestDone <- err
+	}()
+	select {
+	case <-newStdin.written:
+	case <-time.After(time.Second):
+		t.Fatal("replacement request did not write")
+	}
+	adapter.handleRPCMessageForGeneration(2, []byte(`{"id":1,"result":{"ok":true}}`))
+	if err := <-requestDone; err != nil {
+		t.Fatalf("replacement request failed: %v", err)
+	}
+}
+
+func TestCodexStaleGenerationMessagesAreDiscarded(t *testing.T) {
+	adapter := NewCodexAdapter(nil)
+	adapter.mu.Lock()
+	adapter.cmd = &exec.Cmd{Process: &os.Process{Pid: 9201}}
+	adapter.generation = 2
+	adapter.mu.Unlock()
+	adapter.handleNotificationForGeneration(2, "turn/started", json.RawMessage(`{"threadId":"thread-1","turnId":"turn-new"}`))
+	adapter.handleNotificationForGeneration(1, "turn/started", json.RawMessage(`{"threadId":"thread-1","turnId":"turn-old"}`))
+	if got := adapter.ActiveTurn("thread-1"); got != "turn-new" {
+		t.Fatalf("stale start changed active turn=%q", got)
+	}
+	adapter.handleNotificationForGeneration(1, "turn/completed", json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-old","status":"completed"}}`))
+	if got := adapter.ActiveTurn("thread-1"); got != "turn-new" {
+		t.Fatalf("stale completion changed active turn=%q", got)
+	}
+	adapter.handleRPCMessageForGeneration(1, []byte(`{"id":"old-request","method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-old","questions":[{"id":"choice"}]}}`))
+	if got := adapter.PendingRequests("thread-1"); len(got) != 0 {
+		t.Fatalf("stale server request was queued: %#v", got)
+	}
+	adapter.handleRPCMessageForGeneration(2, []byte(`{"id":"new-request","method":"item/tool/requestUserInput","params":{"threadId":"thread-1","turnId":"turn-new","questions":[{"id":"choice"}]}}`))
+	if got := adapter.PendingRequests("thread-1"); len(got) != 1 || got[0]["requestId"] != "new-request" {
+		t.Fatalf("current server request=%#v", got)
+	}
+}
+
+func TestCodexNotificationRevalidatesAfterLifecycleHandoff(t *testing.T) {
+	adapter := NewCodexAdapter(nil)
+	oldCmd := &exec.Cmd{Process: &os.Process{Pid: 9251}}
+	oldDone := make(chan struct{})
+	newCmd := &exec.Cmd{Process: &os.Process{Pid: 9252}}
+	newDone := make(chan struct{})
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	unloadCalled := make(chan struct{}, 1)
+	adapter.mu.Lock()
+	adapter.cmd = oldCmd
+	adapter.processDone = oldDone
+	adapter.generation = 1
+	adapter.mu.Unlock()
+	adapter.eventMu.Lock()
+	adapter.activeTurns["thread-1"] = "turn-old"
+	adapter.activeTurnGeneration["thread-1"] = 1
+	adapter.eventMu.Unlock()
+	adapter.notificationBeforeCommit = func(generation uint64) {
+		if generation != 1 {
+			return
+		}
+		close(entered)
+		<-release
+	}
+	adapter.unloadThreadOverride = func(_ context.Context, sessionID string) error {
+		if sessionID == "thread-1" {
+			unloadCalled <- struct{}{}
+		}
+		return nil
+	}
+	handlerDone := make(chan struct{})
+	go func() {
+		adapter.handleNotificationForGeneration(1, "turn/completed", json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-old","status":"completed"}}`))
+		close(handlerDone)
+	}()
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("old notification did not reach the lifecycle handoff")
+	}
+	adapter.finishProcess(oldCmd, 1, oldDone, errors.New("old generation exited"))
+	adapter.mu.Lock()
+	adapter.cmd = newCmd
+	adapter.processDone = newDone
+	adapter.generation = 2
+	adapter.quarantined = false
+	adapter.mu.Unlock()
+	adapter.eventMu.Lock()
+	adapter.activeTurns["thread-1"] = "turn-new"
+	adapter.activeTurnGeneration["thread-1"] = 2
+	eventsBefore := len(adapter.events)
+	adapter.eventMu.Unlock()
+	close(release)
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("old notification did not finish after handoff")
+	}
+	if got := adapter.ActiveTurn("thread-1"); got != "turn-new" {
+		t.Fatalf("old notification changed replacement active turn=%q", got)
+	}
+	adapter.eventMu.Lock()
+	newEvents := append([]AgentEvent(nil), adapter.events[eventsBefore:]...)
+	adapter.eventMu.Unlock()
+	for _, event := range newEvents {
+		if event.Type == "turn.completed" && event.TurnID == "turn-old" {
+			t.Fatalf("old completion was recorded after handoff: %#v", event)
+		}
+	}
+	select {
+	case <-unloadCalled:
+		t.Fatal("old completion started unload after handoff")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestCodexGenerationBoundUnloadCannotRemoveReplacementLoad(t *testing.T) {
+	adapter := NewCodexAdapter(nil)
+	oldCmd := &exec.Cmd{Process: &os.Process{Pid: 9261}}
+	oldDone := make(chan struct{})
+	newCmd := &exec.Cmd{Process: &os.Process{Pid: 9262}}
+	newDone := make(chan struct{})
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	unsubscribed := make(chan struct{}, 1)
+	adapter.mu.Lock()
+	adapter.cmd = oldCmd
+	adapter.processDone = oldDone
+	adapter.generation = 1
+	adapter.loaded["thread-1"] = struct{}{}
+	adapter.loadedGeneration["thread-1"] = 1
+	adapter.mu.Unlock()
+	adapter.requestOverride = func(_ context.Context, method string, _ map[string]any) (map[string]any, error) {
+		if method == "thread/unsubscribe" {
+			unsubscribed <- struct{}{}
+		}
+		return map[string]any{}, nil
+	}
+	adapter.unloadBeforeSend = func(target codexProcess) {
+		if target.generation == 1 {
+			close(entered)
+			<-release
+		}
+	}
+	adapter.eventMu.Lock()
+	adapter.activeTurns["thread-1"] = "turn-1"
+	adapter.activeTurnGeneration["thread-1"] = 1
+	adapter.eventMu.Unlock()
+	adapter.handleNotificationForGeneration(1, "turn/completed", json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`))
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("generation-bound unload did not reach pre-send barrier")
+	}
+	adapter.finishProcess(oldCmd, 1, oldDone, errors.New("old generation exited"))
+	adapter.mu.Lock()
+	adapter.cmd = newCmd
+	adapter.stdin = &bufferWriteCloser{}
+	adapter.processDone = newDone
+	adapter.generation = 2
+	adapter.quarantined = false
+	adapter.mu.Unlock()
+	adapter.markThreadLoaded("thread-1")
+	close(release)
+	time.Sleep(20 * time.Millisecond)
+	select {
+	case <-unsubscribed:
+		t.Fatal("old generation sent unsubscribe after replacement load")
+	default:
+	}
+	adapter.mu.Lock()
+	loaded := adapter.loadedForGenerationLocked("thread-1", 2)
+	adapter.mu.Unlock()
+	if !loaded {
+		t.Fatal("replacement generation loaded state was removed")
+	}
+}
+
+func TestCodexBlockedOldServerReplyDoesNotHoldLifecycle(t *testing.T) {
+	adapter := NewCodexAdapter(nil)
+	oldCmd := &exec.Cmd{Process: &os.Process{Pid: 9271}}
+	oldDone := make(chan struct{})
+	oldWriter := &blockingWriteCloser{started: make(chan struct{}), release: make(chan struct{})}
+	adapter.mu.Lock()
+	adapter.cmd = oldCmd
+	adapter.stdin = oldWriter
+	adapter.processDone = oldDone
+	adapter.generation = 1
+	adapter.mu.Unlock()
+	handlerDone := make(chan struct{})
+	go func() {
+		adapter.handleServerRequestForGeneration(1, json.RawMessage(`null`), "item/tool/requestUserInput", nil)
+		close(handlerDone)
+	}()
+	select {
+	case <-oldWriter.started:
+	case <-time.After(time.Second):
+		t.Fatal("invalid request did not enter blocked old-generation reply")
+	}
+	finished := make(chan struct{})
+	go func() {
+		adapter.finishProcess(oldCmd, 1, oldDone, errors.New("old generation exited"))
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("finishProcess blocked behind old server reply writer")
+	}
+	newCmd := &exec.Cmd{Process: &os.Process{Pid: 9272}}
+	newDone := make(chan struct{})
+	newWriter := &bufferWriteCloser{}
+	adapter.mu.Lock()
+	adapter.cmd = newCmd
+	adapter.stdin = newWriter
+	adapter.processDone = newDone
+	adapter.generation = 2
+	adapter.quarantined = false
+	adapter.mu.Unlock()
+	close(oldWriter.release)
+	select {
+	case <-handlerDone:
+	case <-time.After(time.Second):
+		t.Fatal("old blocked reply did not finish after release")
+	}
+	if newWriter.Len() != 0 {
+		t.Fatal("old server reply wrote to replacement stdin")
+	}
+}
+
+func TestCodexQuarantineStopUsesSingleDeadline(t *testing.T) {
+	adapter := NewCodexAdapter(nil)
+	adapter.mu.Lock()
+	adapter.cmd = &exec.Cmd{Process: &os.Process{Pid: 9301}}
+	adapter.processDone = make(chan struct{})
+	adapter.generation = 1
+	adapter.mu.Unlock()
+	adapter.stopProcessOverride = func(ctx context.Context, _ *exec.Cmd) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	started := time.Now()
+	adapter.quarantineProcess(1)
+	if elapsed := time.Since(started); elapsed < codexAppServerStopWait-100*time.Millisecond || elapsed > codexAppServerStopWait+time.Second {
+		t.Fatalf("quarantine stop elapsed=%s, want one ~%s budget", elapsed, codexAppServerStopWait)
+	}
+}
+
 func TestCodexExitedGenerationCannotClearReplacementProcess(t *testing.T) {
 	adapter := NewCodexAdapter(nil)
 	oldCmd := &exec.Cmd{}
@@ -441,6 +880,31 @@ func TestCodexAdapterQueuesAndResolvesInteractiveServerRequest(t *testing.T) {
 type bufferWriteCloser struct{ bytes.Buffer }
 
 func (w *bufferWriteCloser) Close() error { return nil }
+
+type trackingWriteCloser struct {
+	mu sync.Mutex
+	bytes.Buffer
+	written chan struct{}
+	closes  int32
+}
+
+func (w *trackingWriteCloser) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.written != nil {
+		select {
+		case <-w.written:
+		default:
+			close(w.written)
+		}
+	}
+	return w.Buffer.Write(p)
+}
+
+func (w *trackingWriteCloser) Close() error {
+	atomic.AddInt32(&w.closes, 1)
+	return nil
+}
 
 type blockingWriteCloser struct {
 	started chan struct{}

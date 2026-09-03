@@ -4,11 +4,24 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/isguang2024/fast-spider/internal/node"
 )
+
+const chatgptCreateReconcileTimeout = 30 * time.Second
+
+type chatgptCloudSessionPluginBindingError struct{}
+
+func (chatgptCloudSessionPluginBindingError) Error() string {
+	return "chatgpt_cloud session.create does not support per-session plugin binding; installed or catalog plugins are not session bindings"
+}
+
+func (chatgptCloudSessionPluginBindingError) CapabilityError() (string, string, bool) {
+	return "UNSUPPORTED_SESSION_PLUGIN_BINDING", "chatgpt_cloud session.create does not support per-session plugin binding; installed or catalog plugins are not session bindings", false
+}
 
 // controlChatGPTCloud dispatches ai_control actions for the codex + chatgpt_cloud
 // backend: ChatGPT cloud conversations created through the Codex app-server
@@ -90,6 +103,12 @@ func (m *AgentManager) chatgptCloudSetArchived(ctx context.Context, input agentC
 }
 
 func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentControlParams) (map[string]any, error) {
+	// ChatGPT Cloud sessions have no per-session plugin/tool transport. Reject
+	// this before touching the idempotency store or provider so a catalog lookup
+	// cannot be mistaken for a binding and cannot reserve a misleading create.
+	if strings.TrimSpace(input.PluginName) != "" {
+		return nil, chatgptCloudSessionPluginBindingError{}
+	}
 	defaults := m.chatGPTCloudCreateDefaults()
 	if strings.TrimSpace(input.Mode) == "" {
 		input.Mode = defaults.Mode
@@ -165,6 +184,38 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 		}
 		replayed, ok, err := m.createStore.begin(storeKey, specHash, legacyHashes...)
 		if err != nil {
+			var idempotencyErr *createIdempotencyError
+			if errors.As(err, &idempotencyErr) && idempotencyErr.code == "AGENT_CREATE_IN_DOUBT" {
+				if attempt, exists := m.createStore.attempt(storeKey); exists && attempt.Backend == sessionBackendChatGPTCloud {
+					reconcileCtx, cancel := context.WithTimeout(ctx, chatgptCreateReconcileTimeout)
+					sessionID, found, reconcileErr := m.chatgptCloud.FindConversationByMessageID(reconcileCtx, attempt.RequestMessageID)
+					cancel()
+					if found {
+						stored := map[string]any{
+							"sessionId": sessionID, "executionMode": "chatgpt_cloud", "createMode": createMode,
+							"model": selectedModel, "thinking": selectedThinking, "owner": "node_agent_bridge",
+							"phase": "created_execution_unknown", "completionPending": true, "creationConfirmed": true,
+							"creationReconciled": true, "realtimeChannel": "session.watch", "idempotencyProtected": true,
+							"idempotencyStatus": "created", "workingDirectory": workingDirectory,
+						}
+						spec.applyToResult(stored, sessionID)
+						if visibilityErr := m.persistSessionVisibility(spec.recordForDirectory("codex", sessionID, workingDirectory, time.Now().UTC())); visibilityErr != nil {
+							_ = m.createStore.update(storeKey, "in_doubt", stored)
+							return nil, visibilityErr
+						}
+						if persistenceErr := m.createStore.update(storeKey, "succeeded", stored); persistenceErr != nil {
+							_ = m.createStore.update(storeKey, "in_doubt", stored)
+							return nil, persistenceErr
+						}
+						replayed := cloneAgentMap(stored)
+						replayed["idempotencyStatus"] = "replayed"
+						return replayed, nil
+					}
+					if reconcileErr != nil && m.logger != nil {
+						m.logger.Warn("reconcile ambiguous ChatGPT cloud creation", "error", reconcileErr)
+					}
+				}
+			}
 			return nil, err
 		}
 		if ok {
@@ -183,12 +234,66 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 			return replayed, nil
 		}
 	}
+	var createBody map[string]any
+	if m.chatgptCloud.createOverride == nil {
+		if createMode == "quick_chat" {
+			createBody = chatgptQuickChatBodyWithThinking(input.Prompt, selectedModel, selectedThinking)
+		} else {
+			createBody = chatgptNewChatBodyWithThinking(input.Prompt, selectedModel, selectedThinking)
+		}
+		attempt := sessionCreateAttempt{
+			Backend: sessionBackendChatGPTCloud, RequestMessageID: chatgptCloudRequestMessageID(createBody), StartedAt: time.Now().UTC(),
+		}
+		if err := m.createStore.setAttempt(storeKey, attempt); err != nil {
+			if abortErr := m.createStore.abort(storeKey); abortErr != nil {
+				return nil, errors.Join(err, abortErr)
+			}
+			return nil, err
+		}
+	}
 	var result chatgptCloudTurnResult
 	var createErr error
+	persistObservedConversation := func(observed chatgptCloudTurnResult) error {
+		sessionID := strings.TrimSpace(observed.ConversationID)
+		if sessionID == "" {
+			return nil
+		}
+		partial := map[string]any{
+			"sessionId":            sessionID,
+			"executionMode":        "chatgpt_cloud",
+			"createMode":           createMode,
+			"model":                selectedModel,
+			"thinking":             selectedThinking,
+			"owner":                "node_agent_bridge",
+			"phase":                "created_execution_unknown",
+			"completionPending":    true,
+			"creationConfirmed":    true,
+			"realtimeChannel":      "session.watch",
+			"idempotencyProtected": true,
+			"idempotencyStatus":    "created",
+			"workingDirectory":     workingDirectory,
+		}
+		spec.applyToResult(partial, sessionID)
+		if err := m.createStore.update(storeKey, "thread_created", partial); err != nil {
+			return fmt.Errorf("persist observed ChatGPT cloud conversation: %w", err)
+		}
+		if err := m.persistSessionVisibility(spec.recordForDirectory("codex", sessionID, workingDirectory, time.Now().UTC())); err != nil {
+			return fmt.Errorf("persist observed ChatGPT cloud visibility metadata: %w", err)
+		}
+		return nil
+	}
 	if createMode == "quick_chat" {
-		result, createErr = m.chatgptCloud.CreateQuickWithThinking(ctx, input.Prompt, selectedModel, selectedThinking)
+		if createBody != nil {
+			result, createErr = m.chatgptCloud.createQuickBody(ctx, createBody)
+		} else {
+			result, createErr = m.chatgptCloud.CreateQuickWithThinking(ctx, input.Prompt, selectedModel, selectedThinking)
+		}
 	} else {
-		result, createErr = m.chatgptCloud.CreateWithThinking(ctx, input.Prompt, selectedModel, selectedThinking)
+		if createBody != nil {
+			result, createErr = m.chatgptCloud.createBodyObserved(ctx, createBody, persistObservedConversation)
+		} else {
+			result, createErr = m.chatgptCloud.CreateWithThinkingObserved(ctx, input.Prompt, selectedModel, selectedThinking, persistObservedConversation)
+		}
 	}
 	if createErr != nil && strings.TrimSpace(result.ConversationID) == "" {
 		if idempotencyKey != "" {
@@ -224,6 +329,7 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 		"thinking":             selectedThinking,
 		"owner":                "node_agent_bridge",
 		"phase":                "ready",
+		"creationConfirmed":    true,
 		"realtimeChannel":      "session.watch",
 		"idempotencyProtected": idempotencyKey != "",
 		"workingDirectory":     workingDirectory,
@@ -331,7 +437,22 @@ func (m *AgentManager) chatgptCloudGet(ctx context.Context, input agentControlPa
 func (m *AgentManager) chatgptCloudList(ctx context.Context, input agentControlParams) (map[string]any, error) {
 	items, err := m.chatgptCloud.List(ctx, input.Limit)
 	if err != nil {
-		return nil, err
+		fallback, fallbackErr := m.managedChatGPTCloudSessions("", input.Limit)
+		if fallbackErr != nil {
+			return nil, errors.Join(err, fallbackErr)
+		}
+		providerStatus := "unavailable"
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			providerStatus = "timeout"
+		}
+		return map[string]any{
+			"sessions":               fallback,
+			"source":                 "fast_spider_sidecar",
+			"providerStatus":         providerStatus,
+			"authoritative":          false,
+			"incomplete":             true,
+			"reconciliationRequired": true,
+		}, nil
 	}
 	snapshot, err := m.visibilitySnapshot()
 	if err != nil {
@@ -352,7 +473,13 @@ func (m *AgentManager) chatgptCloudList(ctx context.Context, input agentControlP
 		}
 		out = append(out, item)
 	}
-	return map[string]any{"sessions": out}, nil
+	return map[string]any{
+		"sessions":       out,
+		"source":         "chatgpt_cloud",
+		"providerStatus": "ok",
+		"authoritative":  true,
+		"incomplete":     false,
+	}, nil
 }
 
 func (m *AgentManager) chatgptCloudResult(ctx context.Context, input agentControlParams) (map[string]any, error) {
@@ -363,11 +490,37 @@ func (m *AgentManager) chatgptCloudResult(ctx context.Context, input agentContro
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
+	status := chatgptCloudConversationStatus(detail)
+	if m.callbackStore != nil {
+		if callbackResult, ok, callbackErr := m.callbackStore.resultFor(input.SessionID); callbackErr != nil {
+			return nil, callbackErr
+		} else if ok && callbackResult.Status != "" {
+			status = callbackResult.Status
+		}
+	}
+	if status == "" {
+		status = "unknown"
+	}
+	result := map[string]any{
 		"sessionId":         detail["sessionId"],
-		"status":            "completed",
+		"status":            status,
 		"finalAgentMessage": chatgptCloudLatestAssistantText(detail),
-	}, nil
+	}
+	resultMode := strings.ToLower(strings.TrimSpace(firstNonEmptyString(input.ResultMode, input.Mode)))
+	if resultMode == "manifest" || resultMode == "result-id" || resultMode == "result_id" || strings.TrimSpace(input.ResultID) != "" {
+		delete(result, "finalAgentMessage")
+		result["resultMode"] = firstNonEmptyString(resultMode, "manifest")
+		if strings.TrimSpace(input.ResultID) != "" {
+			result["resultId"] = strings.TrimSpace(input.ResultID)
+		}
+		if callbackResult, ok, _ := m.callbackStore.resultFor(input.SessionID); ok {
+			applyCallbackResultMetadata(result, callbackResult)
+		}
+	}
+	if result["finalAgentMessage"] == "" {
+		delete(result, "finalAgentMessage")
+	}
+	return result, nil
 }
 
 func (m *AgentManager) chatgptCloudDelete(ctx context.Context, input agentControlParams) (map[string]any, error) {
@@ -437,27 +590,68 @@ func (m *AgentManager) chatgptCloudWatch(ctx context.Context, input agentControl
 
 // chatgptCloudLatestAssistantText extracts the newest assistant message text.
 func chatgptCloudLatestAssistantText(detail map[string]any) string {
+	text, _ := chatgptCloudLatestAssistantTextLimit(detail, 64*1024)
+	return text
+}
+
+func chatgptCloudLatestAssistantTextLimit(detail map[string]any, limit int) (string, error) {
 	mapping, _ := detail["mapping"].(map[string]any)
-	var latest string
-	for _, raw := range mapping {
-		node, _ := raw.(map[string]any)
-		msg, _ := node["message"].(map[string]any)
-		if msg == nil {
-			continue
-		}
-		author, _ := msg["author"].(map[string]any)
-		if role, _ := author["role"].(string); role != "assistant" {
-			continue
-		}
-		content, _ := msg["content"].(map[string]any)
-		parts, _ := content["parts"].([]any)
-		var sb strings.Builder
-		for _, p := range parts {
-			sb.WriteString(strings.TrimSpace(fmt.Sprintf("%v", p)))
-		}
-		if sb.Len() > 0 {
-			latest = sb.String()
+	candidateID := chatgptCloudLastAssistantNodeID(detail)
+	if candidateID == "" {
+		return "", nil
+	}
+	node, _ := mapping[candidateID].(map[string]any)
+	message, _ := node["message"].(map[string]any)
+	content, _ := message["content"].(map[string]any)
+	parts, _ := content["parts"].([]any)
+	var builder strings.Builder
+	for _, part := range parts {
+		if text, ok := part.(string); ok {
+			builder.WriteString(text)
+			if builder.Len() > limit {
+				return "", fmt.Errorf("cloud assistant result exceeds %d bytes", limit)
+			}
 		}
 	}
-	return latest
+	return strings.TrimSpace(builder.String()), nil
+}
+
+func chatgptCloudLastAssistantNodeID(detail map[string]any) string {
+	mapping, _ := detail["mapping"].(map[string]any)
+	if current := chatgptCloudCurrentNodeID(detail); current != "" {
+		seen := map[string]bool{}
+		for current != "" && !seen[current] {
+			seen[current] = true
+			node, _ := mapping[current].(map[string]any)
+			message, _ := node["message"].(map[string]any)
+			if chatgptCloudMessageRole(message) == "assistant" {
+				return current
+			}
+			current = mapString(node, "parent")
+		}
+	}
+	type candidate struct {
+		key     string
+		created float64
+	}
+	candidates := make([]candidate, 0, len(mapping))
+	for key, raw := range mapping {
+		node, _ := raw.(map[string]any)
+		message, _ := node["message"].(map[string]any)
+		if chatgptCloudMessageRole(message) != "assistant" {
+			continue
+		}
+		created, _ := message["create_time"].(float64)
+		candidates = append(candidates, candidate{key: key, created: created})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].created == candidates[j].created {
+			return candidates[i].key > candidates[j].key
+		}
+		return candidates[i].created > candidates[j].created
+	})
+	if len(candidates) == 0 {
+		return ""
+	}
+	return candidates[0].key
 }

@@ -48,11 +48,13 @@ const (
 	DirectScopeAI            = "ai"
 	DirectScopeContextWrite  = "context.write"
 	DirectScopeArtifactWrite = "artifacts.write"
+	DirectScopeResultWrite   = "results.write"
+	DirectScopePagesRead     = "pages.read"
 )
 
 var directAccessScopes = map[string]struct{}{
 	DirectScopeFilesWrite: {}, DirectScopeShell: {}, DirectScopeJobs: {}, DirectScopeGit: {},
-	DirectScopeBrowser: {}, DirectScopeAI: {}, DirectScopeContextWrite: {}, DirectScopeArtifactWrite: {},
+	DirectScopeBrowser: {}, DirectScopeAI: {}, DirectScopeContextWrite: {}, DirectScopeArtifactWrite: {}, DirectScopeResultWrite: {}, DirectScopePagesRead: {},
 }
 
 type DirectAccessKeyView struct {

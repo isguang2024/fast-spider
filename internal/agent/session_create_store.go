@@ -17,11 +17,18 @@ import (
 const maxSessionCreateRecords = 4096
 
 type sessionCreateRecord struct {
-	Key       string         `json:"key"`
-	SpecHash  string         `json:"specHash"`
-	State     string         `json:"state"`
-	Result    map[string]any `json:"result,omitempty"`
-	UpdatedAt time.Time      `json:"updatedAt"`
+	Key       string                `json:"key"`
+	SpecHash  string                `json:"specHash"`
+	State     string                `json:"state"`
+	Attempt   *sessionCreateAttempt `json:"attempt,omitempty"`
+	Result    map[string]any        `json:"result,omitempty"`
+	UpdatedAt time.Time             `json:"updatedAt"`
+}
+
+type sessionCreateAttempt struct {
+	Backend          string    `json:"backend"`
+	RequestMessageID string    `json:"requestMessageId"`
+	StartedAt        time.Time `json:"startedAt"`
 }
 
 type sessionCreateIndex struct {
@@ -105,6 +112,11 @@ func validateSessionCreateRecord(record sessionCreateRecord) error {
 	if record.UpdatedAt.IsZero() {
 		return fmt.Errorf("missing update time")
 	}
+	if record.Attempt != nil {
+		if record.Attempt.Backend != sessionBackendChatGPTCloud || strings.TrimSpace(record.Attempt.RequestMessageID) == "" || len(record.Attempt.RequestMessageID) > 128 || strings.ContainsAny(record.Attempt.RequestMessageID, "\x00\r\n") || record.Attempt.StartedAt.IsZero() {
+			return fmt.Errorf("invalid create attempt")
+		}
+	}
 	sessionID := ""
 	if record.Result != nil {
 		var ok bool
@@ -131,6 +143,51 @@ func validateSessionCreateRecord(record sessionCreateRecord) error {
 		return fmt.Errorf("invalid state")
 	}
 	return nil
+}
+
+func (s *sessionCreateStore) setAttempt(key string, attempt sessionCreateAttempt) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return &createIdempotencyError{code: "AGENT_IDEMPOTENCY_STORE_UNAVAILABLE", message: "session.create idempotency state is unavailable"}
+	}
+	record, ok := s.records[key]
+	if !ok || record.State != "reserved" {
+		return fmt.Errorf("session create reservation is not active")
+	}
+	if record.Attempt != nil {
+		if *record.Attempt == attempt {
+			return nil
+		}
+		return &createIdempotencyError{code: "IDEMPOTENCY_CONFLICT", message: "session.create attempt metadata does not match the existing reservation"}
+	}
+	previous := record
+	record.Attempt = &attempt
+	record.UpdatedAt = time.Now().UTC()
+	if err := validateSessionCreateRecord(record); err != nil {
+		return err
+	}
+	s.records[key] = record
+	if committed, err := s.saveLocked(); err != nil {
+		if !committed {
+			s.records[key] = previous
+		}
+		return err
+	}
+	return nil
+}
+
+func (s *sessionCreateStore) attempt(key string) (sessionCreateAttempt, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return sessionCreateAttempt{}, false
+	}
+	record, ok := s.records[key]
+	if !ok || record.Attempt == nil {
+		return sessionCreateAttempt{}, false
+	}
+	return *record.Attempt, true
 }
 
 func (s *sessionCreateStore) abort(key string) error {
@@ -214,10 +271,17 @@ func (s *sessionCreateStore) begin(key, specHash string, legacySpecHashes ...str
 		switch current.State {
 		case "succeeded":
 			return cloneAgentMap(current.Result), true, nil
+		case "thread_created", "in_doubt":
+			creationConfirmed, _ := current.Result["creationConfirmed"].(bool)
+			sessionID, _ := current.Result["sessionId"].(string)
+			if creationConfirmed && strings.TrimSpace(sessionID) != "" {
+				return cloneAgentMap(current.Result), true, nil
+			}
+			return nil, false, &createIdempotencyError{code: "AGENT_CREATE_IN_DOUBT", message: "a prior session.create may have created a session; retry with the same idempotencyKey after provider reconciliation becomes available"}
 		case "reserved":
 			return nil, false, &createIdempotencyError{code: "AGENT_CREATE_IN_PROGRESS", message: "session.create with this idempotencyKey is already in progress"}
 		default:
-			return nil, false, &createIdempotencyError{code: "AGENT_CREATE_IN_DOUBT", message: "a prior session.create may have created a session; inspect session.list before retrying"}
+			return nil, false, &createIdempotencyError{code: "AGENT_CREATE_IN_DOUBT", message: "a prior session.create may have created a session; retry with the same idempotencyKey after provider reconciliation becomes available"}
 		}
 	}
 	if len(s.records) >= maxSessionCreateRecords {

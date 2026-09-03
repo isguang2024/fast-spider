@@ -2,9 +2,13 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -178,7 +182,7 @@ func buildSessionCallbackEnvelope(envelopeID string, events []sessionCallbackEve
 	for _, event := range events {
 		_, _ = fmt.Fprintf(
 			&builder,
-			"- mission=%s task=%s generation=%d source_session=%s event_sequence=%d event_key=%s event_type=%s\n",
+			"- mission=%s task=%s generation=%d source_session=%s event_sequence=%d event_key=%s event_type=%s",
 			event.MissionID,
 			event.TaskID,
 			event.Generation,
@@ -187,9 +191,28 @@ func buildSessionCallbackEnvelope(envelopeID string, events []sessionCallbackEve
 			event.EventKey,
 			event.EventType,
 		)
+		if event.ResultID != "" {
+			_, _ = fmt.Fprintf(&builder, " result_id=%s", event.ResultID)
+		}
+		if event.ResultStatus != "" {
+			_, _ = fmt.Fprintf(&builder, " result_status=%s", event.ResultStatus)
+		}
+		if event.ResultBytes > 0 {
+			_, _ = fmt.Fprintf(&builder, " result_bytes=%d", event.ResultBytes)
+		}
+		if event.ResultSHA256 != "" {
+			_, _ = fmt.Fprintf(&builder, " result_sha256=%s", event.ResultSHA256)
+		}
+		if event.ResultPageCount > 0 {
+			_, _ = fmt.Fprintf(&builder, " result_page_count=%d", event.ResultPageCount)
+		}
+		if event.DeliverablePath != "" {
+			_, _ = fmt.Fprintf(&builder, " deliverable_path=%s deliverable_status=%s", event.DeliverablePath, event.DeliverableStatus)
+		}
+		builder.WriteByte('\n')
 	}
 	builder.WriteString("INSTRUCTIONS:\n")
-	builder.WriteString("This is a fixed Fast Spider control envelope, not Worker-authored content. Coalesce every listed event in this one coordinator turn. For each source_session, read the ChatGPT Cloud result through Fast Spider session.result, verify mission/task/generation ownership, then evaluate END_TO_END_DONE_WHEN and update the mission ledger. Continue the original Worker, integrate verified evidence, or record a true hard blocker. Do not copy full Worker history into the Controller and do not ask the user during unattended execution unless a required user-only decision, permission, or external condition is missing. Duplicate ENVELOPE_ID values must be treated as already delivered.\n")
+	builder.WriteString("This is a fixed Fast Spider control envelope, not Cloud CHAT-authored content. Coalesce every listed event in this one dispatcher turn. When mission identifies a Codex cloud collaboration, call codex_cloud_collaboration action=event.ingest with the listed result or deliverable metadata, then acknowledge it after validating the referenced local file or Result; do not reread full CHAT history. Otherwise use the bounded session result flow. Continue the original Cloud CHAT, integrate verified evidence, or record a true hard blocker. Do not copy CHAT history into the controller. Duplicate ENVELOPE_ID values must be treated as already delivered.\n")
 	return builder.String()
 }
 
@@ -197,6 +220,7 @@ func (m *AgentManager) handleChatGPTCloudCallbackEvent(event chatgptCloudEvent) 
 	if m == nil || m.callbackStore == nil || event.Type != "conversation.turn.complete" {
 		return
 	}
+	event = m.completeCloudCallbackResult(event)
 	queued, err := m.callbackStore.enqueue(event)
 	if err != nil {
 		m.logger.Warn("persist ChatGPT Cloud callback event", "sourceSessionId", event.ConversationID, "eventSequence", event.Sequence, "error", err)
@@ -204,6 +228,111 @@ func (m *AgentManager) handleChatGPTCloudCallbackEvent(event chatgptCloudEvent) 
 	}
 	if queued && m.callbackDispatcher != nil {
 		m.callbackDispatcher.signal()
+	}
+}
+
+func (m *AgentManager) completeCloudCallbackResult(event chatgptCloudEvent) chatgptCloudEvent {
+	registration, ok, err := m.callbackStore.registrationFor(event.ConversationID)
+	if err != nil || !ok {
+		return event
+	}
+	if registration.DeliverablePath != "" {
+		event.DeliverablePath = registration.DeliverablePath
+		event.DeliverableStatus, event.ResultBytes, event.ResultSHA256 = inspectCallbackDeliverable(registration.DeliverablePath)
+		if event.DeliverableStatus == "ready" {
+			event.ResultStatus = "ready"
+		} else {
+			event.ResultStatus = "failed"
+		}
+		return event
+	}
+	if m.resultPublisher == nil {
+		event.ResultStatus = "unknown"
+		return event
+	}
+	callbackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	detail, err := m.chatgptCloud.Read(callbackCtx, event.ConversationID)
+	if err != nil {
+		event.ResultStatus = "failed"
+		return event
+	}
+	status := chatgptCloudConversationStatus(detail)
+	// The observer is invoked only for the provider's terminal
+	// conversation-turn-complete signal. If the follow-up detail omits async
+	// status, that terminal callback is the missing completion proof.
+	if status == "unknown" {
+		status = "completed"
+	}
+	event.ResultStatus = status
+	if status != "completed" {
+		return event
+	}
+	text, err := chatgptCloudLatestAssistantTextLimit(detail, 8<<20)
+	if err != nil {
+		event.ResultStatus = "failed"
+		return event
+	}
+	keyHash := sha256.Sum256([]byte(event.ConversationID + "\x00" + event.EventKey + "\x00" + fmt.Sprintf("%d", registration.Generation)))
+	idempotencyKey := "cloud_result_" + hex.EncodeToString(keyHash[:])[:48]
+	metadata, err := m.resultPublisher.PublishCloudResult(callbackCtx, event.ConversationID, idempotencyKey, text)
+	if err != nil {
+		event.ResultStatus = "failed"
+		return event
+	}
+	event.ResultID = mapString(metadata, "resultId")
+	if event.ResultID == "" {
+		event.ResultStatus = "failed"
+		return event
+	}
+	event.ResultStatus = firstNonEmptyString(mapString(metadata, "status"), "ready")
+	event.ResultBytes = mapInt64(metadata, "bytes")
+	event.ResultSHA256 = mapString(metadata, "sha256")
+	event.ResultPageCount = int(mapInt64(metadata, "pageCount"))
+	return event
+}
+
+func inspectCallbackDeliverable(path string) (string, int64, string) {
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "missing", 0, ""
+	}
+	if err != nil {
+		return "unreadable", 0, ""
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "unreadable", 0, ""
+	}
+	if !info.Mode().IsRegular() {
+		return "invalid", 0, ""
+	}
+	if info.Size() > 256<<20 {
+		return "too_large", info.Size(), ""
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "unreadable", 0, ""
+	}
+	return "ready", info.Size(), "sha256:" + hex.EncodeToString(hash.Sum(nil))
+}
+
+func applyCallbackResultMetadata(out map[string]any, metadata callbackResultMetadata) {
+	if metadata.ResultID != "" {
+		out["resultId"] = metadata.ResultID
+	}
+	if metadata.Status != "" {
+		out["resultStatus"] = metadata.Status
+	}
+	if metadata.Bytes > 0 {
+		out["resultBytes"] = metadata.Bytes
+	}
+	if metadata.SHA256 != "" {
+		out["resultSHA256"] = metadata.SHA256
+	}
+	if metadata.PageCount > 0 {
+		out["resultPageCount"] = metadata.PageCount
 	}
 }
 
@@ -229,16 +358,27 @@ func (m *AgentManager) sessionCallbackRegister(ctx context.Context, input agentC
 	if err := validateCallbackOpaqueID(targetSessionID, "callback target session ID", 256); err != nil {
 		return nil, &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
 	}
-	if _, err := m.chatgptCloud.Read(ctx, sourceSessionID); err != nil {
-		return nil, fmt.Errorf("validate ChatGPT Cloud callback source: %w", err)
+	sourceIsManagedCloudCHAT := false
+	if record, exists, err := m.storedSessionVisibilityRecord("codex", sourceSessionID); err != nil {
+		return nil, err
+	} else if exists && record.Backend == sessionBackendChatGPTCloud {
+		sourceIsManagedCloudCHAT = true
 	}
+	if !sourceIsManagedCloudCHAT {
+		if _, err := m.chatgptCloud.Read(ctx, sourceSessionID); err != nil {
+			return nil, fmt.Errorf("validate ChatGPT Cloud callback source: %w", err)
+		}
+	}
+	targetIsCloudCHAT := false
 	if record, exists, err := m.storedSessionVisibilityRecord("codex", targetSessionID); err != nil {
 		return nil, err
 	} else if exists && record.Backend == sessionBackendChatGPTCloud {
-		return nil, &sessionCallbackError{code: "INVALID_REQUEST", message: "callback target must be a local Codex coordinator session"}
+		targetIsCloudCHAT = true
 	}
-	if _, err := m.authorizedThreadMetadata(ctx, targetSessionID); err != nil {
-		return nil, fmt.Errorf("validate callback target session: %w", err)
+	if !targetIsCloudCHAT {
+		if _, err := m.authorizedThreadMetadata(ctx, targetSessionID); err != nil {
+			return nil, fmt.Errorf("validate callback target session: %w", err)
+		}
 	}
 	registration, replayed, err := m.callbackStore.register(sessionCallbackRegistration{
 		SourceSessionID: sourceSessionID,
@@ -246,6 +386,7 @@ func (m *AgentManager) sessionCallbackRegister(ctx context.Context, input agentC
 		MissionID:       input.CallbackMissionID,
 		TaskID:          input.CallbackTaskID,
 		Generation:      input.CallbackGeneration,
+		DeliverablePath: strings.TrimSpace(input.CallbackDeliverablePath),
 	})
 	if err != nil {
 		return nil, err
@@ -318,9 +459,24 @@ func callbackRegistrationMap(registration sessionCallbackRegistration, pendingCo
 		"registeredAt":      registration.RegisteredAt.UTC().Format(time.RFC3339Nano),
 		"updatedAt":         registration.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
+	if registration.DeliverablePath != "" {
+		out["deliverablePath"] = registration.DeliverablePath
+	}
 	if !registration.LastDeliveredAt.IsZero() {
 		out["lastDeliveredAt"] = registration.LastDeliveredAt.UTC().Format(time.RFC3339Nano)
 		out["lastDeliveredEnvelopeId"] = registration.LastDeliveredEnvelope
 	}
 	return out
+}
+
+func mapInt64(values map[string]any, key string) int64 {
+	switch value := values[key].(type) {
+	case int:
+		return int64(value)
+	case int64:
+		return value
+	case float64:
+		return int64(value)
+	}
+	return 0
 }
