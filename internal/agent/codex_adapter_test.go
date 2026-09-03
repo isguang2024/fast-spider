@@ -119,6 +119,47 @@ func TestCodexAppServerSocketPathRequiresAbsolutePath(t *testing.T) {
 	}
 }
 
+func TestCodexAuthTokenRefreshesWhenResidentStatusHasNoToken(t *testing.T) {
+	adapter := NewCodexAdapter(nil)
+	var refreshValues []bool
+	adapter.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
+		if method != "getAuthStatus" {
+			t.Fatalf("method=%q", method)
+		}
+		refresh, _ := params["refreshToken"].(bool)
+		refreshValues = append(refreshValues, refresh)
+		if !refresh {
+			return map[string]any{"authMode": "chatgpt"}, nil
+		}
+		return map[string]any{"authToken": "refreshed-token"}, nil
+	}
+
+	token, err := adapter.AuthToken(t.Context())
+	if err != nil || token != "refreshed-token" {
+		t.Fatalf("AuthToken=(%q, %v)", token, err)
+	}
+	if !reflect.DeepEqual(refreshValues, []bool{false, true}) {
+		t.Fatalf("refresh sequence=%v", refreshValues)
+	}
+}
+
+func TestCodexAuthTokenDoesNotRefreshFreshToken(t *testing.T) {
+	adapter := NewCodexAdapter(nil)
+	calls := 0
+	adapter.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
+		calls++
+		if method != "getAuthStatus" || params["refreshToken"] != false {
+			t.Fatalf("request=(%q, %#v)", method, params)
+		}
+		return map[string]any{"authToken": "cached-token"}, nil
+	}
+
+	token, err := adapter.AuthToken(t.Context())
+	if err != nil || token != "cached-token" || calls != 1 {
+		t.Fatalf("AuthToken=(%q, %v), calls=%d", token, err, calls)
+	}
+}
+
 func TestCodexSessionLoadLocksSerializePerSessionOnly(t *testing.T) {
 	adapter := NewCodexAdapter(nil)
 	unlockA := adapter.lockSessionLoad("session-a")
