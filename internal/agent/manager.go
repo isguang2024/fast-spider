@@ -95,6 +95,7 @@ type agentMentionInput struct {
 
 type AgentManager struct {
 	codex              *CodexAdapter
+	chatgptAuth        *CodexAdapter
 	claude             *ClaudeCodeAdapter
 	chatgptCloud       *ChatGPTCloudAdapter
 	ccswitch           *CCSwitchInspector
@@ -144,8 +145,12 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 	}
 	ccswitch := NewCCSwitchInspector(logger)
 	callbackStore := newSessionCallbackStore(dataDir)
+	chatgptAuth := NewCodexAdapter(logger)
+	chatgptAuth.SetManagedAppServerOnly()
+	chatgptAuth.SetCodexDesktopBridgeEnabled(false)
 	manager := &AgentManager{
 		codex:           NewCodexAdapter(logger),
+		chatgptAuth:     chatgptAuth,
 		claude:          NewClaudeCodeAdapter(dataDir, ccswitch, logger),
 		ccswitch:        ccswitch,
 		logger:          logger,
@@ -158,7 +163,7 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 		chatgptDefaults: chatGPTCloudCreateDefaults{ConfigurationMode: "auto", Mode: "complete"},
 	}
 	manager.chatgptCloud = NewChatGPTCloudAdapter(logger, func(ctx context.Context) (string, error) {
-		return manager.codex.AuthToken(ctx)
+		return manager.chatgptAuth.AuthToken(ctx)
 	})
 	manager.chatgptCloud.SetRealtimeObserver(manager.handleChatGPTCloudCallbackEvent, callbackStore.maxEventSequence())
 	manager.codex.SetEventObserver(manager.handleCodexCallbackEvent)
@@ -196,6 +201,11 @@ func (m *AgentManager) Close(ctx context.Context) error {
 	}
 	if m.codex != nil {
 		if err := m.codex.Close(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if m.chatgptAuth != nil {
+		if err := m.chatgptAuth.Close(ctx); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

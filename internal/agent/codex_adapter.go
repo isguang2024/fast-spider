@@ -117,6 +117,7 @@ type CodexAdapter struct {
 	generation       uint64
 	loaded           map[string]struct{}
 	loadedGeneration map[string]uint64
+	managedOnly      bool
 
 	eventMu              sync.Mutex
 	events               []AgentEvent
@@ -163,6 +164,12 @@ func (a *CodexAdapter) SetEventObserver(observer func(AgentEvent)) {
 	a.eventMu.Lock()
 	a.eventObserver = observer
 	a.eventMu.Unlock()
+}
+
+func (a *CodexAdapter) SetManagedAppServerOnly() {
+	a.mu.Lock()
+	a.managedOnly = true
+	a.mu.Unlock()
 }
 
 // SetCodexDesktopBridgeEnabled lets the local Node client own the session
@@ -300,7 +307,7 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 		}
 	}
 
-	socketPath, err := codexAppServerSocketPath()
+	socketPath, err := a.appServerSocketPath()
 	if err != nil {
 		return err
 	}

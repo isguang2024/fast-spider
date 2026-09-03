@@ -119,6 +119,19 @@ func TestCodexAppServerSocketPathRequiresAbsolutePath(t *testing.T) {
 	}
 }
 
+func TestCodexManagedAppServerOnlyIgnoresExternalSocket(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "app-server.sock")
+	t.Setenv(codexAppServerSocketEnv, socketPath)
+	adapter := NewCodexAdapter(nil)
+	if got, err := adapter.appServerSocketPath(); err != nil || got != socketPath {
+		t.Fatalf("default socket=(%q, %v)", got, err)
+	}
+	adapter.SetManagedAppServerOnly()
+	if got, err := adapter.appServerSocketPath(); err != nil || got != "" {
+		t.Fatalf("managed-only socket=(%q, %v)", got, err)
+	}
+}
+
 func TestCodexSessionLoadLocksSerializePerSessionOnly(t *testing.T) {
 	adapter := NewCodexAdapter(nil)
 	unlockA := adapter.lockSessionLoad("session-a")

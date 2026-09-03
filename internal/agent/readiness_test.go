@@ -123,6 +123,23 @@ func TestClassifyChatGPTCloudAuthError(t *testing.T) {
 	}
 }
 
+func TestManagerUsesManagedAppServerForChatGPTAuth(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(t.Context())
+	if manager.chatgptAuth == nil || manager.chatgptAuth == manager.codex {
+		t.Fatal("chatgpt_cloud auth adapter was not isolated from local session control")
+	}
+	if socketPath, err := manager.chatgptAuth.appServerSocketPath(); err != nil || socketPath != "" {
+		t.Fatalf("chatgpt auth app-server socket=(%q, %v), want managed stdio", socketPath, err)
+	}
+	manager.chatgptAuth.mu.Lock()
+	bridgeEnabled := manager.chatgptAuth.desktopBridgeEnabled
+	manager.chatgptAuth.mu.Unlock()
+	if bridgeEnabled == nil || *bridgeEnabled {
+		t.Fatal("chatgpt auth adapter must not attach to the Desktop bridge")
+	}
+}
+
 func TestClassifyRouteReadinessUsesInspectedRouteFacts(t *testing.T) {
 	tests := []struct {
 		name, state, reason string

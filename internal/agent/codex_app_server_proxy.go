@@ -29,6 +29,18 @@ func codexAppServerSocketPath() (string, error) {
 	return filepath.Clean(socketPath), nil
 }
 
+func (a *CodexAdapter) appServerSocketPath() (string, error) {
+	if a != nil {
+		a.mu.Lock()
+		managedOnly := a.managedOnly
+		a.mu.Unlock()
+		if managedOnly {
+			return "", nil
+		}
+	}
+	return codexAppServerSocketPath()
+}
+
 func codexAppServerCommandArgs(socketPath string) []string {
 	if strings.TrimSpace(socketPath) != "" {
 		return []string{"app-server", "proxy", "--sock", socketPath}
@@ -44,7 +56,7 @@ func (a *CodexAdapter) executionMetadata() (string, string) {
 }
 
 func (a *CodexAdapter) usesExternalAppServer() bool {
-	socketPath, err := codexAppServerSocketPath()
+	socketPath, err := a.appServerSocketPath()
 	return err == nil && socketPath != ""
 }
 
