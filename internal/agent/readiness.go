@@ -2,9 +2,18 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 )
+
+const providerReadinessSuccessTTL = 30 * time.Second
+
+type providerReadinessCacheEntry struct {
+	checkedAt       time.Time
+	codexGeneration uint64
+	result          map[string]any
+}
 
 type readinessLayer struct {
 	State      string `json:"state"`
@@ -30,6 +39,10 @@ func (m *AgentManager) providerReadiness(ctx context.Context, input agentControl
 	}
 	if mode != "passive" && mode != "safe" {
 		return nil, &createIdempotencyError{code: "INVALID_REQUEST", message: "mode must be passive or safe"}
+	}
+	backend := strings.ToLower(strings.TrimSpace(input.Backend))
+	if cached, ok := m.cachedProviderReadiness(providerID, mode, backend, started); ok {
+		return cached, nil
 	}
 	layers := map[string]readinessLayer{}
 	layers["routing"] = measuredReadiness(func() (string, string) {
@@ -97,17 +110,91 @@ func (m *AgentManager) providerReadiness(ctx context.Context, input agentControl
 		})
 	}
 	layers["readyCreate"] = measuredReadiness(func() (string, string) {
-		for _, name := range []string{"routing", "provider", "harness", "sessionBackend"} {
-			if layers[name].State != "ready" {
-				return "blocked", "NOT_CHECKED"
-			}
+		if reason := readinessBlockingReason(layers); reason != "" {
+			return "blocked", reason
 		}
 		if cloud, present := layers["chatgptCloud"]; present && cloud.State != "ready" {
 			return "blocked", cloud.ReasonCode
 		}
 		return "ready", "READY"
 	})
-	return m.readinessResultWithDesktopBridge(providerID, mode, layers, started), nil
+	result := m.readinessResultWithDesktopBridge(providerID, mode, layers, started)
+	if ready, _ := result["ready"].(bool); ready {
+		m.rememberProviderReadiness(providerID, mode, backend, result)
+	}
+	return result, nil
+}
+
+func readinessBlockingReason(layers map[string]readinessLayer) string {
+	for _, name := range []string{"routing", "provider", "harness", "sessionBackend"} {
+		if layers[name].State == "ready" {
+			continue
+		}
+		reason := strings.TrimSpace(layers[name].ReasonCode)
+		if reason == "" || reason == "OK" {
+			return "NOT_CHECKED"
+		}
+		return reason
+	}
+	return ""
+}
+
+func (m *AgentManager) readinessCacheKey(providerID, mode, backend string) string {
+	return fmt.Sprintf("%s\x00%s\x00%s", providerID, mode, backend)
+}
+
+func (m *AgentManager) codexReadinessGeneration() (uint64, bool) {
+	if m == nil || m.codex == nil {
+		return 0, false
+	}
+	m.codex.mu.Lock()
+	defer m.codex.mu.Unlock()
+	ready := !m.codex.closed && m.codex.cmd != nil && m.codex.cmd.Process != nil && m.codex.cmd.ProcessState == nil && m.codex.stdin != nil && !m.codex.quarantined && m.codex.configErr == nil
+	return m.codex.generation, ready
+}
+
+func (m *AgentManager) rememberProviderReadiness(providerID, mode, backend string, result map[string]any) {
+	if providerID != "codex" || mode != "safe" || backend != sessionBackendChatGPTCloud {
+		return
+	}
+	generation, ready := m.codexReadinessGeneration()
+	if !ready {
+		return
+	}
+	m.readinessMu.Lock()
+	if m.readinessCache == nil {
+		m.readinessCache = map[string]providerReadinessCacheEntry{}
+	}
+	m.readinessCache[m.readinessCacheKey(providerID, mode, backend)] = providerReadinessCacheEntry{
+		checkedAt: time.Now(), codexGeneration: generation, result: cloneAgentMap(result),
+	}
+	m.readinessMu.Unlock()
+}
+
+func (m *AgentManager) cachedProviderReadiness(providerID, mode, backend string, started time.Time) (map[string]any, bool) {
+	if m == nil || providerID != "codex" || mode != "safe" || backend != sessionBackendChatGPTCloud {
+		return nil, false
+	}
+	generation, ready := m.codexReadinessGeneration()
+	if !ready {
+		return nil, false
+	}
+	key := m.readinessCacheKey(providerID, mode, backend)
+	m.readinessMu.Lock()
+	entry, ok := m.readinessCache[key]
+	if ok && (entry.codexGeneration != generation || time.Since(entry.checkedAt) > providerReadinessSuccessTTL) {
+		delete(m.readinessCache, key)
+		ok = false
+	}
+	m.readinessMu.Unlock()
+	if !ok {
+		return nil, false
+	}
+	result := cloneAgentMap(entry.result)
+	result["cached"] = true
+	result["cacheAgeMs"] = time.Since(entry.checkedAt).Milliseconds()
+	result["elapsedMs"] = time.Since(started).Milliseconds()
+	return result, true
 }
 
 func (m *AgentManager) readinessResultWithDesktopBridge(providerID, mode string, layers map[string]readinessLayer, started time.Time) map[string]any {

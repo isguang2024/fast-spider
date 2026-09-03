@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"os/exec"
 	"testing"
 	"time"
 )
@@ -38,6 +40,56 @@ func TestReadinessResultPublishesCodexDesktopBridgeMetadata(t *testing.T) {
 	desktopBridge, _ := result["desktopBridge"].(map[string]any)
 	if desktopBridge["state"] != "disabled" || desktopBridge["nativeConversationStreaming"] != "unsupported" {
 		t.Fatalf("desktopBridge=%#v", desktopBridge)
+	}
+}
+
+func TestProviderReadinessReusesRecentSuccessForSameCodexGeneration(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = reader.Close()
+		_ = writer.Close()
+	})
+	adapter := &CodexAdapter{
+		cmd:        &exec.Cmd{Process: &os.Process{Pid: 12345}},
+		stdin:      writer,
+		generation: 7,
+	}
+	manager := &AgentManager{codex: adapter}
+	result := map[string]any{
+		"providerId": "codex", "mode": "safe", "ready": true,
+		"readyForSessionCreate": true, "chatgptCloudAvailable": true,
+		"reasonCode": "READY", "checkedAt": time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	manager.rememberProviderReadiness("codex", "safe", sessionBackendChatGPTCloud, result)
+
+	cached, err := manager.providerReadiness(t.Context(), agentControlParams{ProviderID: "codex", Backend: sessionBackendChatGPTCloud, Mode: "safe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached["cached"] != true || cached["ready"] != true || cached["reasonCode"] != "READY" {
+		t.Fatalf("cached readiness=%#v", cached)
+	}
+
+	adapter.mu.Lock()
+	adapter.generation++
+	adapter.mu.Unlock()
+	if _, ok := manager.cachedProviderReadiness("codex", "safe", sessionBackendChatGPTCloud, time.Now()); ok {
+		t.Fatal("readiness from an earlier Codex app-server generation was reused")
+	}
+}
+
+func TestProviderReadinessReportsFailingLayerReason(t *testing.T) {
+	layers := map[string]readinessLayer{
+		"routing":        {State: "ready", ReasonCode: "OK"},
+		"provider":       {State: "ready", ReasonCode: "OK"},
+		"harness":        {State: "ready", ReasonCode: "OK"},
+		"sessionBackend": {State: "blocked", ReasonCode: "SESSION_BACKEND_UNAVAILABLE"},
+	}
+	if reason := readinessBlockingReason(layers); reason != "SESSION_BACKEND_UNAVAILABLE" {
+		t.Fatalf("reason=%s", reason)
 	}
 }
 

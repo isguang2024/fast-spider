@@ -13,7 +13,7 @@ case "${1:-}" in
 Usage: bash scripts/release-gate.sh [--full]
 
 core: formatting, worktree/index secret scan, module integrity, vet, all unit/integration tests,
-      current + Windows client/Linux server builds, Hub restore E2E, Local Bridge E2E.
+      Windows amd64 Node client + Linux amd64 Hub/spiderctl builds, Hub restore E2E, Local Bridge E2E.
 full: core + synthetic secret-scan self-test, full Git object history scan,
       explicit 0.4.2 Task Workspace/Search/file_read/file_edit/update/
       reconnect gates, the 0.4.3 consumed-current staging cleanup gate,
@@ -66,9 +66,13 @@ step "Module checksum verification" go mod verify
 step "go.mod/go.sum tidiness" go mod tidy -diff
 step "Static analysis" go vet ./...
 step "All tests" go test ./... -count=1
-step "Current-platform build" go build ./...
-step "Windows amd64 build" env CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./...
-step "Linux amd64 build" env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./...
+build_gate_dir="$(mktemp -d "${TMPDIR:-/tmp}/fast-spider-build-gate.XXXXXX")"
+trap 'rm -rf -- "$build_gate_dir"' EXIT
+step "Windows amd64 Node client build" env CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o "$build_gate_dir/fast-spider-node.exe" ./cmd/node
+step "Linux amd64 Hub build" env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$build_gate_dir/fast-spider-hub" ./cmd/hub
+step "Linux amd64 spiderctl build" env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$build_gate_dir/spiderctl" ./cmd/spiderctl
+rm -rf -- "$build_gate_dir"
+trap - EXIT
 step "Restored Hub health E2E" go test -tags opse2e ./internal/opsbackup -run TestRestoredHubStartsHealthy -count=1
 step "Local Bridge E2E" go test -tags localbridgee2e ./internal/localbridge -count=1
 

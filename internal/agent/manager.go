@@ -111,6 +111,8 @@ type AgentManager struct {
 	}
 	chatgptDefaultsMu sync.RWMutex
 	chatgptDefaults   chatGPTCloudCreateDefaults
+	readinessMu       sync.Mutex
+	readinessCache    map[string]providerReadinessCacheEntry
 }
 
 // SetCloudResultPublisher connects the Cloud callback path to the Node's
