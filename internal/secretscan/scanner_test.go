@@ -36,7 +36,7 @@ func TestScanRepositoryCoversTrackedUntrackedAndStagedOnly(t *testing.T) {
 	assertRedacted(t, findings, trackedCanary, untrackedCanary, stagedCanary)
 }
 
-func TestScanHistoryCoversReachableAndDanglingBlobs(t *testing.T) {
+func TestScanHistoryCoversPublishableRefsAndExcludesPrivateObjects(t *testing.T) {
 	repo := newGitRepository(t)
 	writeFile(t, filepath.Join(repo, ".gitignore"), ".local/\n")
 	writeFile(t, filepath.Join(repo, "safe.txt"), "safe\n")
@@ -53,10 +53,22 @@ func TestScanHistoryCoversReachableAndDanglingBlobs(t *testing.T) {
 
 	danglingCanary := secretCanary("npm_")
 	danglingOID := strings.TrimSpace(git(t, repo, []byte(danglingCanary), "hash-object", "-w", "--stdin"))
+	privateRefCanary := secretCanary("ghp_")
+	writeFile(t, filepath.Join(repo, "private-ref.txt"), privateRefCanary)
+	git(t, repo, nil, "add", "private-ref.txt")
+	git(t, repo, nil, "commit", "-m", "private tool ref fixture")
+	privateRefOID := strings.TrimSpace(git(t, repo, nil, "rev-parse", "HEAD:private-ref.txt"))
+	git(t, repo, nil, "update-ref", "refs/codex/snapshots/test", "HEAD")
+	git(t, repo, nil, "reset", "--hard", "HEAD^")
 	privateMarker := "history-private-marker-" + strings.Repeat("R6", 8)
 	markerFile := filepath.Join(repo, ".local", "public-private-markers.txt")
 	writeFile(t, markerFile, privateMarker+"\n")
-	markerOID := strings.TrimSpace(git(t, repo, []byte(privateMarker), "hash-object", "-w", "--stdin"))
+	writeFile(t, filepath.Join(repo, "marker-history.txt"), privateMarker)
+	git(t, repo, nil, "add", "marker-history.txt")
+	git(t, repo, nil, "commit", "-m", "private marker history fixture")
+	markerOID := strings.TrimSpace(git(t, repo, nil, "rev-parse", "HEAD:marker-history.txt"))
+	git(t, repo, nil, "rm", "marker-history.txt")
+	git(t, repo, nil, "commit", "-m", "remove private marker fixture")
 	commitCanary := secretCanary("sk-")
 	git(t, repo, nil, "commit", "--allow-empty", "-m", commitCanary)
 	commitOID := strings.TrimSpace(git(t, repo, nil, "rev-parse", "HEAD"))
@@ -76,20 +88,22 @@ func TestScanHistoryCoversReachableAndDanglingBlobs(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertObjectFinding(t, findings, historyOID)
-	assertObjectFinding(t, findings, danglingOID)
 	assertObjectFinding(t, findings, commitOID)
-	assertObjectFinding(t, findings, tagOID)
+	assertNoObjectFinding(t, findings, danglingOID)
+	assertNoObjectFinding(t, findings, privateRefOID)
+	assertNoObjectFinding(t, findings, tagOID)
 	for _, finding := range findings {
 		if finding.Rule == "private-marker" {
 			t.Fatal("default history scan applied local private markers")
 		}
 	}
-	assertRedacted(t, findings, historyCanary, danglingCanary, commitCanary, tagCanary)
+	assertRedacted(t, findings, historyCanary, commitCanary, tagCanary, privateRefCanary)
 	explicitFindings, err := ScanRepository(context.Background(), repo, true, Options{MarkerFile: markerFile})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertObjectRule(t, explicitFindings, markerOID, "private-marker")
+	assertRedacted(t, findings, danglingCanary)
 }
 
 func TestScanTreeCoversBinaryZIPAndPrivateMarkers(t *testing.T) {
@@ -404,6 +418,15 @@ func assertObjectFinding(t *testing.T, findings []Finding, oid string) {
 		}
 	}
 	t.Fatalf("missing history finding for object %s", oid)
+}
+
+func assertNoObjectFinding(t *testing.T, findings []Finding, oid string) {
+	t.Helper()
+	for _, finding := range findings {
+		if finding.Source == "history" && finding.ObjectID == oid {
+			t.Fatalf("unexpected history finding for private object %s", oid)
+		}
+	}
 }
 
 func assertObjectRule(t *testing.T, findings []Finding, oid, rule string) {

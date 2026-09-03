@@ -141,6 +141,60 @@ func TestSessionCallbackStorePersistsCoalescesAndFencesGeneration(t *testing.T) 
 	}
 }
 
+func TestSessionCallbackStoreBatchClaimLeaseExpiryAndAck(t *testing.T) {
+	store := newSessionCallbackStore(t.TempDir())
+	for _, source := range []string{"source-a", "source-b", "source-c"} {
+		if _, _, err := store.register(testCallbackRegistration(source, "target-batch", "task-"+source, 1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for sequence, source := range []string{"source-a", "source-b", "source-c"} {
+		if queued, err := store.enqueue(testCallbackEvent(source, int64(sequence+1))); err != nil || !queued {
+			t.Fatalf("enqueue source=%s queued=%v err=%v", source, queued, err)
+		}
+	}
+	now := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	claimID, claimed, err := store.claim("target-batch", "claim-batch-1", 2, now)
+	if err != nil || claimID != "claim-batch-1" || len(claimed) != 2 {
+		t.Fatalf("first claim id=%q events=%#v err=%v", claimID, claimed, err)
+	}
+	retryID, retry, err := store.claim("target-batch", "claim-batch-1", 2, now.Add(time.Second))
+	if err != nil || retryID != claimID || len(retry) != 2 {
+		t.Fatalf("idempotent claim id=%q events=%#v err=%v", retryID, retry, err)
+	}
+	if _, _, err := store.claim("target-batch", "claim-too-large", maxSessionCallbackClaimBatch+1, now); err == nil {
+		t.Fatal("oversized callback claim was accepted")
+	}
+	if acked, err := store.acknowledgeClaim("target-batch", claimID, now.Add(time.Second)); err != nil || acked != 2 {
+		t.Fatalf("first ack count=%d err=%v", acked, err)
+	}
+	if acked, err := store.acknowledgeClaim("target-batch", claimID, now.Add(2*time.Second)); err != nil || acked != 0 {
+		t.Fatalf("idempotent ack count=%d err=%v", acked, err)
+	}
+	leaseID, leaseEvents, err := store.claim("target-batch", "claim-lease-1", 2, now.Add(3*time.Second))
+	if err != nil || leaseID != "claim-lease-1" || len(leaseEvents) != 1 {
+		t.Fatalf("lease claim id=%q events=%#v err=%v", leaseID, leaseEvents, err)
+	}
+	if _, err := store.acknowledgeClaim("target-batch", leaseID, now.Add(sessionCallbackClaimLease+4*time.Second)); err == nil || !strings.Contains(err.Error(), "lease expired") {
+		t.Fatalf("expired lease ack error=%v", err)
+	}
+	released, err := store.releaseExpiredClaims(now.Add(sessionCallbackClaimLease + 5*time.Second))
+	if err != nil || released != 1 {
+		t.Fatalf("released=%d err=%v", released, err)
+	}
+	newID, newEvents, err := store.claim("target-batch", "claim-after-expiry", 2, now.Add(sessionCallbackClaimLease+6*time.Second))
+	if err != nil || newID != "claim-after-expiry" || len(newEvents) != 1 {
+		t.Fatalf("reclaim id=%q events=%#v err=%v", newID, newEvents, err)
+	}
+	if _, err := store.acknowledgeClaim("target-batch", newID, now.Add(sessionCallbackClaimLease+7*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	grouped, err := store.pendingByTarget()
+	if err != nil || len(grouped) != 0 {
+		t.Fatalf("queue after batch ack=%#v err=%v", grouped, err)
+	}
+}
+
 func TestSessionCallbackStoreFailsClosedWhenPendingSequenceDisagrees(t *testing.T) {
 	dataDir := t.TempDir()
 	path := filepath.Join(dataDir, "agent", "session-callbacks.json")
@@ -255,21 +309,46 @@ func TestSessionCallbackManagerObserverInboxDispatchesAfterCoordinatorIdle(t *te
 		t.Fatal("active coordinator received callback: ", prompt)
 	case <-time.After(50 * time.Millisecond):
 	}
+	manager.callbackStore.mu.Lock()
+	queued := manager.callbackStore.pending["source-integration"]
+	queued.OccurredAt = time.Now().UTC().Add(-sessionCallbackNudgeAfter - time.Second)
+	manager.callbackStore.pending["source-integration"] = queued
+	manager.callbackStore.mu.Unlock()
 	activeMu.Lock()
 	active = false
 	activeMu.Unlock()
 	manager.handleCodexCallbackEvent(AgentEvent{Type: "turn.completed", SessionID: "coordinator-local"})
 	select {
 	case prompt := <-sent:
-		if !strings.Contains(prompt, "FAST_SPIDER_SESSION_CALLBACK_V1") || !strings.Contains(prompt, "source_session=source-integration") || strings.Contains(prompt, "authored content:") {
+		if !strings.Contains(prompt, "FAST_SPIDER_SESSION_CALLBACK_NUDGE_V1") || !strings.Contains(prompt, "session.callback.claim") || strings.Contains(prompt, "source_session=source-integration") {
 			t.Fatalf("unexpected callback envelope=%q", prompt)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("terminal signal did not dispatch callback")
 	}
 	grouped, err = manager.callbackStore.pendingByTarget()
+	if err != nil || len(grouped["coordinator-local"]) != 1 {
+		t.Fatalf("durable queue unexpectedly cleared by nudge: pending=%#v err=%v", grouped, err)
+	}
+	claim, err := manager.Control(context.Background(), "session.callback.claim", map[string]any{
+		"providerId": "codex", "sessionId": "coordinator-local", "callbackClaimLimit": 64,
+	})
+	if err != nil || claim["claimedCount"] != 1 {
+		t.Fatalf("claim=%#v err=%v", claim, err)
+	}
+	claimID, _ := claim["claimId"].(string)
+	if claimID == "" {
+		t.Fatalf("claim missing claimId: %#v", claim)
+	}
+	acked, err := manager.Control(context.Background(), "session.callback.ack", map[string]any{
+		"providerId": "codex", "sessionId": "coordinator-local", "callbackClaimId": claimID,
+	})
+	if err != nil || acked["ackedCount"] != 1 {
+		t.Fatalf("ack=%#v err=%v", acked, err)
+	}
+	grouped, err = manager.callbackStore.pendingByTarget()
 	if err != nil || len(grouped) != 0 {
-		t.Fatalf("durable inbox not acknowledged: pending=%#v err=%v", grouped, err)
+		t.Fatalf("durable queue not acknowledged: pending=%#v err=%v", grouped, err)
 	}
 }
 
@@ -375,15 +454,26 @@ func TestSessionCallbackDispatcherBatchesAndWaitsForIdleTarget(t *testing.T) {
 	}
 	active = false
 	dispatcher.dispatchOnce()
-	if len(prompts) != 1 || !strings.Contains(prompts[0], "source_session=source-a") || !strings.Contains(prompts[0], "source_session=source-b") {
+	if len(prompts) != 1 || !strings.Contains(prompts[0], "FAST_SPIDER_SESSION_CALLBACK_NUDGE_V1") || !strings.Contains(prompts[0], "PENDING_COUNT: 2") {
 		t.Fatalf("batched prompt=%q", prompts)
 	}
-	if strings.Contains(prompts[0], "Cloud CHAT-authored content:") || !strings.Contains(prompts[0], "not Cloud CHAT-authored content") {
+	if strings.Contains(prompts[0], "source_session=source-a") || strings.Contains(prompts[0], "source_session=source-b") || !strings.Contains(prompts[0], "no task result body") {
 		t.Fatalf("callback envelope did not keep the fixed trust boundary: %q", prompts[0])
 	}
 	grouped, err := store.pendingByTarget()
+	if err != nil || len(grouped["coordinator"]) != 2 {
+		t.Fatalf("nudge unexpectedly removed queued events: %#v err=%v", grouped, err)
+	}
+	claimID, claimed, err := store.claim("coordinator", "claim-batch-test", 64, time.Now().UTC())
+	if err != nil || claimID != "claim-batch-test" || len(claimed) != 2 {
+		t.Fatalf("claim id=%q events=%#v err=%v", claimID, claimed, err)
+	}
+	if acked, err := store.acknowledgeClaim("coordinator", claimID, time.Now().UTC()); err != nil || acked != 2 {
+		t.Fatalf("ack count=%d err=%v", acked, err)
+	}
+	grouped, err = store.pendingByTarget()
 	if err != nil || len(grouped) != 0 {
-		t.Fatalf("delivered events remain pending: %#v err=%v", grouped, err)
+		t.Fatalf("claimed events remain pending: %#v err=%v", grouped, err)
 	}
 }
 
@@ -418,8 +508,15 @@ func TestSessionCallbackDispatcherKeepsBusyDeliveryPending(t *testing.T) {
 	busy = false
 	dispatcher.dispatchOnce()
 	grouped, _ = store.pendingByTarget()
-	if sends != 2 || len(grouped) != 0 {
+	if sends != 2 || len(grouped["coordinator"]) != 1 {
 		t.Fatalf("retry sends=%d pending=%#v", sends, grouped)
+	}
+	claimID, _, err := store.claim("coordinator", "claim-busy-test", 64, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.acknowledgeClaim("coordinator", claimID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -540,8 +637,19 @@ func TestSessionCallbackProviderReplayCannotReplaceInFlightPendingEnvelope(t *te
 		t.Fatal("in-flight callback dispatch did not finish")
 	}
 	grouped, err := store.pendingByTarget()
+	if err != nil || len(grouped["target-1"]) != 1 {
+		t.Fatalf("in-flight nudge removed queued event: pending=%#v err=%v", grouped, err)
+	}
+	claimID, claimed, err := store.claim("target-1", "claim-inflight-test", 64, time.Now().UTC())
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("in-flight claim id=%q events=%#v err=%v", claimID, claimed, err)
+	}
+	if _, err := store.acknowledgeClaim("target-1", claimID, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	grouped, err = store.pendingByTarget()
 	if err != nil || len(grouped) != 0 {
-		t.Fatalf("in-flight envelope was not acknowledged cleanly: pending=%#v err=%v", grouped, err)
+		t.Fatalf("in-flight queue was not acknowledged cleanly: pending=%#v err=%v", grouped, err)
 	}
 }
 
@@ -691,8 +799,11 @@ func TestSessionCallbackActionsRegisterListAndUnregister(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if registered["deliveryPolicy"] != "callback-first" || registered["recoveryPolicy"] != "heartbeat-fallback" {
+	if registered["deliveryPolicy"] != "queued-batch-claim" || registered["recoveryPolicy"] != "node-fallback-status-poll-and-nudge" {
 		t.Fatalf("register=%#v", registered)
+	}
+	if manager.callbackDispatcher.interval != 30*time.Second || registered["fallbackStatusPollIntervalSeconds"] != int64(600) || registered["fallbackNudgeAfterSeconds"] != int64(300) || registered["fallbackNudgeIntervalSeconds"] != int64(600) {
+		t.Fatalf("callback fallback intervals dispatcher=%s register=%#v", manager.callbackDispatcher.interval, registered)
 	}
 	listed, err := manager.Control(context.Background(), "session.callback.list", map[string]any{
 		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "sessionId": "source-cloud",
@@ -703,6 +814,12 @@ func TestSessionCallbackActionsRegisterListAndUnregister(t *testing.T) {
 	callbacks, _ := listed["callbacks"].([]map[string]any)
 	if len(callbacks) != 1 || callbacks[0]["targetSessionId"] != "coordinator-local" || callbacks[0]["generation"] != int64(1) {
 		t.Fatalf("callbacks=%#v", callbacks)
+	}
+	if listed["deliveryPolicy"] != "queued-batch-claim" || listed["recoveryPolicy"] != "node-fallback-status-poll-and-nudge" || !strings.Contains(listed["queueText"].(string), "FAST_SPIDER_SESSION_CALLBACK_QUEUE_V1") {
+		t.Fatalf("queue listing=%#v", listed)
+	}
+	if listed["fallbackStatusPollIntervalSeconds"] != int64(600) || listed["fallbackNudgeAfterSeconds"] != int64(300) || listed["fallbackNudgeIntervalSeconds"] != int64(600) {
+		t.Fatalf("queue fallback intervals=%#v", listed)
 	}
 	unregistered, err := manager.Control(context.Background(), "session.callback.unregister", map[string]any{
 		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
@@ -761,6 +878,42 @@ func TestSessionCallbackRegisterReconcilesAlreadyCompletedCloudTurn(t *testing.T
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("completed turn was not reconciled after callback registration")
+}
+
+func TestSessionCallbackFallbackStatusReadSynthesizesMissedCompletion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/conversation/source-fallback" {
+			http.NotFound(w, r)
+			return
+		}
+		writeChatGPTCloudTestJSON(t, w, map[string]any{
+			"conversation_id": "source-fallback", "async_status": "completed", "current_node": "assistant-final",
+			"mapping": map[string]any{"assistant-final": map[string]any{"message": map[string]any{"id": "assistant-final", "author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"fallback result"}}}}},
+		})
+	}))
+	defer server.Close()
+
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	if err := manager.chatgptCloud.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.chatgptCloud = NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token", nil })
+	manager.chatgptCloud.baseURL, manager.chatgptCloud.http = server.URL, server.Client()
+	if _, _, err := manager.callbackStore.register(testCallbackRegistration("source-fallback", "target-fallback", "task-fallback", 3)); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.recoverCompletedCloudCallback(context.Background(), "source-fallback", 3); err != nil {
+		t.Fatal(err)
+	}
+	grouped, err := manager.callbackStore.pendingByTarget()
+	if err != nil || len(grouped["target-fallback"]) != 1 {
+		t.Fatalf("fallback pending=%#v err=%v", grouped, err)
+	}
+	event := grouped["target-fallback"][0]
+	if !strings.HasPrefix(event.EventKey, "provider_evt_fallback_") || event.EventSequence != 1 || event.ResultStatus != "unknown" {
+		t.Fatalf("fallback event=%#v", event)
+	}
 }
 
 func TestSessionCallbackRegisterAcceptsProjectlessDesktopThreadAndCanSend(t *testing.T) {

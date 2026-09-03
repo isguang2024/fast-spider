@@ -82,6 +82,8 @@ session.watch
 session.callback.register
 session.callback.unregister
 session.callback.list
+session.callback.claim
+session.callback.ack
 session.cancel
 session.result
 session.rename
@@ -154,7 +156,9 @@ Cloud 只有一个创建入口 `session.create`，用 `mode=quick_chat|complete`
 | `session.watch` | `/celsius/ws/user` pubsub 订阅 `conversations` + `conversation-{uuid}`；`conversation-turn-complete` 等事件 → `session.watch` 事件（提示 refetch `session.get` 取内容） |
 | `session.callback.register` | 为一个 ChatGPT Cloud CHAT 注册唯一的本机 Codex 协调会话；持久保存 mission/task/generation/可选本地交付路径，并建立不会被普通 watch 空闲淘汰的订阅 |
 | `session.callback.unregister` | 按 source session + generation 撤销回调 owner，同时清除该来源尚未投递的事件 |
-| `session.callback.list` | 只读列出注册、最后事件序号、最后已投递信封和 pending 数量；可按 source 或 target 过滤 |
+| `session.callback.list` | 只读列出注册、pending 队列、固定 queue text、领取状态和恢复策略；可按 source 或 target 过滤 |
+| `session.callback.claim` | 按目标协调会话一次领取最多 64 条 pending；同一 claim 可幂等重读，租约 5 分钟 |
+| `session.callback.ack` | 按目标协调会话和 claim ID 批量确认已处理事件；确认后才从队列移除 |
 | `session.steer` | 活动兼容 TPP 轮：`POST /f/steer_turn`（`asyncTaskId` 映射为 `async_task_id`；普通已完成聊天无可 steer 的活动轮时明确报错） |
 
 实时同步基于 `/backend-api/celsius/ws/user` 的 pubsub（订阅 `conversations` + `conversation-{uuid}`，
@@ -162,11 +166,13 @@ Cloud 只有一个创建入口 `session.create`，用 `mode=quick_chat|complete`
 
 ### `session.callback.*`
 
-`session.callback.register` 只支持 `providerId=codex + backend=chatgpt_cloud`。调用方提供 Cloud CHAT 的 `sessionId`、本机 Codex 协调/调度会话的 `callbackTargetSessionId`、`callbackMissionId`、`callbackTaskId` 和正整数 `callbackGeneration`。可选 `callbackDeliverablePath` 必须是 Node 本机绝对路径：终态回调直接验证该普通文件并返回路径、状态、大小和 SHA-256，不读取 CHAT 正文；未指定时才把最新 assistant 结果写入 Result Pool。默认 target 不是用户正在对话的主控；协调会话负责并发批次、任务账本和有界摘要，主控只接收真正需要裁决的结果。一个 source Cloud CHAT 同时只能有一个 callback owner；相同 owner/代次/交付路径可幂等重放，更旧代次拒绝，更高代次会替换旧代并清除旧 pending。`session.callback.unregister` 必须携带当前 generation；`session.callback.list` 是可安全重试的只读查询。
+`session.callback.register` 只支持 `providerId=codex + backend=chatgpt_cloud`。调用方提供 Cloud CHAT 的 `sessionId`、本机 Codex 协调/调度会话的 `callbackTargetSessionId`、`callbackMissionId`、`callbackTaskId` 和正整数 `callbackGeneration`。可选 `callbackDeliverablePath` 必须是 Node 本机绝对路径：终态回调直接验证该普通文件并返回路径、状态、大小和 SHA-256，不读取 CHAT 正文；未指定时才把最新 assistant 结果写入 Result Pool。对 `codex_cloud_collaboration`，Cloud CHAT 本身应通过 FastSpider_FS 的 `codex_cloud_collaboration` 调用 `event.ingest` 后再 `event.ack`；Node callback 仅保留为恢复兜底。Cloud CHAT 可用 `actorSessionId=$self + taskId` 让 Hub 绑定到已登记的当前会话。默认 target 不是用户正在对话的主控；协调会话负责并发批次、任务账本和有界摘要，主控只接收真正需要裁决的结果。一个 source Cloud CHAT 同时只能有一个 callback owner；相同 owner/代次/交付路径可幂等重放，更旧代次拒绝，更高代次会替换旧代并清除旧 pending。`session.callback.unregister` 必须携带当前 generation；`session.callback.list` 是可安全重试的只读查询。
 
-Cloud 的 `conversation.turn.complete` 会先写入 Node data-dir 下的 `agent/session-callbacks.json`，再尝试唤醒协调会话。持久索引损坏或 pending/registration 序列不一致时回调读写 fail-closed，不会用空状态覆盖。注册会先落盘再在同一 owner/generation 临界区建立持久订阅；并发注销不能在快照后留下 orphan watcher。订阅建立失败时 durable registration 保留并由恢复循环续做。事件按 `generation + event key` 去重：优先使用 Provider payload 中真实存在的 event/turn/message ID，并持久保留最近 256 个稳定身份用于跨重连、跨重启去重；超过该有界历史的极旧重放允许按至少一次语义再次投递。缺少稳定 ID 时，Node 对 payload 派生键只做 15 秒短窗口重复抑制，不写入永久 recent-event 集合；短窗口可抑制双 topic 或紧邻重放，但相同 payload 在后续合法 Turn 会生成新的 key，极端窗口边界也允许重复而不允许漏掉合法完成事件。指定本地交付路径时，terminal 回调只检查文件并计算元数据；否则才重新读取最新 assistant，按最多 8 MiB 来源拆成不超过 1 MiB 的 Artifact 页，创建/attach/commit 一个 Result。信封只携带可选的 Result 或交付文件元数据，不携带正文、artifactId、Prompt、Provider payload、Token 或原始错误。Result 创建/提交响应丢失时用 lookup 对账，旧 generation 拒绝；捕获或发布失败仍投递安全错误状态元数据，绝不降级为整段正文。一个 Cloud CHAT 只保留最新 pending，同一协调会话的多个 Cloud CHAT 会合并成一个稳定 `FAST_SPIDER_SESSION_CALLBACK_V1` 信封。信封包含 mission、task、generation、source session、event sequence/key/type 和固定控制说明；`event_sequence` 始终参与 envelope ID，使有界窗口外的重放不会复用旧 envelope，而同一 pending 的崩溃重发保持相同 ID。
+Cloud 的 `conversation.turn.complete` 会先写入 Node data-dir 下的 `agent/session-callbacks.json`，再尝试唤醒协调会话。持久索引损坏或 pending/registration 序列不一致时回调读写 fail-closed，不会用空状态覆盖。注册会先落盘再在同一 owner/generation 临界区建立持久订阅；并发注销不能在快照后留下 orphan watcher。订阅建立失败时 durable registration 保留并由恢复循环续做。事件按 `generation + event key` 去重：优先使用 Provider payload 中真实存在的 event/turn/message ID，并持久保留最近 256 个稳定身份用于跨重连、跨重启去重；超过该有界历史的极旧重放允许按至少一次语义再次投递。缺少稳定 ID 时，Node 对 payload 派生键只做 15 秒短窗口重复抑制，不写入永久 recent-event 集合；短窗口可抑制双 topic 或紧邻重放，但相同 payload 在后续合法 Turn 会生成新的 key，极端窗口边界也允许重复而不允许漏掉合法完成事件。指定本地交付路径时，terminal 回调只检查文件并计算元数据；否则才重新读取最新 assistant，按最多 8 MiB 来源拆成不超过 1 MiB 的 Artifact 页，创建/attach/commit 一个 Result。队列只携带可选的 Result 或交付文件元数据，不携带正文、artifactId、Prompt、Provider payload、Token 或原始错误。Result 创建/提交响应丢失时用 lookup 对账，旧 generation 拒绝；捕获或发布失败仍投递安全错误状态元数据，绝不降级为整段正文。一个 Cloud CHAT 只保留最新 pending，同一协调会话的多个 Cloud CHAT 可通过一次 `session.callback.claim` 批量领取；claim ID 与 5 分钟租约持久化，超时自动释放，只有 `session.callback.ack` 才移除领取的事件。
 
-投递策略是 `callback-first / heartbeat-fallback`：协调会话存在活动 Turn 或底层 `session.send` 返回 busy 时继续保留 pending；该 Turn 完成、失败或中断后立即重试。Node 重启后恢复持久订阅和 pending；五分钟检查仅用于断线、重启或漏通知恢复，不是主要轮询路径。注册和注销的 watcher 生命周期带 generation 围栏，旧代注销不会关闭新 owner 的订阅。成功 send 后才按稳定 envelope ID 清除当时投递的事件；并发到达的新事件保留给下一批。调用方仍应把重复 envelope ID 视为已投递，因为进程可能在发送成功、确认落盘前退出。协调会话只读最终 CHAT 回复或本地交付物的必要增量元数据，不抓取完整会话网页；实际业务网页仍由对应 Cloud CHAT 读取和操作。
+投递策略是 `Cloud CHAT self-callback / Node fallback`：Cloud CHAT 先完成 `event.ingest` → `event.ack`，Node 只在回调缺失、断线、漏通知时恢复。Node 每约 30 秒检查本地 pending/claim 状态，但不会因此查询 Cloud CHAT；pending 最早存在约 5 分钟且目标调度会话空闲时才发送无结果正文的 nudge，此后同一目标最多约每 10 分钟再提醒一次。Provider 状态恢复查询另以约 10 分钟低频执行，仅用于合成漏掉的 terminal callback。Node 重启后恢复持久订阅、pending、claim 与 nudge 状态；注册和注销的 watcher 生命周期带 generation 围栏，旧代注销不会关闭新 owner 的订阅。协调会话只处理 Result/本地交付物元数据和有界摘要，不抓取完整会话网页；实际业务网页仍由对应 Cloud CHAT 读取和操作。
+
+`codex_cloud_collaboration` 的卡住恢复由调度 AI 决策：默认 heartbeat 15 分钟、stall 60 分钟，并要求至少两次无进展检查才标记疑似卡住。调度先执行 `status.poll`；若 Provider 已完成则走结果恢复，若仍在运行则 `chat.continue` 发送固定“请继续”，在观察到新进展前不重复发送。后续观察到新 cursor 会清零 `continueAttempts` 并恢复正常调度；继续后仍无进展、Provider 失败/取消或状态不确定时，返回 `chat_recovery_decision`/`controller_decision`，允许主控决定人工接手或换代，但服务不会自动创建替代 CHAT。回调、状态检查、继续或 Cloud CHAT 本身遇到的问题/疑问，应先读取并以 file revision CAS 调用 `working_context markdown.append`，追加到 `docs/progress/04-open-issues.md`；禁止记录凭据、原始 Provider payload、完整聊天记录或长日志。
 
 ### `session.send`
 

@@ -5,6 +5,23 @@ semantic versioning for public releases.
 
 ## Unreleased
 
+## 0.4.39 - 2026-09-03
+
+- Make the existing ChatGPT Cloud CHAT the primary completion callback for
+  `codex_cloud_collaboration` through FastSpider_FS `event.ingest` →
+  `event.ack`; retain Node callback delivery and polling as recovery fallback,
+  and explicitly forbid creating a new Cloud Worker/CHAT for completion.
+- Expose `ai_control session.result` manifest selectors and a task-scoped
+  `actorSessionId=$self` binding for Cloud CHAT callbacks.
+- Persist callback results as a batch-claim queue with five-minute claim leases;
+  keep local queue checks at roughly 30 seconds, provider status recovery at
+  roughly 10 minutes, and send only lightweight delayed nudges to idle dispatchers.
+- Add the stalled Cloud CHAT recovery message `请继续` after a provider status
+  check, suppress duplicates until new progress, leave replacement to an
+  explicit controller decision, and direct bounded recovery questions to
+  `docs/progress/04-open-issues.md` through Working Context CAS.
+- Limit release builds to the Linux Hub/spiderctl server and the Windows amd64
+  Node client, and scan only the candidate HEAD history during the full gate.
 - Add public CI, governance, support and maintainer workflow documentation.
 - Document the current early-stage public project status and contribution path.
 

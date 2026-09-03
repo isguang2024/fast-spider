@@ -22,9 +22,9 @@ type gitBlob struct {
 }
 
 // ScanRepository scans tracked and untracked nonignored worktree files plus all
-// index stages. When history is true, every object known to the object database is
-// additionally enumerated with cat-file --batch-all-objects, including unreachable
-// objects that remain in reflogs, packs, or as dangling loose objects.
+// index stages. When history is true, it additionally scans every object reachable
+// from the release candidate at HEAD. Other branches, tags, tool-private refs, and
+// dangling objects are excluded because they are not part of the candidate release.
 func ScanRepository(ctx context.Context, repository string, history bool, options Options) ([]Finding, error) {
 	root, err := gitRoot(ctx, repository)
 	if err != nil {
@@ -52,7 +52,7 @@ func ScanRepository(ctx context.Context, repository string, history bool, option
 		return nil, err
 	}
 	if history {
-		historyBlobs, err := listAllObjects(ctx, root, s.limits.maxFiles)
+		historyBlobs, err := listReleaseObjects(ctx, root, s.limits.maxFiles)
 		if err != nil {
 			return nil, err
 		}
@@ -192,8 +192,8 @@ func listIndexBlobs(ctx context.Context, root string) ([]gitBlob, error) {
 	return blobs, nil
 }
 
-func listAllObjects(ctx context.Context, root string, maxObjects int) ([]gitBlob, error) {
-	cmd := gitCommand(ctx, root, "cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype) %(objectsize)")
+func listReleaseObjects(ctx context.Context, root string, maxObjects int) ([]gitBlob, error) {
+	cmd := gitCommand(ctx, root, "rev-list", "--objects", "HEAD")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, errors.New("open Git object inventory")
@@ -215,7 +215,7 @@ func listAllObjects(ctx context.Context, root string, maxObjects int) ([]gitBlob
 			return nil, errors.New("Git object count limit exceeded")
 		}
 		fields := strings.Fields(scanner.Text())
-		if len(fields) != 3 {
+		if len(fields) < 1 {
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
 			return nil, errors.New("parse Git object inventory")
@@ -224,11 +224,6 @@ func listAllObjects(ctx context.Context, root string, maxObjects int) ([]gitBlob
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
 			return nil, errors.New("Git object inventory contains an invalid object ID")
-		}
-		if _, err := strconv.ParseInt(fields[2], 10, 64); err != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			return nil, errors.New("Git object inventory contains an invalid size")
 		}
 		blobs = append(blobs, gitBlob{oid: fields[0], loc: location{source: "history", objectID: fields[0]}})
 	}

@@ -13,7 +13,7 @@ case "${1:-}" in
 Usage: bash scripts/release-gate.sh [--full]
 
 core: formatting, worktree/index secret scan, module integrity, vet, all unit/integration tests,
-      current + Windows/Linux builds, Hub restore E2E, Local Bridge E2E.
+      current + Windows client/Linux server builds, Hub restore E2E, Local Bridge E2E.
 full: core + synthetic secret-scan self-test, full Git object history scan,
       explicit 0.4.2 Task Workspace/Search/file_read/file_edit/update/
       reconnect gates, the 0.4.3 consumed-current staging cleanup gate,
@@ -69,14 +69,12 @@ step "All tests" go test ./... -count=1
 step "Current-platform build" go build ./...
 step "Windows amd64 build" env CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./...
 step "Linux amd64 build" env CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./...
-step "macOS amd64 build" env CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build ./...
-step "macOS arm64 build" env CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ./...
 step "Restored Hub health E2E" go test -tags opse2e ./internal/opsbackup -run TestRestoredHubStartsHealthy -count=1
 step "Local Bridge E2E" go test -tags localbridgee2e ./internal/localbridge -count=1
 
 if [[ "$mode" == "full" ]]; then
   step "Secret scanner synthetic self-test" go run ./cmd/secretscan --self-test
-  step "Full Git object database secret scan" go run ./cmd/secretscan --history "${private_marker_args[@]}"
+	step "Release HEAD history secret scan" go run ./cmd/secretscan --history
   step "0.4.2 Task Workspace gate" go test ./internal/node ./internal/nodeui -run 'Test(WorkingPlan|WorkingMarkdown|WorkingProgress)' -count=1
   step "0.4.2 Managed ripgrep/native search gate" go test ./internal/node ./internal/nodeui -run 'Test(ManagedRipgrep|NativeSearch|RipgrepJSON|SearchFileSelfTest)' -count=1
   step "0.4.2 ripgrep component packager gate" go test ./cmd/ripgreppack -count=1

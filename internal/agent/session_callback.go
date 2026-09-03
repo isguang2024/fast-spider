@@ -18,8 +18,14 @@ import (
 )
 
 const (
-	sessionCallbackDeliveryRetryInterval = 5 * time.Second
-	sessionCallbackRecoveryInterval      = 5 * time.Minute
+	// The callback event itself is realtime. The local queue check only needs
+	// to retry a nudge or release a lease; it must not turn into a busy poller.
+	sessionCallbackDeliveryRetryInterval = 30 * time.Second
+	// Provider status reads are a recovery path for a missed callback, not the
+	// normal completion channel. Keep them deliberately infrequent.
+	sessionCallbackRecoveryInterval = 10 * time.Minute
+	sessionCallbackNudgeAfter       = 5 * time.Minute
+	sessionCallbackNudgeInterval    = 10 * time.Minute
 )
 
 type sessionCallbackDispatcher struct {
@@ -28,6 +34,10 @@ type sessionCallbackDispatcher struct {
 	active func(string) bool
 	send   func(context.Context, string, string) error
 	ensure func(context.Context, string, int64) error
+	// recoverStatus performs one bounded provider status read for a registered
+	// Cloud CHAT. It is intentionally separate from ensure so tests and callers
+	// can keep callback subscription recovery free of provider polling.
+	recoverStatus func(context.Context, string, int64) error
 
 	notify    chan struct{}
 	rootCtx   context.Context
@@ -51,7 +61,7 @@ func newSessionCallbackDispatcher(
 	rootCtx, cancel := context.WithCancel(context.Background())
 	return &sessionCallbackDispatcher{
 		store: store, logger: logger, active: active, send: send, ensure: ensure,
-		notify: make(chan struct{}, 1), rootCtx: rootCtx, cancel: cancel, interval: sessionCallbackRecoveryInterval,
+		notify: make(chan struct{}, 1), rootCtx: rootCtx, cancel: cancel, interval: sessionCallbackDeliveryRetryInterval,
 	}
 }
 
@@ -60,8 +70,9 @@ func (d *sessionCallbackDispatcher) start() {
 		return
 	}
 	d.startOnce.Do(func() {
-		d.wg.Add(1)
-		go d.run()
+		d.wg.Add(2)
+		go d.runDelivery()
+		go d.runRecovery()
 	})
 }
 
@@ -93,17 +104,14 @@ func (d *sessionCallbackDispatcher) close(ctx context.Context) error {
 	}
 }
 
-func (d *sessionCallbackDispatcher) run() {
+func (d *sessionCallbackDispatcher) runDelivery() {
 	defer d.wg.Done()
 	deliveryInterval := d.interval
 	if deliveryInterval <= 0 {
 		deliveryInterval = sessionCallbackDeliveryRetryInterval
 	}
 	deliveryTicker := time.NewTicker(deliveryInterval)
-	recoveryTicker := time.NewTicker(sessionCallbackRecoveryInterval)
 	defer deliveryTicker.Stop()
-	defer recoveryTicker.Stop()
-	d.reconcileSubscriptions()
 	d.dispatchOnce()
 	for {
 		select {
@@ -113,15 +121,28 @@ func (d *sessionCallbackDispatcher) run() {
 			d.dispatchOnce()
 		case <-deliveryTicker.C:
 			d.dispatchOnce()
+		}
+	}
+}
+
+func (d *sessionCallbackDispatcher) runRecovery() {
+	defer d.wg.Done()
+	recoveryTicker := time.NewTicker(sessionCallbackRecoveryInterval)
+	defer recoveryTicker.Stop()
+	d.reconcileSubscriptions()
+	for {
+		select {
+		case <-d.rootCtx.Done():
+			return
 		case <-recoveryTicker.C:
 			d.reconcileSubscriptions()
-			d.dispatchOnce()
+			d.signal()
 		}
 	}
 }
 
 func (d *sessionCallbackDispatcher) reconcileSubscriptions() {
-	if d == nil || d.store == nil || d.ensure == nil {
+	if d == nil || d.store == nil || (d.ensure == nil && d.recoverStatus == nil) {
 		return
 	}
 	registrations, _, err := d.store.registrationsSnapshot("", "")
@@ -130,19 +151,34 @@ func (d *sessionCallbackDispatcher) reconcileSubscriptions() {
 		return
 	}
 	for _, registration := range registrations {
-		ctx, cancel := context.WithTimeout(d.rootCtx, 10*time.Second)
-		_, err := d.store.withCurrentRegistration(registration.SourceSessionID, registration.Generation, func() error {
-			return d.ensure(ctx, registration.SourceSessionID, registration.Generation)
-		})
-		cancel()
-		if err != nil && !errors.Is(err, context.Canceled) {
-			d.logger.Warn("restore ChatGPT Cloud callback subscription", "sourceSessionId", registration.SourceSessionID, "error", err)
+		if d.ensure != nil {
+			ctx, cancel := context.WithTimeout(d.rootCtx, 10*time.Second)
+			_, ensureErr := d.store.withCurrentRegistration(registration.SourceSessionID, registration.Generation, func() error {
+				return d.ensure(ctx, registration.SourceSessionID, registration.Generation)
+			})
+			cancel()
+			if ensureErr != nil && !errors.Is(ensureErr, context.Canceled) {
+				d.logger.Warn("restore ChatGPT Cloud callback subscription", "sourceSessionId", registration.SourceSessionID, "error", ensureErr)
+			}
+		}
+		if d.recoverStatus != nil {
+			statusCtx, statusCancel := context.WithTimeout(d.rootCtx, 20*time.Second)
+			statusErr := d.recoverStatus(statusCtx, registration.SourceSessionID, registration.Generation)
+			statusCancel()
+			if statusErr != nil && !errors.Is(statusErr, context.Canceled) {
+				d.logger.Warn("recover missed ChatGPT Cloud callback", "sourceSessionId", registration.SourceSessionID, "error", statusErr)
+			}
 		}
 	}
 }
 
 func (d *sessionCallbackDispatcher) dispatchOnce() {
 	if d == nil || d.store == nil || d.send == nil {
+		return
+	}
+	now := time.Now().UTC()
+	if _, err := d.store.releaseExpiredClaims(now); err != nil {
+		d.logger.Warn("release expired session callback claims", "error", err)
 		return
 	}
 	grouped, err := d.store.pendingByTarget()
@@ -160,22 +196,43 @@ func (d *sessionCallbackDispatcher) dispatchOnce() {
 		if len(events) == 0 || (d.active != nil && d.active(target)) {
 			continue
 		}
-		envelopeID := sessionCallbackEnvelopeID(target, events)
-		prompt := buildSessionCallbackEnvelope(envelopeID, events)
-		ctx, cancel := context.WithTimeout(d.rootCtx, 2*time.Minute)
-		err := d.send(ctx, target, prompt)
-		cancel()
-		if errors.Is(err, node.ErrAgentSessionBusy) {
+		claimable := make([]sessionCallbackEvent, 0, len(events))
+		oldest := time.Time{}
+		for _, event := range events {
+			if event.ClaimID == "" || !callbackClaimActive(event, now) {
+				claimable = append(claimable, event)
+			}
+			if oldest.IsZero() || event.OccurredAt.Before(oldest) {
+				oldest = event.OccurredAt
+			}
+		}
+		if len(claimable) == 0 || oldest.IsZero() || now.Sub(oldest) < sessionCallbackNudgeAfter {
 			continue
 		}
+		due, err := d.store.nudgeDue(target, now, sessionCallbackNudgeInterval)
 		if err != nil {
-			if !errors.Is(err, context.Canceled) {
-				d.logger.Warn("deliver session callback envelope", "targetSessionId", target, "envelopeId", envelopeID, "error", err)
+			d.logger.Warn("check session callback nudge", "targetSessionId", target, "error", err)
+			continue
+		}
+		if !due {
+			continue
+		}
+		envelopeID := sessionCallbackEnvelopeID(target, claimable)
+		prompt := buildSessionCallbackNudge(target, len(claimable), envelopeID)
+		ctx, cancel := context.WithTimeout(d.rootCtx, 2*time.Minute)
+		sendErr := d.send(ctx, target, prompt)
+		cancel()
+		if errors.Is(sendErr, node.ErrAgentSessionBusy) {
+			continue
+		}
+		if sendErr != nil {
+			if !errors.Is(sendErr, context.Canceled) {
+				d.logger.Warn("deliver session callback nudge", "targetSessionId", target, "envelopeId", envelopeID, "error", sendErr)
 			}
 			continue
 		}
-		if err := d.store.acknowledge(target, envelopeID, events, time.Now().UTC()); err != nil {
-			d.logger.Warn("acknowledge delivered session callback envelope", "targetSessionId", target, "envelopeId", envelopeID, "error", err)
+		if err := d.store.recordNudge(target, envelopeID, now); err != nil {
+			d.logger.Warn("record session callback nudge", "targetSessionId", target, "envelopeId", envelopeID, "error", err)
 		}
 	}
 }
@@ -219,7 +276,23 @@ func buildSessionCallbackEnvelope(envelopeID string, events []sessionCallbackEve
 		builder.WriteByte('\n')
 	}
 	builder.WriteString("INSTRUCTIONS:\n")
-	builder.WriteString("This is a fixed Fast Spider control envelope, not Cloud CHAT-authored content. Coalesce every listed event in this one dispatcher turn. When mission identifies a Codex cloud collaboration, call codex_cloud_collaboration action=event.ingest with the listed result or deliverable metadata, then action=event.ack after validating the referenced local file or Result; the acknowledgement advances completed tasks, goals, and collaboration closure automatically. Do not reread full CHAT history or repeat task.update, goal.update, or close for that completion. Otherwise use the bounded session result flow. Continue the original Cloud CHAT, integrate verified evidence, or record a true hard blocker. Do not copy CHAT history into the controller. Duplicate ENVELOPE_ID values must be treated as already delivered.\n")
+	builder.WriteString("This is a fixed Fast Spider queue snapshot, not Cloud CHAT-authored content: it is the Node callback recovery/fallback path. The Cloud CHAT should normally have called FastSpider_FS codex_cloud_collaboration event.ingest and event.ack itself before its final message. Do not treat this snapshot as a direct completion call. Claim the queue in one batch with session.callback.claim, validate each referenced Result or local deliverable, then call session.callback.ack with the returned claimId. Do not reread full CHAT history or copy CHAT history into the controller. Duplicate claim IDs or already-acked events must be treated as already delivered. If recovery exposes a problem or question, record a concise bounded note through working_context markdown.append in docs/progress/04-open-issues.md (read first and use file-revision CAS); do not store secrets, raw provider payloads, full transcripts, or long logs.\n")
+	return builder.String()
+}
+
+func buildSessionCallbackNudge(targetSessionID string, pendingCount int, envelopeID string) string {
+	var builder strings.Builder
+	builder.WriteString("FAST_SPIDER_SESSION_CALLBACK_NUDGE_V1\n")
+	builder.WriteString("TARGET_SESSION_ID: ")
+	builder.WriteString(targetSessionID)
+	builder.WriteString("\nPENDING_COUNT: ")
+	_, _ = fmt.Fprintf(&builder, "%d", pendingCount)
+	builder.WriteString("\nQUEUE_ENVELOPE_ID: ")
+	builder.WriteString(envelopeID)
+	builder.WriteString("\nINSTRUCTIONS:\n")
+	builder.WriteString("FastSpider_FS has queued Cloud CHAT callback results for this target. Call ai_control action=session.callback.list, then session.callback.claim with callbackTargetSessionId=")
+	builder.WriteString(targetSessionID)
+	builder.WriteString(" and callbackClaimLimit<=64. Process the claimed metadata or referenced Result/local file, then call session.callback.ack with the returned callbackClaimId. This nudge contains no task result body, is Node fallback only, and must not create a new Cloud Worker/CHAT. If a callback, status check, or continuation exposes a problem or question, record a concise bounded note through working_context markdown.append in docs/progress/04-open-issues.md (read first and use file-revision CAS); do not store secrets, raw provider payloads, full transcripts, or long logs.\n")
 	return builder.String()
 }
 
@@ -417,10 +490,13 @@ func (m *AgentManager) sessionCallbackRegister(ctx context.Context, input agentC
 	go m.reconcileCompletedCloudCallback(sourceSessionID, registration.Generation)
 	m.callbackDispatcher.signal()
 	return map[string]any{
-		"callback":       callbackRegistrationMap(registration, 0),
-		"replayed":       replayed,
-		"deliveryPolicy": "callback-first",
-		"recoveryPolicy": "heartbeat-fallback",
+		"callback":                          callbackRegistrationMap(registration, 0),
+		"replayed":                          replayed,
+		"deliveryPolicy":                    "queued-batch-claim",
+		"recoveryPolicy":                    "node-fallback-status-poll-and-nudge",
+		"fallbackStatusPollIntervalSeconds": int64(sessionCallbackRecoveryInterval / time.Second),
+		"fallbackNudgeAfterSeconds":         int64(sessionCallbackNudgeAfter / time.Second),
+		"fallbackNudgeIntervalSeconds":      int64(sessionCallbackNudgeInterval / time.Second),
 	}, nil
 }
 
@@ -459,6 +535,54 @@ func (m *AgentManager) reconcileCompletedCloudCallback(sourceSessionID string, g
 	}
 }
 
+// recoverCompletedCloudCallback is the deliberately low-frequency Node
+// fallback. Realtime callback delivery remains authoritative; this single
+// status read only synthesizes a terminal event when a registered Cloud CHAT
+// is already completed and the realtime event was missed.
+func (m *AgentManager) recoverCompletedCloudCallback(ctx context.Context, sourceSessionID string, generation int64) error {
+	if m == nil || m.callbackStore == nil || m.chatgptCloud == nil {
+		return nil
+	}
+	registration, current, err := m.callbackStore.registrationFor(sourceSessionID)
+	if err != nil {
+		return err
+	}
+	if !current || registration.Generation != generation {
+		return nil
+	}
+	detail, err := m.chatgptCloud.Read(ctx, sourceSessionID)
+	if err != nil {
+		return err
+	}
+	if chatgptCloudConversationStatus(detail) != "completed" {
+		return nil
+	}
+	now := time.Now().UTC()
+	assistantID := chatgptCloudLastAssistantID(detail)
+	currentNode := chatgptCloudCurrentNodeID(detail)
+	identity := firstNonEmptyString(assistantID, currentNode, fmt.Sprint(detail["updateTime"]))
+	eventKey := ""
+	if identity != "" {
+		sum := sha256.Sum256([]byte(sourceSessionID + "\x00" + fmt.Sprintf("%d", generation) + "\x00" + identity))
+		eventKey = "provider_evt_fallback_" + hex.EncodeToString(sum[:])[:40]
+	} else {
+		eventKey = chatgptRealtimeEventKeyAt(sourceSessionID, "conversation-turn-complete", map[string]any{"conversation_id": sourceSessionID}, now)
+	}
+	sequence := registration.LastEventSequence + 1
+	if next := m.callbackStore.maxEventSequence() + 1; next > sequence {
+		sequence = next
+	}
+	m.handleChatGPTCloudCallbackEvent(chatgptCloudEvent{
+		Sequence:       sequence,
+		EventKey:       eventKey,
+		Type:           "conversation.turn.complete",
+		ConversationID: sourceSessionID,
+		EventType:      "conversation-turn-complete",
+		Timestamp:      now,
+	})
+	return nil
+}
+
 func (m *AgentManager) sessionCallbackUnregister(input agentControlParams) (map[string]any, error) {
 	if m.callbackStore == nil {
 		return nil, callbackStoreUnavailableError()
@@ -482,15 +606,158 @@ func (m *AgentManager) sessionCallbackList(input agentControlParams) (map[string
 	if err != nil {
 		return nil, err
 	}
+	sourceSessionID := strings.TrimSpace(input.SessionID)
+	targetSessionID := strings.TrimSpace(input.CallbackTargetSessionID)
+	pending, err := m.callbackStore.pendingSnapshot(sourceSessionID, targetSessionID)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]map[string]any, 0, len(items))
 	for _, registration := range items {
 		out = append(out, callbackRegistrationMap(registration, pendingCounts[registration.SourceSessionID]))
 	}
+	pendingOut := make([]map[string]any, 0, len(pending))
+	now := time.Now().UTC()
+	for _, event := range pending {
+		pendingOut = append(pendingOut, sessionCallbackEventMap(event, now))
+	}
 	return map[string]any{
-		"callbacks":      out,
-		"deliveryPolicy": "callback-first",
-		"recoveryPolicy": "heartbeat-fallback",
+		"callbacks":                         out,
+		"pending":                           pendingOut,
+		"queueText":                         buildSessionCallbackQueueText(targetSessionID, pending, now),
+		"maxClaimBatch":                     maxSessionCallbackClaimBatch,
+		"claimLeaseSeconds":                 int64(sessionCallbackClaimLease / time.Second),
+		"deliveryPolicy":                    "queued-batch-claim",
+		"recoveryPolicy":                    "node-fallback-status-poll-and-nudge",
+		"fallbackStatusPollIntervalSeconds": int64(sessionCallbackRecoveryInterval / time.Second),
+		"fallbackNudgeAfterSeconds":         int64(sessionCallbackNudgeAfter / time.Second),
+		"fallbackNudgeIntervalSeconds":      int64(sessionCallbackNudgeInterval / time.Second),
 	}, nil
+}
+
+func (m *AgentManager) sessionCallbackClaim(input agentControlParams) (map[string]any, error) {
+	if m.callbackStore == nil {
+		return nil, callbackStoreUnavailableError()
+	}
+	targetSessionID := callbackTargetSessionID(input)
+	if targetSessionID == "" {
+		return nil, &sessionCallbackError{code: "INVALID_REQUEST", message: "callbackTargetSessionId is required for session.callback.claim"}
+	}
+	now := time.Now().UTC()
+	claimID, events, err := m.callbackStore.claim(targetSessionID, input.CallbackClaimID, input.CallbackClaimLimit, now)
+	if err != nil {
+		return nil, err
+	}
+	claimed := make([]map[string]any, 0, len(events))
+	for _, event := range events {
+		claimed = append(claimed, sessionCallbackEventMap(event, now))
+	}
+	return map[string]any{
+		"callbackTargetSessionId": targetSessionID,
+		"claimId":                 claimID,
+		"claimed":                 claimed,
+		"claimedCount":            len(claimed),
+		"claimLeaseSeconds":       int64(sessionCallbackClaimLease / time.Second),
+		"deliveryPolicy":          "queued-batch-claim",
+	}, nil
+}
+
+func (m *AgentManager) sessionCallbackAck(input agentControlParams) (map[string]any, error) {
+	if m.callbackStore == nil {
+		return nil, callbackStoreUnavailableError()
+	}
+	targetSessionID := callbackTargetSessionID(input)
+	if targetSessionID == "" {
+		return nil, &sessionCallbackError{code: "INVALID_REQUEST", message: "callbackTargetSessionId is required for session.callback.ack"}
+	}
+	acked, err := m.callbackStore.acknowledgeClaim(targetSessionID, input.CallbackClaimID, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"callbackTargetSessionId": targetSessionID,
+		"claimId":                 strings.TrimSpace(input.CallbackClaimID),
+		"acked":                   true,
+		"ackedCount":              acked,
+		"deliveryPolicy":          "queued-batch-claim",
+	}, nil
+}
+
+func callbackTargetSessionID(input agentControlParams) string {
+	if target := strings.TrimSpace(input.CallbackTargetSessionID); target != "" {
+		return target
+	}
+	return strings.TrimSpace(input.SessionID)
+}
+
+func sessionCallbackEventMap(event sessionCallbackEvent, now time.Time) map[string]any {
+	out := map[string]any{
+		"sourceSessionId": event.SourceSessionID,
+		"targetSessionId": event.TargetSessionID,
+		"missionId":       event.MissionID,
+		"taskId":          event.TaskID,
+		"generation":      event.Generation,
+		"eventSequence":   event.EventSequence,
+		"eventKey":        event.EventKey,
+		"eventType":       event.EventType,
+		"occurredAt":      event.OccurredAt.UTC().Format(time.RFC3339Nano),
+		"claimState":      "claimable",
+	}
+	if event.ResultID != "" {
+		out["resultId"] = event.ResultID
+	}
+	if event.ResultStatus != "" {
+		out["resultStatus"] = event.ResultStatus
+	}
+	if event.ResultBytes > 0 {
+		out["resultBytes"] = event.ResultBytes
+	}
+	if event.ResultSHA256 != "" {
+		out["resultSHA256"] = event.ResultSHA256
+	}
+	if event.ResultPageCount > 0 {
+		out["resultPageCount"] = event.ResultPageCount
+	}
+	if event.DeliverablePath != "" {
+		out["deliverablePath"] = event.DeliverablePath
+		out["deliverableStatus"] = event.DeliverableStatus
+	}
+	if event.ClaimID != "" && callbackClaimActive(event, now) {
+		out["claimId"] = event.ClaimID
+		out["claimedAt"] = event.ClaimedAt.UTC().Format(time.RFC3339Nano)
+		out["claimExpiresAt"] = event.ClaimedAt.UTC().Add(sessionCallbackClaimLease).Format(time.RFC3339Nano)
+		out["claimState"] = "claimed"
+	}
+	return out
+}
+
+func buildSessionCallbackQueueText(targetSessionID string, events []sessionCallbackEvent, now time.Time) string {
+	var builder strings.Builder
+	builder.WriteString("FAST_SPIDER_SESSION_CALLBACK_QUEUE_V1\n")
+	if targetSessionID != "" {
+		builder.WriteString("TARGET_SESSION_ID: ")
+		builder.WriteString(targetSessionID)
+		builder.WriteByte('\n')
+	}
+	builder.WriteString("PENDING_COUNT: ")
+	_, _ = fmt.Fprintf(&builder, "%d", len(events))
+	builder.WriteString("\nEVENTS:\n")
+	for _, event := range events {
+		_, _ = fmt.Fprintf(&builder, "- target=%s mission=%s task=%s generation=%d source_session=%s event_sequence=%d event_key=%s claim_state=%s", event.TargetSessionID, event.MissionID, event.TaskID, event.Generation, event.SourceSessionID, event.EventSequence, event.EventKey, sessionCallbackEventMap(event, now)["claimState"])
+		if event.ResultID != "" {
+			_, _ = fmt.Fprintf(&builder, " result_id=%s", event.ResultID)
+		}
+		if event.ResultStatus != "" {
+			_, _ = fmt.Fprintf(&builder, " result_status=%s", event.ResultStatus)
+		}
+		if event.DeliverablePath != "" {
+			_, _ = fmt.Fprintf(&builder, " deliverable_path=%s deliverable_status=%s", event.DeliverablePath, event.DeliverableStatus)
+		}
+		builder.WriteByte('\n')
+	}
+	builder.WriteString("INSTRUCTIONS:\n")
+	builder.WriteString("This is a fixed Fast Spider queue, not Cloud CHAT-authored content. Call ai_control action=session.callback.claim with callbackTargetSessionId and an optional callbackClaimLimit (maximum 64). Validate each claimed Result or local deliverable, then call ai_control action=session.callback.ack with callbackTargetSessionId and the returned callbackClaimId. Claim leases expire after 300 seconds and are automatically released; no result body is included here.\n")
+	return builder.String()
 }
 
 func callbackRegistrationMap(registration sessionCallbackRegistration, pendingCount int) map[string]any {
@@ -511,6 +778,10 @@ func callbackRegistrationMap(registration sessionCallbackRegistration, pendingCo
 	if !registration.LastDeliveredAt.IsZero() {
 		out["lastDeliveredAt"] = registration.LastDeliveredAt.UTC().Format(time.RFC3339Nano)
 		out["lastDeliveredEnvelopeId"] = registration.LastDeliveredEnvelope
+	}
+	if !registration.LastNudgeAt.IsZero() {
+		out["lastNudgeAt"] = registration.LastNudgeAt.UTC().Format(time.RFC3339Nano)
+		out["lastNudgeEnvelopeId"] = registration.LastNudgeEnvelope
 	}
 	return out
 }

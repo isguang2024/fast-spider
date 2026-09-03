@@ -371,6 +371,92 @@ func TestCodexCloudCollaborationPollRecoversMissedCallbackAndCloses(t *testing.T
 	}
 }
 
+func TestCodexCloudCollaborationContinuesStalledChatOnceWithoutReplacement(t *testing.T) {
+	service, ownerID, machineID, node := newCloudCollaborationTestService(t)
+	created, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "create", MachineID: machineID, IdempotencyKey: "codex-collab-continue-001", ControllerSessionID: "codex-controller", DispatcherSessionID: "codex-dispatcher",
+		Title: "Continue", Goal: "Recover a stalled chat", DoneWhen: "The chat resumes", WorkingDirectory: t.TempDir(), AllowedActions: []string{"chat.create", "file.read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collaborationID, _ := created["collaborationId"].(string)
+	leased, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "lease.acquire", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(created, "revision")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	added, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "task.add", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(leased, "revision"),
+		TaskID: "task-continue", Title: "Continue", Prompt: "Complete the bounded task.", AccessMode: "read_only", AllowedActions: []string{"chat.create", "file.read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "task.dispatch", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(added, "revision"), TaskID: "task-continue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, state, err := service.loadCloudCollaboration(context.Background(), ownerID, collaborationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Chats[0].StalledNotified = true
+	state.Chats[0].QuietChecks = 2
+	saved, err := service.saveCloudCollaboration(context.Background(), ownerID, rec, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	node.setResponse("session.get", map[string]any{"session": map[string]any{"sessionId": "cloud-chat-1", "providerId": "codex", "backend": "chatgpt_cloud", "status": "completed"}})
+	completed, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "chat.continue", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(saved, "revision"), TaskID: "task-continue",
+	})
+	if err != nil || completed["continueSent"] != false || completed["recoveryAction"] != "status_poll" {
+		t.Fatalf("completed chat recovery=%#v err=%v", completed, err)
+	}
+	if countCloudCollaborationCalls(node.snapshotCalls(), "session.send") != 0 {
+		t.Fatalf("completed chat received a continue send: %#v", node.snapshotCalls())
+	}
+
+	node.setResponse("session.get", map[string]any{"session": map[string]any{"sessionId": "cloud-chat-1", "providerId": "codex", "backend": "chatgpt_cloud", "status": "running"}})
+	continued, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "chat.continue", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(saved, "revision"), TaskID: "task-continue",
+	})
+	if err != nil || continued["continueSent"] != true || continued["continuePrompt"] != "请继续" || continued["automaticReplacement"] != false || continued["recordIssuesTo"] != cloudCollaborationIssueMarkdownPath {
+		t.Fatalf("continue recovery=%#v err=%v", continued, err)
+	}
+	if countCloudCollaborationCalls(node.snapshotCalls(), "session.send") != 1 || countCloudCollaborationCalls(node.snapshotCalls(), "session.create") != 1 {
+		t.Fatalf("continue calls=%#v", node.snapshotCalls())
+	}
+	var sendPrompt string
+	for _, call := range node.snapshotCalls() {
+		if call.Action == "session.send" {
+			sendPrompt, _ = call.Params["prompt"].(string)
+		}
+	}
+	if sendPrompt != "请继续" {
+		t.Fatalf("continue prompt=%q", sendPrompt)
+	}
+	repeated, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "chat.continue", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(continued, "revision"), TaskID: "task-continue",
+	})
+	if err != nil || repeated["continueSent"] != false || repeated["recoveryAction"] != "controller_decision" || repeated["automaticReplacement"] != false {
+		t.Fatalf("repeated continue recovery=%#v err=%v", repeated, err)
+	}
+	if countCloudCollaborationCalls(node.snapshotCalls(), "session.send") != 1 {
+		t.Fatalf("repeated recovery sent another continue: %#v", node.snapshotCalls())
+	}
+
+	tick, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "tick", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := strings.Join(mapActionTypes(tick["actions"]), ",")
+	if !strings.Contains(actions, "chat_recovery_decision") || strings.Contains(actions, "continue_chat") {
+		t.Fatalf("post-continue actions=%s %#v", actions, tick)
+	}
+}
+
 func countCloudCollaborationCalls(calls []protocolv1.CapabilityRequest, action string) int {
 	count := 0
 	for _, call := range calls {

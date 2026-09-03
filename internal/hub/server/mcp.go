@@ -341,14 +341,14 @@ type screenshotTakeInput struct {
 type aiControlInput struct {
 	MCPResponseOptions
 	MachineID               string              `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	Action                  string              `json:"action" jsonschema:"agent.control action. ChatGPT cloud CHAT session.create uses providerId=codex, backend=chatgpt_cloud, visibility=visible and mode=quick_chat|complete. Use capability_list for the exact action catalog including session.callback.*"`
+	Action                  string              `json:"action" jsonschema:"session.create: providerId=codex, backend=chatgpt_cloud, visibility=visible, mode=quick_chat|complete; callback fallback: session.callback.list/claim/ack; see capability_list"`
 	ProviderID              string              `json:"providerId,omitempty" jsonschema:"AI harness provider ID; defaults to codex"`
 	AppType                 string              `json:"appType,omitempty" jsonschema:"routing.status app scope: claude,codex,or claude-desktop; omit to inspect all supported CC Switch routes"`
 	SessionID               string              `json:"sessionId,omitempty" jsonschema:"opaque provider session ID; optional thread scope for mcp.status.list"`
 	TurnID                  string              `json:"turnId,omitempty" jsonschema:"active turn ID for cancel and required expected active turn ID for session.steer"`
 	AsyncTaskID             string              `json:"asyncTaskId,omitempty" jsonschema:"ChatGPT cloud active task ID for session.steer"`
 	RequestID               string              `json:"requestId,omitempty" jsonschema:"pending Codex server request ID required for session.respond"`
-	IdempotencyKey          string              `json:"idempotencyKey,omitempty" jsonschema:"12-128 character key required for session.create; with session.delete and no sessionId, identifies an unresolved create reservation to release"`
+	IdempotencyKey          string              `json:"idempotencyKey,omitempty" jsonschema:"12-128 character session.create/delete key"`
 	Visibility              string              `json:"visibility,omitempty" jsonschema:"session.create: visible or internal; default visible"`
 	Backend                 string              `json:"backend,omitempty" jsonschema:"session.create backend: codex_local, claude_local, or chatgpt_cloud"`
 	VisibilityTarget        string              `json:"visibilityTarget,omitempty" jsonschema:"session.create target: codex_local, claude_local, chatgpt_cloud, or none"`
@@ -360,16 +360,18 @@ type aiControlInput struct {
 	Thinking                string              `json:"thinking,omitempty" jsonschema:"optional provider reasoning effort; chatgpt_cloud session.send inherits the first turn effort when omitted"`
 	Cursor                  int64               `json:"cursor,omitempty" jsonschema:"last consumed normalized event sequence"`
 	WaitSeconds             int64               `json:"waitSeconds,omitempty" jsonschema:"session.watch long-poll from 0 to 15 seconds"`
+	ResultMode              string              `json:"resultMode,omitempty" jsonschema:"session.result: manifest or result-id; omits CHAT body"`
+	ResultID                string              `json:"resultId,omitempty" jsonschema:"Result Pool ID for result-id"`
 	Limit                   int                 `json:"limit,omitempty" jsonschema:"session.list maximum, default 50 and maximum 100"`
 	Name                    string              `json:"name,omitempty" jsonschema:"new session name for session.rename"`
 	ForceReload             bool                `json:"forceReload,omitempty" jsonschema:"skills.list only; bypass the local Codex skill cache"`
-	MarketplaceKinds        []string            `json:"marketplaceKinds,omitempty" jsonschema:"plugins.list filter: local,vertical,workspace-directory,shared-with-me,created-by-me-remote"`
+	MarketplaceKinds        []string            `json:"marketplaceKinds,omitempty" jsonschema:"plugins.list marketplace filters"`
 	PluginName              string              `json:"pluginName,omitempty" jsonschema:"plugin name required for plugins.get; unsupported for chatgpt_cloud session.create because Cloud has no per-session plugin binding"`
 	MarketplacePath         string              `json:"marketplacePath,omitempty" jsonschema:"optional absolute local marketplace path for plugins.get"`
 	RemoteMarketplaceName   string              `json:"remoteMarketplaceName,omitempty" jsonschema:"remote marketplace name for plugins.get or plugin.skill.read"`
 	RemotePluginID          string              `json:"remotePluginId,omitempty" jsonschema:"remote plugin identifier required for plugin.skill.read"`
 	SkillName               string              `json:"skillName,omitempty" jsonschema:"skill name required for plugin.skill.read"`
-	NumTurns                int                 `json:"numTurns,omitempty" jsonschema:"session.rollback only; number of trailing Codex turns to remove, 1-1000; does not revert working-tree changes"`
+	NumTurns                int                 `json:"numTurns,omitempty" jsonschema:"session.rollback trailing turns, 1-1000"`
 	Objective               string              `json:"objective,omitempty" jsonschema:"goal objective for session.goal.set"`
 	GoalStatus              string              `json:"goalStatus,omitempty" jsonschema:"session.goal.set status: active,paused,blocked,usageLimited,budgetLimited,complete"`
 	TokenBudget             int64               `json:"tokenBudget,omitempty" jsonschema:"optional non-negative Codex goal token budget"`
@@ -378,8 +380,8 @@ type aiControlInput struct {
 	LocalImages             []string            `json:"localImages,omitempty" jsonschema:"absolute local image paths for session.create/session.send/session.steer"`
 	Mentions                []map[string]string `json:"mentions,omitempty" jsonschema:"native Codex mention inputs with name and absolute path for session.create/session.send/session.steer"`
 	ImageDetail             string              `json:"imageDetail,omitempty" jsonschema:"image detail for all image/localImage inputs: auto,low,high,original"`
-	OutputSchema            map[string]any      `json:"outputSchema,omitempty" jsonschema:"bounded JSON Schema object constraining the final assistant message for session.create/session.send"`
-	Decision                string              `json:"decision,omitempty" jsonschema:"session.respond approval/elicitation decision accept,decline,cancel; or confirm_not_created for session.delete by idempotencyKey after reconciling session.list"`
+	OutputSchema            map[string]any      `json:"outputSchema,omitempty" jsonschema:"bounded JSON Schema for the final message"`
+	Decision                string              `json:"decision,omitempty" jsonschema:"session.respond decision or session.delete reconciliation"`
 	Answers                 map[string][]string `json:"answers,omitempty" jsonschema:"session.respond answers keyed by Codex request_user_input question ID"`
 	ResponseContent         map[string]any      `json:"responseContent,omitempty" jsonschema:"session.respond structured content when accepting an MCP elicitation"`
 	PageCursor              string              `json:"pageCursor,omitempty" jsonschema:"opaque pagination cursor for permissions.list or mcp.status.list"`
@@ -400,6 +402,8 @@ type aiControlInput struct {
 	CallbackTaskID          string              `json:"callbackTaskId,omitempty" jsonschema:"callback task ID"`
 	CallbackGeneration      int64               `json:"callbackGeneration,omitempty" jsonschema:"positive callback generation"`
 	CallbackDeliverablePath string              `json:"callbackDeliverablePath,omitempty" jsonschema:"absolute callback output file"`
+	CallbackClaimID         string              `json:"callbackClaimId,omitempty" jsonschema:"claim ID from session.callback.claim"`
+	CallbackClaimLimit      int                 `json:"callbackClaimLimit,omitempty" jsonschema:"claim batch size; maximum 64"`
 }
 
 type genericCapabilityOutput struct {
@@ -628,11 +632,11 @@ func (s *Server) newMCPHandler() http.Handler {
 
 const mcpServerInstructions = `FastSpider_FS is a remote development control plane. When selected as @FastSpider_FS, try a real read-only tool before judging UI text.
 
-Tools may be lazy. If absent, use api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Never load all 21 schemas for health or request login before a real connection check.
+Tools may be lazy. If absent, use api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Never load all 21 schemas or request login before a real connection check.
 
-Map: connection = capability_list, machine_list, machine_get; audit = audit_log, operation_log; files = code_search, file_read, file_edit; jobs = shell_run, build_control, job_watch, job_cancel; Git = git_control; browser = browser_control, screenshot_take; AI = ai_control; Codex cloud collaboration = codex_cloud_collaboration; context = working_context; roles = thinking_team; artifacts = artifact_get. codex_cloud_collaboration requires local Codex + ChatGPT auth, creates backend=chatgpt_cloud visible ChatGPT CHAT sessions, and never falls back to another AI. Local Codex may report desktopBridge and nativeConversationStreaming=unsupported while using the Desktop owner/control bridge.
+Map: connection=capability_list,machine_list,machine_get; audit=audit_log,operation_log; files=code_search,file_read,file_edit; jobs=shell_run,build_control,job_watch,job_cancel; Git=git_control; browser=browser_control,screenshot_take; AI=ai_control; cloud=codex_cloud_collaboration; context=working_context; roles=thinking_team; artifacts=artifact_get. Cloud collaboration uses an existing visible ChatGPT CHAT (backend=chatgpt_cloud): it calls event.ingest then event.ack before final output and must not create a new Cloud Worker/CHAT. Node callback delivery is fallback only. Local Codex may report desktopBridge, nativeConversationStreaming=unsupported, and Desktop owner/control bridge.
 
-Rules: be compact; diagnostics=true adds timing/trace. Unknown machineId -> machine_list. Check connection with capability_list(view=overview) + machine_list. Use view=capability or one view=tool|workflow|error guide only when needed. Codex history starts at ai_control(action=session.list), then get/watch/result. Every shell/build jobId reaches terminal via job_watch; remove only caller-owned temporary outputs. File edits use read/SHA/preview/CAS. Close each browser session. shell_run is the host/WSL entry; on Windows put powershell.exe or cmd.exe in argv (e.g. tzutil /g), not a separate PowerShell tool. Attachments expire within 48h.`
+Rules: Unknown machineId -> machine_list. Check with capability_list(view=overview)+machine_list. Load only one view=capability or view=tool|workflow|error guide. Codex history starts at ai_control(action=session.list), then get/watch/result. Callback fallback is list->claim->ack; stalled CHAT recovery sends “请继续” after status check and records bounded issues through working_context. Every shell/build jobId reaches terminal through job_watch; remove only caller-owned temporary outputs. File edits use read/SHA/preview/CAS. Close each browser session. On Windows shell_run names powershell.exe or cmd.exe in argv (for example tzutil /g), not a separate PowerShell tool. Attachments expire within 48h.`
 
 func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	server := mcp.NewServer(

@@ -12,12 +12,16 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/isguang2024/fast-spider/internal/security"
 )
 
 const (
 	sessionCallbackStoreSchemaVersion = 1
 	maxSessionCallbacks               = 64
 	maxRecentCallbackEventKeys        = 256
+	maxSessionCallbackClaimBatch      = 64
+	sessionCallbackClaimLease         = 5 * time.Minute
 )
 
 type sessionCallbackError struct {
@@ -45,6 +49,8 @@ type sessionCallbackRegistration struct {
 	LastFallbackEventAt   time.Time `json:"lastFallbackEventAt,omitempty"`
 	LastDeliveredAt       time.Time `json:"lastDeliveredAt,omitempty"`
 	LastDeliveredEnvelope string    `json:"lastDeliveredEnvelope,omitempty"`
+	LastNudgeAt           time.Time `json:"lastNudgeAt,omitempty"`
+	LastNudgeEnvelope     string    `json:"lastNudgeEnvelope,omitempty"`
 	LastResultID          string    `json:"lastResultId,omitempty"`
 	LastResultStatus      string    `json:"lastResultStatus,omitempty"`
 	LastResultBytes       int64     `json:"lastResultBytes,omitempty"`
@@ -71,6 +77,8 @@ type sessionCallbackEvent struct {
 	ResultPageCount   int       `json:"resultPageCount,omitempty"`
 	DeliverablePath   string    `json:"deliverablePath,omitempty"`
 	DeliverableStatus string    `json:"deliverableStatus,omitempty"`
+	ClaimID           string    `json:"claimId,omitempty"`
+	ClaimedAt         time.Time `json:"claimedAt,omitempty"`
 }
 
 type callbackResultMetadata struct {
@@ -226,6 +234,12 @@ func validateSessionCallbackRegistration(registration sessionCallbackRegistratio
 	if len(registration.LastDeliveredEnvelope) > 128 || strings.ContainsAny(registration.LastDeliveredEnvelope, "\x00\r\n") {
 		return fmt.Errorf("invalid delivered envelope ID")
 	}
+	if len(registration.LastNudgeEnvelope) > 128 || strings.ContainsAny(registration.LastNudgeEnvelope, "\x00\r\n") {
+		return fmt.Errorf("invalid callback nudge envelope ID")
+	}
+	if !registration.LastNudgeAt.IsZero() && registration.LastNudgeEnvelope == "" {
+		return fmt.Errorf("callback nudge timestamp has no envelope ID")
+	}
 	if err := validateCallbackResultMetadata(callbackResultMetadata{registration.LastResultID, registration.LastResultStatus, registration.LastResultBytes, registration.LastResultSHA256, registration.LastResultPageCount}); err != nil {
 		return err
 	}
@@ -271,6 +285,16 @@ func validateSessionCallbackEvent(event sessionCallbackEvent) error {
 		}
 	} else if event.DeliverableStatus != "" {
 		return fmt.Errorf("callback deliverable status has no path")
+	}
+	if event.ClaimID != "" {
+		if err := validateSessionCallbackClaimID(event.ClaimID); err != nil {
+			return err
+		}
+		if event.ClaimedAt.IsZero() {
+			return fmt.Errorf("callback claim timestamp is required")
+		}
+	} else if !event.ClaimedAt.IsZero() {
+		return fmt.Errorf("callback claim timestamp has no claim ID")
 	}
 	return nil
 }
@@ -321,6 +345,17 @@ func validateCallbackKey(value, label string) error {
 		return fmt.Errorf("%s is required and must be at most 128 non-whitespace characters", label)
 	}
 	return nil
+}
+
+func validateSessionCallbackClaimID(value string) error {
+	if value == "" || len(value) > 128 || strings.ContainsAny(value, "\x00\r\n\t ") {
+		return fmt.Errorf("invalid callback claim ID")
+	}
+	return nil
+}
+
+func callbackClaimActive(event sessionCallbackEvent, now time.Time) bool {
+	return event.ClaimID != "" && !event.ClaimedAt.IsZero() && now.Before(event.ClaimedAt.UTC().Add(sessionCallbackClaimLease))
 }
 
 func (s *sessionCallbackStore) register(request sessionCallbackRegistration) (sessionCallbackRegistration, bool, error) {
@@ -578,6 +613,350 @@ func (s *sessionCallbackStore) pendingByTarget() (map[string][]sessionCallbackEv
 		})
 	}
 	return grouped, nil
+}
+
+func (s *sessionCallbackStore) pendingSnapshot(sourceSessionID, targetSessionID string) ([]sessionCallbackEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return nil, callbackStoreUnavailableError()
+	}
+	events := make([]sessionCallbackEvent, 0, len(s.pending))
+	for _, event := range s.pending {
+		if sourceSessionID != "" && event.SourceSessionID != sourceSessionID {
+			continue
+		}
+		if targetSessionID != "" && event.TargetSessionID != targetSessionID {
+			continue
+		}
+		events = append(events, event)
+	}
+	sort.Slice(events, func(i, j int) bool {
+		left, right := events[i], events[j]
+		if left.TargetSessionID != right.TargetSessionID {
+			return left.TargetSessionID < right.TargetSessionID
+		}
+		if left.MissionID != right.MissionID {
+			return left.MissionID < right.MissionID
+		}
+		if left.TaskID != right.TaskID {
+			return left.TaskID < right.TaskID
+		}
+		return left.SourceSessionID < right.SourceSessionID
+	})
+	return events, nil
+}
+
+// claim reserves a bounded batch for one target. A caller-supplied claim ID is
+// idempotent while the lease is active and after it has been acknowledged;
+// omitting it allocates a fresh opaque ID.
+func (s *sessionCallbackStore) claim(targetSessionID, requestedClaimID string, limit int, now time.Time) (string, []sessionCallbackEvent, error) {
+	targetSessionID = strings.TrimSpace(targetSessionID)
+	if err := validateCallbackOpaqueID(targetSessionID, "callback target session ID", 256); err != nil {
+		return "", nil, &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
+	}
+	if limit == 0 {
+		limit = maxSessionCallbackClaimBatch
+	}
+	if limit < 1 || limit > maxSessionCallbackClaimBatch {
+		return "", nil, &sessionCallbackError{code: "INVALID_REQUEST", message: fmt.Sprintf("callbackClaimLimit must be between 1 and %d", maxSessionCallbackClaimBatch)}
+	}
+	requestedClaimID = strings.TrimSpace(requestedClaimID)
+	if requestedClaimID != "" {
+		if err := validateSessionCallbackClaimID(requestedClaimID); err != nil {
+			return "", nil, &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
+		}
+	}
+	now = now.UTC()
+	claimID := requestedClaimID
+	if claimID == "" {
+		var err error
+		claimID, err = security.RandomOpaque("claim_")
+		if err != nil {
+			return "", nil, err
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return "", nil, callbackStoreUnavailableError()
+	}
+	previousRegistrations := cloneSessionCallbackRegistrations(s.registrations)
+	previousPending := cloneSessionCallbackEvents(s.pending)
+	restore := func() {
+		s.registrations = previousRegistrations
+		s.pending = previousPending
+	}
+	released := false
+	persistReleased := func() error {
+		if !released {
+			return nil
+		}
+		if _, err := s.saveLocked(); err != nil {
+			restore()
+			return err
+		}
+		return nil
+	}
+
+	// Expired leases are immediately reusable. This is done under the same lock
+	// as selection so two concurrent claimers cannot observe the same item.
+	for source, event := range s.pending {
+		if event.ClaimID != "" && !callbackClaimActive(event, now) {
+			event.ClaimID = ""
+			event.ClaimedAt = time.Time{}
+			s.pending[source] = event
+			released = true
+		}
+	}
+
+	var existing []sessionCallbackEvent
+	for _, event := range s.pending {
+		if event.ClaimID != claimID {
+			continue
+		}
+		if event.TargetSessionID != targetSessionID {
+			return "", nil, &sessionCallbackError{code: "CALLBACK_CLAIM_CONFLICT", message: "callback claim ID belongs to another target session"}
+		}
+		if callbackClaimActive(event, now) {
+			existing = append(existing, event)
+		}
+	}
+	if len(existing) > 0 {
+		if err := persistReleased(); err != nil {
+			return "", nil, err
+		}
+		sortSessionCallbackEvents(existing)
+		return claimID, existing, nil
+	}
+	if requestedClaimID != "" {
+		for _, registration := range s.registrations {
+			if registration.TargetSessionID == targetSessionID && registration.LastDeliveredEnvelope == claimID {
+				if err := persistReleased(); err != nil {
+					return "", nil, err
+				}
+				return claimID, nil, nil
+			}
+		}
+	}
+
+	available := make([]sessionCallbackEvent, 0, len(s.pending))
+	for _, event := range s.pending {
+		if event.TargetSessionID != targetSessionID || event.ClaimID != "" {
+			continue
+		}
+		available = append(available, event)
+	}
+	sortSessionCallbackEvents(available)
+	if len(available) > limit {
+		available = available[:limit]
+	}
+	if len(available) == 0 {
+		if err := persistReleased(); err != nil {
+			return "", nil, err
+		}
+		return requestedClaimID, nil, nil
+	}
+	for _, selected := range available {
+		event := s.pending[selected.SourceSessionID]
+		event.ClaimID = claimID
+		event.ClaimedAt = now
+		s.pending[selected.SourceSessionID] = event
+		registration := s.registrations[selected.SourceSessionID]
+		registration.UpdatedAt = now
+		s.registrations[selected.SourceSessionID] = registration
+	}
+	if _, err := s.saveLocked(); err != nil {
+		restore()
+		return "", nil, err
+	}
+	for i := range available {
+		available[i].ClaimID = claimID
+		available[i].ClaimedAt = now
+	}
+	return claimID, available, nil
+}
+
+func (s *sessionCallbackStore) acknowledgeClaim(targetSessionID, claimID string, now time.Time) (int, error) {
+	targetSessionID = strings.TrimSpace(targetSessionID)
+	claimID = strings.TrimSpace(claimID)
+	if err := validateCallbackOpaqueID(targetSessionID, "callback target session ID", 256); err != nil {
+		return 0, &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
+	}
+	if err := validateSessionCallbackClaimID(claimID); err != nil {
+		return 0, &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
+	}
+	now = now.UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return 0, callbackStoreUnavailableError()
+	}
+	previousRegistrations := cloneSessionCallbackRegistrations(s.registrations)
+	previousPending := cloneSessionCallbackEvents(s.pending)
+	acked := 0
+	expired := false
+	for source, event := range s.pending {
+		if event.TargetSessionID != targetSessionID || event.ClaimID != claimID {
+			continue
+		}
+		if !callbackClaimActive(event, now) {
+			expired = true
+			continue
+		}
+		delete(s.pending, source)
+		registration := s.registrations[source]
+		registration.LastDeliveredAt = now
+		registration.LastDeliveredEnvelope = claimID
+		registration.UpdatedAt = now
+		s.registrations[source] = registration
+		acked++
+	}
+	if acked == 0 {
+		if expired {
+			return 0, &sessionCallbackError{code: "CALLBACK_CLAIM_EXPIRED", message: "callback claim lease expired; claim the queue again before acknowledging"}
+		}
+		for _, registration := range s.registrations {
+			if registration.TargetSessionID == targetSessionID && registration.LastDeliveredEnvelope == claimID {
+				return 0, nil
+			}
+		}
+		return 0, &sessionCallbackError{code: "CALLBACK_CLAIM_NOT_FOUND", message: "callback claim is not active for the target session"}
+	}
+	if _, err := s.saveLocked(); err != nil {
+		s.registrations = previousRegistrations
+		s.pending = previousPending
+		return 0, err
+	}
+	return acked, nil
+}
+
+func (s *sessionCallbackStore) releaseExpiredClaims(now time.Time) (int, error) {
+	now = now.UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return 0, callbackStoreUnavailableError()
+	}
+	previousRegistrations := cloneSessionCallbackRegistrations(s.registrations)
+	previousPending := cloneSessionCallbackEvents(s.pending)
+	released := 0
+	for source, event := range s.pending {
+		if event.ClaimID == "" || callbackClaimActive(event, now) {
+			continue
+		}
+		event.ClaimID = ""
+		event.ClaimedAt = time.Time{}
+		s.pending[source] = event
+		registration := s.registrations[source]
+		registration.UpdatedAt = now
+		s.registrations[source] = registration
+		released++
+	}
+	if released == 0 {
+		return 0, nil
+	}
+	if _, err := s.saveLocked(); err != nil {
+		s.registrations = previousRegistrations
+		s.pending = previousPending
+		return 0, err
+	}
+	return released, nil
+}
+
+func (s *sessionCallbackStore) nudgeDue(targetSessionID string, now time.Time, interval time.Duration) (bool, error) {
+	targetSessionID = strings.TrimSpace(targetSessionID)
+	now = now.UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return false, callbackStoreUnavailableError()
+	}
+	var latest time.Time
+	found := false
+	for _, registration := range s.registrations {
+		if registration.TargetSessionID != targetSessionID {
+			continue
+		}
+		found = true
+		if registration.LastNudgeAt.After(latest) {
+			latest = registration.LastNudgeAt
+		}
+	}
+	if !found {
+		return false, nil
+	}
+	if interval <= 0 {
+		interval = sessionCallbackNudgeInterval
+	}
+	return latest.IsZero() || now.Sub(latest) >= interval, nil
+}
+
+func (s *sessionCallbackStore) recordNudge(targetSessionID, envelopeID string, now time.Time) error {
+	targetSessionID = strings.TrimSpace(targetSessionID)
+	if err := validateSessionCallbackClaimID(envelopeID); err != nil {
+		return &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
+	}
+	now = now.UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return callbackStoreUnavailableError()
+	}
+	previous := cloneSessionCallbackRegistrations(s.registrations)
+	updated := 0
+	for source, registration := range s.registrations {
+		if registration.TargetSessionID != targetSessionID {
+			continue
+		}
+		registration.LastNudgeAt = now
+		registration.LastNudgeEnvelope = envelopeID
+		registration.UpdatedAt = now
+		s.registrations[source] = registration
+		updated++
+	}
+	if updated == 0 {
+		return nil
+	}
+	if _, err := s.saveLocked(); err != nil {
+		s.registrations = previous
+		return err
+	}
+	return nil
+}
+
+func cloneSessionCallbackRegistrations(input map[string]sessionCallbackRegistration) map[string]sessionCallbackRegistration {
+	output := make(map[string]sessionCallbackRegistration, len(input))
+	for key, value := range input {
+		value.RecentEventKeys = append([]string(nil), value.RecentEventKeys...)
+		output[key] = value
+	}
+	return output
+}
+
+func cloneSessionCallbackEvents(input map[string]sessionCallbackEvent) map[string]sessionCallbackEvent {
+	output := make(map[string]sessionCallbackEvent, len(input))
+	for key, value := range input {
+		output[key] = value
+	}
+	return output
+}
+
+func sortSessionCallbackEvents(events []sessionCallbackEvent) {
+	sort.Slice(events, func(i, j int) bool {
+		left, right := events[i], events[j]
+		if left.TargetSessionID != right.TargetSessionID {
+			return left.TargetSessionID < right.TargetSessionID
+		}
+		if left.MissionID != right.MissionID {
+			return left.MissionID < right.MissionID
+		}
+		if left.TaskID != right.TaskID {
+			return left.TaskID < right.TaskID
+		}
+		return left.SourceSessionID < right.SourceSessionID
+	})
 }
 
 func sessionCallbackEnvelopeID(targetSessionID string, events []sessionCallbackEvent) string {

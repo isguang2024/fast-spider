@@ -64,13 +64,21 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		assertMCPGuideSize(t, guide, 12<<10)
 		if name == "ai_control" {
 			guideText := strings.Join(append(append(append(guide.WhenToUse, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
-			for _, needle := range []string{"session.create", "providerId=codex", "backend=chatgpt_cloud", "mode=quick_chat", "CHAT", "externalIdType=chatgpt_conversation", "completionPending=true", "pluginName", "UNSUPPORTED_SESSION_PLUGIN_BINDING"} {
+			for _, needle := range []string{"session.create", "providerId=codex", "backend=chatgpt_cloud", "mode=quick_chat", "CHAT", "externalIdType=chatgpt_conversation", "completionPending=true", "pluginName", "UNSUPPORTED_SESSION_PLUGIN_BINDING", "resultMode=manifest", "session.callback.claim", "about every 30 seconds", "about every 10 minutes", "docs/progress/04-open-issues.md"} {
 				if !strings.Contains(guideText, needle) {
 					t.Fatalf("ai_control guide missing %q: %+v", needle, guide)
 				}
 			}
 			if strings.Contains(guide.Summary, "explicitly unsupported") {
 				t.Fatalf("ai_control guide still advertises ChatGPT cloud as unsupported: %s", guide.Summary)
+			}
+		}
+		if name == "codex_cloud_collaboration" {
+			guideText := strings.Join(append(append(append([]string{guide.Summary}, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
+			for _, needle := range []string{"existing Cloud CHAT", "actorSessionId=$self", "event.ingest", "event.ack", "resultMode=manifest", "Node session.callback", "new Cloud Worker/CHAT", "status.poll", "chat.continue", "controller decision", "docs/progress/04-open-issues.md"} {
+				if !strings.Contains(guideText, needle) {
+					t.Fatalf("codex_cloud_collaboration guide missing %q: %+v", needle, guide)
+				}
 			}
 		}
 		if name == "browser_control" {
@@ -90,7 +98,7 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"connection-check", "file-edit", "shell-job", "build-job", "git-change", "browser", "codex-session", "long-task", "artifact-display"} {
+	for _, name := range []string{"connection-check", "file-edit", "shell-job", "build-job", "git-change", "browser", "codex-session", "long-task", "artifact-display", "codex-cloud-collaboration"} {
 		guide, err := newMCPGuide("0.4.17", "workflow", name)
 		if err != nil || guide.Summary == "" || len(guide.SafeSequence) == 0 {
 			t.Fatalf("workflow %s guide=%+v err=%v", name, guide, err)
@@ -233,7 +241,7 @@ func TestMCPServerInstructionsStayBoundedAndCoverCapabilityMap(t *testing.T) {
 		"shell_run", "build_control", "job_watch", "job_cancel", "git_control", "browser_control", "screenshot_take",
 		"ai_control", "codex_cloud_collaboration", "working_context", "thinking_team", "artifact_get", "session.list", "view=tool|workflow|error", "view=capability",
 		`query="fsprobe"`, "Never load all 21 schemas", "powershell.exe", "tzutil /g", "not a separate PowerShell tool", "backend=chatgpt_cloud", "ChatGPT CHAT",
-		"desktopBridge", "nativeConversationStreaming=unsupported", "Desktop owner/control bridge",
+		"desktopBridge", "nativeConversationStreaming=unsupported", "Desktop owner/control bridge", "event.ingest", "event.ack", "new Cloud Worker/CHAT", "Node callback delivery",
 	} {
 		if !strings.Contains(mcpServerInstructions, needle) {
 			t.Fatalf("instructions missing %q", needle)

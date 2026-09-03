@@ -170,12 +170,12 @@ func TestAgentCapabilityRetryAndAuditPolicy(t *testing.T) {
 			t.Fatalf("%s should be retryable", action)
 		}
 	}
-	for _, action := range []string{"session.send", "session.steer", "session.respond", "session.callback.register", "session.callback.unregister", "session.delete", "session.rollback", "session.settings.update", "session.review"} {
+	for _, action := range []string{"session.send", "session.steer", "session.respond", "session.callback.register", "session.callback.unregister", "session.callback.claim", "session.callback.ack", "session.delete", "session.rollback", "session.settings.update", "session.review"} {
 		if isRetryableCapability("agent.control", action) {
 			t.Fatalf("%s must not be retryable", action)
 		}
 	}
-	if !shouldAuditCapability("agent.control", "session.delete") || !shouldAuditCapability("agent.control", "session.goal.set") || !shouldAuditCapability("agent.control", "session.steer") || !shouldAuditCapability("agent.control", "session.respond") || !shouldAuditCapability("agent.control", "session.callback.register") || !shouldAuditCapability("agent.control", "session.callback.unregister") {
+	if !shouldAuditCapability("agent.control", "session.delete") || !shouldAuditCapability("agent.control", "session.goal.set") || !shouldAuditCapability("agent.control", "session.steer") || !shouldAuditCapability("agent.control", "session.respond") || !shouldAuditCapability("agent.control", "session.callback.register") || !shouldAuditCapability("agent.control", "session.callback.unregister") || !shouldAuditCapability("agent.control", "session.callback.claim") || !shouldAuditCapability("agent.control", "session.callback.ack") {
 		t.Fatal("destructive/state-changing agent actions must be audited")
 	}
 	if shouldAuditCapability("agent.control", "skills.list") {

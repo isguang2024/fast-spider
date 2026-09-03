@@ -1,4 +1,4 @@
-# 部署与运维（0.4.38）
+# 部署与运维（0.4.39）
 
 ## Hub
 
@@ -27,9 +27,9 @@ Hub 只监听 loopback 时会把反向代理视为可信来源，因此代理必
 
 0.4.20 增加独立 Direct API。生产 PublicBaseURL 为 `/fast-spider` 时，对外入口为 `GET /fast-spider/direct/v1/tools` 和 `POST /fast-spider/direct/v1/call`，仅接受后台生成的 `fsp_tmp_` Direct Access Key Bearer。Direct Key 与 OAuth、Connection Token 完全隔离；默认只读，高危 Scope 单独授权，高权限最长 24 小时、只读最长 7 天，可绑定单一 Machine 并设置每分钟限速。MCP 与 Direct API 对共有工具复用同一 `toolExecutor`，不得维护两套 Capability 参数映射；MCP-only `audit_log` 不进入 Direct Access Key 工具目录。
 
-## Windows/macOS/Linux Node
+## Windows Node
 
-Windows 对外交付 `fast-spider-node.exe`；macOS 交付 `darwin-arm64`（Apple Silicon）和 `darwin-amd64`（Intel）两个单文件客户端。macOS 下载后需要执行 `chmod +x fast-spider-node`。Windows 第一次运行后正式副本位于 `%LOCALAPPDATA%\FastSpider\bin\fast-spider-node.exe`；macOS 使用当前用户配置目录保存 Node 状态。
+客户端只对外交付 Windows amd64 `fast-spider-node.exe`。第一次运行后正式副本位于 `%LOCALAPPDATA%\FastSpider\bin\fast-spider-node.exe`。
 
 客户端只有“连接”和“本地配置”等本机运行设置，不需要登记目录。连接后的文件/进程权限就是当前 OS 用户权限。本地配置可设置 ChatGPT Cloud 新建会话默认使用 Quick chat 或 Complete，以及默认模型和思考程度；单次请求明确传入的值优先，续聊继续继承原会话。
 

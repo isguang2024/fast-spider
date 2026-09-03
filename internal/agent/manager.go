@@ -78,6 +78,8 @@ type agentControlParams struct {
 	CallbackTaskID          string              `json:"callbackTaskId,omitempty"`
 	CallbackGeneration      int64               `json:"callbackGeneration,omitempty"`
 	CallbackDeliverablePath string              `json:"callbackDeliverablePath,omitempty"`
+	CallbackClaimID         string              `json:"callbackClaimId,omitempty"`
+	CallbackClaimLimit      int                 `json:"callbackClaimLimit,omitempty"`
 	modelProvided           bool
 	thinkingProvided        bool
 }
@@ -170,6 +172,7 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 			return manager.chatgptCloud.EnsureCallbackRealtimeForGeneration(ctx, sessionID, generation)
 		},
 	)
+	manager.callbackDispatcher.recoverStatus = manager.recoverCompletedCloudCallback
 	manager.callbackDispatcher.start()
 	return manager
 }
@@ -271,6 +274,12 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 	}
 	if _, ok := m.registry.get(providerID); !ok {
 		return nil, fmt.Errorf("unsupported providerId %q", providerID)
+	}
+	// Callback queue actions are Node-owned state operations. Route them through
+	// the Cloud callback manager even when the caller omits backend=chatgpt_cloud
+	// (the target session is normally a local Codex dispatcher).
+	if strings.HasPrefix(action, "session.callback.") {
+		return m.controlChatGPTCloud(ctx, action, input)
 	}
 	// chatgpt_cloud is a codex backend: cloud conversations created through the
 	// Codex app-server ChatGPT token + the official /f conversation flow.

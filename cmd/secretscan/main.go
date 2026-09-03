@@ -20,7 +20,7 @@ func main() {
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("secretscan", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	history := flags.Bool("history", false, "also scan every blob in the Git object database")
+	history := flags.Bool("history", false, "also scan the complete history reachable from HEAD")
 	tree := flags.String("tree", "", "scan an exact filesystem tree instead of a Git repository")
 	repository := flags.String("repo", ".", "Git repository to scan")
 	markerFile := flags.String("markers", "", "optional local private-marker file")
