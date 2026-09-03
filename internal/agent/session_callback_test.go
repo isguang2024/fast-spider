@@ -320,7 +320,7 @@ func TestSessionCallbackManagerObserverInboxDispatchesAfterCoordinatorIdle(t *te
 	manager.handleCodexCallbackEvent(AgentEvent{Type: "turn.completed", SessionID: "coordinator-local"})
 	select {
 	case prompt := <-sent:
-		if !strings.Contains(prompt, "FAST_SPIDER_SESSION_CALLBACK_NUDGE_V1") || !strings.Contains(prompt, "session.callback.claim") || strings.Contains(prompt, "source_session=source-integration") {
+		if !strings.Contains(prompt, "FAST_SPIDER_SESSION_CALLBACK_NUDGE_V1") || !strings.Contains(prompt, "session.callback.claim") || !strings.Contains(prompt, "plan.init") || !strings.Contains(prompt, "initializeMarkdown=true") || strings.Contains(prompt, "source_session=source-integration") {
 			t.Fatalf("unexpected callback envelope=%q", prompt)
 		}
 	case <-time.After(2 * time.Second):

@@ -172,7 +172,7 @@ Cloud 的 `conversation.turn.complete` 会先写入 Node data-dir 下的 `agent/
 
 投递策略是 `Cloud CHAT self-callback / Node fallback`：Cloud CHAT 先完成 `event.ingest` → `event.ack`，Node 只在回调缺失、断线、漏通知时恢复。Node 每约 30 秒检查本地 pending/claim 状态，但不会因此查询 Cloud CHAT；pending 最早存在约 5 分钟且目标调度会话空闲时才发送无结果正文的 nudge，此后同一目标最多约每 10 分钟再提醒一次。Provider 状态恢复查询另以约 10 分钟低频执行，仅用于合成漏掉的 terminal callback。Node 重启后恢复持久订阅、pending、claim 与 nudge 状态；注册和注销的 watcher 生命周期带 generation 围栏，旧代注销不会关闭新 owner 的订阅。协调会话只处理 Result/本地交付物元数据和有界摘要，不抓取完整会话网页；实际业务网页仍由对应 Cloud CHAT 读取和操作。
 
-`codex_cloud_collaboration` 的卡住恢复由调度 AI 决策：默认 heartbeat 15 分钟、stall 60 分钟，并要求至少两次无进展检查才标记疑似卡住。调度先执行 `status.poll`；若 Provider 已完成则走结果恢复，若仍在运行则 `chat.continue` 发送固定“请继续”，在观察到新进展前不重复发送。后续观察到新 cursor 会清零 `continueAttempts` 并恢复正常调度；继续后仍无进展、Provider 失败/取消或状态不确定时，返回 `chat_recovery_decision`/`controller_decision`，允许主控决定人工接手或换代，但服务不会自动创建替代 CHAT。回调、状态检查、继续或 Cloud CHAT 本身遇到的问题/疑问，应先读取并以 file revision CAS 调用 `working_context markdown.append`，追加到 `docs/progress/04-open-issues.md`；禁止记录凭据、原始 Provider payload、完整聊天记录或长日志。
+`codex_cloud_collaboration` 的卡住恢复由调度 AI 决策：默认 heartbeat 15 分钟、stall 60 分钟，并要求至少两次无进展检查才标记疑似卡住。调度先执行 `status.poll`；若 Provider 已完成则走结果恢复，若仍在运行则 `chat.continue` 发送固定“请继续”，在观察到新进展前不重复发送。后续观察到新 cursor 会清零 `continueAttempts` 并恢复正常调度；继续后仍无进展、Provider 失败/取消或状态不确定时，返回 `chat_recovery_decision`/`controller_decision`，允许主控决定人工接手或换代，但服务不会自动创建替代 CHAT。回调、状态检查、继续或 Cloud CHAT 本身遇到的问题/疑问，应先读取并以 file revision CAS 调用 `working_context markdown.append`，追加到 `docs/progress/04-open-issues.md`；若读取返回 `NOT_FOUND`，先调用 `plan.init` 且设置 `initializeMarkdown=true` 初始化 Markdown 工作区。禁止记录凭据、原始 Provider payload、完整聊天记录或长日志。
 
 ### `session.send`
 

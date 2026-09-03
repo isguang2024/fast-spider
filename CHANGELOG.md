@@ -5,6 +5,11 @@ semantic versioning for public releases.
 
 ## Unreleased
 
+## 0.4.40 - 2026-09-04
+
+- Initialize the Working Context Markdown workspace when the recovery issue log
+  is missing, then use file-revision CAS to append the bounded issue report.
+
 ## 0.4.39 - 2026-09-03
 
 - Make the existing ChatGPT Cloud CHAT the primary completion callback for

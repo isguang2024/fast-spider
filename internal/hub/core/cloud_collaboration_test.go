@@ -235,7 +235,7 @@ func TestCodexCloudCollaborationRequiresLocalCodexAndUsesDeliverableCallback(t *
 			callbackPath, _ = call.Params["callbackDeliverablePath"].(string)
 		}
 	}
-	if callbackPath != output || !strings.Contains(createPrompt, output) || !strings.Contains(createPrompt, "codex_cloud_collaboration") {
+	if callbackPath != output || !strings.Contains(createPrompt, output) || !strings.Contains(createPrompt, "codex_cloud_collaboration") || !strings.Contains(createPrompt, "plan.init") || !strings.Contains(createPrompt, "initializeMarkdown=true") {
 		t.Fatalf("prompt/path prompt=%q callbackPath=%q", createPrompt, callbackPath)
 	}
 	goalCounts, _ := dispatched["goalCounts"].(map[string]int)

@@ -64,7 +64,7 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		assertMCPGuideSize(t, guide, 12<<10)
 		if name == "ai_control" {
 			guideText := strings.Join(append(append(append(guide.WhenToUse, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
-			for _, needle := range []string{"session.create", "providerId=codex", "backend=chatgpt_cloud", "mode=quick_chat", "CHAT", "externalIdType=chatgpt_conversation", "completionPending=true", "pluginName", "UNSUPPORTED_SESSION_PLUGIN_BINDING", "resultMode=manifest", "session.callback.claim", "about every 30 seconds", "about every 10 minutes", "docs/progress/04-open-issues.md"} {
+			for _, needle := range []string{"session.create", "providerId=codex", "backend=chatgpt_cloud", "mode=quick_chat", "CHAT", "externalIdType=chatgpt_conversation", "completionPending=true", "pluginName", "UNSUPPORTED_SESSION_PLUGIN_BINDING", "resultMode=manifest", "session.callback.claim", "about every 30 seconds", "about every 10 minutes", "plan.init", "initializeMarkdown=true", "docs/progress/04-open-issues.md"} {
 				if !strings.Contains(guideText, needle) {
 					t.Fatalf("ai_control guide missing %q: %+v", needle, guide)
 				}
@@ -75,7 +75,7 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		}
 		if name == "codex_cloud_collaboration" {
 			guideText := strings.Join(append(append(append([]string{guide.Summary}, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
-			for _, needle := range []string{"existing Cloud CHAT", "actorSessionId=$self", "event.ingest", "event.ack", "resultMode=manifest", "Node session.callback", "new Cloud Worker/CHAT", "status.poll", "chat.continue", "controller decision", "docs/progress/04-open-issues.md"} {
+			for _, needle := range []string{"existing Cloud CHAT", "actorSessionId=$self", "event.ingest", "event.ack", "resultMode=manifest", "Node session.callback", "new Cloud Worker/CHAT", "status.poll", "chat.continue", "controller decision", "plan.init", "initializeMarkdown=true", "docs/progress/04-open-issues.md"} {
 				if !strings.Contains(guideText, needle) {
 					t.Fatalf("codex_cloud_collaboration guide missing %q: %+v", needle, guide)
 				}
