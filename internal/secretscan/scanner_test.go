@@ -208,6 +208,22 @@ func TestTestPlaceholderAllowlistIsValueBased(t *testing.T) {
 	}
 }
 
+func TestOpenAITokenRequiresTokenBoundary(t *testing.T) {
+	root := t.TempDir()
+	openAIToken := secretCanary("sk-")
+	writeFile(t, filepath.Join(root, "token.txt"), openAIToken+"\n")
+	writeFile(t, filepath.Join(root, "task-id.txt"), "task-e2e-0439-selfcb-20260903-2359\n")
+
+	findings, err := ScanTree(context.Background(), root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 1 || findings[0].Path != "token.txt" || findings[0].Rule != "openai-token" {
+		t.Fatalf("findings = %#v, want only the standalone OpenAI token", findings)
+	}
+	assertRedacted(t, findings, openAIToken)
+}
+
 func TestAssignmentReferencesRequireCompleteSyntax(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "allowed.yaml"), "service:\n  password: ${PASSWORD_REF}\n")

@@ -28,7 +28,7 @@ var contentRules = []contentRule{
 	{name: "stripe-secret-key", pattern: regexp.MustCompile(`(?:sk|rk)_live_[A-Za-z0-9]{16,255}`)},
 	{name: "npm-token", pattern: regexp.MustCompile(`npm_[A-Za-z0-9]{20,255}`)},
 	{name: "huggingface-token", pattern: regexp.MustCompile(`hf_[A-Za-z0-9]{20,255}`)},
-	{name: "openai-token", pattern: regexp.MustCompile(`sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,255}`)},
+	{name: "openai-token", pattern: regexp.MustCompile(`\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,255}`)},
 	{name: "fast-spider-token", pattern: regexp.MustCompile(`(?:bsp|ctk|dev|oat|ort|ses)_[A-Za-z0-9_-]{24,255}`)},
 	{name: "jwt", pattern: regexp.MustCompile(`eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`)},
 	{name: "credentialed-uri", pattern: regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]{1,20}://[^/@\s:]{1,128}:[^/@\s]{3,256}@[A-Za-z0-9.-]+(?::[0-9]{1,5})?`)},
