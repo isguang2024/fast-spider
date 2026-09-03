@@ -492,7 +492,8 @@ func (m *AgentManager) chatgptCloudResult(ctx context.Context, input agentContro
 	if err != nil {
 		return nil, err
 	}
-	status := chatgptCloudConversationStatus(detail)
+	providerStatus := chatgptCloudConversationStatus(detail)
+	status := providerStatus
 	var callbackResult callbackResultMetadata
 	hasCallbackResult := false
 	if m.callbackStore != nil {
@@ -500,7 +501,7 @@ func (m *AgentManager) chatgptCloudResult(ctx context.Context, input agentContro
 		callbackResult, hasCallbackResult, callbackErr = m.callbackStore.resultFor(input.SessionID)
 		if callbackErr != nil {
 			return nil, callbackErr
-		} else if hasCallbackResult && callbackResult.Status != "" {
+		} else if hasCallbackResult && callbackResult.Status != "" && (callbackResult.Status != "failed" || providerStatus != "completed") {
 			status = callbackResult.Status
 		}
 	}
@@ -519,9 +520,9 @@ func (m *AgentManager) chatgptCloudResult(ctx context.Context, input agentContro
 		if strings.TrimSpace(input.ResultID) != "" {
 			result["resultId"] = strings.TrimSpace(input.ResultID)
 		}
-		if hasCallbackResult {
+		if hasCallbackResult && callbackResult.Status != "failed" {
 			applyCallbackResultMetadata(result, callbackResult)
-		} else if status == "completed" {
+		} else if providerStatus == "completed" {
 			deliverablePath := strings.TrimSpace(input.CallbackDeliverablePath)
 			if deliverablePath != "" {
 				deliverableStatus, size, digest := inspectCallbackDeliverable(deliverablePath)

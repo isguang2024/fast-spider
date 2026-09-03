@@ -713,6 +713,47 @@ func TestSessionCallbackActionsRegisterListAndUnregister(t *testing.T) {
 	}
 }
 
+func TestSessionCallbackRegisterReconcilesAlreadyCompletedCloudTurn(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatGPTCloudTestJSON(t, w, map[string]any{
+			"conversation_id": "source-completed", "async_status": "completed", "current_node": "assistant-1",
+			"mapping": map[string]any{"assistant-1": map[string]any{"message": map[string]any{"author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"CLOUD_COLLAB_OK"}}}}},
+		})
+	}))
+	defer server.Close()
+
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	if err := manager.chatgptCloud.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.chatgptCloud = NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token", nil })
+	manager.chatgptCloud.baseURL, manager.chatgptCloud.http = server.URL, server.Client()
+	manager.chatgptCloud.realtime.baseURL, manager.chatgptCloud.realtime.http = server.URL, server.Client()
+	manager.SetCloudResultPublisher(&testCloudResultPublisher{})
+	manager.codex.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
+		return map[string]any{"thread": map[string]any{"id": "coordinator-local", "cwd": t.TempDir()}}, nil
+	}
+	if _, err := manager.Control(context.Background(), "session.callback.register", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "sessionId": "source-completed", "callbackTargetSessionId": "coordinator-local",
+		"callbackMissionId": "mission-1", "callbackTaskId": "task-1", "callbackGeneration": 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		metadata, ok, err := manager.callbackStore.resultFor("source-completed")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok && metadata.Status == "ready" && metadata.SHA256 != "" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("completed turn was not reconciled after callback registration")
+}
+
 func TestSessionCallbackRegisterAcceptsProjectlessDesktopThreadAndCanSend(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/backend-api/conversation/source-cloud" {

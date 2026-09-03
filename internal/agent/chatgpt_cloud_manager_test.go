@@ -133,6 +133,43 @@ func TestChatGPTCloudResultManifestPublishesCompletedResultForPollingRecovery(t 
 	}
 }
 
+func TestChatGPTCloudResultManifestRetriesFailedCallbackPublication(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatGPTCloudTestJSON(t, w, map[string]any{
+			"conversation_id": "cloud-retry", "async_status": "completed", "current_node": "assistant-1",
+			"mapping": map[string]any{"assistant-1": map[string]any{"message": map[string]any{"author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"CLOUD_COLLAB_OK"}}}}},
+		})
+	}))
+	defer server.Close()
+
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	if err := manager.chatgptCloud.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.chatgptCloud = NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token", nil })
+	manager.chatgptCloud.baseURL, manager.chatgptCloud.http = server.URL, server.Client()
+	if _, _, err := manager.callbackStore.register(testCallbackRegistration("cloud-retry", "target", "task", 1)); err != nil {
+		t.Fatal(err)
+	}
+	failed := testCallbackEvent("cloud-retry", 1)
+	failed.ResultStatus = "failed"
+	if queued, err := manager.callbackStore.enqueue(failed); err != nil || !queued {
+		t.Fatalf("enqueue failed metadata queued=%v err=%v", queued, err)
+	}
+	publisher := &testCloudResultPublisher{}
+	manager.SetCloudResultPublisher(publisher)
+	result, err := manager.Control(context.Background(), "session.result", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "sessionId": "cloud-retry", "resultMode": "manifest", "idempotencyKey": "poll-recovery-retry-001",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !publisher.called || result["status"] != "completed" || result["resultStatus"] != "ready" || result["resultId"] != "res_callback_1" {
+		t.Fatalf("publisher=%+v result=%#v", publisher, result)
+	}
+}
+
 func TestChatGPTCloudResultManifestInspectsAssignedDeliverable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeChatGPTCloudTestJSON(t, w, map[string]any{"conversation_id": "cloud-file", "async_status": "completed", "mapping": map[string]any{}})

@@ -8,6 +8,11 @@ semantic versioning for public releases.
 - Add public CI, governance, support and maintainer workflow documentation.
 - Document the current early-stage public project status and contribution path.
 
+## 0.4.37 - 2026-09-03
+
+- Reconcile Cloud turns that complete before callback registration and retry
+  failed callback result publication during status-poll recovery.
+
 ## 0.4.36 - 2026-09-03
 
 - Add a same-machine stdio MCP entry that invokes the current-user Local Bridge

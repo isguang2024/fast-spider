@@ -404,6 +404,10 @@ func (m *AgentManager) sessionCallbackRegister(ctx context.Context, input agentC
 	if !current {
 		return nil, &sessionCallbackError{code: "CALLBACK_GENERATION_STALE", message: "callback registration was replaced or unregistered before its watcher was established"}
 	}
+	// The Cloud turn may finish between session.create returning and the durable
+	// callback registration being installed. Re-read once after subscription and
+	// synthesize the same terminal event when that window was hit.
+	go m.reconcileCompletedCloudCallback(sourceSessionID, registration.Generation)
 	m.callbackDispatcher.signal()
 	return map[string]any{
 		"callback":       callbackRegistrationMap(registration, 0),
@@ -411,6 +415,35 @@ func (m *AgentManager) sessionCallbackRegister(ctx context.Context, input agentC
 		"deliveryPolicy": "callback-first",
 		"recoveryPolicy": "heartbeat-fallback",
 	}, nil
+}
+
+func (m *AgentManager) reconcileCompletedCloudCallback(sourceSessionID string, generation int64) {
+	if m == nil || m.callbackStore == nil || m.chatgptCloud == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	detail, err := m.chatgptCloud.Read(ctx, sourceSessionID)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		m.logger.Warn("reconcile completed ChatGPT Cloud callback after registration", "sourceSessionId", sourceSessionID, "error", err)
+		return
+	}
+	if err != nil || chatgptCloudConversationStatus(detail) != "completed" {
+		return
+	}
+	registration, current, storeErr := m.callbackStore.registrationFor(sourceSessionID)
+	if storeErr != nil || !current || registration.Generation != generation {
+		return
+	}
+	sum := sha256.Sum256([]byte(sourceSessionID + "\x00register-reconcile\x00" + fmt.Sprintf("%d", generation)))
+	m.handleChatGPTCloudCallbackEvent(chatgptCloudEvent{
+		Sequence:       m.callbackStore.maxEventSequence() + 1,
+		EventKey:       "provider_evt_reconcile_" + hex.EncodeToString(sum[:])[:40],
+		Type:           "conversation.turn.complete",
+		ConversationID: sourceSessionID,
+		EventType:      "conversation-turn-complete",
+		Timestamp:      time.Now().UTC(),
+	})
 }
 
 func (m *AgentManager) sessionCallbackUnregister(input agentControlParams) (map[string]any, error) {
