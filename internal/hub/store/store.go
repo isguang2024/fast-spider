@@ -1303,6 +1303,34 @@ func (s *Store) EnqueueCloudCompletionNotification(ctx context.Context, rec Clou
 	return stored, inserted == 0, nil
 }
 
+// UpgradeCloudCompletionNotification replaces an unacknowledged failed/blocked
+// notification after the same task generation later completes. Active claims
+// remain immutable until their lease expires; acknowledged records are final.
+func (s *Store) UpgradeCloudCompletionNotification(ctx context.Context, rec CloudCompletionNotificationRecord, expiredClaimCutoff time.Time) (CloudCompletionNotificationRecord, bool, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE cloud_completion_notifications
+		SET outcome='completed',state='pending',claim_id=NULL,claimed_at=NULL,updated_at=?
+		WHERE owner_id=? AND collaboration_id=? AND task_id=? AND generation=? AND notification_kind=?
+		AND notification_id=? AND source_session_id=? AND target_session_id=? AND COALESCE(deliverable_path,'')=?
+		AND outcome IN ('failed','blocked') AND (state='pending' OR (state='claimed' AND claimed_at<=?))`,
+		rec.UpdatedAt.Unix(), rec.OwnerID, rec.CollaborationID, rec.TaskID, rec.Generation, rec.NotificationKind,
+		rec.NotificationID, rec.SourceSessionID, rec.TargetSessionID, rec.DeliverablePath, expiredClaimCutoff.Unix())
+	if err != nil {
+		return CloudCompletionNotificationRecord{}, false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return CloudCompletionNotificationRecord{}, false, err
+	}
+	stored, err := s.getCloudCompletionNotificationByTask(ctx, rec.OwnerID, rec.CollaborationID, rec.TaskID, rec.Generation, rec.NotificationKind)
+	if err != nil {
+		return CloudCompletionNotificationRecord{}, false, err
+	}
+	if affected != 1 || stored.Outcome != "completed" || stored.NotificationID != rec.NotificationID || stored.SourceSessionID != rec.SourceSessionID || stored.TargetSessionID != rec.TargetSessionID || stored.DeliverablePath != rec.DeliverablePath {
+		return CloudCompletionNotificationRecord{}, false, ErrConflict
+	}
+	return stored, false, nil
+}
+
 func (s *Store) getCloudCompletionNotificationByTask(ctx context.Context, ownerID, collaborationID, taskID string, generation int64, kind string) (CloudCompletionNotificationRecord, error) {
 	rec, err := scanCloudCompletionNotification(s.db.QueryRowContext(ctx, "SELECT "+cloudCompletionNotificationColumns+` FROM cloud_completion_notifications
 		WHERE owner_id=? AND collaboration_id=? AND task_id=? AND generation=? AND notification_kind=?`, ownerID, collaborationID, taskID, generation, kind))

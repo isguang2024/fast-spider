@@ -110,6 +110,9 @@ func (s *Service) notifyCloudCompletion(ctx context.Context, ownerID string, req
 		UpdatedAt:        now,
 	}
 	stored, replayed, err := s.store.EnqueueCloudCompletionNotification(ctx, notification)
+	if errors.Is(err, store.ErrConflict) && outcome == "completed" {
+		stored, replayed, err = s.store.UpgradeCloudCompletionNotification(ctx, notification, now.Add(-cloudCompletionClaimLease))
+	}
 	if err != nil {
 		return nil, err
 	}

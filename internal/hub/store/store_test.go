@@ -195,6 +195,42 @@ func TestCloudCompletionQueuePersistsBatchesDeduplicatesAndRecoversClaims(t *tes
 	}
 }
 
+func TestCloudCompletionNotificationUpgradeRequiresUnackedOrExpiredClaim(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 4, 4, 0, 0, 0, time.UTC)
+	st, err := Open(ctx, filepath.Join(t.TempDir(), "hub.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.db.ExecContext(ctx, "INSERT INTO owners(id, display_name, created_at) VALUES(?,?,?)", "usr_upgrade", "Owner", now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `INSERT INTO machines(id, owner_id, display_name, status, os, arch, node_version, created_at, updated_at) VALUES(?,?,?,'active','windows','amd64','test',?,?)`, "mach_upgrade", "usr_upgrade", "Node", now.Unix(), now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `INSERT INTO cloud_collaborations(collaboration_id,owner_id,machine_id,idempotency_key,request_hash,status,state_json,revision,created_at,updated_at) VALUES(?,?,?,?,?,'active','{}',1,?,?)`, "collab_upgrade", "usr_upgrade", "mach_upgrade", "upgrade-key-001", "hash", now.Unix(), now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	rec := CloudCompletionNotificationRecord{NotificationID: "completion_upgrade", OwnerID: "usr_upgrade", CollaborationID: "collab_upgrade", TaskID: "task-upgrade", Generation: 1, NotificationKind: "completion", Outcome: "failed", SourceSessionID: "chat-upgrade", TargetSessionID: "dispatcher-upgrade", DeliverablePath: `C:\results\upgrade.md`, CreatedAt: now, UpdatedAt: now}
+	if _, _, err := st.EnqueueCloudCompletionNotification(ctx, rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.ClaimCloudCompletionNotifications(ctx, rec.OwnerID, rec.TargetSessionID, "claim-upgrade", 1, now.Add(time.Minute), 5*time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	completed := rec
+	completed.Outcome, completed.UpdatedAt = "completed", now.Add(2*time.Minute)
+	if _, _, err := st.UpgradeCloudCompletionNotification(ctx, completed, now.Add(-3*time.Minute)); !errors.Is(err, ErrConflict) {
+		t.Fatalf("active claim upgrade error=%v", err)
+	}
+	completed.UpdatedAt = now.Add(7 * time.Minute)
+	upgraded, replayed, err := st.UpgradeCloudCompletionNotification(ctx, completed, now.Add(2*time.Minute))
+	if err != nil || replayed || upgraded.Outcome != "completed" || upgraded.State != "pending" || upgraded.ClaimID != "" {
+		t.Fatalf("upgraded=%+v replayed=%v err=%v", upgraded, replayed, err)
+	}
+}
+
 func TestCleanupExpiredRemovesTokensAndOldAudit(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Second)
