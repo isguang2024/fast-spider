@@ -145,6 +145,37 @@ func TestSyncCodexDesktopProjectSkipsNonGitDirectory(t *testing.T) {
 	}
 }
 
+func TestReadCodexDesktopSnapshotIncludesProjectlessThreads(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), codexDesktopStateFilename)
+	rootHint := filepath.Join(t.TempDir(), "projectless-root")
+	outputDirectory := filepath.Join(rootHint, "task", "outputs")
+	state := map[string]any{
+		"local-projects":                        map[string]any{},
+		"thread-project-assignments":            map[string]any{},
+		"projectless-thread-ids":                []any{"projectless-thread"},
+		"thread-workspace-root-hints":           map[string]any{"projectless-thread": rootHint},
+		"thread-projectless-output-directories": map[string]any{"projectless-thread": outputDirectory},
+	}
+	raw, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := readCodexDesktopSnapshot(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thread, ok := snapshot.Threads["projectless-thread"]
+	if !ok || !thread.Projectless || !sameAgentPath(thread.WorkingDirectory, rootHint) || !sameAgentPath(thread.OutputDirectory, outputDirectory) {
+		t.Fatalf("projectless thread=%+v exists=%v", thread, ok)
+	}
+	if _, assigned := snapshot.Assignments["projectless-thread"]; assigned {
+		t.Fatal("projectless thread was treated as a project assignment")
+	}
+}
+
 func runGitForTest(t *testing.T, directory string, args ...string) {
 	t.Helper()
 	commandArgs := append([]string{"-C", directory}, args...)

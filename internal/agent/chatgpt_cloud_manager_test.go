@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -93,6 +95,70 @@ func TestChatGPTCloudLatestAssistantFollowsCurrentNodeAndIsBounded(t *testing.T)
 	}
 	if status := chatgptCloudConversationStatus(map[string]any{"mapping": map[string]any{}}); status != "unknown" {
 		t.Fatalf("status without terminal proof=%q", status)
+	}
+}
+
+func TestChatGPTCloudResultManifestPublishesCompletedResultForPollingRecovery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/conversation/cloud-complete" {
+			http.NotFound(w, r)
+			return
+		}
+		writeChatGPTCloudTestJSON(t, w, map[string]any{
+			"conversation_id": "cloud-complete", "async_status": "completed", "current_node": "assistant-1",
+			"mapping": map[string]any{"assistant-1": map[string]any{"message": map[string]any{"author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"CLOUD_COLLAB_OK"}}}}},
+		})
+	}))
+	defer server.Close()
+
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	if err := manager.chatgptCloud.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.chatgptCloud = NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token", nil })
+	manager.chatgptCloud.baseURL = server.URL
+	manager.chatgptCloud.http = server.Client()
+	publisher := &testCloudResultPublisher{}
+	manager.SetCloudResultPublisher(publisher)
+
+	result, err := manager.Control(context.Background(), "session.result", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "sessionId": "cloud-complete", "resultMode": "manifest", "idempotencyKey": "poll-recovery-result-001",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !publisher.called || publisher.text != "CLOUD_COLLAB_OK" || result["resultId"] != "res_callback_1" || result["resultStatus"] != "ready" || result["finalAgentMessage"] != nil {
+		t.Fatalf("publisher=%+v result=%#v", publisher, result)
+	}
+}
+
+func TestChatGPTCloudResultManifestInspectsAssignedDeliverable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatGPTCloudTestJSON(t, w, map[string]any{"conversation_id": "cloud-file", "async_status": "completed", "mapping": map[string]any{}})
+	}))
+	defer server.Close()
+	deliverable := filepath.Join(t.TempDir(), "report.md")
+	if err := os.WriteFile(deliverable, []byte("complete\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	if err := manager.chatgptCloud.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.chatgptCloud = NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token", nil })
+	manager.chatgptCloud.baseURL = server.URL
+	manager.chatgptCloud.http = server.Client()
+	result, err := manager.Control(context.Background(), "session.result", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "sessionId": "cloud-file", "resultMode": "manifest", "callbackDeliverablePath": deliverable,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["resultStatus"] != "ready" || result["deliverableStatus"] != "ready" || result["deliverablePath"] != deliverable || result["resultSHA256"] == "" {
+		t.Fatalf("deliverable manifest=%#v", result)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/isguang2024/fast-spider/internal/agent"
 	"github.com/isguang2024/fast-spider/internal/localbridge"
+	"github.com/isguang2024/fast-spider/internal/localmcp"
 	"github.com/isguang2024/fast-spider/internal/node"
 	"github.com/isguang2024/fast-spider/internal/nodeinstance"
 	"github.com/isguang2024/fast-spider/internal/nodeui"
@@ -43,6 +44,8 @@ func main() {
 		runSelfUpdateApply(os.Args[2:])
 	case "local-call":
 		runLocalCall(os.Args[2:])
+	case "mcp-local":
+		runLocalMCP(os.Args[2:])
 	case "version":
 		fmt.Println(version.Version)
 	default:
@@ -216,6 +219,16 @@ func runLocalCall(args []string) {
 	}
 }
 
+func runLocalMCP(args []string) {
+	fs := flag.NewFlagSet("mcp-local", flag.ExitOnError)
+	dataDir := fs.String("data-dir", defaultDataDir(), "Node data directory")
+	_ = fs.Parse(args)
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	fatalIf(localmcp.Run(ctx, *dataDir, version.Version, logger))
+}
+
 func printJSON(value any) {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
@@ -241,5 +254,5 @@ func fatalIf(err error) {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: fast-spider-node <ui|connect|run|status|local-call|version> [flags]")
+	fmt.Fprintln(os.Stderr, "usage: fast-spider-node <ui|connect|run|status|local-call|mcp-local|version> [flags]")
 }

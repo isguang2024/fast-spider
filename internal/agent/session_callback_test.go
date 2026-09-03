@@ -713,6 +713,94 @@ func TestSessionCallbackActionsRegisterListAndUnregister(t *testing.T) {
 	}
 }
 
+func TestSessionCallbackRegisterAcceptsProjectlessDesktopThreadAndCanSend(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/conversation/source-cloud" {
+			http.NotFound(w, r)
+			return
+		}
+		writeChatGPTCloudTestJSON(t, w, map[string]any{"conversation_id": "source-cloud", "mapping": map[string]any{}})
+	}))
+	defer server.Close()
+
+	dataDir := t.TempDir()
+	manager := New(dataDir, nil)
+	defer manager.Close(context.Background())
+	if err := manager.chatgptCloud.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.chatgptCloud = NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token", nil })
+	manager.chatgptCloud.baseURL = server.URL
+	manager.chatgptCloud.http = server.Client()
+	manager.chatgptCloud.realtime.baseURL = server.URL
+	manager.chatgptCloud.realtime.http = server.Client()
+
+	rootHint := t.TempDir()
+	manager.codexStatePath = filepath.Join(dataDir, codexDesktopStateFilename)
+	state := fmt.Sprintf(`{"local-projects":{},"thread-project-assignments":{},"projectless-thread-ids":["dispatcher-projectless"],"thread-workspace-root-hints":{"dispatcher-projectless":%q}}`, rootHint)
+	if err := os.WriteFile(manager.codexStatePath, []byte(state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var turnStart map[string]any
+	manager.codex.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
+		switch method {
+		case "thread/read":
+			return nil, node.ErrAgentSessionNotFound
+		case "thread/resume":
+			return map[string]any{"thread": map[string]any{"id": params["threadId"]}}, nil
+		case "turn/start":
+			turnStart = params
+			return map[string]any{"turn": map[string]any{"id": "turn-projectless"}}, nil
+		default:
+			return nil, fmt.Errorf("unexpected Codex request %s %#v", method, params)
+		}
+	}
+
+	if _, err := manager.Control(context.Background(), "session.callback.register", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
+		"sessionId": "source-cloud", "callbackTargetSessionId": "dispatcher-projectless",
+		"callbackMissionId": "mission-1", "callbackTaskId": "task-1", "callbackGeneration": 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := manager.Control(context.Background(), "session.get", map[string]any{"providerId": "codex", "sessionId": "dispatcher-projectless"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := got["session"].(map[string]any)
+	if session["sessionId"] != "dispatcher-projectless" || session["providerId"] != "codex" || session["backend"] != sessionBackendCodexLocal {
+		t.Fatalf("projectless session.get=%#v", got)
+	}
+	if _, err := manager.sessionSend(context.Background(), agentControlParams{SessionID: "dispatcher-projectless", Prompt: "callback"}); err != nil {
+		t.Fatal(err)
+	}
+	if turnStart["threadId"] != "dispatcher-projectless" || turnStart["cwd"] != rootHint {
+		t.Fatalf("turn/start params=%#v", turnStart)
+	}
+}
+
+func TestAuthorizedThreadFallbackRequiresRegisteredDesktopThreadAndNotFoundError(t *testing.T) {
+	dataDir := t.TempDir()
+	manager := New(dataDir, nil)
+	defer manager.Close(context.Background())
+	manager.codexStatePath = filepath.Join(dataDir, codexDesktopStateFilename)
+	if err := os.WriteFile(manager.codexStatePath, []byte(`{"local-projects":{},"thread-project-assignments":{},"projectless-thread-ids":["known-thread"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager.codex.requestOverride = func(_ context.Context, _ string, params map[string]any) (map[string]any, error) {
+		if params["threadId"] == "known-thread" {
+			return nil, fmt.Errorf("app server unavailable")
+		}
+		return nil, node.ErrAgentSessionNotFound
+	}
+	if _, err := manager.authorizedThreadMetadata(context.Background(), "random-thread"); !isAgentSessionNotFound(err) {
+		t.Fatalf("unregistered thread error=%v", err)
+	}
+	if _, err := manager.authorizedThreadMetadata(context.Background(), "known-thread"); err == nil || !strings.Contains(err.Error(), "app server unavailable") {
+		t.Fatalf("provider failure was masked: %v", err)
+	}
+}
+
 func TestSessionCallbackRegisterKeepsDurableOwnerWhenWatcherFails(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/backend-api/conversation/source-cloud" {

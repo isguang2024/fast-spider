@@ -275,6 +275,10 @@ func (s *Service) CloudCollaboration(ctx context.Context, ownerID string, req Cl
 		if err := cloudCollaborationAckEvent(&state, req); err != nil {
 			return nil, err
 		}
+		cloudCollaborationAdvanceAcknowledgedEvent(&state, req.EventID, s.now().UTC())
+		if cloudCollaborationReadyToClose(state) {
+			return s.cloudCollaborationClose(ctx, ownerID, rec, state)
+		}
 	case "decision.request":
 		if role != "dispatcher" && role != "chat" {
 			return nil, store.ErrUnauthorized
@@ -494,6 +498,9 @@ func cloudCollaborationTick(rec store.CloudCollaborationRecord, state cloudColla
 func cloudCollaborationTickActions(state cloudCollaborationState) []map[string]any {
 	now := time.Now().UTC()
 	actions := make([]map[string]any, 0, 8)
+	if state.Status == "closing" {
+		return []map[string]any{{"type": "retry_close"}}
+	}
 	if state.Status != "active" {
 		return actions
 	}
@@ -852,6 +859,9 @@ func (s *Service) registerCloudCollaborationCallback(ctx context.Context, ownerI
 }
 
 func (s *Service) cloudCollaborationPollStatus(ctx context.Context, ownerID string, rec store.CloudCollaborationRecord, state cloudCollaborationState, req CloudCollaborationRequest) (map[string]any, error) {
+	if state.Status == "closing" {
+		return s.cloudCollaborationClose(ctx, ownerID, rec, state)
+	}
 	idx := taskIndex(state, req.TaskID)
 	if idx < 0 {
 		return nil, store.ErrNotFound
@@ -867,7 +877,10 @@ func (s *Service) cloudCollaborationPollStatus(ctx context.Context, ownerID stri
 		return nil, err
 	}
 	now := s.now().UTC()
-	next, _ := numericInt64(result["nextCursor"])
+	next, _ := numericInt64(result["cursor"])
+	if next == 0 {
+		next, _ = numericInt64(result["nextCursor"])
+	}
 	progressed := next > chat.WatchCursor
 	if progressed {
 		chat.WatchCursor, chat.LastProgressAt, chat.QuietChecks, chat.StalledNotified = next, now.Format(time.RFC3339), 0, false
@@ -880,12 +893,117 @@ func (s *Service) cloudCollaborationPollStatus(ctx context.Context, ownerID stri
 	if newlyStalled {
 		chat.StalledNotified = true
 	}
+	recoveryPending := false
+	if task.Status == "active" || task.Status == "result_available" {
+		manifestKey := cloudCollaborationResultIdempotencyKey(rec.CollaborationID, *task)
+		manifest, resultErr := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.result", map[string]any{
+			"providerId": "codex", "sessionId": chat.SessionID, "resultMode": "manifest", "idempotencyKey": manifestKey, "callbackDeliverablePath": task.DeliverablePath,
+		})
+		if resultErr != nil {
+			recoveryPending = true
+		} else if recoveryReq, ok := cloudCollaborationRecoveryEventRequest(rec.CollaborationID, state, *task, result, manifest); ok {
+			if err := cloudCollaborationIngestEvent(&state, recoveryReq); err != nil {
+				return nil, err
+			}
+			if err := cloudCollaborationAckEvent(&state, recoveryReq); err != nil {
+				return nil, err
+			}
+			cloudCollaborationAdvanceAcknowledgedEvent(&state, recoveryReq.EventID, now)
+			if cloudCollaborationReadyToClose(state) {
+				return s.cloudCollaborationClose(ctx, ownerID, rec, state)
+			}
+		}
+	}
 	out, saveErr := s.saveCloudCollaboration(ctx, ownerID, rec, state)
 	if saveErr != nil {
 		return nil, saveErr
 	}
 	out["progressed"], out["newlyStalled"] = progressed, newlyStalled
+	if recoveryPending {
+		out["recoveryPending"] = true
+	}
 	return out, nil
+}
+
+func cloudCollaborationResultIdempotencyKey(collaborationID string, task cloudCollaborationTask) string {
+	sum := sha256.Sum256([]byte(collaborationID + "\x00" + task.ID + "\x00" + fmt.Sprintf("%d", task.Generation)))
+	return "collab_result_" + hex.EncodeToString(sum[:])[:48]
+}
+
+func cloudCollaborationRecoveryEventRequest(collaborationID string, state cloudCollaborationState, task cloudCollaborationTask, watch, manifest map[string]any) (CloudCollaborationRequest, bool) {
+	providerStatus, _ := manifest["status"].(string)
+	resultStatus, _ := manifest["resultStatus"].(string)
+	if providerStatus != "completed" && resultStatus != "ready" && resultStatus != "completed" && resultStatus != "failed" {
+		return CloudCollaborationRequest{}, false
+	}
+	resultID, _ := manifest["resultId"].(string)
+	resultSHA256, _ := manifest["resultSHA256"].(string)
+	deliverablePath, _ := manifest["deliverablePath"].(string)
+	deliverableStatus, _ := manifest["deliverableStatus"].(string)
+	resultBytes, _ := numericInt64(manifest["resultBytes"])
+	if resultStatus == "" {
+		resultStatus = providerStatus
+	}
+	if (resultStatus == "ready" || resultStatus == "completed") && resultSHA256 == "" {
+		return CloudCollaborationRequest{}, false
+	}
+	eventID, sequence := cloudCollaborationTerminalWatchEvent(watch, task.ChatSessionID)
+	if eventID == "" {
+		sum := sha256.Sum256([]byte(collaborationID + "\x00" + task.ID + "\x00" + fmt.Sprintf("%d", task.Generation) + "\x00" + resultID + "\x00" + resultSHA256 + "\x00" + deliverableStatus))
+		eventID = "recovery_evt_" + hex.EncodeToString(sum[:])[:48]
+	}
+	for _, event := range state.Events {
+		if event.ID == eventID {
+			sequence = event.Sequence
+			break
+		}
+		if event.SessionID == task.ChatSessionID && event.Sequence >= sequence {
+			sequence = event.Sequence + 1
+		}
+	}
+	if sequence < 1 {
+		sequence = 1
+	}
+	return CloudCollaborationRequest{
+		TaskID: task.ID, EventID: eventID, EventSequence: sequence, EventGeneration: task.Generation, EventType: "conversation.turn.complete",
+		ResultID: resultID, ResultStatus: resultStatus, ResultBytes: resultBytes, ResultSHA256: resultSHA256, DeliverablePath: deliverablePath, DeliverableStatus: deliverableStatus,
+	}, true
+}
+
+func cloudCollaborationTerminalWatchEvent(watch map[string]any, sessionID string) (string, int64) {
+	var eventID string
+	var sequence int64
+	for _, event := range collaborationMapItems(watch["events"]) {
+		typeName, _ := event["type"].(string)
+		eventSessionID, _ := event["sessionId"].(string)
+		if typeName != "conversation.turn.complete" || eventSessionID != "" && eventSessionID != sessionID {
+			continue
+		}
+		candidate, _ := numericInt64(event["sequence"])
+		if candidate < sequence {
+			continue
+		}
+		sequence = candidate
+		eventID, _ = event["eventKey"].(string)
+	}
+	return eventID, sequence
+}
+
+func collaborationMapItems(value any) []map[string]any {
+	switch items := value.(type) {
+	case []map[string]any:
+		return items
+	case []any:
+		out := make([]map[string]any, 0, len(items))
+		for _, raw := range items {
+			if item, ok := raw.(map[string]any); ok {
+				out = append(out, item)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func cloudCollaborationIngestEvent(state *cloudCollaborationState, req CloudCollaborationRequest) error {
@@ -989,6 +1107,84 @@ func cloudCollaborationAckEvent(state *cloudCollaborationState, req CloudCollabo
 	return store.ErrNotFound
 }
 
+func cloudCollaborationAdvanceAcknowledgedEvent(state *cloudCollaborationState, eventID string, now time.Time) {
+	if state == nil {
+		return
+	}
+	var acknowledged *cloudCollaborationEvent
+	for i := range state.Events {
+		if state.Events[i].ID == eventID && state.Events[i].Status == "acked" {
+			acknowledged = &state.Events[i]
+			break
+		}
+	}
+	if acknowledged == nil {
+		return
+	}
+	idx := taskIndex(*state, acknowledged.TaskID)
+	if idx < 0 {
+		return
+	}
+	task := &state.Tasks[idx]
+	switch acknowledged.ResultStatus {
+	case "ready", "completed":
+		task.Status = "done"
+	case "failed", "aborted", "canceled":
+		task.Status = "blocked"
+	default:
+		return
+	}
+	task.UpdatedAt = now.Format(time.RFC3339)
+	if chatIdx := chatIndex(*state, task.ChatSessionID); chatIdx >= 0 {
+		if task.Status == "done" {
+			state.Chats[chatIdx].Status = "completed"
+		} else {
+			state.Chats[chatIdx].Status = "failed"
+		}
+		state.Chats[chatIdx].LastObservedAt = now.Format(time.RFC3339)
+	}
+	if len(state.Tasks) == 0 {
+		return
+	}
+	for _, current := range state.Tasks {
+		if current.Status != "done" && current.Status != "dropped" {
+			return
+		}
+	}
+	for i := range state.Goals {
+		if state.Goals[i].Status != "dropped" {
+			state.Goals[i].Status = "done"
+		}
+	}
+}
+
+func cloudCollaborationReadyToClose(state cloudCollaborationState) bool {
+	if len(state.Tasks) == 0 {
+		return false
+	}
+	for _, task := range state.Tasks {
+		if task.Status != "done" && task.Status != "dropped" {
+			return false
+		}
+	}
+	for _, goal := range state.Goals {
+		if goal.Status != "done" && goal.Status != "dropped" {
+			return false
+		}
+	}
+	for _, event := range state.Events {
+		if event.Status != "acked" {
+			return false
+		}
+	}
+	for _, decision := range state.Decisions {
+		if decision.Status == "requested" {
+			return false
+		}
+	}
+	return true
+}
+
 func cloudCollaborationRequestDecision(state *cloudCollaborationState, req CloudCollaborationRequest) error {
 	if len(req.Options) > 3 || len(req.Question) == 0 || len(req.Question) > 1000 {
 		return store.ErrConflict
@@ -1086,6 +1282,11 @@ func (s *Service) cloudCollaborationClose(ctx context.Context, ownerID string, r
 	}
 	for _, task := range state.Tasks {
 		if task.Status != "done" && task.Status != "dropped" {
+			return nil, store.ErrConflict
+		}
+	}
+	for _, decision := range state.Decisions {
+		if decision.Status == "requested" {
 			return nil, store.ErrConflict
 		}
 	}

@@ -30,10 +30,19 @@ type codexDesktopAssignment struct {
 	WorkingDirectory string
 }
 
+type codexDesktopThread struct {
+	ProjectID        string
+	ProjectDirectory string
+	WorkingDirectory string
+	OutputDirectory  string
+	Projectless      bool
+}
+
 type codexDesktopSnapshot struct {
 	Projects       []codexDesktopProject
 	ProjectsByID   map[string]codexDesktopProject
 	Assignments    map[string]codexDesktopAssignment
+	Threads        map[string]codexDesktopThread
 	ProjectIDByKey map[string]string
 }
 
@@ -131,6 +140,7 @@ func readCodexDesktopSnapshot(statePath string) (codexDesktopSnapshot, error) {
 	snapshot := codexDesktopSnapshot{
 		ProjectsByID:   map[string]codexDesktopProject{},
 		Assignments:    map[string]codexDesktopAssignment{},
+		Threads:        map[string]codexDesktopThread{},
 		ProjectIDByKey: map[string]string{},
 	}
 	if strings.TrimSpace(statePath) == "" {
@@ -183,10 +193,31 @@ func readCodexDesktopSnapshot(statePath string) (codexDesktopSnapshot, error) {
 		entry, _ := rawAssignment.(map[string]any)
 		projectID := mapAnyString(entry, "projectId")
 		project := snapshot.ProjectsByID[projectID]
-		snapshot.Assignments[sessionID] = codexDesktopAssignment{
+		assignment := codexDesktopAssignment{
 			ProjectID:        projectID,
 			ProjectDirectory: project.ProjectDirectory,
 			WorkingDirectory: cleanOptionalAgentPath(mapAnyString(entry, "cwd")),
+		}
+		snapshot.Assignments[sessionID] = assignment
+		snapshot.Threads[sessionID] = codexDesktopThread{
+			ProjectID:        assignment.ProjectID,
+			ProjectDirectory: assignment.ProjectDirectory,
+			WorkingDirectory: assignment.WorkingDirectory,
+		}
+	}
+	rootHints, _ := state["thread-workspace-root-hints"].(map[string]any)
+	outputDirectories, _ := state["thread-projectless-output-directories"].(map[string]any)
+	for _, sessionID := range stringSlice(state["projectless-thread-ids"]) {
+		if strings.TrimSpace(sessionID) == "" {
+			continue
+		}
+		if _, assigned := snapshot.Threads[sessionID]; assigned {
+			continue
+		}
+		snapshot.Threads[sessionID] = codexDesktopThread{
+			WorkingDirectory: cleanOptionalAgentPath(mapAnyString(rootHints, sessionID)),
+			OutputDirectory:  cleanOptionalAgentPath(mapAnyString(outputDirectories, sessionID)),
+			Projectless:      true,
 		}
 	}
 	return snapshot, nil

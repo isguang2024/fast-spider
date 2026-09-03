@@ -8,6 +8,15 @@ semantic versioning for public releases.
 - Add public CI, governance, support and maintainer workflow documentation.
 - Document the current early-stage public project status and contribution path.
 
+## 0.4.36 - 2026-09-03
+
+- Add a same-machine stdio MCP entry that invokes the current-user Local Bridge
+  directly without Hub routing or a machine ID.
+- Recognize Desktop-registered projectless Codex tasks for callback delivery and
+  continuation while preserving real provider failures and rejecting unknown IDs.
+- Automatically close callback-driven Cloud collaborations after acknowledgement,
+  with result-manifest polling as an idempotent recovery path when delivery is lost.
+
 ## 0.4.35 - 2026-09-03
 
 - Add the Hub MCP-only `codex_cloud_collaboration` control plane for persistent,

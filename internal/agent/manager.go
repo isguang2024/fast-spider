@@ -1748,14 +1748,14 @@ func (m *AgentManager) authorizedThread(ctx context.Context, sessionID string) (
 		return nil, fmt.Errorf("sessionId is required")
 	}
 	result, err := m.codex.ReadThread(ctx, sessionID)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		thread, _ := result["thread"].(map[string]any)
+		if len(thread) > 0 {
+			return thread, nil
+		}
+		err = node.ErrAgentSessionNotFound
 	}
-	thread, _ := result["thread"].(map[string]any)
-	if len(thread) == 0 {
-		return nil, node.ErrAgentSessionNotFound
-	}
-	return thread, nil
+	return m.authorizedCodexDesktopThread(sessionID, err)
 }
 
 func (m *AgentManager) authorizedThreadMetadata(ctx context.Context, sessionID string) (map[string]any, error) {
@@ -1763,12 +1763,41 @@ func (m *AgentManager) authorizedThreadMetadata(ctx context.Context, sessionID s
 		return nil, fmt.Errorf("sessionId is required")
 	}
 	result, err := m.codex.ReadThreadMetadata(ctx, sessionID)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		thread, _ := result["thread"].(map[string]any)
+		if len(thread) > 0 {
+			return thread, nil
+		}
+		err = node.ErrAgentSessionNotFound
 	}
-	thread, _ := result["thread"].(map[string]any)
-	if len(thread) == 0 {
+	return m.authorizedCodexDesktopThread(sessionID, err)
+}
+
+func (m *AgentManager) authorizedCodexDesktopThread(sessionID string, readErr error) (map[string]any, error) {
+	if readErr != nil && !isAgentSessionNotFound(readErr) {
+		return nil, readErr
+	}
+	snapshot, err := readCodexDesktopSnapshot(m.codexStatePath)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warn("read Codex Desktop thread registry", "sessionId", sessionID, "error", err)
+		}
+		if readErr != nil {
+			return nil, readErr
+		}
 		return nil, node.ErrAgentSessionNotFound
+	}
+	registered, ok := snapshot.Threads[sessionID]
+	if !ok {
+		if readErr != nil {
+			return nil, readErr
+		}
+		return nil, node.ErrAgentSessionNotFound
+	}
+	thread := map[string]any{"id": sessionID, "sourceKind": "codex_desktop"}
+	workingDirectory := firstNonEmptyString(registered.WorkingDirectory, registered.ProjectDirectory)
+	if workingDirectory != "" {
+		thread["cwd"] = workingDirectory
 	}
 	return thread, nil
 }

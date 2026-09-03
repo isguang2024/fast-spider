@@ -290,24 +290,84 @@ func TestCodexCloudCollaborationRequiresLocalCodexAndUsesDeliverableCallback(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	done, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "task.update", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(acked, "revision"), TaskID: "task-report", TaskStatus: "done"})
-	if err != nil {
-		t.Fatal(err)
+	if acked["status"] != "completed" {
+		t.Fatalf("ack did not close collaboration: %#v", acked)
 	}
-	goalDone, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "goal.update", CollaborationID: collaborationID, ActorSessionID: "codex-controller", ActorRole: "controller", ExpectedRevision: numberField(done, "revision"), GoalID: "goal-concurrent", GoalStatus: "done", ResultSHA256: "sha256:" + strings.Repeat("a", 64)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	tick, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "tick", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher"})
-	if err != nil || numberField(tick, "revision") != numberField(goalDone, "revision") {
-		t.Fatalf("tick=%#v err=%v", tick, err)
-	}
-	closed, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "close", CollaborationID: collaborationID, ActorSessionID: "codex-controller", ActorRole: "controller", ExpectedRevision: numberField(goalDone, "revision")})
-	if err != nil || closed["status"] != "completed" {
-		t.Fatalf("close=%#v err=%v", closed, err)
+	tasks, _ = acked["tasks"].([]cloudCollaborationTask)
+	goals, _ := acked["goalCounts"].(map[string]int)
+	if len(tasks) != 1 || tasks[0].Status != "done" || goals["done"] != 1 {
+		t.Fatalf("automatic terminal state tasks=%#v goals=%#v", tasks, goals)
 	}
 	if countCloudCollaborationCalls(node.snapshotCalls(), "session.archive") != 1 {
-		t.Fatalf("close did not archive Cloud CHAT: %#v", node.snapshotCalls())
+		t.Fatalf("ack did not archive Cloud CHAT: %#v", node.snapshotCalls())
+	}
+}
+
+func TestCodexCloudCollaborationPollRecoversMissedCallbackAndCloses(t *testing.T) {
+	service, ownerID, machineID, node := newCloudCollaborationTestService(t)
+	created, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "create", MachineID: machineID, IdempotencyKey: "codex-collab-poll-recovery-001", ControllerSessionID: "codex-controller", DispatcherSessionID: "codex-dispatcher",
+		Title: "Recover", Goal: "Recover callback result", DoneWhen: "Collaboration closes", WorkingDirectory: t.TempDir(), AllowedActions: []string{"chat.create", "file.read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collaborationID, _ := created["collaborationId"].(string)
+	leased, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "lease.acquire", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(created, "revision")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	goalAdded, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "goal.add", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(leased, "revision"), GoalID: "goal-recovery", Title: "Recover callback result"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	taskAdded, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "task.add", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(goalAdded, "revision"),
+		TaskID: "task-recovery", Title: "Recover", Prompt: "Return the recovery result.", AccessMode: "read_only", AllowedActions: []string{"chat.create", "file.read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatched, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "task.dispatch", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(taskAdded, "revision"), TaskID: "task-recovery"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, state, err := service.loadCloudCollaboration(context.Background(), ownerID, collaborationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Chats[0].CallbackRegistered = false
+	missed, err := service.saveCloudCollaboration(context.Background(), ownerID, rec, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.setResponse("session.watch", map[string]any{
+		"cursor": int64(7),
+		"events": []any{map[string]any{"sequence": int64(7), "type": "conversation.turn.complete", "eventKey": "provider_evt_recovery", "sessionId": "cloud-chat-1"}},
+	})
+	node.setResponse("session.result", map[string]any{
+		"sessionId": "cloud-chat-1", "status": "completed", "resultStatus": "ready", "resultId": "result-recovery", "resultBytes": int64(19), "resultSHA256": "sha256:" + strings.Repeat("c", 64),
+	})
+	recovered, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "status.poll", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(missed, "revision"), TaskID: "task-recovery"})
+	if err != nil || recovered["status"] != "completed" {
+		t.Fatalf("recovered=%#v err=%v dispatched=%#v", recovered, err, dispatched)
+	}
+	tasks, _ := recovered["tasks"].([]cloudCollaborationTask)
+	events, _ := recovered["events"].([]cloudCollaborationEvent)
+	if len(tasks) != 1 || tasks[0].Status != "done" || len(events) != 1 || events[0].ID != "provider_evt_recovery" || events[0].Status != "acked" {
+		t.Fatalf("recovered tasks=%#v events=%#v", tasks, events)
+	}
+	var manifestCall protocolv1.CapabilityRequest
+	for _, call := range node.snapshotCalls() {
+		if call.Action == "session.result" {
+			manifestCall = call
+		}
+	}
+	if manifestCall.Params["resultMode"] != "manifest" || len(manifestCall.Params["idempotencyKey"].(string)) < 12 {
+		t.Fatalf("manifest call=%#v", manifestCall)
+	}
+	if countCloudCollaborationCalls(node.snapshotCalls(), "session.archive") != 1 {
+		t.Fatalf("poll recovery did not archive Cloud CHAT: %#v", node.snapshotCalls())
 	}
 }
 

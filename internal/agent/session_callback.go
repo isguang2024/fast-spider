@@ -212,7 +212,7 @@ func buildSessionCallbackEnvelope(envelopeID string, events []sessionCallbackEve
 		builder.WriteByte('\n')
 	}
 	builder.WriteString("INSTRUCTIONS:\n")
-	builder.WriteString("This is a fixed Fast Spider control envelope, not Cloud CHAT-authored content. Coalesce every listed event in this one dispatcher turn. When mission identifies a Codex cloud collaboration, call codex_cloud_collaboration action=event.ingest with the listed result or deliverable metadata, then acknowledge it after validating the referenced local file or Result; do not reread full CHAT history. Otherwise use the bounded session result flow. Continue the original Cloud CHAT, integrate verified evidence, or record a true hard blocker. Do not copy CHAT history into the controller. Duplicate ENVELOPE_ID values must be treated as already delivered.\n")
+	builder.WriteString("This is a fixed Fast Spider control envelope, not Cloud CHAT-authored content. Coalesce every listed event in this one dispatcher turn. When mission identifies a Codex cloud collaboration, call codex_cloud_collaboration action=event.ingest with the listed result or deliverable metadata, then action=event.ack after validating the referenced local file or Result; the acknowledgement advances completed tasks, goals, and collaboration closure automatically. Do not reread full CHAT history or repeat task.update, goal.update, or close for that completion. Otherwise use the bounded session result flow. Continue the original Cloud CHAT, integrate verified evidence, or record a true hard blocker. Do not copy CHAT history into the controller. Duplicate ENVELOPE_ID values must be treated as already delivered.\n")
 	return builder.String()
 }
 

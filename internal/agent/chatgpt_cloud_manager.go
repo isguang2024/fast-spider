@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
@@ -491,10 +493,14 @@ func (m *AgentManager) chatgptCloudResult(ctx context.Context, input agentContro
 		return nil, err
 	}
 	status := chatgptCloudConversationStatus(detail)
+	var callbackResult callbackResultMetadata
+	hasCallbackResult := false
 	if m.callbackStore != nil {
-		if callbackResult, ok, callbackErr := m.callbackStore.resultFor(input.SessionID); callbackErr != nil {
+		var callbackErr error
+		callbackResult, hasCallbackResult, callbackErr = m.callbackStore.resultFor(input.SessionID)
+		if callbackErr != nil {
 			return nil, callbackErr
-		} else if ok && callbackResult.Status != "" {
+		} else if hasCallbackResult && callbackResult.Status != "" {
 			status = callbackResult.Status
 		}
 	}
@@ -513,8 +519,44 @@ func (m *AgentManager) chatgptCloudResult(ctx context.Context, input agentContro
 		if strings.TrimSpace(input.ResultID) != "" {
 			result["resultId"] = strings.TrimSpace(input.ResultID)
 		}
-		if callbackResult, ok, _ := m.callbackStore.resultFor(input.SessionID); ok {
+		if hasCallbackResult {
 			applyCallbackResultMetadata(result, callbackResult)
+		} else if status == "completed" {
+			deliverablePath := strings.TrimSpace(input.CallbackDeliverablePath)
+			if deliverablePath != "" {
+				deliverableStatus, size, digest := inspectCallbackDeliverable(deliverablePath)
+				resultStatus := "failed"
+				if deliverableStatus == "ready" {
+					resultStatus = "ready"
+				}
+				result["deliverablePath"] = deliverablePath
+				result["deliverableStatus"] = deliverableStatus
+				applyCallbackResultMetadata(result, callbackResultMetadata{Status: resultStatus, Bytes: size, SHA256: digest})
+			} else if m.resultPublisher != nil {
+				text, textErr := chatgptCloudLatestAssistantTextLimit(detail, 8<<20)
+				if textErr != nil {
+					return nil, textErr
+				}
+				idempotencyKey := strings.TrimSpace(input.IdempotencyKey)
+				if idempotencyKey == "" {
+					sum := sha256.Sum256([]byte(input.SessionID + "\x00" + text))
+					idempotencyKey = "cloud_result_poll_" + hex.EncodeToString(sum[:])[:40]
+				}
+				if len(idempotencyKey) < 12 || len(idempotencyKey) > 128 || strings.ContainsAny(idempotencyKey, "\x00\r\n") {
+					return nil, fmt.Errorf("idempotencyKey must be 12 to 128 safe characters for a Cloud result manifest")
+				}
+				metadata, publishErr := m.resultPublisher.PublishCloudResult(ctx, input.SessionID, idempotencyKey, text)
+				if publishErr != nil {
+					return nil, publishErr
+				}
+				applyCallbackResultMetadata(result, callbackResultMetadata{
+					ResultID:  mapString(metadata, "resultId"),
+					Status:    firstNonEmptyString(mapString(metadata, "status"), "ready"),
+					Bytes:     mapInt64(metadata, "bytes"),
+					SHA256:    mapString(metadata, "sha256"),
+					PageCount: int(mapInt64(metadata, "pageCount")),
+				})
+			}
 		}
 	}
 	if result["finalAgentMessage"] == "" {
@@ -579,7 +621,7 @@ func (m *AgentManager) chatgptCloudWatch(ctx context.Context, input agentControl
 	for _, event := range events {
 		out = append(out, map[string]any{
 			"sequence": event.Sequence, "type": event.Type, "eventType": event.EventType,
-			"sessionId": event.ConversationID, "timestamp": event.Timestamp.Format(time.RFC3339Nano),
+			"eventKey": event.EventKey, "sessionId": event.ConversationID, "timestamp": event.Timestamp.Format(time.RFC3339Nano),
 		})
 	}
 	return map[string]any{
