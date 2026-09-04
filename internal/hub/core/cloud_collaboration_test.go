@@ -189,8 +189,8 @@ func TestCodexCloudCollaborationRequiresLocalCodexAndUsesDeliverableCallback(t *
 	}
 	initialCallCount := len(node.snapshotCalls())
 	for _, call := range node.snapshotCalls() {
-		if call.Action == "session.get" && call.Params["metadataOnly"] != true {
-			t.Fatalf("local Codex validation loaded turn history: %#v", call.Params)
+		if call.Action == "session.get" && (call.Params["metadataOnly"] != true || call.Params["preferDesktopRegistry"] != true) {
+			t.Fatalf("local Codex validation did not use the bounded desktop registry path: %#v", call.Params)
 		}
 	}
 	if repeated, err := service.CloudCollaboration(context.Background(), ownerID, createReq); err != nil || repeated["collaborationId"] != created["collaborationId"] || len(node.snapshotCalls()) != initialCallCount {
@@ -250,7 +250,7 @@ func TestCodexCloudCollaborationRequiresLocalCodexAndUsesDeliverableCallback(t *
 			}
 		}
 	}
-	if !strings.Contains(createPrompt, output) || !strings.Contains(createPrompt, "codex_cloud_completion") || !strings.Contains(createPrompt, "action=notify") || strings.Contains(createPrompt, "action=event.ingest") || !strings.Contains(createPrompt, "plan.init") || !strings.Contains(createPrompt, "initializeMarkdown=true") {
+	if !strings.Contains(createPrompt, output) || !strings.Contains(createPrompt, "codex_cloud_collaboration") || !strings.Contains(createPrompt, "action=completion.notify") || !strings.Contains(createPrompt, "artifact upload") || strings.Contains(createPrompt, "action=event.ingest") || !strings.Contains(createPrompt, "plan.init") || !strings.Contains(createPrompt, "initializeMarkdown=true") {
 		t.Fatalf("prompt=%q", createPrompt)
 	}
 	if countCloudCollaborationCalls(node.snapshotCalls(), "session.list") != 0 {

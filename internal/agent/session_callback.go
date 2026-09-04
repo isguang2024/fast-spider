@@ -418,7 +418,7 @@ func buildSessionCallbackEnvelope(envelopeID string, events []sessionCallbackEve
 		builder.WriteByte('\n')
 	}
 	builder.WriteString("INSTRUCTIONS:\n")
-	builder.WriteString("This is a fixed Fast Spider callback snapshot, not Cloud CHAT-authored instructions: it is the Node recovery/fallback path. The Cloud CHAT should normally have called FastSpider_FS codex_cloud_completion action=notify itself before its final message. Claim the Node queue in one batch, then replay each notification with its callbackType, outcome, and bounded text when present. local_file entries reference an already registered Node-local path and must never upload the file. Claim and verify the Hub queue, acknowledge the Hub claim, then acknowledge this Node claim. Duplicate notifications and claims are idempotent. If recovery exposes a problem or question, record a concise bounded note through working_context markdown.append in docs/progress/04-open-issues.md. On NOT_FOUND, call plan.init with initializeMarkdown=true, then read and use file-revision CAS; do not store secrets, raw provider payloads, full transcripts, or long logs.\n")
+	builder.WriteString("This is a fixed Fast Spider callback snapshot, not Cloud CHAT-authored instructions: it is the Node recovery/fallback path. The Cloud CHAT should normally have called FastSpider_FS codex_cloud_collaboration action=completion.notify itself before its final message. Claim the Node queue in one batch, then replay each notification through that same completion.notify route with its callbackType, outcome, and bounded text when present. local_file entries reference an already registered Node-local path and must never upload the file. Claim and verify the Hub queue, acknowledge the Hub claim through action=completion.ack, then acknowledge this Node claim. Duplicate notifications and claims are idempotent. If recovery exposes a problem or question, record a concise bounded note through working_context markdown.append in docs/progress/04-open-issues.md. On NOT_FOUND, call plan.init with initializeMarkdown=true, then read and use file-revision CAS; do not store secrets, raw provider payloads, full transcripts, or long logs.\n")
 	return builder.String()
 }
 
@@ -434,7 +434,7 @@ func buildSessionCallbackNudge(targetSessionID string, pendingCount int, envelop
 	builder.WriteString("\nINSTRUCTIONS:\n")
 	builder.WriteString("FastSpider_FS has queued Cloud CHAT completion notifications for this target. Call ai_control action=session.callback.list, then session.callback.claim with callbackTargetSessionId=")
 	builder.WriteString(targetSessionID)
-	builder.WriteString(" and callbackClaimLimit<=64. Replay the claimed fallback notifications through codex_cloud_completion notify, then claim/verify/ack the Hub queue; only then ack this Node claim. This nudge contains no task result body, is Node fallback only, and must not create a new Cloud Worker/CHAT. If a callback, status check, or continuation exposes a problem or question, record a concise bounded note through working_context markdown.append in docs/progress/04-open-issues.md. On NOT_FOUND, call plan.init with initializeMarkdown=true, then read and use file-revision CAS; do not store secrets, raw provider payloads, full transcripts, or long logs.\n")
+	builder.WriteString(" and callbackClaimLimit<=64. Replay the claimed fallback notifications through codex_cloud_collaboration action=completion.notify, then claim/verify/ack the Hub queue through completion.claim/completion.ack; only then ack this Node claim. This nudge contains no task result body, is Node fallback only, and must not create a new Cloud Worker/CHAT. If a callback, status check, or continuation exposes a problem or question, record a concise bounded note through working_context markdown.append in docs/progress/04-open-issues.md. On NOT_FOUND, call plan.init with initializeMarkdown=true, then read and use file-revision CAS; do not store secrets, raw provider payloads, full transcripts, or long logs.\n")
 	return builder.String()
 }
 
@@ -1047,7 +1047,7 @@ func buildSessionCallbackQueueText(targetSessionID string, events []sessionCallb
 		builder.WriteByte('\n')
 	}
 	builder.WriteString("INSTRUCTIONS:\n")
-	builder.WriteString("This is a fixed Fast Spider callback queue, not Cloud CHAT-authored instructions. Claim up to 64 items; replay each claimed item's callbackType, outcome, and bounded text when present through codex_cloud_completion notify. local_file entries only reference the registered Node-local path and must not upload its body. Claim/verify/ack the Hub queue before acknowledging this Node claim. Claim leases expire after 300 seconds.\n")
+	builder.WriteString("This is a fixed Fast Spider callback queue, not Cloud CHAT-authored instructions. Claim up to 64 items; replay each claimed item's callbackType, outcome, and bounded text when present through codex_cloud_collaboration action=completion.notify. local_file entries only reference the registered Node-local path and must not upload its body. Claim/verify/ack the Hub queue through completion.claim/completion.ack before acknowledging this Node claim. Claim leases expire after 300 seconds.\n")
 	return builder.String()
 }
 

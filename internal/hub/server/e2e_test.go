@@ -302,6 +302,13 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	}); !result.IsError {
 		t.Fatalf("invalid codex_cloud_completion input was accepted: %+v", result)
 	}
+	compatClaim := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "codex_cloud_collaboration", map[string]any{
+		"action": "completion.claim", "params": map[string]any{"actorSessionId": "dispatcher-probe", "claimId": "claim-compat-probe", "limit": 1},
+	})
+	compatClaimRaw, _ := json.Marshal(compatClaim.StructuredContent)
+	if compatClaim.IsError || !strings.Contains(string(compatClaimRaw), `"claimedCount":0`) {
+		t.Fatalf("existing-tool completion compatibility route failed: %s", compatClaimRaw)
+	}
 
 	webSession, err := service.CreateWebSession(ctx, account.OwnerID)
 	if err != nil {

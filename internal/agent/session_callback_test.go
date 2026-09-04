@@ -80,7 +80,7 @@ func TestCloudCallbackUsesLocalDeliverableWithoutReadingCHAT(t *testing.T) {
 		t.Fatalf("deliverable pending=%#v err=%v", grouped, err)
 	}
 	prompt := buildSessionCallbackEnvelope("env-file", grouped["target-file"])
-	if !strings.Contains(prompt, "deliverable_path="+path) || !strings.Contains(prompt, "codex_cloud_completion") || strings.Contains(prompt, string(content)) {
+	if !strings.Contains(prompt, "deliverable_path="+path) || !strings.Contains(prompt, "completion.notify") || strings.Contains(prompt, string(content)) {
 		t.Fatalf("deliverable envelope=%q", prompt)
 	}
 
@@ -537,7 +537,7 @@ func TestSessionCallbackCompletionQueuesNotificationWithoutReadingOrPublishingRe
 		t.Fatalf("pending result metadata=%#v", pending)
 	}
 	envelope := buildSessionCallbackEnvelope(sessionCallbackEnvelopeID("target", grouped["target"]), grouped["target"])
-	if strings.Contains(envelope, "final callback text") || strings.Contains(envelope, "artifactId") || strings.Contains(envelope, "result_id=") || !strings.Contains(envelope, "codex_cloud_completion") {
+	if strings.Contains(envelope, "final callback text") || strings.Contains(envelope, "artifactId") || strings.Contains(envelope, "result_id=") || !strings.Contains(envelope, "completion.notify") {
 		t.Fatalf("unsafe callback envelope=%q", envelope)
 	}
 }
@@ -1324,6 +1324,31 @@ func TestSessionGetMetadataOnlySkipsTurnHistory(t *testing.T) {
 	session, _ := got["session"].(map[string]any)
 	if session["sessionId"] != "metadata-thread" || session["providerId"] != "codex" || session["backend"] != sessionBackendCodexLocal {
 		t.Fatalf("metadata-only session.get=%#v", got)
+	}
+}
+
+func TestSessionGetMetadataOnlyCanPreferDesktopRegistry(t *testing.T) {
+	dataDir := t.TempDir()
+	manager := New(dataDir, nil)
+	defer manager.Close(context.Background())
+	rootHint := t.TempDir()
+	manager.codexStatePath = filepath.Join(dataDir, codexDesktopStateFilename)
+	state := fmt.Sprintf(`{"local-projects":{},"thread-project-assignments":{},"projectless-thread-ids":["registered-thread"],"thread-workspace-root-hints":{"registered-thread":%q}}`, rootHint)
+	if err := os.WriteFile(manager.codexStatePath, []byte(state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager.codex.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
+		return nil, fmt.Errorf("unexpected Codex request %s %#v", method, params)
+	}
+	got, err := manager.Control(context.Background(), "session.get", map[string]any{
+		"providerId": "codex", "sessionId": "registered-thread", "metadataOnly": true, "preferDesktopRegistry": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := got["session"].(map[string]any)
+	if session["sessionId"] != "registered-thread" || session["backend"] != sessionBackendCodexLocal || !sameAgentPath(mapString(session, "workingDirectory"), rootHint) {
+		t.Fatalf("desktop-registry metadata=%#v", got)
 	}
 }
 

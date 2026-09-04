@@ -3,6 +3,16 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.55 - 2026-09-04
+
+- Keep typed Cloud CHAT callbacks usable before a ChatGPT connector schema
+  refresh by routing `completion.notify|claim|ack` through the existing
+  `codex_cloud_collaboration` tool; the dedicated completion tool remains an
+  equivalent shortcut.
+- Validate collaboration controller and dispatcher IDs from the local Codex
+  Desktop registry before asking app-server for metadata, avoiding an observed
+  request timeout while preserving Provider fallback for unregistered IDs.
+
 ## 0.4.54 - 2026-09-04
 
 - Share one account-level ChatGPT Celsius WebSocket across managed CHATs, use

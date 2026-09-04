@@ -75,7 +75,7 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		}
 		if name == "codex_cloud_collaboration" {
 			guideText := strings.Join(append(append(append([]string{guide.Summary}, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
-			for _, needle := range []string{"targetSessionId", "original creator", "mode=quick_chat", "never call session.list", "per-task lease", "actorSessionId=$self", "codex_cloud_completion", "notify", "Node session.callback", "30-minute", "one bounded action", "not_due", "nextPollAt", "status.poll", "chat.continue", "controller decision", "released", "plan.init", "initializeMarkdown=true", "docs/progress/04-open-issues.md"} {
+			for _, needle := range []string{"targetSessionId", "original creator", "mode=quick_chat", "never call session.list", "per-task lease", "actorSessionId=$self", "completion.notify", "completion.claim", "completion.ack", "refreshed connector", "Node session.callback", "30-minute", "one bounded action", "not_due", "nextPollAt", "status.poll", "chat.continue", "controller decision", "released", "plan.init", "initializeMarkdown=true", "docs/progress/04-open-issues.md"} {
 				if !strings.Contains(guideText, needle) {
 					t.Fatalf("codex_cloud_collaboration guide missing %q: %+v", needle, guide)
 				}

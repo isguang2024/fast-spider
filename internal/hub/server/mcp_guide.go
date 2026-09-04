@@ -214,7 +214,7 @@ var mcpToolGuides = map[string]mcpToolGuideEntry{
 	},
 	"codex_cloud_collaboration": {
 		Description: "Codex 云端协作：按任务显式选择复用指定的普通可见 ChatGPT Cloud CHAT，或在未指定 ID 时新建隔离 CHAT；CHAT 是可选协作者，完成后通过 FastSpider_FS 通知，Node 仅作恢复兜底。",
-		WhenToUse:   []string{"Unattended multi-step work", "Local Codex coordinates existing Cloud CHAT sessions", "Cloud CHAT self-callback through FastSpider_FS", "Recovery across context limits or missed callbacks"}, RequiredInputs: []string{"Read capability_list(view=workflow,name=codex-cloud-collaboration) first", "create requires two existing local Codex controller/dispatcher sessions plus machineId, goal/doneWhen, workingDirectory, limits, allowedActions and idempotencyKey", "task.add selects callbackType=local_file|text|status; local_file is the backward-compatible default", "Cloud CHAT completion uses actorSessionId=$self, taskId, outcome, callbackType, and text only for text callbacks", "collaboration mutations require revision and lease, but completion notify/claim/ack do not"},
+		WhenToUse:   []string{"Unattended multi-step work", "Local Codex coordinates existing Cloud CHAT sessions", "Cloud CHAT self-callback through FastSpider_FS", "Recovery across context limits or missed callbacks"}, RequiredInputs: []string{"Read capability_list(view=workflow,name=codex-cloud-collaboration) first", "create requires two existing local Codex controller/dispatcher sessions plus machineId, goal/doneWhen, workingDirectory, limits, allowedActions and idempotencyKey", "task.add selects callbackType=local_file|text|status; local_file is the backward-compatible default", "Cloud CHAT completion uses codex_cloud_collaboration action=completion.notify with actorSessionId=$self, taskId, outcome, callbackType, and text only for text callbacks", "collaboration mutations require revision and lease, but completion notify/claim/ack do not"},
 		SafeSequence: []string{
 			"create performs local Codex + ChatGPT login readiness checks",
 			"lease.acquire for the dispatcher",
@@ -222,7 +222,7 @@ var mcpToolGuides = map[string]mcpToolGuideEntry{
 			"task.dispatch reuses only targetSessionId when supplied; it persists the pre-send completion identity in an unarmed route, sends the new quick_chat turn, then arms the callback; otherwise it creates one clean visible quick_chat and never scans history",
 			"the Cloud CHAT calls codex_cloud_collaboration(action=get, actorSessionId=$self, actorRole=chat, taskId=...) to obtain callbackType and any fixed resultPath",
 			"local_file writes directly through FS to the registered Node-local resultPath and never uploads it; that exact callback-only slot remains writable for read_only tasks but grants no other write permission; text stays within both limits; status has no payload",
-			"the same Cloud CHAT calls codex_cloud_completion notify; the dispatcher batch claims up to 64 records with at most 64 KiB total inline text, verifies by type, and acknowledges them",
+			"the same Cloud CHAT calls codex_cloud_collaboration action=completion.notify; the dispatcher uses completion.claim/completion.ack for up to 64 records with at most 64 KiB total inline text; codex_cloud_completion remains an equivalent shortcut when exposed",
 			"completion ack advances task state; archive is asynchronous and cannot block ack",
 			"Node session.callback is event/deadline driven; Provider recovery and tick/status.poll are 30-minute fallbacks, and healthy realtime suppresses repeated CHAT status reads",
 			"each scheduler turn performs one bounded action and becomes idle; early status.poll returns not_due with nextPollAt and makes no Node/provider status call; duplicate event IDs/revisions are reconciled",
@@ -238,7 +238,7 @@ var mcpToolGuides = map[string]mcpToolGuideEntry{
 		RequiredInputs:  []string{"notify: collaborationId, taskId, actorSessionId=$self, outcome, callbackType; text only for callbackType=text", "claim: dispatcher actorSessionId and optional claimId/limit", "ack: dispatcher actorSessionId, claimId, and one acknowledgement per claimed callback"},
 		SafeSequence:    []string{"For local_file, CHAT writes through FS to the registered Node-local resultPath and does not upload it", "For text, send at most 2000 Unicode characters and 8192 UTF-8 bytes; for status, send no payload", "CHAT calls notify before its final message", "dispatcher claims up to 64 durable callbacks, capped at 64 KiB total inline text, with a five-minute lease", "dispatcher verifies local_file paths; text/status acknowledgements require no file metadata", "archive runs independently after ack and cannot block the acknowledgement", "Node fallback reuses the same canonical notification ID and remains low-frequency"},
 		Returns:         []string{"Durable idempotent notification ID", "typed batch containing a registered local path, bounded text, or status", "ack count and asynchronous archive state"},
-		RecommendedNext: []string{"codex_cloud_completion(action=claim)", "file_read(statOnly=true)", "codex_cloud_completion(action=ack)"},
+		RecommendedNext: []string{"codex_cloud_collaboration(action=completion.claim)", "file_read(statOnly=true)", "codex_cloud_collaboration(action=completion.ack)", "codex_cloud_completion when its refreshed schema is exposed"},
 		CommonErrors:    []string{"INVALID_REQUEST", "UNAUTHORIZED", "CONFLICT", "EXPIRED", "CALLBACK_TEXT_REQUIRED", "CALLBACK_TEXT_TOO_LARGE", "COLLABORATION_NOT_FOUND", "TASK_NOT_FOUND"},
 		BoundedExamples: []map[string]any{{"action": "notify", "collaborationId": "<collaboration-id>", "taskId": "task-1", "actorSessionId": "$self", "outcome": "completed", "callbackType": "text", "text": "short result"}, {"action": "claim", "actorSessionId": "<dispatcher-session>", "limit": 64}},
 	},
@@ -398,7 +398,7 @@ func codexCloudCollaborationGuide() (string, []string, []string, []string) {
 		"Read capability_list(view=workflow,name=codex-cloud-collaboration) first",
 		"create requires two existing local Codex controller/dispatcher sessions plus machineId, goal/doneWhen, workingDirectory, limits, allowedActions and idempotencyKey",
 		"task.add or task.dispatch may include targetSessionId only when that exact visible ChatGPT Cloud CHAT must be reused; chat.send must be allowed",
-		"task.add fixes callbackType=local_file|text|status; completion uses actorSessionId=$self, taskId, outcome and the same type",
+		"task.add fixes callbackType=local_file|text|status; completion uses codex_cloud_collaboration action=completion.notify with actorSessionId=$self, taskId, outcome and the same type; codex_cloud_completion is an equivalent optional shortcut",
 	}
 	safeSequence := []string{
 		"First decide whether the current Codex can complete the task directly; use this collaboration only when CHAT assistance is useful or explicitly requested",
@@ -407,8 +407,8 @@ func codexCloudCollaborationGuide() (string, []string, []string, []string) {
 		"If targetSessionId is present, validate only that exact CHAT regardless of its original creator; persist its current completion identity in an unarmed callback route, save the task binding, send with a stable idempotencyKey, then arm and catch up behind the baseline fence",
 		"If targetSessionId is absent, task.dispatch creates one new backend=chatgpt_cloud visibility=visible mode=quick_chat conversation; never call session.list or guess an old CHAT",
 		"The targetSessionId association is a per-task lease, not permanent ownership; reused CHATs are released rather than archived or deleted",
-		"Cloud CHAT calls codex_cloud_collaboration action=get with actorSessionId=$self and taskId; local_file writes the registered Node-local path without upload, text is bounded to 2000 characters and 8192 bytes, status carries no payload, then codex_cloud_completion notify persists the typed callback",
-		"The dispatcher batch claims up to 64 callbacks with at most 64 KiB inline text, verifies by type, and acknowledges the batch; Hub persistence survives process or computer restart",
+		"Cloud CHAT calls codex_cloud_collaboration action=get with actorSessionId=$self and taskId; local_file writes the registered Node-local path without upload, text is bounded to 2000 characters and 8192 bytes, status carries no payload, then action=completion.notify persists the typed callback without depending on a refreshed connector tool list",
+		"The dispatcher uses action=completion.claim/completion.ack to batch up to 64 callbacks with at most 64 KiB inline text, verifies by type, and acknowledges the batch; Hub persistence survives process or computer restart",
 		"Node session.callback uses event/deadline wakeups; Provider recovery and tick/status.poll are 30-minute fallbacks, healthy realtime suppresses repeated CHAT reads, and one scheduler turn performs one bounded action before idling; an early status.poll returns not_due plus nextPollAt without a Node/provider status call",
 		"For a suspected stall, status.poll first; chat.continue sends 请继续 only while still running and suppresses duplicates until progress; replacement requires an explicit controller decision",
 		"On COLLABORATION_NOT_FOUND, TASK_NOT_FOUND, or ORPHAN_CALLBACK_ROUTE stop repeated callback retries; if issue Markdown is missing, call working_context plan.init with initializeMarkdown=true, then CAS-append a bounded note to docs/progress/04-open-issues.md",

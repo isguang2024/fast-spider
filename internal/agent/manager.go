@@ -31,6 +31,7 @@ type agentControlParams struct {
 	Ephemeral                *bool               `json:"ephemeral,omitempty"`
 	Mode                     string              `json:"mode,omitempty"`
 	MetadataOnly             bool                `json:"metadataOnly,omitempty"`
+	PreferDesktopRegistry    bool                `json:"preferDesktopRegistry,omitempty"`
 	Prompt                   string              `json:"prompt,omitempty"`
 	WorkingDirectory         string              `json:"workingDirectory,omitempty"`
 	Model                    string              `json:"model,omitempty"`
@@ -405,7 +406,11 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		var thread map[string]any
 		var err error
 		if input.MetadataOnly {
-			thread, err = m.authorizedThreadMetadata(ctx, input.SessionID)
+			if input.PreferDesktopRegistry {
+				thread, err = m.authorizedThreadMetadataPreferDesktopRegistry(ctx, input.SessionID)
+			} else {
+				thread, err = m.authorizedThreadMetadata(ctx, input.SessionID)
+			}
 		} else {
 			thread, err = m.authorizedThread(ctx, input.SessionID)
 		}
@@ -1823,6 +1828,16 @@ func (m *AgentManager) authorizedThreadMetadata(ctx context.Context, sessionID s
 		err = node.ErrAgentSessionNotFound
 	}
 	return m.authorizedCodexDesktopThread(sessionID, err)
+}
+
+func (m *AgentManager) authorizedThreadMetadataPreferDesktopRegistry(ctx context.Context, sessionID string) (map[string]any, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return nil, fmt.Errorf("sessionId is required")
+	}
+	if thread, err := m.authorizedCodexDesktopThread(sessionID, node.ErrAgentSessionNotFound); err == nil {
+		return thread, nil
+	}
+	return m.authorizedThreadMetadata(ctx, sessionID)
 }
 
 func (m *AgentManager) authorizedCodexDesktopThread(sessionID string, readErr error) (map[string]any, error) {
