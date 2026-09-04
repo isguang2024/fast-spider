@@ -64,7 +64,7 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		assertMCPGuideSize(t, guide, 12<<10)
 		if name == "ai_control" {
 			guideText := strings.Join(append(append(append(guide.WhenToUse, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
-			for _, needle := range []string{"session.create", "providerId=codex", "backend=chatgpt_cloud", "mode=quick_chat", "CHAT", "externalIdType=chatgpt_conversation", "completionPending=true", "pluginName", "UNSUPPORTED_SESSION_PLUGIN_BINDING", "resultMode=manifest", "session.callback.claim", "event", "exact deadlines", "30-minute minimum", "healthy shared socket", "metadataOnly=true", "exact Codex or ChatGPT sessionId", "optional", "do not call session.list", "AGENT_SESSION_BUSY", "plan.init", "initializeMarkdown=true", "docs/progress/04-open-issues.md"} {
+			for _, needle := range []string{"session.create", "providerId=codex", "backend=chatgpt_cloud", "mode=quick_chat", "CHAT", "externalIdType=chatgpt_conversation", "completionPending=true", "pluginName", "UNSUPPORTED_SESSION_PLUGIN_BINDING", "resultMode=manifest", "session.callback.claim", "event", "exact deadlines", "30-minute minimum", "healthy shared socket", "metadataOnly=true", "exact Codex or ChatGPT sessionId", "optional", "do not call session.list", "AGENT_SESSION_BUSY", "durable controller callback", "codex_cloud_collaboration", "plan.init", "initializeMarkdown=true", "docs/progress/04-open-issues.md"} {
 				if !strings.Contains(guideText, needle) {
 					t.Fatalf("ai_control guide missing %q: %+v", needle, guide)
 				}
@@ -75,7 +75,7 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		}
 		if name == "codex_cloud_collaboration" {
 			guideText := strings.Join(append(append(append([]string{guide.Summary}, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
-			for _, needle := range []string{"targetSessionId", "original creator", "mode=quick_chat", "never call session.list", "per-task lease", "actorSessionId=$self", "completion.notify", "completion.claim", "completion.ack", "refreshed connector", "Node session.callback", "30-minute", "one bounded action", "not_due", "nextPollAt", "status.poll", "chat.continue", "controller decision", "released", "plan.init", "initializeMarkdown=true", "docs/progress/04-open-issues.md"} {
+			for _, needle := range []string{"simple task", "targetSessionId", "original creator", "mode=quick_chat", "never call session.list", "per-task lease", "actorSessionId=$self", "completion.notify", "completion.claim", "completion.ack", "refreshed connector", "Node session.callback", "30-minute", "one bounded action", "not_due", "nextPollAt", "status.poll", "chat.continue", "controller decision", "released", "callerShouldYield=true", "activePollingAllowed=false", "nextAction=end_turn", "session.get", "plan.init", "initializeMarkdown=true", "docs/progress/04-open-issues.md"} {
 				if !strings.Contains(guideText, needle) {
 					t.Fatalf("codex_cloud_collaboration guide missing %q: %+v", needle, guide)
 				}
@@ -106,16 +106,24 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"connection-check", "file-edit", "shell-job", "build-job", "git-change", "browser", "codex-session", "long-task", "artifact-display", "codex-cloud-collaboration"} {
+	for _, name := range []string{"connection-check", "cloud-chat-callback", "file-edit", "shell-job", "build-job", "git-change", "browser", "codex-session", "long-task", "artifact-display", "codex-cloud-collaboration"} {
 		guide, err := newMCPGuide("0.4.17", "workflow", name)
 		if err != nil || guide.Summary == "" || len(guide.SafeSequence) == 0 {
 			t.Fatalf("workflow %s guide=%+v err=%v", name, guide, err)
 		}
 		if name == "connection-check" {
 			sequence := strings.Join(guide.SafeSequence, "\n")
-			for _, needle := range []string{"api_tool.list_resources", `query="fsprobe"`, "Never materialize the full 19-tool schema", "login/reauthorization", "machine_list"} {
+			for _, needle := range []string{"api_tool.list_resources", `query="fsprobe"`, "Never materialize the full tool schema", "login/reauthorization", "machine_list"} {
 				if !strings.Contains(sequence, needle) {
 					t.Fatalf("connection recovery workflow missing %q: %+v", needle, guide)
+				}
+			}
+		}
+		if name == "cloud-chat-callback" {
+			sequence := strings.Join(append(append([]string{guide.Summary}, guide.SafeSequence...), guide.RecommendedNext...), "\n")
+			for _, needle := range []string{"one simple", "codex_cloud_collaboration", "callerShouldYield=true", "nextAction=end_turn", "do not call session.get", "completion.claim", "completion.ack"} {
+				if !strings.Contains(sequence, needle) {
+					t.Fatalf("cloud callback workflow missing %q: %+v", needle, guide)
 				}
 			}
 		}

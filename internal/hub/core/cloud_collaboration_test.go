@@ -241,6 +241,9 @@ func TestCodexCloudCollaborationRequiresLocalCodexAndUsesDeliverableCallback(t *
 	if numberField(dispatched, "revision") < 6 {
 		t.Fatalf("dispatch=%#v", dispatched)
 	}
+	if dispatched["awaitMode"] != "callback" || dispatched["activePollingAllowed"] != false || dispatched["callerShouldYield"] != true || dispatched["nextAction"] != "end_turn" || !strings.Contains(mapString(dispatched, "nextActionReason"), "session.get") {
+		t.Fatalf("dispatch did not instruct the dispatcher to yield for callback: %#v", dispatched)
+	}
 	var createPrompt string
 	for _, call := range node.snapshotCalls() {
 		if call.Action == "session.create" {

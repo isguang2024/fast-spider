@@ -280,7 +280,11 @@ func (s *Service) CloudCollaboration(ctx context.Context, ownerID string, req Cl
 		if role != "dispatcher" && role != "chat" {
 			return nil, store.ErrUnauthorized
 		}
-		return s.cloudCollaborationDispatchTask(ctx, ownerID, rec, state, req, role)
+		out, err := s.cloudCollaborationDispatchTask(ctx, ownerID, rec, state, req, role)
+		if err != nil {
+			return nil, err
+		}
+		return cloudCollaborationDispatchReceipt(out, role), nil
 	case "status.poll":
 		if role != "dispatcher" && role != "chat" {
 			return nil, store.ErrUnauthorized
@@ -366,6 +370,25 @@ func (s *Service) CloudCollaboration(ctx context.Context, ownerID string, req Cl
 		return nil, store.ErrConflict
 	}
 	return s.saveCloudCollaboration(ctx, ownerID, rec, state)
+}
+
+func cloudCollaborationDispatchReceipt(out map[string]any, role string) map[string]any {
+	if out == nil {
+		out = map[string]any{}
+	}
+	out["awaitMode"] = "callback"
+	out["activePollingAllowed"] = false
+	out["completionDelivery"] = "cloud-chat-self-callback"
+	out["recoveryDelivery"] = "node-fallback-and-30-minute-scheduler-check"
+	out["nextAction"] = "end_turn"
+	out["nextActionReason"] = "the task was dispatched asynchronously; wait for the durable callback wake instead of calling session.get, session.watch, session.result, tick, or status.poll"
+	if role == "dispatcher" {
+		out["callerShouldYield"] = true
+	} else {
+		out["callerShouldYield"] = false
+		out["callerGuidance"] = "continue only independent parent work; do not wait or poll for the dispatched CHAT"
+	}
+	return out
 }
 
 func (s *Service) createCloudCollaboration(ctx context.Context, ownerID string, req CloudCollaborationRequest) (map[string]any, error) {
