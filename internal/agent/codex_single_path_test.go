@@ -60,10 +60,13 @@ func TestCodexSessionSendUsesAppServerAndRequiresTurnID(t *testing.T) {
 	defer manager.Close(context.Background())
 	workingDirectory := t.TempDir()
 	var methods []string
-	manager.codex.requestOverride = func(_ context.Context, method string, _ map[string]any) (map[string]any, error) {
+	manager.codex.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
 		methods = append(methods, method)
 		switch method {
 		case "thread/read":
+			if includeTurns, _ := params["includeTurns"].(bool); includeTurns {
+				t.Fatal("session.send loaded complete Codex turn history")
+			}
 			return map[string]any{"thread": map[string]any{"id": "thread-send", "cwd": workingDirectory}}, nil
 		case "thread/resume":
 			return map[string]any{"thread": map[string]any{"id": "thread-send"}}, nil
@@ -88,10 +91,13 @@ func TestNormalCodexSessionSendDoesNotAutoUnarchive(t *testing.T) {
 	workingDirectory := t.TempDir()
 	var methods []string
 	archivedErr := errors.New("session thread-archived is archived. Run `codex unarchive thread-archived` to unarchive it first")
-	manager.codex.requestOverride = func(_ context.Context, method string, _ map[string]any) (map[string]any, error) {
+	manager.codex.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
 		methods = append(methods, method)
 		switch method {
 		case "thread/read":
+			if includeTurns, _ := params["includeTurns"].(bool); includeTurns {
+				t.Fatal("archived session.send loaded complete Codex turn history")
+			}
 			return map[string]any{"thread": map[string]any{"id": "thread-archived", "cwd": workingDirectory, "archived": true}}, nil
 		case "thread/resume":
 			return nil, archivedErr

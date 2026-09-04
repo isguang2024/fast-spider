@@ -1398,7 +1398,10 @@ func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams
 	if err := validateTurnInputs(input); err != nil {
 		return nil, err
 	}
-	thread, err := m.authorizedThread(ctx, input.SessionID)
+	// A send only needs the thread identity and cwd. Loading the complete turn
+	// history here can serialize the app-server behind a very large archived
+	// callback target and block unrelated local Codex operations.
+	thread, err := m.authorizedThreadMetadata(ctx, input.SessionID)
 	if err != nil {
 		return nil, err
 	}

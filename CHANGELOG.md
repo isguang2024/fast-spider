@@ -18,6 +18,9 @@ semantic versioning for public releases.
 - Make the extended release gate diff-aware: common tests and builds run once,
   while real WSL, Browser, CC Switch, Claude, and Codex E2E groups run only when
   their owning paths changed; `FAST_SPIDER_GATE_ALL_E2E=1` still forces all.
+- Keep `session.send` and callback delivery on metadata-only `thread/read` before
+  `thread/resume`, so an old task with a very large turn history cannot serialize
+  the shared app-server and block unrelated local Codex requests.
 
 ## 0.4.60 - 2026-09-05
 
