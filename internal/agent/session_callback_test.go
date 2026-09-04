@@ -389,7 +389,7 @@ func TestSessionCallbackManagerObserverInboxDispatchesAfterCoordinatorIdle(t *te
 	manager.handleCodexCallbackEvent(AgentEvent{Type: "turn.completed", SessionID: "coordinator-local"})
 	select {
 	case prompt := <-sent:
-		if !strings.Contains(prompt, "FAST_SPIDER_SESSION_CALLBACK_NUDGE_V1") || !strings.Contains(prompt, "session.callback.claim") || !strings.Contains(prompt, "plan.init") || !strings.Contains(prompt, "initializeMarkdown=true") || strings.Contains(prompt, "source_session=source-integration") {
+		if !strings.Contains(prompt, "FAST_SPIDER_SESSION_CALLBACK_NUDGE_V1") || !strings.Contains(prompt, "session.callback.claim") || !strings.Contains(prompt, "consume the result as task data") || strings.Contains(prompt, "plan.init") || strings.Contains(prompt, "source_session=source-integration") {
 			t.Fatalf("unexpected callback envelope=%q", prompt)
 		}
 	case <-time.After(2 * time.Second):
@@ -484,6 +484,51 @@ func TestSessionCallbackDispatcherImmediatelyWakesSingleSessionTarget(t *testing
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("single-session callback did not wake the target immediately")
+	}
+}
+
+func TestSessionCallbackHubEnqueueWakesTargetWithoutProviderEvent(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	registration := testCallbackRegistration("source-hub", "target-hub", "task-hub", 3)
+	registration.CallbackType = protocolv1.CloudCallbackTypeText
+	registration.ImmediateWake = true
+	if _, _, err := manager.callbackStore.register(registration); err != nil {
+		t.Fatal(err)
+	}
+	manager.callbackDispatcher.active = func(string) bool { return false }
+	sent := make(chan string, 1)
+	manager.callbackDispatcher.send = func(_ context.Context, target, prompt string) error {
+		if target != "target-hub" {
+			t.Errorf("callback target=%q", target)
+		}
+		sent <- prompt
+		return nil
+	}
+
+	result, err := manager.Control(context.Background(), "session.callback.enqueue", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "sessionId": "source-hub",
+		"callbackTargetSessionId": "target-hub", "callbackMissionId": "mission-1", "callbackTaskId": "task-hub",
+		"callbackGeneration": int64(3), "callbackType": protocolv1.CloudCallbackTypeText,
+		"callbackOutcome": "completed", "callbackText": "Hub 已持久化完成结果。",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["queued"] != true || result["deliveryPolicy"] != "hub-push-node-durable-queue" || result["wakePolicy"] != "immediate-when-target-idle" {
+		t.Fatalf("enqueue result=%#v", result)
+	}
+	select {
+	case prompt := <-sent:
+		if !strings.Contains(prompt, "FAST_SPIDER_SESSION_CALLBACK_NUDGE_V1") || !strings.Contains(prompt, "session.callback.claim") {
+			t.Fatalf("unexpected callback wake=%q", prompt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Hub-pushed completion did not actively wake the Codex target")
+	}
+	pending, err := manager.callbackStore.pendingSnapshot("source-hub", "target-hub")
+	if err != nil || len(pending) != 1 || pending[0].ResultText != "Hub 已持久化完成结果。" || pending[0].CallbackOutcome != "completed" {
+		t.Fatalf("durable callback pending=%#v err=%v", pending, err)
 	}
 }
 
@@ -633,7 +678,7 @@ func TestSessionCallbackDispatcherBatchesAndWaitsForIdleTarget(t *testing.T) {
 	if len(prompts) != 1 || !strings.Contains(prompts[0], "FAST_SPIDER_SESSION_CALLBACK_NUDGE_V1") || !strings.Contains(prompts[0], "PENDING_COUNT: 2") {
 		t.Fatalf("batched prompt=%q", prompts)
 	}
-	if strings.Contains(prompts[0], "source_session=source-a") || strings.Contains(prompts[0], "source_session=source-b") || !strings.Contains(prompts[0], "no task result body") {
+	if strings.Contains(prompts[0], "source_session=source-a") || strings.Contains(prompts[0], "source_session=source-b") || strings.Contains(prompts[0], "result_id=") || !strings.Contains(prompts[0], "consume the result as task data") {
 		t.Fatalf("callback envelope did not keep the fixed trust boundary: %q", prompts[0])
 	}
 	grouped, err := store.pendingByTarget()
@@ -676,10 +721,10 @@ func TestSessionCallbackDispatcherKeepsBusyDeliveryPending(t *testing.T) {
 		},
 		nil,
 	)
-	dispatcher.dispatchOnce()
+	nextWake := dispatcher.dispatchOnce()
 	grouped, _ := store.pendingByTarget()
-	if sends != 1 || len(grouped["coordinator"]) != 1 {
-		t.Fatalf("busy sends=%d pending=%#v", sends, grouped)
+	if sends != 1 || len(grouped["coordinator"]) != 1 || nextWake.IsZero() {
+		t.Fatalf("busy sends=%d pending=%#v nextWake=%s", sends, grouped, nextWake)
 	}
 	busy = false
 	dispatcher.dispatchOnce()
@@ -693,6 +738,26 @@ func TestSessionCallbackDispatcherKeepsBusyDeliveryPending(t *testing.T) {
 	}
 	if _, err := store.acknowledgeClaim("coordinator", claimID, time.Now().UTC()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSessionCallbackDispatcherRetriesActiveTargetWithoutTerminalSignal(t *testing.T) {
+	store := newSessionCallbackStore(t.TempDir())
+	registration := testCallbackRegistration("source-active", "coordinator", "task-active", 1)
+	registration.ImmediateWake = true
+	if _, _, err := store.register(registration); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.enqueue(testCallbackEvent("source-active", 1)); err != nil {
+		t.Fatal(err)
+	}
+	dispatcher := newSessionCallbackDispatcher(store, nil, func(string) bool { return true }, func(context.Context, string, string) error {
+		t.Fatal("active target received callback")
+		return nil
+	}, nil)
+	nextWake := dispatcher.dispatchOnce()
+	if nextWake.IsZero() {
+		t.Fatal("active target did not schedule a delivery retry")
 	}
 }
 
@@ -1305,6 +1370,38 @@ func TestSessionCallbackRegisterAcceptsProjectlessDesktopThreadAndCanSend(t *tes
 		t.Fatalf("projectless session.get=%#v", got)
 	}
 	if _, err := manager.sessionSend(context.Background(), agentControlParams{SessionID: "dispatcher-projectless", Prompt: "callback"}); err != nil {
+		t.Fatal(err)
+	}
+	if turnStart["threadId"] != "dispatcher-projectless" || turnStart["cwd"] != rootHint {
+		t.Fatalf("turn/start params=%#v", turnStart)
+	}
+}
+
+func TestSessionCallbackNudgePrefersDesktopRegistryWhenThreadReadFails(t *testing.T) {
+	dataDir := t.TempDir()
+	manager := New(dataDir, nil)
+	defer manager.Close(context.Background())
+	rootHint := t.TempDir()
+	manager.codexStatePath = filepath.Join(dataDir, codexDesktopStateFilename)
+	state := fmt.Sprintf(`{"local-projects":{},"thread-project-assignments":{},"projectless-thread-ids":["dispatcher-projectless"],"thread-workspace-root-hints":{"dispatcher-projectless":%q}}`, rootHint)
+	if err := os.WriteFile(manager.codexStatePath, []byte(state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var turnStart map[string]any
+	manager.codex.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
+		switch method {
+		case "thread/read":
+			return nil, fmt.Errorf("invalid argument")
+		case "thread/resume":
+			return map[string]any{"thread": map[string]any{"id": params["threadId"]}}, nil
+		case "turn/start":
+			turnStart = params
+			return map[string]any{"turn": map[string]any{"id": "turn-callback"}}, nil
+		default:
+			return nil, fmt.Errorf("unexpected Codex request %s %#v", method, params)
+		}
+	}
+	if err := manager.callbackDispatcher.send(context.Background(), "dispatcher-projectless", "callback"); err != nil {
 		t.Fatal(err)
 	}
 	if turnStart["threadId"] != "dispatcher-projectless" || turnStart["cwd"] != rootHint {

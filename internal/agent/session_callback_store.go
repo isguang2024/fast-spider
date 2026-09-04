@@ -644,9 +644,9 @@ func (s *sessionCallbackStore) enqueue(event chatgptCloudEvent) (bool, error) {
 	if event.DeliverablePath != "" && registration.DeliverablePath != event.DeliverablePath {
 		return false, &sessionCallbackError{code: "INVALID_REQUEST", message: "callback deliverable path does not match the registered source"}
 	}
-	// Node is a fallback queue. It never copies local files or uploads result
-	// artifacts; it retains only bounded inline text when the registered type
-	// explicitly requests a text callback.
+	// Node is the durable wake queue for Hub-pushed completions and the recovery
+	// queue for missed Provider events. It never copies local files or uploads
+	// result artifacts; it retains only bounded inline text when requested.
 	event.CallbackType = registration.CallbackType
 	if event.CallbackOutcome == "" {
 		event.CallbackOutcome = "completed"

@@ -63,26 +63,11 @@
 
 ## 协作资料室
 
-复杂多角色任务直接复用现有 `working_context` 标准 Markdown Workspace，不增加第二套任务数据库或第二套文件初始化器。
+复杂多角色任务需要跨 AI 复用信息时，直接使用 `working_context` 的一段普通文本，不再初始化 Markdown Workspace、Plan、Task 或固定文件目录。
 
-每个任务使用独立：
+推荐文本只保留：目标、当前进度、关键决定、阻塞和下一步。主控先 `working_context get` 取得文本与 revision，合并必要事实后用 `working_context set(expectedRevision=...)` 更新；其他角色只返回结论和证据，由主控统一整理，避免多人争抢写入。
 
-- `planId`
-- `markdownRoot = .local/fast-spider/collaboration/<task-id>`
-- `initializeMarkdown = true`
-
-初始化后固定复用 Working Context 的标准六文件：
-
-- `00-current-state.md`：共享简报 + `Read Evidence`；记录已读文件路径、SHA-256、关键行和最小摘要。
-- `01-roadmap-0.4.md`：阶段计划与交接。
-- `02-decisions.md`：主控决策与裁决。
-- `03-acceptance-log.md`：测试、验收和验证证据。
-- `04-open-issues.md`：角色发现、风险和未决项。
-- `05-change-log.md`：变更与交接历史。
-
-`markdown.append` 是 CAS 写入：主控必须先 `markdown.read` 目标文件取得 `fileRevision`，再把该值作为 `expectedFileRevision` 写入；不得绕开 Working Context 的并发保护。多个角色视角先复用 `00-current-state.md` 中的共享简报和已读证据；已登记证据在 SHA-256 未变化时不重复读取。阶段切换前复核关键文件指纹；发生变化则重新读取并更新证据，不复用旧结论。
-
-主控是资料室唯一维护者。资料室不得保存源码全文、访问令牌、密码、私钥、支付凭证、完整个人信息或原始长日志。`.local/` 已由仓库忽略，协作资料不进入 Git。
+简单任务或当前会话已经记得住的内容不需要写资料室。文本不得保存源码全文、访问令牌、密码、私钥、支付凭证、完整个人信息、聊天全文或原始长日志。
 
 ## 选择原则
 

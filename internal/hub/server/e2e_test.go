@@ -123,7 +123,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	if initResult.ServerInfo.Title != "FastSpider_FS" {
 		t.Fatalf("server title=%q", initResult.ServerInfo.Title)
 	}
-	for _, needle := range []string{"@FastSpider_FS", "capability_list", "machine_list", "session.list"} {
+	for _, needle := range []string{"@FastSpider_FS", "capability_list", "machine_list", "codex_cloud_collaboration", "working_context"} {
 		if !strings.Contains(initResult.Instructions, needle) {
 			t.Fatalf("MCP instructions missing %q: %q", needle, initResult.Instructions)
 		}
@@ -198,7 +198,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		t.Fatalf("MCP tool %s grew beyond 8 KiB individual budget: %d", largestToolName, largestToolBytes)
 	}
 	sort.Strings(names)
-	want := []string{"ai_control", "artifact_get", "audit_log", "browser_control", "build_control", "capability_list", "code_search", "codex_cloud_collaboration", "codex_cloud_completion", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "operation_log", "result_get", "screenshot_take", "shell_run", "thinking_team", "working_context"}
+	want := []string{"ai_control", "artifact_get", "audit_log", "browser_control", "build_control", "capability_list", "code_search", "codex_cloud_collaboration", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "operation_log", "result_get", "screenshot_take", "shell_run", "thinking_team", "working_context"}
 	if stringJSON(names) != stringJSON(want) {
 		t.Fatalf("tools=%v want=%v", names, want)
 	}
@@ -227,8 +227,13 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 			t.Fatalf("file_edit schema missing %q: %s", field, fileEditSchema)
 		}
 	}
-	if !bytes.Contains(workingContextSchema, []byte("required for set and plan.init")) {
-		t.Fatalf("working_context goal schema does not describe plan.init requirement: %s", workingContextSchema)
+	for _, field := range []string{"action", "projectPath", "text", "expectedRevision"} {
+		if !bytes.Contains(workingContextSchema, []byte(`"`+field+`"`)) {
+			t.Fatalf("working_context schema missing %q: %s", field, workingContextSchema)
+		}
+	}
+	if bytes.Contains(workingContextSchema, []byte("plan.init")) || bytes.Contains(workingContextSchema, []byte("markdown.append")) {
+		t.Fatalf("working_context schema still exposes task-workspace actions: %s", workingContextSchema)
 	}
 	for _, field := range []string{"view", "name"} {
 		if !bytes.Contains(capabilityListSchema, []byte(`"`+field+`"`)) {
@@ -247,8 +252,8 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		t.Fatalf("ai_control description does not advertise ChatGPT CHAT creation: %q", aiControlDescription)
 	}
 	for _, needle := range []string{"desktopBridge", "Desktop owner/control bridge", "nativeConversationStreaming=unsupported"} {
-		if !strings.Contains(aiControlDescription, needle) {
-			t.Fatalf("ai_control description missing %q: %q", needle, aiControlDescription)
+		if !strings.Contains(initResult.Instructions, needle) {
+			t.Fatalf("MCP server instructions missing %q: %q", needle, initResult.Instructions)
 		}
 	}
 
@@ -263,7 +268,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(defaultGuideRaw, &defaultGuidePayload); err != nil {
 		t.Fatal(err)
 	}
-	if defaultGuide.IsError || !strings.Contains(string(defaultGuideRaw), `"capabilities"`) || !strings.Contains(string(defaultGuideRaw), `"view":"overview"`) || len(defaultGuidePayload.Guide.ToolSummaries) != 22 || len(defaultGuidePayload.CapabilitySummaries) == 0 {
+	if defaultGuide.IsError || !strings.Contains(string(defaultGuideRaw), `"capabilities"`) || !strings.Contains(string(defaultGuideRaw), `"view":"overview"`) || len(defaultGuidePayload.Guide.ToolSummaries) != 21 || len(defaultGuidePayload.CapabilitySummaries) == 0 {
 		t.Fatalf("default capability_list=%s", defaultGuideRaw)
 	}
 	if len(defaultGuide.Content) != 0 {
@@ -296,11 +301,6 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		if result := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "capability_list", arguments); !result.IsError {
 			t.Fatalf("invalid capability_list args=%v result=%+v", arguments, result)
 		}
-	}
-	if result := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "codex_cloud_completion", map[string]any{
-		"action": "ack", "actorSessionId": "bad actor", "claimId": "claim-1",
-	}); !result.IsError {
-		t.Fatalf("invalid codex_cloud_completion input was accepted: %+v", result)
 	}
 	compatClaim := coldMCPCall(t, ctx, httpServer.URL+"/mcp", mcpAccessToken, "codex_cloud_collaboration", map[string]any{
 		"action": "completion.claim", "params": map[string]any{"actorSessionId": "dispatcher-probe", "claimId": "claim-compat-probe", "limit": 1},
@@ -466,8 +466,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 
 	contextSet, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "working_context", Arguments: map[string]any{
 		"machineId": state.MachineID, "action": "set", "projectPath": root,
-		"goal": "keep a compact task snapshot", "completed": []string{"file read and edit verified"},
-		"constraints": []string{"do not store chat transcripts"}, "pending": []string{"finish e2e"}, "keyFiles": []string{"hello.txt"},
+		"text": "# Goal\nkeep a compact task snapshot\n\n## Progress\nfile read and edit verified\n\n## Next\nfinish e2e",
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -475,6 +474,14 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	raw, _ = json.Marshal(contextSet.StructuredContent)
 	if !strings.Contains(string(raw), "keep a compact task snapshot") || !strings.Contains(string(raw), `"exists":true`) {
 		t.Fatalf("working_context set=%s", raw)
+	}
+	var contextEnvelope struct {
+		Result struct {
+			Revision string `json:"revision"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &contextEnvelope); err != nil || contextEnvelope.Result.Revision == "" {
+		t.Fatalf("working_context set revision err=%v raw=%s", err, raw)
 	}
 	contextGet, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "working_context", Arguments: map[string]any{
 		"machineId": state.MachineID, "action": "get", "projectPath": root,
@@ -486,36 +493,18 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	if !strings.Contains(string(raw), "keep a compact task snapshot") || !strings.Contains(string(raw), `"currentGit"`) {
 		t.Fatalf("working_context get=%s", raw)
 	}
-	planInit, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "working_context", Arguments: map[string]any{
-		"machineId": state.MachineID, "action": "plan.init", "projectPath": root, "planId": "e2e-plan", "goal": "verify plan actions", "targetVersion": "0.4.1",
-		"tasks": []map[string]any{{"id": "FS-041-E2E", "title": "MCP plan flow", "status": "in_progress"}}, "initializeMarkdown": true,
+	contextUpdate, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "working_context", Arguments: map[string]any{
+		"machineId": state.MachineID, "action": "set", "projectPath": root, "expectedRevision": contextEnvelope.Result.Revision,
+		"text": "# Goal\nkeep a compact task snapshot\n\n## Progress\nE2E context flow complete",
 	}})
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || contextUpdate.IsError {
+		t.Fatalf("working_context CAS update err=%v result=%+v", err, contextUpdate)
 	}
-	raw, _ = json.Marshal(planInit.StructuredContent)
-	var planEnvelope struct {
-		Result struct {
-			Revision string `json:"revision"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(raw, &planEnvelope); err != nil || planEnvelope.Result.Revision == "" {
-		t.Fatalf("working_context plan.init err=%v raw=%s", err, raw)
-	}
-	planUpdate, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "working_context", Arguments: map[string]any{
-		"machineId": state.MachineID, "action": "task.update", "projectPath": root, "planId": "e2e-plan", "expectedRevision": planEnvelope.Result.Revision,
-		"taskId": "FS-041-E2E", "taskStatus": "done", "completion": 100, "evidence": map[string]any{"summary": "MCP task update passed", "kind": "e2e"},
+	removedPlan, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "working_context", Arguments: map[string]any{
+		"machineId": state.MachineID, "action": "plan.init", "projectPath": root,
 	}})
-	if err != nil || planUpdate.IsError {
-		t.Fatalf("working_context task.update err=%v result=%+v", err, planUpdate)
-	}
-	markdownList, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "working_context", Arguments: map[string]any{"machineId": state.MachineID, "action": "markdown.list", "projectPath": root, "planId": "e2e-plan"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, _ = json.Marshal(markdownList.StructuredContent)
-	if !strings.Contains(string(raw), "00-current-state.md") {
-		t.Fatalf("working_context markdown.list=%s", raw)
+	if err != nil || !removedPlan.IsError {
+		t.Fatalf("removed working_context plan action err=%v result=%+v", err, removedPlan)
 	}
 
 	buildResult, err := mcpSession.CallTool(ctx, &mcp.CallToolParams{Name: "build_control", Arguments: map[string]any{"machineId": state.MachineID, "action": "run", "argv": e2eEchoArgv(), "cwd": root, "timeoutSeconds": 10, "idempotencyKey": "idem_e2e_build_0001", "diagnostics": true}})

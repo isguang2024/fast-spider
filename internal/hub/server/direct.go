@@ -304,7 +304,7 @@ func isDirectAIRead(action string) bool {
 
 func isDirectContextRead(action string) bool {
 	switch strings.TrimSpace(action) {
-	case "get", "plan.get", "plan.list", "markdown.list", "markdown.read", "progress.watch":
+	case "get":
 		return true
 	default:
 		return false

@@ -38,6 +38,19 @@ func toolInput[T any](tool string, input any) (T, error) {
 	return value, nil
 }
 
+func validateCloudCollaborationParamKeys(params map[string]any, allowed ...string) error {
+	allowedSet := make(map[string]bool, len(allowed))
+	for _, key := range allowed {
+		allowedSet[key] = true
+	}
+	for key := range params {
+		if !allowedSet[key] {
+			return &toolRequestError{message: "unsupported cloud collaboration parameter " + key}
+		}
+	}
+	return nil
+}
+
 func executeTypedTool[T any](executor *toolExecutor, ctx context.Context, ownerID, tool string, input any) (T, error) {
 	var zero T
 	result, err := executor.Execute(ctx, ownerID, tool, input)
@@ -197,6 +210,23 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 		if err != nil {
 			return nil, err
 		}
+		action := strings.TrimSpace(input.Action)
+		var allowedParams []string
+		switch action {
+		case "dispatch":
+			allowedParams = []string{"machineId", "callbackSessionId", "workingDirectory", "prompt", "idempotencyKey", "targetSessionId", "accessMode", "writeScope", "deliverablePath", "callbackType"}
+		case "completion.notify":
+			allowedParams = []string{"collaborationId", "taskId", "actorSessionId", "sourceSessionId", "outcome", "callbackType", "text"}
+		case "completion.claim":
+			allowedParams = []string{"actorSessionId", "claimId", "limit"}
+		case "completion.ack":
+			allowedParams = []string{"actorSessionId", "claimId", "acknowledgements"}
+		default:
+			return nil, &toolRequestError{message: "action must be dispatch, completion.notify, completion.claim, or completion.ack"}
+		}
+		if err := validateCloudCollaborationParamKeys(input.Params, allowedParams...); err != nil {
+			return nil, err
+		}
 		rawParams, err := json.Marshal(input.Params)
 		if err != nil {
 			return nil, &toolRequestError{message: "params must be a JSON object"}
@@ -205,9 +235,9 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 		if err := json.Unmarshal(rawParams, &params); err != nil {
 			return nil, &toolRequestError{message: "invalid cloud collaboration params"}
 		}
-		if strings.HasPrefix(input.Action, "completion.") {
+		if strings.HasPrefix(action, "completion.") {
 			completionInput := cloudCompletionInput{
-				Action: strings.TrimPrefix(input.Action, "completion."), CollaborationID: params.CollaborationID, TaskID: params.TaskID,
+				Action: strings.TrimPrefix(action, "completion."), CollaborationID: params.CollaborationID, TaskID: params.TaskID,
 				ActorSessionID: params.ActorSessionID, SourceSessionID: params.SourceSessionID, Outcome: params.Outcome, CallbackType: params.CallbackType, Text: params.Text,
 				ClaimID: params.ClaimID, Limit: params.Limit, Acknowledgements: params.Acknowledgements,
 			}
@@ -231,46 +261,14 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 			}
 			return genericCapabilityOutput{Result: result}, nil
 		}
-		var deadline time.Time
-		if strings.TrimSpace(params.Deadline) != "" {
-			deadline, err = time.Parse(time.RFC3339, params.Deadline)
-			if err != nil {
-				return nil, &toolRequestError{message: "deadline must be RFC3339"}
-			}
+		if strings.TrimSpace(params.MachineID) == "" || strings.TrimSpace(params.CallbackSessionID) == "" || strings.TrimSpace(params.WorkingDirectory) == "" || strings.TrimSpace(params.Prompt) == "" || len(params.IdempotencyKey) < 12 || len(params.IdempotencyKey) > 128 {
+			return nil, &toolRequestError{message: "dispatch requires machineId, callbackSessionId, workingDirectory, prompt, and a 12-128 character idempotencyKey"}
 		}
 		result, err := e.service.CloudCollaboration(ctx, ownerID, core.CloudCollaborationRequest{
-			Action: input.Action, CollaborationID: params.CollaborationID, ExpectedRevision: params.ExpectedRevision, ActorSessionID: params.ActorSessionID, ActorRole: params.ActorRole,
-			MachineID: params.MachineID, IdempotencyKey: params.IdempotencyKey, RequestHash: params.RequestHash, ControllerSessionID: params.ControllerSessionID, DispatcherSessionID: params.DispatcherSessionID,
-			Title: params.Title, Goal: params.Goal, Scope: params.Scope, DoneWhen: params.DoneWhen, WorkingDirectory: params.WorkingDirectory, AllowedActions: params.AllowedActions,
-			MaxDepth: params.MaxDepth, MaxActiveChats: params.MaxActiveChats, MaxCreates: params.MaxCreates, HeartbeatMinutes: params.HeartbeatMinutes, StallMinutes: params.StallMinutes, Deadline: deadline,
-			GoalID: params.GoalID, GoalStatus: params.GoalStatus, TaskID: params.TaskID, TaskStatus: params.TaskStatus, ParentSessionID: params.ParentSessionID, TargetSessionID: params.TargetSessionID, Prompt: params.Prompt, AccessMode: params.AccessMode, WriteScope: params.WriteScope,
-			DeliverablePath: params.DeliverablePath, CallbackType: params.CallbackType, EventID: params.EventID, EventSequence: params.EventSequence, EventType: params.EventType, EventGeneration: params.EventGeneration, ResultID: params.ResultID, ResultStatus: params.ResultStatus, ResultBytes: params.ResultBytes, ResultSHA256: params.ResultSHA256, DeliverableStatus: params.DeliverableStatus,
-			DecisionID: params.DecisionID, DecisionStatus: params.DecisionStatus, Question: params.Question, Options: params.Options, Recommendation: params.Recommendation, Checkpoint: params.Checkpoint, InactiveVerified: params.InactiveVerified, Limit: params.Limit,
-		})
-		if err != nil {
-			return nil, err
-		}
-		return genericCapabilityOutput{Result: result}, nil
-
-	case "codex_cloud_completion":
-		input, err := toolInput[cloudCompletionInput](tool, rawInput)
-		if err != nil {
-			return nil, err
-		}
-		if err := validateCloudCompletionToolInput(input); err != nil {
-			return nil, err
-		}
-		acknowledgements := make([]core.CloudCompletionAckItem, 0, len(input.Acknowledgements))
-		for _, item := range input.Acknowledgements {
-			acknowledgements = append(acknowledgements, core.CloudCompletionAckItem{
-				NotificationID: item.NotificationID, ResultID: item.ResultID, ResultStatus: item.ResultStatus,
-				ResultBytes: item.ResultBytes, ResultSHA256: item.ResultSHA256, DeliverableStatus: item.DeliverableStatus,
-			})
-		}
-		result, err := e.service.CloudCompletion(ctx, ownerID, core.CloudCompletionRequest{
-			Action: input.Action, CollaborationID: input.CollaborationID, TaskID: input.TaskID,
-			ActorSessionID: input.ActorSessionID, SourceSessionID: input.SourceSessionID, Outcome: input.Outcome, CallbackType: input.CallbackType, Text: input.Text,
-			ClaimID: input.ClaimID, Limit: input.Limit, Acknowledgements: acknowledgements,
+			Action: "dispatch", MachineID: params.MachineID, CallbackSessionID: params.CallbackSessionID,
+			WorkingDirectory: params.WorkingDirectory, Prompt: params.Prompt, IdempotencyKey: params.IdempotencyKey,
+			TargetSessionID: params.TargetSessionID, AccessMode: params.AccessMode, WriteScope: params.WriteScope,
+			DeliverablePath: params.DeliverablePath, CallbackType: params.CallbackType,
 		})
 		if err != nil {
 			return nil, err
@@ -471,8 +469,8 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 		if input.Action == "session.create" && (len(input.IdempotencyKey) < 12 || len(input.IdempotencyKey) > 128) {
 			return nil, &toolRequestError{message: "idempotencyKey is required for session.create and must be 12 to 128 characters"}
 		}
-		if input.Action == "session.callback.register" || input.Action == "session.callback.arm" {
-			return nil, &core.CapabilityCallError{Code: "CALLBACK_ROUTE_MANAGED_ONLY", Message: "callback routes are created and armed by codex_cloud_collaboration; use session.callback.list/claim/ack only for fallback recovery", Retryable: false}
+		if input.Action == "session.callback.register" || input.Action == "session.callback.arm" || input.Action == "session.callback.enqueue" {
+			return nil, &core.CapabilityCallError{Code: "CALLBACK_ROUTE_MANAGED_ONLY", Message: "callback routes and active delivery are managed by codex_cloud_collaboration; use session.callback.list/claim/ack only for fallback recovery", Retryable: false}
 		}
 		callbackClaimID := input.CallbackClaimID
 		if callbackClaimID == "" && (input.Action == "session.callback.claim" || input.Action == "session.callback.ack") {
@@ -526,18 +524,7 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 		if err != nil {
 			return nil, err
 		}
-		params := map[string]any{
-			"projectPath": input.ProjectPath, "goal": input.Goal,
-			"planId": input.PlanID, "expectedRevision": input.ExpectedRevision, "title": input.Title,
-			"targetVersion": input.TargetVersion, "markdownRoot": input.MarkdownRoot, "initializeMarkdown": input.InitializeMarkdown,
-			"baselineBranch": input.BaselineBranch, "baselineCommit": input.BaselineCommit,
-			"completed": input.Completed, "constraints": input.Constraints, "pending": input.Pending,
-			"keyFiles": input.KeyFiles, "facts": input.Facts,
-			"tasks": input.Tasks, "taskId": input.TaskID, "taskTitle": input.TaskTitle, "taskStatus": input.TaskStatus,
-			"blockedReason": input.BlockedReason, "completion": input.Completion, "evidence": input.Evidence,
-			"markdownPath": input.MarkdownPath, "content": input.Content, "managedBlock": input.ManagedBlock,
-			"expectedFileRevision": input.ExpectedFileRevision, "sinceRevision": input.SinceRevision, "waitSeconds": input.WaitSeconds,
-		}
+		params := map[string]any{"projectPath": input.ProjectPath, "text": input.Text, "expectedRevision": input.ExpectedRevision}
 		result, err := e.service.CallCapability(ctx, ownerID, input.MachineID, "working.context", input.Action, params)
 		if err != nil {
 			return nil, err

@@ -2,11 +2,13 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWorkingContextSetGetClearAndLiveGitFacts(t *testing.T) {
@@ -32,27 +34,13 @@ func TestWorkingContextSetGetClearAndLiveGitFacts(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	set, err := client.workingContextControl(ctx, "set", map[string]any{
-		"projectPath": root,
-		"goal":        "实现轻量 Working Context",
-		"completed":   []string{"Presentation Relay 已完成"},
-		"constraints": []string{"不保存聊天原文", "Git/文件是最终事实源"},
-		"pending":     []string{"大图自动压缩"},
-		"keyFiles":    []string{"app.txt"},
-		"facts":       []string{"公开仓库需要 clean export/squash history"},
-	})
+	text := "# 目标\n实现轻量项目上下文\n\n## 进度\n- 正在修改 API\n\n## 下一步\n- 运行测试"
+	set, err := client.workingContextControl(ctx, "set", map[string]any{"projectPath": root, "text": text})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !set.Exists || set.State == nil || set.Revision == "" || !set.CurrentGit.IsRepository || set.CurrentGit.Head == "" {
+	if !set.Exists || set.State == nil || set.State.Text != text || set.Revision == "" || !set.CurrentGit.IsRepository || set.CurrentGit.Head == "" {
 		t.Fatalf("set result=%+v", set)
-	}
-	baselineHead := set.CurrentGit.Head
-	if set.State.Baseline.Commit != baselineHead || set.State.Baseline.Branch != set.CurrentGit.Branch {
-		t.Fatalf("baseline=%+v currentGit=%+v", set.State.Baseline, set.CurrentGit)
-	}
-	if len(set.State.KeyFiles) != 1 || set.State.KeyFiles[0] != "app.txt" {
-		t.Fatalf("keyFiles=%v", set.State.KeyFiles)
 	}
 	if pathWithin(root, client.workingContextPath(root)) {
 		t.Fatal("working context was stored inside the project")
@@ -65,36 +53,29 @@ func TestWorkingContextSetGetClearAndLiveGitFacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !get.Exists || get.State == nil || !get.CurrentGit.Dirty {
+	if !get.Exists || get.State == nil || get.State.Text != text || !get.CurrentGit.Dirty {
 		t.Fatalf("get result=%+v", get)
 	}
-	if get.State.Baseline.Commit != baselineHead {
-		t.Fatalf("saved baseline changed: %q want %q", get.State.Baseline.Commit, baselineHead)
+	if _, err := client.workingContextControl(ctx, "set", map[string]any{"projectPath": root, "text": "stale", "expectedRevision": "sha256:stale"}); err != ErrRevisionConflict {
+		t.Fatalf("stale set error=%v", err)
 	}
 
-	cleared, err := client.workingContextControl(ctx, "clear", map[string]any{"projectPath": root})
+	updated, err := client.workingContextControl(ctx, "set", map[string]any{"projectPath": root, "text": "已完成", "expectedRevision": get.Revision})
+	if err != nil || updated.State == nil || updated.State.Text != "已完成" {
+		t.Fatalf("updated=%+v err=%v", updated, err)
+	}
+	cleared, err := client.workingContextControl(ctx, "clear", map[string]any{"projectPath": root, "expectedRevision": updated.Revision})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !cleared.Cleared || cleared.Exists {
 		t.Fatalf("clear result=%+v", cleared)
 	}
-	empty, err := client.workingContextControl(ctx, "get", map[string]any{"projectPath": root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if empty.Exists || !empty.CurrentGit.Dirty {
-		t.Fatalf("empty result=%+v", empty)
-	}
 }
 
-func TestWorkingContextBoundsAndProjectBoundary(t *testing.T) {
+func TestWorkingContextBoundsAndOnlySimpleActions(t *testing.T) {
 	project := filepath.Join(t.TempDir(), "project")
-	outside := filepath.Join(t.TempDir(), "outside.txt")
 	if err := os.MkdirAll(project, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(outside, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	client, err := New(Config{DataDir: filepath.Join(t.TempDir(), "node"), Version: "test"})
@@ -102,21 +83,54 @@ func TestWorkingContextBoundsAndProjectBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := client.workingContextControl(context.Background(), "set", map[string]any{"projectPath": project}); err == nil {
-		t.Fatal("set without goal was accepted")
+		t.Fatal("set without text was accepted")
 	}
-	items := make([]string, maxWorkingContextItems+1)
-	for index := range items {
-		items[index] = "item"
+	if _, err := client.workingContextControl(context.Background(), "set", map[string]any{"projectPath": project, "text": strings.Repeat("x", maxWorkingContextTextBytes+1)}); err == nil {
+		t.Fatal("oversized text was accepted")
 	}
-	if _, err := client.workingContextControl(context.Background(), "set", map[string]any{
-		"projectPath": project, "goal": "test", "completed": items,
-	}); err == nil {
-		t.Fatal("oversized item list was accepted")
+	if _, err := client.workingContextControl(context.Background(), "plan.init", map[string]any{"projectPath": project, "text": "legacy"}); err == nil {
+		t.Fatal("legacy plan action was accepted")
 	}
-	if _, err := client.workingContextControl(context.Background(), "set", map[string]any{
-		"projectPath": project, "goal": "test", "keyFiles": []string{outside},
-	}); err == nil || !strings.Contains(err.Error(), "outside projectPath") {
-		t.Fatalf("outside key file error=%v", err)
+}
+
+func TestWorkingContextReadsLegacyStateAsText(t *testing.T) {
+	project := filepath.Join(t.TempDir(), "project")
+	dataDir := filepath.Join(t.TempDir(), "node")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(Config{DataDir: dataDir, Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedProject, err := resolveWorkingContextProject(project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := map[string]any{
+		"schemaVersion": 2,
+		"projectPath":   resolvedProject,
+		"planId":        "default",
+		"goal":          "完成旧任务",
+		"completed":     []string{"接口已完成"},
+		"pending":       []string{"运行测试"},
+		"updatedAt":     time.Now().UTC(),
+	}
+	raw, _ := json.MarshalIndent(legacy, "", "  ")
+	raw = append(raw, '\n')
+	path := client.workingContextPath(resolvedProject)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.workingContextControl(context.Background(), "get", map[string]any{"projectPath": project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.State == nil || !strings.Contains(result.State.Text, "完成旧任务") || !strings.Contains(result.State.Text, "运行测试") {
+		t.Fatalf("legacy result=%+v", result)
 	}
 }
 

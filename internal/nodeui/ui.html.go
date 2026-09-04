@@ -28,7 +28,7 @@ const localUIHTML = `<!doctype html>
     <div class="layout">
       <nav class="nav" aria-label="本地设置">
         <button class="active" data-tab="connect">设备</button>
-        <button data-tab="working">任务与进度</button>
+			<button data-tab="working">项目上下文</button>
 		<button data-tab="ai">AI 与路由</button>
 		<button data-tab="diagnostics">诊断</button>
 		<button data-tab="components">组件</button>
@@ -74,54 +74,21 @@ const localUIHTML = `<!doctype html>
           </div>
         </section>
 
-        <section id="tab-working" class="section">
-          <div class="panel">
-            <h2>任务与进度</h2>
-            <p class="copy">绑定项目内的结构化 Plan 与 Markdown Workspace。这里直接使用 Node Working Context，不创建额外任务状态。</p>
-            <div class="grid">
-              <label class="field full"><span>当前项目</span><input id="working-project" maxlength="4096" placeholder="项目绝对路径"></label>
-              <label class="field"><span>planId</span><input id="working-plan" maxlength="128" value="default"></label>
-              <label class="field"><span>目标版本</span><input id="working-target" maxlength="128" placeholder="例如 0.4.1"></label>
-            </div>
-            <div class="actions"><button id="working-init" class="primary" type="button">初始化 / 绑定 docs/progress</button><button id="working-refresh" class="secondary" type="button">刷新</button><button id="working-sync" class="secondary" type="button" disabled>同步受管区块</button><button id="working-open" class="secondary" type="button" disabled>打开 Markdown 文件夹</button></div>
-            <div class="facts">
-              <div class="fact"><span>项目 / Plan</span><strong id="working-binding">未绑定</strong></div>
-              <div class="fact"><span>目标版本</span><strong id="working-version">—</strong></div>
-              <div class="fact"><span>Git</span><strong id="working-git">—</strong></div>
-              <div class="fact"><span>总完成度</span><strong id="working-completion">—</strong><div class="progress-track"><div id="working-progress" class="progress-fill"></div></div></div>
-              <div class="fact"><span>Markdown Workspace</span><strong id="working-workspace">未初始化</strong></div>
-              <div class="fact"><span>Working Context revision</span><strong id="working-revision" class="mono">—</strong></div>
-            </div>
-	          </div>
+	        <section id="tab-working" class="section">
 	          <div class="panel">
-            <div class="split">
-              <div><h3 class="subhead">当前任务</h3><div id="working-current-tasks" class="task-list"><span class="empty">暂无</span></div></div>
-              <div><h3 class="subhead">阻塞任务</h3><div id="working-blocked-tasks" class="task-list"><span class="empty">暂无</span></div></div>
-            </div>
-          </div>
-          <div class="panel">
-            <h2>更新任务</h2>
-            <p class="copy">更新使用当前 revision；若内容已经变化，会要求刷新后重试。</p>
-            <div class="grid">
-              <label class="field full"><span>任务</span><select id="working-task"><option value="">暂无任务</option></select></label>
-              <label class="field"><span>状态</span><select id="working-task-status"><option value="pending">待处理</option><option value="in_progress">进行中</option><option value="blocked">阻塞</option><option value="done">完成</option></select></label>
-              <label class="field"><span>完成度（0–100）</span><input id="working-task-completion" type="number" min="0" max="100" value="0"></label>
-            </div>
-            <div class="actions"><button id="working-task-save" class="primary" type="button" disabled>保存任务状态</button></div>
-            <div class="grid" style="margin-top:18px">
-              <label class="field full"><span>验收证据摘要</span><input id="working-evidence-summary" maxlength="2048" placeholder="简短、可验证的验收结果"></label>
-              <label class="field"><span>类型</span><input id="working-evidence-kind" maxlength="128" placeholder="test / review"></label>
-              <label class="field"><span>引用</span><input id="working-evidence-reference" maxlength="2048" placeholder="测试命令、相对文件或工单"></label>
-            </div>
-            <div class="actions"><button id="working-evidence-add" class="secondary" type="button" disabled>添加验收证据</button></div>
-            <h3 class="subhead" style="margin-top:20px">最近验收证据</h3><div id="working-evidences" class="task-list"><span class="empty">暂无</span></div>
-          </div>
-          <div class="panel">
-            <h2>Markdown Workspace</h2>
-            <p class="copy">只读查看已绑定项目 MarkdownRoot 内的普通 .md 文件。</p>
-            <div class="workspace"><div id="working-files" class="file-list"><span class="empty">请先刷新</span></div><pre id="working-markdown" class="markdown-view">选择一个 Markdown 文件查看内容。</pre></div>
-          </div>
-        </section>
+	            <h2>项目上下文</h2>
+	            <p class="copy">每个项目只保存一段普通文本。目标、进度、阻塞和下一步由 AI 自行组织，不建立额外的 Plan、Task 或 Markdown 资料树。</p>
+	            <label class="field"><span>当前项目</span><input id="working-project" maxlength="4096" placeholder="项目绝对路径"></label>
+	            <label class="field" style="margin-top:16px"><span>上下文文本</span><textarea id="working-text" maxlength="65536" rows="18" placeholder="# 目标&#10;...&#10;&#10;## 当前进度&#10;...&#10;&#10;## 下一步&#10;..."></textarea></label>
+	            <div class="actions"><button id="working-save" class="primary" type="button">保存</button><button id="working-refresh" class="secondary" type="button">刷新</button></div>
+	            <div class="facts">
+	              <div class="fact"><span>状态</span><strong id="working-binding">未保存</strong></div>
+	              <div class="fact"><span>Git</span><strong id="working-git">—</strong></div>
+	              <div class="fact"><span>更新时间</span><strong id="working-updated">—</strong></div>
+	              <div class="fact"><span>Revision</span><strong id="working-revision" class="mono">—</strong></div>
+	            </div>
+	          </div>
+	        </section>
 
 		<section id="tab-ai" class="section">
 		  <div class="panel">
@@ -156,8 +123,8 @@ const localUIHTML = `<!doctype html>
 
 		<section id="tab-diagnostics" class="section">
 		  <div class="panel">
-			<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap"><div><h2>诊断中心</h2><p class="copy">汇总本机 Node、Hub、Agent、任务工作区和本地能力的脱敏只读状态，不读取日志原文或敏感配置。</p></div><button id="diagnostics-refresh" class="secondary" type="button">刷新诊断</button></div>
-			<div class="notice">刷新只执行本地 discovery、plan.get 与 markdown.list，不会创建会话、发送 Prompt 或运行真实模型健康测试。</div>
+				<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:14px;flex-wrap:wrap"><div><h2>诊断中心</h2><p class="copy">汇总本机 Node、Hub、Agent、项目上下文和本地能力的脱敏只读状态，不读取日志原文或敏感配置。</p></div><button id="diagnostics-refresh" class="secondary" type="button">刷新诊断</button></div>
+				<div class="notice">刷新只执行本地 discovery 与 working.context get，不会创建会话、发送 Prompt 或运行真实模型健康测试。</div>
 		  </div>
 		  <div class="split">
 			<div class="panel"><h2>Node / 客户端</h2><div id="diagnostics-node" class="data-list"><span class="empty">切换到本页后读取</span></div></div>
@@ -169,7 +136,7 @@ const localUIHTML = `<!doctype html>
 			<h3 class="subhead" style="margin-top:20px">CC Switch</h3><div id="diagnostics-ccswitch" class="data-list"><span class="empty">待刷新</span></div>
 		  </div>
 		  <div class="split">
-			<div class="panel"><h2>Working Context / Task Workspace</h2><div id="diagnostics-workspace" class="data-list"><span class="empty">待刷新</span></div></div>
+				<div class="panel"><h2>项目上下文</h2><div id="diagnostics-workspace" class="data-list"><span class="empty">待刷新</span></div></div>
 			<div class="panel"><h2>本地能力</h2><div id="diagnostics-local" class="data-list"><span class="empty">待刷新</span></div></div>
 		  </div>
 		  <div class="panel"><h2>最近诊断错误</h2><div id="diagnostics-errors" class="data-list"><span class="empty">暂无公开错误</span></div></div>
@@ -345,10 +312,9 @@ const localUIHTML = `<!doctype html>
 				  setSelectValueWithFallback($('config-chatgpt-thinking'),cfg.chatgptDefaultThinking || '','已保存思考程度');
 				}
 		    }
-    if (!workingDirty) {
-      $('working-project').value = cfg.workingProjectPath || '';
-      $('working-plan').value = cfg.workingPlanId || 'default';
-    }
+	    if (!workingDirty) {
+	      $('working-project').value = cfg.workingProjectPath || '';
+	    }
     $('config-autostart').disabled = !status.autoStartSupported;
     renderUpdate(status.update || {});
   }
@@ -374,17 +340,12 @@ const localUIHTML = `<!doctype html>
     try { renderStatus(await api('/api/status')); } catch (e) { message(e.message, true); }
   }
 
-  function workingArgs(action, extra = {}) {
-    return Object.assign({action:action,projectPath:$('working-project').value.trim(),planId:$('working-plan').value.trim()}, extra);
-  }
+	  function workingArgs(action, extra = {}) {
+	    return Object.assign({action:action,projectPath:$('working-project').value.trim()}, extra);
+	  }
 
   async function workingCall(action, extra = {}) {
     return api('/api/working',{method:'POST',body:JSON.stringify(workingArgs(action,extra))});
-  }
-
-  function taskRows(tasks, emptyText) {
-    if (!tasks.length) return '<span class="empty">' + emptyText + '</span>';
-    return tasks.map(task => '<div class="task-row"><strong>' + escapeText(task.id + ' · ' + task.title) + '</strong><small>' + escapeText(task.status + ' · ' + task.completion + '%' + (task.blockedReason ? ' · ' + task.blockedReason : '')) + '</small></div>').join('');
   }
 
   function escapeText(value) {
@@ -514,7 +475,7 @@ const localUIHTML = `<!doctype html>
 	  renderData('diagnostics-hub',[['已配置',boolText(hub.configured)],['Hub host',hub.host || '—'],['连接状态',hub.connectionStatus || 'unknown'],['最近状态',hub.lastKnownStatus || 'unknown']]);
 	  renderData('diagnostics-codex',diagnosticRuntimeRows(agent.codex,false)); renderData('diagnostics-claude',diagnosticRuntimeRows(agent.claudeCode,true));
 	  renderData('diagnostics-ccswitch',[['DB detected',boolText(cc.dbDetected)],['Schema supported',boolText(cc.schemaSupported)],['Schema fingerprint',cc.schemaFingerprint || '—'],['Current route',cc.currentRoute || 'unknown'],['Selection consistent',boolText(cc.selectionConsistent)],['错误',cc.errorClass ? cc.errorClass+' · '+(cc.errorMessage || '') : '无公开错误']]);
-	  renderData('diagnostics-workspace',[['绑定',boolText(workspace.bound)],['项目摘要',workspace.projectStatus || 'not_bound'],['Plan',workspace.planId || '—'],['可读',boolText(workspace.readable)],['计划存在',boolText(workspace.exists)],['Revision',workspace.revision || '—'],['Markdown 文件',String(workspace.markdownFiles || 0)]]);
+		  renderData('diagnostics-workspace',[['绑定',boolText(workspace.bound)],['项目摘要',workspace.projectStatus || 'not_bound'],['可读',boolText(workspace.readable)],['上下文存在',boolText(workspace.exists)],['Revision',workspace.revision || '—']]);
 	  renderData('diagnostics-local',[['Local Bridge configured',boolText(local.localBridgeConfigured)],['Browser configured',boolText(local.browserConfigured)],['Browser present',boolText(local.browserPresent)],['Browser ready',boolText(local.browserReady)],['Browser readiness',String(local.browserReasonCode || 'unknown')+' · '+String(local.browserReadinessMs || 0)+'ms'],['WSL runtime',boolText(local.wslAvailable)],['Component root present',boolText(local.componentRootPresent)],['Tray supported',boolText(local.traySupported)],['Tray active',boolText(local.trayActive)]]);
 	  renderData('diagnostics-errors',(data.errors || []).map(item=>[item.area || 'diagnostic',(item.errorClass || 'unknown')+' · '+(item.publicMessage || '诊断失败')]));
 	  const summary=data.summary || {}; $('diagnostics-summary').textContent=['Node: '+(summary.node || '—'),'Hub: '+(summary.hub || '—'),'Agent: '+(summary.agent || '—'),'Workspace: '+(summary.workspace || '—'),'Local: '+(summary.local || '—')].join('\n');
@@ -555,65 +516,26 @@ const localUIHTML = `<!doctype html>
 	  finally { selfTestBusy=false; $('search-file-self-test').disabled=false; }
 	}
 
-  function renderWorking(result, markdown) {
-    workingState = result.state || null;
-    workingRevision = result.revision || '';
-    const state = workingState || {};
-    const tasks = Array.isArray(state.tasks) ? state.tasks : [];
-    const currentTasks = tasks.filter(task => task.status === 'in_progress' || task.status === 'pending');
-    const blockedTasks = tasks.filter(task => task.status === 'blocked');
-    const completion = tasks.length ? Math.round(tasks.reduce((sum,task) => sum + Number(task.completion || 0),0) / tasks.length) : 0;
-    const git = result.currentGit || {};
-    $('working-binding').textContent = result.exists ? (state.planId || 'default') + ' · ' + (state.projectPath || $('working-project').value) : '未初始化';
-    $('working-version').textContent = state.targetVersion || '—';
-    $('working-git').textContent = git.isRepository ? ((git.branch || 'detached') + ' · ' + (git.head || '—').slice(0,12) + (git.dirty ? ' · dirty' : ' · clean')) : '非 Git 仓库';
-    $('working-completion').textContent = completion + '%';
-    $('working-progress').style.width = completion + '%';
-    $('working-revision').textContent = workingRevision || '—';
-    $('working-current-tasks').innerHTML = taskRows(currentTasks,'当前没有待处理任务');
-    $('working-blocked-tasks').innerHTML = taskRows(blockedTasks,'当前没有阻塞任务');
-    const select = $('working-task');
-    const selected = select.value;
-    select.textContent='';
-    if(tasks.length){tasks.forEach(task=>{const option=document.createElement('option');option.value=task.id;option.textContent=task.id+' · '+task.title;select.appendChild(option);});}
-    else{const option=document.createElement('option');option.value='';option.textContent='暂无任务';select.appendChild(option);}
-    if (tasks.some(task => task.id === selected)) select.value=selected;
-    const active = tasks.find(task => task.id === select.value);
-    if (active) { $('working-task-status').value=active.status; $('working-task-completion').value=active.completion; }
-    $('working-task-save').disabled = !result.exists || !tasks.length;
-    $('working-evidence-add').disabled = !result.exists || !tasks.length;
-    $('working-sync').disabled = !result.exists;
-    $('working-open').disabled = !result.exists;
-    const evidences=[];
-    tasks.forEach(task => (task.evidences || []).forEach(item => evidences.push(Object.assign({taskId:task.id},item))));
-    evidences.sort((a,b) => String(b.acceptedAt || '').localeCompare(String(a.acceptedAt || '')));
-    $('working-evidences').innerHTML = evidences.length ? evidences.slice(0,8).map(item => '<div class="task-row"><strong>' + escapeText(item.taskId + ' · ' + item.summary) + '</strong><small>' + escapeText((item.kind || 'evidence') + (item.reference ? ' · ' + item.reference : '')) + '</small></div>').join('') : '<span class="empty">暂无验收证据</span>';
-    renderWorkingFiles(markdown || []);
-  }
+	  function renderWorking(result) {
+	    workingState = result.state || null;
+	    workingRevision = result.revision || '';
+	    const state = workingState || {};
+	    const git = result.currentGit || {};
+	    $('working-binding').textContent = result.exists ? '已保存' : '未保存';
+	    $('working-git').textContent = git.isRepository ? ((git.branch || 'detached') + ' · ' + (git.head || '—').slice(0,12) + (git.dirty ? ' · dirty' : ' · clean')) : '非 Git 仓库';
+	    $('working-updated').textContent = state.updatedAt || '—';
+	    $('working-revision').textContent = workingRevision || '—';
+	    if (!workingDirty || document.activeElement !== $('working-text')) $('working-text').value = state.text || '';
+	  }
 
-  function renderWorkingFiles(files) {
-    $('working-workspace').textContent = files.length ? ('正常 · ' + files.length + ' 个文件') : '未初始化或为空';
-    const box=$('working-files'); box.textContent='';
-    if (!files.length) { box.innerHTML='<span class="empty">暂无 Markdown 文件</span>'; return; }
-    files.forEach(file => { const button=document.createElement('button'); button.type='button'; button.className='secondary'; button.textContent=file.path + ' · ' + file.size + ' B'; button.addEventListener('click',() => readWorkingMarkdown(file.path)); box.appendChild(button); });
-  }
-
-  async function refreshWorking() {
-    if (workingBusy || !$('working-project').value.trim() || !$('working-plan').value.trim()) return;
-    workingBusy=true;
-    try {
-      const result=await workingCall('plan.get');
-      let files=[];
-      if (result.exists) { const listed=await workingCall('markdown.list'); files=listed.markdown || []; }
-      workingDirty=false; renderWorking(result,files); message(result.exists ? '任务与进度已刷新。' : '尚未初始化该计划。');
-    } catch(e) { message(e.message,true); } finally { workingBusy=false; }
-  }
-
-  async function readWorkingMarkdown(path) {
-    if (workingBusy) return; workingBusy=true;
-    try { const result=await workingCall('markdown.read',{markdownPath:path}); $('working-markdown').textContent=result.content || ''; }
-    catch(e){message(e.message,true);} finally{workingBusy=false;}
-  }
+	  async function refreshWorking() {
+	    if (workingBusy || !$('working-project').value.trim()) return;
+	    workingBusy=true;
+	    try {
+	      const result=await workingCall('get');
+	      workingDirty=false; renderWorking(result); message(result.exists ? '项目上下文已刷新。' : '该项目尚未保存上下文。');
+	    } catch(e) { message(e.message,true); } finally { workingBusy=false; }
+	  }
 
   document.querySelectorAll('.nav button').forEach(button => button.addEventListener('click', () => {
     document.querySelectorAll('.nav button').forEach(x => x.classList.toggle('active', x === button));
@@ -629,36 +551,14 @@ const localUIHTML = `<!doctype html>
 		$('components-refresh').addEventListener('click',refreshComponents);
 	$('search-file-self-test').addEventListener('click',runSearchFileSelfTest);
 
-  $('working-project').addEventListener('input',()=>{workingDirty=true;});
-  $('working-plan').addEventListener('input',()=>{workingDirty=true;});
-  $('working-target').addEventListener('input',()=>{workingDirty=true;});
-  $('working-init').addEventListener('click',async()=>{
-    if(workingBusy)return; workingBusy=true;
-    try { const result=await workingCall('plan.init',{targetVersion:$('working-target').value.trim()}); const listed=await workingCall('markdown.list'); workingDirty=false; renderWorking(result,listed.markdown || []); message('项目计划已绑定，docs/progress 已验证或初始化。'); }
-    catch(e){message(e.message,true);} finally{workingBusy=false;}
-  });
-  $('working-refresh').addEventListener('click',refreshWorking);
-  $('working-task').addEventListener('change',()=>{ const task=(workingState && workingState.tasks || []).find(item=>item.id===$('working-task').value); if(task){$('working-task-status').value=task.status;$('working-task-completion').value=task.completion;} });
-  $('working-task-save').addEventListener('click',async()=>{
-    if(workingBusy)return; workingBusy=true;
-    try { const result=await workingCall('task.update',{expectedRevision:workingRevision,taskId:$('working-task').value,taskStatus:$('working-task-status').value,completion:Number($('working-task-completion').value)}); const listed=await workingCall('markdown.list'); renderWorking(result,listed.markdown || []); message('任务状态已更新。'); }
-    catch(e){message(e.message,true);} finally{workingBusy=false;}
-  });
-  $('working-evidence-add').addEventListener('click',async()=>{
-    const summary=$('working-evidence-summary').value.trim(); if(!summary){message('请填写验收证据摘要。',true);return;} if(workingBusy)return; workingBusy=true;
-    try { const result=await workingCall('task.update',{expectedRevision:workingRevision,taskId:$('working-task').value,evidence:{summary:summary,kind:$('working-evidence-kind').value.trim(),reference:$('working-evidence-reference').value.trim()}}); const listed=await workingCall('markdown.list'); renderWorking(result,listed.markdown || []); $('working-evidence-summary').value=''; $('working-evidence-kind').value=''; $('working-evidence-reference').value=''; message('验收证据已添加。'); }
-    catch(e){message(e.message,true);} finally{workingBusy=false;}
-  });
-  $('working-sync').addEventListener('click',async()=>{
-    if(workingBusy)return; workingBusy=true;
-    try { await workingCall('plan.sync',{expectedRevision:workingRevision}); const result=await workingCall('plan.get'); const listed=await workingCall('markdown.list'); renderWorking(result,listed.markdown || []); message('受管区块已同步，Manual 内容保持不变。'); }
-    catch(e){message(e.message,true);} finally{workingBusy=false;}
-  });
-  $('working-open').addEventListener('click',async()=>{
-    if(workingBusy)return; workingBusy=true;
-    try { await api('/api/working',{method:'POST',body:JSON.stringify({action:'folder.open'})}); message('已打开 Markdown 文件夹。'); }
-    catch(e){message(e.message,true);} finally{workingBusy=false;}
-  });
+	  $('working-project').addEventListener('input',()=>{workingDirty=true;});
+	  $('working-text').addEventListener('input',()=>{workingDirty=true;});
+	  $('working-save').addEventListener('click',async()=>{
+	    const text=$('working-text').value.trim(); if(!text){message('请填写项目上下文。',true);return;} if(workingBusy)return; workingBusy=true;
+	    try { const result=await workingCall('set',{text:text,expectedRevision:workingRevision}); workingDirty=false; renderWorking(result); message('项目上下文已保存。'); }
+	    catch(e){message(e.message,true);} finally{workingBusy=false;}
+	  });
+	  $('working-refresh').addEventListener('click',refreshWorking);
 
   $('toggle-token').addEventListener('click', () => {
     const input = $('connect-token'); input.type = input.type === 'password' ? 'text' : 'password'; $('toggle-token').textContent = input.type === 'password' ? '显示' : '隐藏';

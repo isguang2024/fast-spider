@@ -194,65 +194,31 @@ type resultWriteInput struct {
 }
 
 type cloudCollaborationInput struct {
-	Action string         `json:"action"`
-	Params map[string]any `json:"params,omitempty"`
+	Action string         `json:"action" jsonschema:"dispatch, completion.notify, completion.claim, or completion.ack"`
+	Params map[string]any `json:"params,omitempty" jsonschema:"action-specific parameters; use the codex_cloud_collaboration guide for the compact contract"`
 }
 
 type cloudCollaborationParams struct {
-	CollaborationID     string                        `json:"collaborationId,omitempty"`
-	ActorSessionID      string                        `json:"actorSessionId,omitempty"`
-	ActorRole           string                        `json:"actorRole,omitempty"`
-	ExpectedRevision    int64                         `json:"expectedRevision,omitempty"`
-	MachineID           string                        `json:"machineId,omitempty"`
-	IdempotencyKey      string                        `json:"idempotencyKey,omitempty"`
-	RequestHash         string                        `json:"requestHash,omitempty"`
-	ControllerSessionID string                        `json:"controllerSessionId,omitempty"`
-	DispatcherSessionID string                        `json:"dispatcherSessionId,omitempty"`
-	Title               string                        `json:"title,omitempty"`
-	Goal                string                        `json:"goal,omitempty"`
-	Scope               string                        `json:"scope,omitempty"`
-	DoneWhen            string                        `json:"doneWhen,omitempty"`
-	WorkingDirectory    string                        `json:"workingDirectory,omitempty"`
-	Deadline            string                        `json:"deadline,omitempty"`
-	AllowedActions      []string                      `json:"allowedActions,omitempty"`
-	MaxDepth            int                           `json:"maxDepth,omitempty"`
-	MaxActiveChats      int                           `json:"maxActiveChats,omitempty"`
-	MaxCreates          int                           `json:"maxCreates,omitempty"`
-	HeartbeatMinutes    int                           `json:"heartbeatMinutes,omitempty"`
-	StallMinutes        int                           `json:"stallMinutes,omitempty"`
-	Limit               int                           `json:"limit,omitempty"`
-	GoalID              string                        `json:"goalId,omitempty"`
-	GoalStatus          string                        `json:"goalStatus,omitempty"`
-	TaskID              string                        `json:"taskId,omitempty"`
-	TaskStatus          string                        `json:"taskStatus,omitempty"`
-	ParentSessionID     string                        `json:"parentSessionId,omitempty"`
-	TargetSessionID     string                        `json:"targetSessionId,omitempty"`
-	Prompt              string                        `json:"prompt,omitempty"`
-	AccessMode          string                        `json:"accessMode,omitempty"`
-	WriteScope          string                        `json:"writeScope,omitempty"`
-	DeliverablePath     string                        `json:"deliverablePath,omitempty"`
-	CallbackType        string                        `json:"callbackType,omitempty"`
-	EventID             string                        `json:"eventId,omitempty"`
-	EventType           string                        `json:"eventType,omitempty"`
-	ResultID            string                        `json:"resultId,omitempty"`
-	ResultStatus        string                        `json:"resultStatus,omitempty"`
-	ResultSHA256        string                        `json:"resultSHA256,omitempty"`
-	DeliverableStatus   string                        `json:"deliverableStatus,omitempty"`
-	EventSequence       int64                         `json:"eventSequence,omitempty"`
-	EventGeneration     int64                         `json:"eventGeneration,omitempty"`
-	ResultBytes         int64                         `json:"resultBytes,omitempty"`
-	DecisionID          string                        `json:"decisionId,omitempty"`
-	DecisionStatus      string                        `json:"decisionStatus,omitempty"`
-	Question            string                        `json:"question,omitempty"`
-	Recommendation      string                        `json:"recommendation,omitempty"`
-	Checkpoint          string                        `json:"checkpoint,omitempty"`
-	Options             []string                      `json:"options,omitempty"`
-	InactiveVerified    bool                          `json:"inactiveVerified,omitempty"`
-	SourceSessionID     string                        `json:"sourceSessionId,omitempty"`
-	Outcome             string                        `json:"outcome,omitempty"`
-	Text                string                        `json:"text,omitempty"`
-	ClaimID             string                        `json:"claimId,omitempty"`
-	Acknowledgements    []cloudCompletionAckItemInput `json:"acknowledgements,omitempty"`
+	MachineID         string `json:"machineId,omitempty"`
+	CallbackSessionID string `json:"callbackSessionId,omitempty"`
+	WorkingDirectory  string `json:"workingDirectory,omitempty"`
+	Prompt            string `json:"prompt,omitempty"`
+	IdempotencyKey    string `json:"idempotencyKey,omitempty"`
+	TargetSessionID   string `json:"targetSessionId,omitempty"`
+	AccessMode        string `json:"accessMode,omitempty"`
+	WriteScope        string `json:"writeScope,omitempty"`
+	DeliverablePath   string `json:"deliverablePath,omitempty"`
+	CallbackType      string `json:"callbackType,omitempty"`
+
+	CollaborationID  string                        `json:"collaborationId,omitempty"`
+	TaskID           string                        `json:"taskId,omitempty"`
+	ActorSessionID   string                        `json:"actorSessionId,omitempty"`
+	SourceSessionID  string                        `json:"sourceSessionId,omitempty"`
+	Outcome          string                        `json:"outcome,omitempty"`
+	Text             string                        `json:"text,omitempty"`
+	ClaimID          string                        `json:"claimId,omitempty"`
+	Limit            int                           `json:"limit,omitempty"`
+	Acknowledgements []cloudCompletionAckItemInput `json:"acknowledgements,omitempty"`
 }
 
 type cloudCompletionInput struct {
@@ -280,36 +246,11 @@ type cloudCompletionAckItemInput struct {
 
 type workingContextInput struct {
 	MCPResponseOptions
-	MachineID            string           `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	Action               string           `json:"action" jsonschema:"get,set,clear,plan.init,plan.get,plan.list,plan.sync,task.update,markdown.list,markdown.read,markdown.append,or progress.watch"`
-	ProjectPath          string           `json:"projectPath" jsonschema:"absolute project directory on the Node machine"`
-	PlanID               string           `json:"planId,omitempty" jsonschema:"bounded plan identifier; omitted by legacy get/set/clear to use the default plan"`
-	ExpectedRevision     string           `json:"expectedRevision,omitempty" jsonschema:"working-context revision required by CAS mutations such as task.update and plan.sync"`
-	Goal                 string           `json:"goal,omitempty" jsonschema:"current development goal; required for set and plan.init"`
-	Title                string           `json:"title,omitempty" jsonschema:"plan title for plan.init"`
-	TargetVersion        string           `json:"targetVersion,omitempty" jsonschema:"plan target version"`
-	MarkdownRoot         string           `json:"markdownRoot,omitempty" jsonschema:"project-relative Markdown workspace directory; defaults to docs/progress"`
-	InitializeMarkdown   bool             `json:"initializeMarkdown,omitempty" jsonschema:"create missing default docs/progress Markdown files without replacing existing content"`
-	BaselineBranch       string           `json:"baselineBranch,omitempty" jsonschema:"optional saved task baseline branch; set auto-fills from current Git when both baseline fields are omitted"`
-	BaselineCommit       string           `json:"baselineCommit,omitempty" jsonschema:"optional saved task baseline commit; set auto-fills from current Git when both baseline fields are omitted"`
-	Completed            []string         `json:"completed,omitempty" jsonschema:"bounded completed-work summary for set"`
-	Constraints          []string         `json:"constraints,omitempty" jsonschema:"bounded active constraints for set; never put secrets here"`
-	Pending              []string         `json:"pending,omitempty" jsonschema:"bounded remaining work for set"`
-	KeyFiles             []string         `json:"keyFiles,omitempty" jsonschema:"project-relative or in-project absolute key file paths for set"`
-	Facts                []string         `json:"facts,omitempty" jsonschema:"bounded project/task facts for set; never chat transcripts or secrets"`
-	Tasks                []map[string]any `json:"tasks,omitempty" jsonschema:"plan.init task objects with id,title,status,completion,blockedReason,and evidences; maximum 500"`
-	TaskID               string           `json:"taskId,omitempty" jsonschema:"task identifier for task.update"`
-	TaskTitle            string           `json:"taskTitle,omitempty" jsonschema:"task title when creating or updating a task"`
-	TaskStatus           string           `json:"taskStatus,omitempty" jsonschema:"pending,in_progress,blocked,or done"`
-	BlockedReason        string           `json:"blockedReason,omitempty" jsonschema:"bounded blocked reason without secrets or raw upstream errors"`
-	Completion           *int             `json:"completion,omitempty" jsonschema:"task completion from 0 through 100"`
-	Evidence             map[string]any   `json:"evidence,omitempty" jsonschema:"optional acceptance evidence with summary,kind,and reference; maximum 32 per task"`
-	MarkdownPath         string           `json:"markdownPath,omitempty" jsonschema:"project-relative .md path inside the bound workspace"`
-	Content              string           `json:"content,omitempty" jsonschema:"bounded UTF-8 content for markdown.append"`
-	ManagedBlock         string           `json:"managedBlock,omitempty" jsonschema:"optional managed block name to replace instead of appending"`
-	ExpectedFileRevision string           `json:"expectedFileRevision,omitempty" jsonschema:"required file revision for markdown.append CAS"`
-	SinceRevision        string           `json:"sinceRevision,omitempty" jsonschema:"last observed plan revision for progress.watch"`
-	WaitSeconds          int              `json:"waitSeconds,omitempty" jsonschema:"progress.watch long poll from 0 to 15 seconds"`
+	MachineID        string `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
+	Action           string `json:"action" jsonschema:"get,set,or clear"`
+	ProjectPath      string `json:"projectPath" jsonschema:"absolute project directory on the Node machine"`
+	Text             string `json:"text,omitempty" jsonschema:"bounded UTF-8 project note for set; the AI may organize goals, progress, blockers and next steps as plain text"`
+	ExpectedRevision string `json:"expectedRevision,omitempty" jsonschema:"optional revision returned by get/set for CAS-protected set or clear"`
 }
 
 type browserLocatorInput struct {
@@ -663,11 +604,11 @@ func (s *Server) newMCPHandler() http.Handler {
 
 const mcpServerInstructions = `@FastSpider_FS is a development control plane; try read-only first.
 
-Lazy tools: api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Never load all 22 schemas.
+Lazy tools: api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Never load all 21 schemas.
 
-Map: capability_list,machine_list,machine_get; audit_log,operation_log; code_search,file_read,file_edit; shell_run,build_control,job_watch,job_cancel; git_control; browser_control,screenshot_take; ai_control; codex_cloud_collaboration,codex_cloud_completion; working_context; thinking_team; artifact_get. Load one view=capability or view=tool|workflow|error. Local Codex: desktopBridge, nativeConversationStreaming=unsupported, Desktop owner/control bridge.
+Map: capability_list,machine_list,machine_get; audit_log,operation_log; code_search,file_read,file_edit; shell_run,build_control,job_watch,job_cancel; git_control; browser_control,screenshot_take; ai_control; codex_cloud_collaboration; working_context; thinking_team; artifact_get,result_get. Load one view=capability or view=tool|workflow|error. Local Codex: desktopBridge, nativeConversationStreaming=unsupported, Desktop owner/control bridge.
 
-AI: Cloud CHAT is optional assistance. Use an exact Codex or ChatGPT sessionId regardless of creator; local Codex uses metadataOnly=true and sends only when idle. Never replace a busy target. Without an ID, create a clean session; never list, search, or guess an old one. session.list is request-only. backend=chatgpt_cloud is a visible ChatGPT CHAT. targetSessionId reuses it; omission creates a new quick_chat. CHAT may continue a known Codex ID. task.add selects local_file, text, or status. local_file writes the registered Node-local path without upload; text is at most 2000 characters/8192 bytes; status has no payload. The dispatcher claims up to 64 durable callbacks and 64 KiB inline text, verifies, then acks. Collaboration owns callback routes: save baseline unarmed, send, arm. Node callback delivery is event/deadline driven fallback; 30-minute fallbacks require no healthy shared realtime connection. Scheduler turns take one bounded action then idle; early status.poll is not_due. Stalls receive “请继续”.
+AI: Cloud CHAT is optional assistance. Use codex_cloud_collaboration action=dispatch with machineId, callbackSessionId, workingDirectory, prompt and idempotencyKey. targetSessionId reuses that exact visible CHAT; omission creates one quick_chat. The default task may edit and test only inside workingDirectory and returns a bounded text callback. After dispatch, end the turn. CHAT completion.notify is persisted by Hub and actively pushed through Node to wake callbackSessionId; Provider realtime and timed status reads are fallback only. Controller/coordinator roles are caller-side organization and are not separate Fast Spider transport modes.
 
 Ops: unknown machineId -> machine_list; finish jobId with job_watch; edits use read/SHA/preview/CAS; close browsers. Windows shell_run uses powershell.exe or cmd.exe argv, e.g. tzutil /g, not a separate PowerShell tool.`
 
@@ -769,10 +710,6 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, mcpToolDefinition("codex_cloud_collaboration", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input cloudCollaborationInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		return executeMCPStructuredTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "codex_cloud_collaboration", input)
-	})
-
-	mcp.AddTool(server, mcpToolDefinition("codex_cloud_completion", toolAnnotations(false, true, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input cloudCompletionInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
-		return executeMCPStructuredTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "codex_cloud_completion", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("working_context", toolAnnotations(false, false, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input workingContextInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {

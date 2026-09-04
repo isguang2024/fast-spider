@@ -84,6 +84,8 @@ type agentControlParams struct {
 	CallbackBaselineIdentity string              `json:"callbackBaselineIdentity,omitempty"`
 	CallbackArmRequired      bool                `json:"callbackArmRequired,omitempty"`
 	CallbackImmediateWake    bool                `json:"callbackImmediateWake,omitempty"`
+	CallbackOutcome          string              `json:"callbackOutcome,omitempty"`
+	CallbackText             string              `json:"callbackText,omitempty"`
 	CallbackClaimID          string              `json:"callbackClaimId,omitempty"`
 	CallbackClaimLimit       int                 `json:"callbackClaimLimit,omitempty"`
 	modelProvided            bool
@@ -185,7 +187,7 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 		logger,
 		func(sessionID string) bool { return manager.codex.ActiveTurn(sessionID) != "" },
 		func(ctx context.Context, sessionID, prompt string) error {
-			_, err := manager.sessionSend(ctx, agentControlParams{SessionID: sessionID, Prompt: prompt})
+			_, err := manager.sessionSend(ctx, agentControlParams{SessionID: sessionID, Prompt: prompt, PreferDesktopRegistry: true})
 			return err
 		},
 		func(ctx context.Context, sessionID string, generation int64) error {
@@ -1451,7 +1453,13 @@ func (m *AgentManager) cleanupRejectedInitialTurn(sessionID string, idempotencyP
 }
 
 func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams) (map[string]any, error) {
-	thread, err := m.authorizedThread(ctx, input.SessionID)
+	var thread map[string]any
+	var err error
+	if input.PreferDesktopRegistry {
+		thread, err = m.authorizedThreadMetadataPreferDesktopRegistry(ctx, input.SessionID)
+	} else {
+		thread, err = m.authorizedThread(ctx, input.SessionID)
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -56,6 +56,8 @@ func (n *cloudCollaborationTestNode) respond(req protocolv1.CapabilityRequest) m
 		return map[string]any{"sessionId": fmt.Sprintf("cloud-chat-%d", created), "backend": "chatgpt_cloud", "visibility": "visible", "externalIdType": "chatgpt_conversation"}
 	case "session.callback.register":
 		return map[string]any{"registered": true}
+	case "session.callback.enqueue":
+		return map[string]any{"queued": true, "replayed": false}
 	case "session.watch":
 		return map[string]any{"nextCursor": int64(1)}
 	case "session.archive":
@@ -252,8 +254,11 @@ func TestCodexCloudCollaborationRequiresLocalCodexAndUsesDeliverableCallback(t *
 				t.Fatalf("new CHAT was not dispatched in quick mode: %#v", call.Params)
 			}
 		}
+		if call.Action == "session.callback.register" && call.Params["callbackImmediateWake"] != true {
+			t.Fatalf("collaboration callback was not configured for active wake: %#v", call.Params)
+		}
 	}
-	if !strings.Contains(createPrompt, output) || !strings.Contains(createPrompt, "codex_cloud_collaboration") || !strings.Contains(createPrompt, "action=completion.notify") || !strings.Contains(createPrompt, "artifact upload") || strings.Contains(createPrompt, "action=event.ingest") || !strings.Contains(createPrompt, "plan.init") || !strings.Contains(createPrompt, "initializeMarkdown=true") {
+	if !strings.Contains(createPrompt, "FAST_SPIDER_CLOUD_TASK_V1") || !strings.Contains(createPrompt, output) || !strings.Contains(createPrompt, "codex_cloud_collaboration") || !strings.Contains(createPrompt, "action=completion.notify") || strings.Contains(createPrompt, "action=event.ingest") || strings.Contains(createPrompt, "plan.init") || strings.Contains(createPrompt, "markdown.append") {
 		t.Fatalf("prompt=%q", createPrompt)
 	}
 	if countCloudCollaborationCalls(node.snapshotCalls(), "session.list") != 0 {
@@ -559,7 +564,7 @@ func TestCodexCloudCollaborationContinuesStalledChatOnceWithoutReplacement(t *te
 	continued, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
 		Action: "chat.continue", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(saved, "revision"), TaskID: "task-continue",
 	})
-	if err != nil || continued["continueSent"] != true || continued["continuePrompt"] != "请继续" || continued["automaticReplacement"] != false || continued["recordIssuesTo"] != cloudCollaborationIssueMarkdownPath {
+	if err != nil || continued["continueSent"] != true || continued["continuePrompt"] != "请继续" || continued["automaticReplacement"] != false || continued["recordIssuesTo"] != cloudCollaborationIssueTarget {
 		t.Fatalf("continue recovery=%#v err=%v", continued, err)
 	}
 	if countCloudCollaborationCalls(node.snapshotCalls(), "session.send") != 1 || countCloudCollaborationCalls(node.snapshotCalls(), "session.create") != 1 {
@@ -945,5 +950,50 @@ func TestCodexCloudCollaborationCreateInDoubtReusesOriginalIdempotencyKey(t *tes
 	}
 	if createKey != originalKey {
 		t.Fatalf("create-in-doubt key=%q want=%q", createKey, originalKey)
+	}
+}
+
+func TestCodexCloudCollaborationSimpleDispatchUsesOneCallbackSession(t *testing.T) {
+	service, ownerID, machineID, node := newCloudCollaborationTestService(t)
+	root := t.TempDir()
+	req := CloudCollaborationRequest{
+		Action: "dispatch", MachineID: machineID, CallbackSessionID: "codex-main",
+		WorkingDirectory: root, Prompt: "Implement the change and run its tests.", IdempotencyKey: "simple-cloud-dispatch-001",
+	}
+	dispatched, err := service.CloudCollaboration(context.Background(), ownerID, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dispatched["simpleMode"] != true || dispatched["callbackSessionId"] != "codex-main" || dispatched["callerShouldYield"] != true || dispatched["taskId"] != "task" {
+		t.Fatalf("dispatch=%#v", dispatched)
+	}
+	collaborationID, _ := dispatched["collaborationId"].(string)
+	_, state, err := service.loadCloudCollaboration(context.Background(), ownerID, collaborationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ControllerSessionID != "codex-main" || state.DispatcherSessionID != "codex-main" || len(state.Tasks) != 1 {
+		t.Fatalf("state=%#v", state)
+	}
+	task := state.Tasks[0]
+	if task.AccessMode != "write" || task.WriteScope != root || task.CallbackType != protocolv1.CloudCallbackTypeText || task.Status != "active" {
+		t.Fatalf("task=%#v", task)
+	}
+	var prompt string
+	for _, call := range node.snapshotCalls() {
+		if call.Action == "session.create" {
+			prompt, _ = call.Params["prompt"].(string)
+		}
+	}
+	if !strings.Contains(prompt, "FAST_SPIDER_CLOUD_TASK_V1") || !strings.Contains(prompt, machineID) || !strings.Contains(prompt, "action=completion.notify") || strings.Contains(prompt, "working_context") || strings.Contains(prompt, "actorRole") {
+		t.Fatalf("prompt=%q", prompt)
+	}
+
+	replayed, err := service.CloudCollaboration(context.Background(), ownerID, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed["replayed"] != true || countCloudCollaborationCalls(node.snapshotCalls(), "session.create") != 1 {
+		t.Fatalf("replayed=%#v calls=%#v", replayed, node.snapshotCalls())
 	}
 }

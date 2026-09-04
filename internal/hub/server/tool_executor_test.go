@@ -46,13 +46,30 @@ func TestValidateCloudCompletionToolInputReturnsRequestErrors(t *testing.T) {
 	}
 }
 
-func TestAIControlRejectsPublicCallbackRouteCreation(t *testing.T) {
+func TestAIControlRejectsPublicCallbackRouteAndDeliveryMutation(t *testing.T) {
 	executor := newToolExecutor(nil)
-	for _, action := range []string{"session.callback.register", "session.callback.arm"} {
+	for _, action := range []string{"session.callback.register", "session.callback.arm", "session.callback.enqueue"} {
 		_, err := executor.Execute(context.Background(), "owner", "ai_control", aiControlInput{Action: action})
 		var capabilityErr *core.CapabilityCallError
 		if !errors.As(err, &capabilityErr) || capabilityErr.Code != "CALLBACK_ROUTE_MANAGED_ONLY" {
 			t.Fatalf("action=%s error=%v", action, err)
+		}
+	}
+}
+
+func TestCloudCollaborationPublicSurfaceRejectsLegacyWorkflow(t *testing.T) {
+	executor := newToolExecutor(nil)
+	for _, input := range []cloudCollaborationInput{
+		{Action: "create", Params: map[string]any{"machineId": "machine-1"}},
+		{Action: "dispatch", Params: map[string]any{
+			"machineId": "machine-1", "callbackSessionId": "codex-1", "workingDirectory": "C:\\project",
+			"prompt": "work", "idempotencyKey": "cloud-task-001", "controllerSessionId": "legacy-controller",
+		}},
+	} {
+		_, err := executor.Execute(context.Background(), "owner", "codex_cloud_collaboration", input)
+		var requestErr *toolRequestError
+		if !errors.As(err, &requestErr) {
+			t.Fatalf("input=%#v error=%v, want public-contract rejection", input, err)
 		}
 	}
 }

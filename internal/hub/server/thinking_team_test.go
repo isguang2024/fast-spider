@@ -78,8 +78,8 @@ func TestThinkingTeamDepartmentFilterAndWorkspace(t *testing.T) {
 	if !ok {
 		t.Fatalf("workspace=%T", workspaceResult["workspace"])
 	}
-	if workspace["recommendedMarkdownRoot"] != ".local/fast-spider/collaboration/<task-id>" {
-		t.Fatalf("recommendedMarkdownRoot=%v", workspace["recommendedMarkdownRoot"])
+	if workspace["format"] != "plain_text" {
+		t.Fatalf("workspace format=%v", workspace["format"])
 	}
 }
 

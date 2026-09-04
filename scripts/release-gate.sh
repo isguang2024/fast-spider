@@ -79,7 +79,7 @@ step "Local Bridge E2E" go test -tags localbridgee2e ./internal/localbridge -cou
 if [[ "$mode" == "full" ]]; then
   step "Secret scanner synthetic self-test" go run ./cmd/secretscan --self-test
 	step "Release HEAD history secret scan" go run ./cmd/secretscan --history
-  step "0.4.2 Task Workspace gate" go test ./internal/node ./internal/nodeui -run 'Test(WorkingPlan|WorkingMarkdown|WorkingProgress)' -count=1
+	step "Working Context gate" go test ./internal/node ./internal/nodeui -run 'Test(WorkingContext|WorkingLoopback)' -count=1
   step "0.4.2 Managed ripgrep/native search gate" go test ./internal/node ./internal/nodeui -run 'Test(ManagedRipgrep|NativeSearch|RipgrepJSON|SearchFileSelfTest)' -count=1
   step "0.4.2 ripgrep component packager gate" go test ./cmd/ripgreppack -count=1
   step "0.4.2 file_read gate" go test ./internal/node ./internal/protocol/v1 ./internal/hub/server -run 'Test(FileReadV2|FileReadCapability|MachineBoundaryEndToEnd)' -count=1

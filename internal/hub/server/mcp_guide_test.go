@@ -12,7 +12,7 @@ import (
 
 func TestMCPGuideCatalogMatchesRegisteredToolsAndDocumentation(t *testing.T) {
 	guideNames := mcpRegisteredGuideNames()
-	if len(guideNames) != 22 {
+	if len(guideNames) != 21 {
 		t.Fatalf("guide tool count=%d names=%v", len(guideNames), guideNames)
 	}
 	var discoveryMarkers []string
@@ -64,7 +64,7 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		assertMCPGuideSize(t, guide, 12<<10)
 		if name == "ai_control" {
 			guideText := strings.Join(append(append(append(guide.WhenToUse, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
-			for _, needle := range []string{"session.create", "providerId=codex", "backend=chatgpt_cloud", "mode=quick_chat", "CHAT", "externalIdType=chatgpt_conversation", "completionPending=true", "pluginName", "UNSUPPORTED_SESSION_PLUGIN_BINDING", "resultMode=manifest", "session.callback.claim", "event", "exact deadlines", "30-minute minimum", "healthy shared socket", "metadataOnly=true", "exact Codex or ChatGPT sessionId", "optional", "do not call session.list", "AGENT_SESSION_BUSY", "durable controller callback", "codex_cloud_collaboration", "plan.init", "initializeMarkdown=true", "docs/progress/04-open-issues.md"} {
+			for _, needle := range []string{"session.create", "backend=chatgpt_cloud", "mode=quick_chat", "CHAT", "metadataOnly=true", "exact Codex or ChatGPT sessionId", "do not call session.list", "AGENT_SESSION_BUSY", "codex_cloud_collaboration", "working_context"} {
 				if !strings.Contains(guideText, needle) {
 					t.Fatalf("ai_control guide missing %q: %+v", needle, guide)
 				}
@@ -75,17 +75,9 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		}
 		if name == "codex_cloud_collaboration" {
 			guideText := strings.Join(append(append(append([]string{guide.Summary}, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
-			for _, needle := range []string{"simple task", "targetSessionId", "original creator", "mode=quick_chat", "never call session.list", "per-task lease", "actorSessionId=$self", "completion.notify", "completion.claim", "completion.ack", "refreshed connector", "Node session.callback", "30-minute", "one bounded action", "not_due", "nextPollAt", "status.poll", "chat.continue", "controller decision", "released", "callerShouldYield=true", "activePollingAllowed=false", "nextAction=end_turn", "session.get", "plan.init", "initializeMarkdown=true", "docs/progress/04-open-issues.md"} {
+			for _, needle := range []string{"one visible ChatGPT Cloud CHAT", "callbackSessionId", "targetSessionId", "action=dispatch", "completion.notify", "Hub persists", "Node callback queue", "recovery only", "not guaranteed", "never replaces", "callerShouldYield=true", "nextAction=end_turn", "controller", "coordinator", "single-AI"} {
 				if !strings.Contains(guideText, needle) {
 					t.Fatalf("codex_cloud_collaboration guide missing %q: %+v", needle, guide)
-				}
-			}
-		}
-		if name == "codex_cloud_completion" {
-			guideText := strings.Join(append(append(append([]string{guide.Summary}, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
-			for _, needle := range []string{"callbackType", "actorSessionId=$self", "local_file", "2000", "8192", "64 KiB", "five-minute", "verifies", "ack", "Node fallback", "does not upload"} {
-				if !strings.Contains(guideText, needle) {
-					t.Fatalf("codex_cloud_completion guide missing %q: %+v", needle, guide)
 				}
 			}
 		}
@@ -121,7 +113,7 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		}
 		if name == "cloud-chat-callback" {
 			sequence := strings.Join(append(append([]string{guide.Summary}, guide.SafeSequence...), guide.RecommendedNext...), "\n")
-			for _, needle := range []string{"one simple", "codex_cloud_collaboration", "callerShouldYield=true", "nextAction=end_turn", "do not call session.get", "completion.claim", "completion.ack"} {
+			for _, needle := range []string{"one visible Cloud CHAT", "codex_cloud_collaboration", "action=dispatch", "callerShouldYield=true", "do not poll", "working_context"} {
 				if !strings.Contains(sequence, needle) {
 					t.Fatalf("cloud callback workflow missing %q: %+v", needle, guide)
 				}
@@ -129,7 +121,7 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		}
 		assertMCPGuideSize(t, guide, 12<<10)
 	}
-	for _, name := range []string{"CONNECTION_LOST", "MACHINE_OFFLINE", "DEADLINE_EXCEEDED", "ABSOLUTE_PATH_REQUIRED", "BROWSER_REF_STALE", "NODE_UPDATING", "RUNTIME_UNAVAILABLE", "WSL_CWD_UNMAPPABLE", "JOB_NOT_FOUND", "INVALID_REQUEST"} {
+	for _, name := range []string{"CONNECTION_LOST", "MACHINE_OFFLINE", "DEADLINE_EXCEEDED", "ABSOLUTE_PATH_REQUIRED", "BROWSER_REF_STALE", "NODE_UPDATING", "RUNTIME_UNAVAILABLE", "WSL_CWD_UNMAPPABLE", "JOB_NOT_FOUND", "INVALID_REQUEST", "CALLBACK_ROUTE_MANAGED_ONLY", "CALLBACK_DELIVERY_PENDING"} {
 		guide, err := newMCPGuide("0.4.16", "error", name)
 		if err != nil || guide.Summary == "" || len(guide.SafeSequence) == 0 {
 			t.Fatalf("error %s guide=%+v err=%v", name, guide, err)
@@ -255,9 +247,9 @@ func TestMCPServerInstructionsStayBoundedAndCoverCapabilityMap(t *testing.T) {
 	for _, needle := range []string{
 		"@FastSpider_FS", "capability_list", "machine_list", "machine_get", "audit_log", "operation_log", "file_read", "file_edit", "code_search",
 		"shell_run", "build_control", "job_watch", "job_cancel", "git_control", "browser_control", "screenshot_take",
-		"ai_control", "codex_cloud_collaboration", "codex_cloud_completion", "working_context", "thinking_team", "artifact_get", "session.list", "view=tool|workflow|error", "view=capability",
-		`query="fsprobe"`, "Never load all 22 schemas", "powershell.exe", "tzutil /g", "not a separate PowerShell tool", "backend=chatgpt_cloud", "ChatGPT CHAT",
-		"desktopBridge", "nativeConversationStreaming=unsupported", "Desktop owner/control bridge", "Cloud CHAT is optional assistance", "exact Codex or ChatGPT sessionId", "metadataOnly=true", "never list, search, or guess an old one", "targetSessionId", "omission creates a new quick_chat", "claims up to 64", "Node callback delivery", "event/deadline driven", "30-minute fallbacks", "healthy shared realtime connection", "one bounded action", "not_due",
+		"ai_control", "codex_cloud_collaboration", "working_context", "thinking_team", "artifact_get", "view=tool|workflow|error", "view=capability",
+		`query="fsprobe"`, "Never load all 21 schemas", "powershell.exe", "tzutil /g", "not a separate PowerShell tool", "Cloud CHAT",
+		"desktopBridge", "nativeConversationStreaming=unsupported", "Desktop owner/control bridge", "Cloud CHAT is optional assistance", "callbackSessionId", "targetSessionId", "omission creates one quick_chat", "bounded text callback", "Controller/coordinator roles", "not separate Fast Spider transport modes",
 	} {
 		if !strings.Contains(mcpServerInstructions, needle) {
 			t.Fatalf("instructions missing %q", needle)
@@ -278,7 +270,7 @@ func assertMCPGuideSize(t *testing.T, guide *mcpGuide, limit int) {
 
 func documentedMCPToolNames(t *testing.T, document string) []string {
 	t.Helper()
-	anchor := strings.Index(document, "当前固定 22 个工具")
+	anchor := strings.Index(document, "当前固定 21 个工具")
 	if anchor < 0 {
 		t.Fatal("MCP tool-list anchor missing from documentation")
 	}

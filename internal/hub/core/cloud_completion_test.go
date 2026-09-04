@@ -149,6 +149,62 @@ func TestCloudCompletionSupportsBoundedTextAndStatusCallbacks(t *testing.T) {
 	}
 }
 
+func TestCloudCompletionNotifyActivelyQueuesCodexCallbackWithoutProviderEvent(t *testing.T) {
+	service, ownerID, machineID, node := newCloudCollaborationTestService(t)
+	ctx := context.Background()
+	dispatched, err := service.CloudCollaboration(ctx, ownerID, CloudCollaborationRequest{
+		Action: "dispatch", MachineID: machineID, CallbackSessionID: "codex-callback-target",
+		WorkingDirectory: t.TempDir(), Prompt: "Return a short result.", IdempotencyKey: "completion-active-callback-001",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collaborationID := mapString(dispatched, "collaborationId")
+	_, state, err := service.loadCloudCollaboration(ctx, ownerID, collaborationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := state.Tasks
+	if len(tasks) != 1 || tasks[0].ChatSessionID == "" {
+		t.Fatalf("dispatch tasks=%#v", tasks)
+	}
+	result, err := service.CloudCompletion(ctx, ownerID, CloudCompletionRequest{
+		Action: "notify", CollaborationID: collaborationID, TaskID: tasks[0].ID,
+		ActorSessionID: "$self", Outcome: "completed", CallbackType: protocolv1.CloudCallbackTypeText, Text: "任务已经完成。",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["activeCallbackState"] != "node_queued" || result["activeCallbackAccepted"] != true || result["callbackWakePolicy"] != "node-durable-immediate-when-idle" {
+		t.Fatalf("notify result=%#v", result)
+	}
+	var enqueue protocolv1.CapabilityRequest
+	for _, call := range node.snapshotCalls() {
+		if call.Action == "session.callback.enqueue" {
+			enqueue = call
+		}
+	}
+	if enqueue.Action == "" {
+		t.Fatalf("completion.notify did not push the Node callback: %#v", node.snapshotCalls())
+	}
+	for key, want := range map[string]any{
+		"sessionId": tasks[0].ChatSessionID, "callbackTargetSessionId": "codex-callback-target",
+		"callbackMissionId": collaborationID, "callbackTaskId": tasks[0].ID,
+		"callbackType":    protocolv1.CloudCallbackTypeText,
+		"callbackOutcome": "completed", "callbackText": "任务已经完成。",
+	} {
+		if got := enqueue.Params[key]; got != want {
+			t.Fatalf("callback enqueue %s=%#v want=%#v params=%#v", key, got, want, enqueue.Params)
+		}
+	}
+	if generation, _ := numericInt64(enqueue.Params["callbackGeneration"]); generation != tasks[0].Generation {
+		t.Fatalf("callback enqueue generation=%d want=%d params=%#v", generation, tasks[0].Generation, enqueue.Params)
+	}
+	if countCloudCollaborationCalls(node.snapshotCalls(), "session.watch") != 0 || countCloudCollaborationCalls(node.snapshotCalls(), "session.result") != 0 {
+		t.Fatalf("primary callback path polled the Provider: %#v", node.snapshotCalls())
+	}
+}
+
 func TestCloudCompletionFailedTextWithoutBodyHasNoSyntheticDigest(t *testing.T) {
 	notification := store.CloudCompletionNotificationRecord{
 		CallbackType: protocolv1.CloudCallbackTypeText,
@@ -165,12 +221,12 @@ func TestCloudCompletionFailedTextWithoutBodyHasNoSyntheticDigest(t *testing.T) 
 
 func TestCloudCollaborationBootstrapDefinesLocalFileCallbackSlot(t *testing.T) {
 	resultPath := filepath.Join(t.TempDir(), ".fast-spider-result-test.md")
-	prompt := cloudCollaborationBootstrap("collab-test", cloudCollaborationState{
+	prompt := cloudCollaborationBootstrap("collab-test", "machine-test", cloudCollaborationState{
 		WorkingDirectory: t.TempDir(),
 	}, cloudCollaborationTask{
 		ID: "task-file", Generation: 1, CallbackType: protocolv1.CloudCallbackTypeLocalFile, ResultPath: resultPath, AccessMode: "read_only",
 	})
-	for _, needle := range []string{resultPath, "callback-only output slot", "accessMode=read_only", "no permission to write any other path", "Do not upload"} {
+	for _, needle := range []string{"FAST_SPIDER_CLOUD_TASK_V1", resultPath, "callback slot", "writable even for a read-only task", "no permission to write anywhere else", "without uploading"} {
 		if !strings.Contains(prompt, needle) {
 			t.Fatalf("bootstrap missing %q: %s", needle, prompt)
 		}

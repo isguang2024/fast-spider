@@ -51,8 +51,8 @@ const (
 )
 
 var AgentCapability = CapabilityDescriptor{
-	CapabilityId: "agent.control", Version: "1.5",
-	Actions: []string{"routing.status", "providers.list", "provider.readiness", "models.list", "provider.capabilities", "projects.list", "skills.list", "hooks.list", "permissions.list", "plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list", "session.list", "session.get", "session.create", "session.send", "session.steer", "session.respond", "session.watch", "session.callback.register", "session.callback.arm", "session.callback.unregister", "session.callback.list", "session.callback.claim", "session.callback.ack", "session.cancel", "session.result", "session.rename", "session.archive", "session.unarchive", "session.delete", "session.fork", "session.compact", "session.rollback", "session.goal.get", "session.goal.set", "session.goal.clear", "session.settings.update", "session.review"},
+	CapabilityId: "agent.control", Version: "1.6",
+	Actions: []string{"routing.status", "providers.list", "provider.readiness", "models.list", "provider.capabilities", "projects.list", "skills.list", "hooks.list", "permissions.list", "plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list", "session.list", "session.get", "session.create", "session.send", "session.steer", "session.respond", "session.watch", "session.callback.register", "session.callback.arm", "session.callback.enqueue", "session.callback.unregister", "session.callback.list", "session.callback.claim", "session.callback.ack", "session.cancel", "session.result", "session.rename", "session.archive", "session.unarchive", "session.delete", "session.fork", "session.compact", "session.rollback", "session.goal.get", "session.goal.set", "session.goal.clear", "session.settings.update", "session.review"},
 }
 
 func ScreenshotCapabilityForOS(goos string) CapabilityDescriptor {
@@ -76,7 +76,7 @@ var NodeCapabilities = []CapabilityDescriptor{
 	{CapabilityId: "build.exec", Version: "1.1", Actions: []string{"run"}},
 	{CapabilityId: "artifact.store", Version: "1.0", Actions: []string{"uploadFile", "uploadJobLog", "publishFile"}},
 	{CapabilityId: "operation.log", Version: "1.0", Actions: []string{"query"}},
-	{CapabilityId: "working.context", Version: "1.1", Actions: []string{"get", "set", "clear", "plan.init", "plan.get", "plan.list", "plan.sync", "task.update", "markdown.list", "markdown.read", "markdown.append", "progress.watch"}},
+	{CapabilityId: "working.context", Version: "2.0", Actions: []string{"get", "set", "clear"}},
 	AgentCapability,
 }
 

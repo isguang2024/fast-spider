@@ -54,7 +54,7 @@ Fast Spider has three clear runtime parts:
 | Git | Inspect status, diffs and history; create commits; manage branches and worktrees; perform controlled fetch, pull and push operations |
 | Browser | Launch an isolated Chromium profile, navigate, inspect pages, click, type, download and capture screenshots |
 | AI coding sessions | Discover and control local Codex and Claude Code sessions through a provider-neutral API |
-| Project coordination | Maintain plans, task state and Markdown working context with revision-safe updates |
+| Project coordination | Keep one compact revisioned plain-text context per project; optional role guidance stays caller-side |
 | Artifacts and evidence | Transfer generated files, expose temporary presentation assets and retain operation/audit records |
 | Access surfaces | Use the same capability model from MCP clients, the Web Console, `spiderctl` and the local bridge |
 
@@ -289,6 +289,8 @@ browser_control
 screenshot_take
 thinking_team
 ai_control
+codex_cloud_collaboration
+result_get
 working_context
 ```
 
@@ -298,6 +300,10 @@ Tool inputs use explicit absolute paths for machine-local operations. Examples:
 - `shell_run`, `build_control`: absolute `cwd`
 - `git_control`: absolute `repositoryPath`
 - `ai_control.session.create`: absolute `workingDirectory`
+- `codex_cloud_collaboration.dispatch`: `machineId`, local `callbackSessionId`, absolute `workingDirectory`, task `prompt` and stable `idempotencyKey`
+- `working_context`: absolute `projectPath`; `set` stores one bounded plain-text note
+
+Cloud collaboration has one transport path regardless of whether the caller is a single controller, a controller plus coordinator, or one AI. The CHAT calls `completion.notify`; the Hub persists that notification and actively pushes it into the Node callback queue; the Node wakes `callbackSessionId` immediately when idle or after its current turn finishes. Provider realtime events, startup reconciliation and timed status reads are fallback recovery only; future-created CHATs and tasks are not guaranteed to be covered by an external timer, so polling cannot replace the active callback.
 
 The Windows Node UI asks for a Codex session mode on first launch and stores that choice in its local configuration. **Shared mode** is the default recommendation: Fast Spider does not claim loaded sessions through Codex Desktop IPC, so Desktop can open them without showing “already open in another application.” **FS managed mode** enables the owner/control bridge for FS-loaded local sessions. The Node UI setting is authoritative; `FAST_SPIDER_CODEX_DESKTOP_BRIDGE` remains a compatibility fallback for headless `run`/automation processes that do not use the Node UI. Public `ai_control` discovery and local session results include `desktopBridge` state. The bridge preserves Fast Spider's existing app-server execution path and does not yet promise native Desktop live-history rendering.
 

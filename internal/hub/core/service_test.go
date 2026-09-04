@@ -165,7 +165,7 @@ func TestScreenshotWindowCallDeadlineAndAuditPolicy(t *testing.T) {
 }
 
 func TestAgentCapabilityRetryAndAuditPolicy(t *testing.T) {
-	for _, action := range []string{"routing.status", "provider.capabilities", "skills.list", "hooks.list", "permissions.list", "plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list", "session.create", "session.callback.list", "session.goal.get"} {
+	for _, action := range []string{"routing.status", "provider.capabilities", "skills.list", "hooks.list", "permissions.list", "plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list", "session.create", "session.callback.enqueue", "session.callback.list", "session.goal.get"} {
 		if !isRetryableCapability("agent.control", action) {
 			t.Fatalf("%s should be retryable", action)
 		}
@@ -175,7 +175,7 @@ func TestAgentCapabilityRetryAndAuditPolicy(t *testing.T) {
 			t.Fatalf("%s must not be retryable", action)
 		}
 	}
-	if !shouldAuditCapability("agent.control", "session.delete") || !shouldAuditCapability("agent.control", "session.goal.set") || !shouldAuditCapability("agent.control", "session.steer") || !shouldAuditCapability("agent.control", "session.respond") || !shouldAuditCapability("agent.control", "session.callback.register") || !shouldAuditCapability("agent.control", "session.callback.arm") || !shouldAuditCapability("agent.control", "session.callback.unregister") || !shouldAuditCapability("agent.control", "session.callback.claim") || !shouldAuditCapability("agent.control", "session.callback.ack") {
+	if !shouldAuditCapability("agent.control", "session.delete") || !shouldAuditCapability("agent.control", "session.goal.set") || !shouldAuditCapability("agent.control", "session.steer") || !shouldAuditCapability("agent.control", "session.respond") || !shouldAuditCapability("agent.control", "session.callback.register") || !shouldAuditCapability("agent.control", "session.callback.arm") || !shouldAuditCapability("agent.control", "session.callback.enqueue") || !shouldAuditCapability("agent.control", "session.callback.unregister") || !shouldAuditCapability("agent.control", "session.callback.claim") || !shouldAuditCapability("agent.control", "session.callback.ack") {
 		t.Fatal("destructive/state-changing agent actions must be audited")
 	}
 	if shouldAuditCapability("agent.control", "skills.list") {
@@ -205,21 +205,24 @@ func TestSessionCreateSeparatesOperationAndResponseDeadlines(t *testing.T) {
 	}
 }
 
-func TestWorkingContextPlanRetryAndAuditPolicy(t *testing.T) {
-	for _, action := range []string{"get", "plan.get", "plan.list", "markdown.list", "markdown.read", "progress.watch"} {
-		if !isRetryableCapability("working.context", action) {
-			t.Fatalf("working.context/%s should be safely retryable", action)
-		}
-		if shouldAuditCapability("working.context", action) {
-			t.Fatalf("working.context/%s must not be audited as a mutation", action)
-		}
+func TestWorkingContextRetryAndAuditPolicy(t *testing.T) {
+	if !isRetryableCapability("working.context", "get") {
+		t.Fatal("working.context/get should be safely retryable")
 	}
-	for _, action := range []string{"set", "clear", "plan.init", "plan.sync", "task.update", "markdown.append"} {
+	if shouldAuditCapability("working.context", "get") {
+		t.Fatal("working.context/get must not be audited as a mutation")
+	}
+	for _, action := range []string{"set", "clear"} {
 		if isRetryableCapability("working.context", action) {
 			t.Fatalf("working.context/%s must not be retryable", action)
 		}
 		if !shouldAuditCapability("working.context", action) {
 			t.Fatalf("working.context/%s must be audited", action)
+		}
+	}
+	for _, removed := range []string{"plan.init", "plan.get", "task.update", "markdown.append", "progress.watch"} {
+		if isRetryableCapability("working.context", removed) || shouldAuditCapability("working.context", removed) {
+			t.Fatalf("removed working.context action %s still has transport policy", removed)
 		}
 	}
 }

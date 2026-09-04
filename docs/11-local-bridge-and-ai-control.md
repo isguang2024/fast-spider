@@ -80,6 +80,8 @@ session.steer
 session.respond
 session.watch
 session.callback.register
+session.callback.arm
+session.callback.enqueue
 session.callback.unregister
 session.callback.list
 session.callback.claim
@@ -100,7 +102,7 @@ session.settings.update
 session.review
 ```
 
-这些 action 同时通过公网 MCP `ai_control` 和 Local Bridge 进入同一 Agent Manager。`providers.list` 返回每个 Harness 的 `supportedActions`，调用方不能假设所有 action 在 Codex 与 Claude Code 上都存在。Codex 保留完整结构化扩展面；Claude Code 第一版只开放已通过真实 CLI 验证的 lifecycle/discovery 子集。FS 不把任一 Provider 的全部内部命令一比一暴露出来。
+这些 action 进入同一 Agent Manager；其中 `session.callback.register/arm/enqueue` 只允许 Hub 的 collaboration 内部链路调用，公网 MCP `ai_control` 会拒绝直接修改 callback 路由或投递。`providers.list` 返回每个 Harness 的 `supportedActions`，调用方不能假设所有 action 在 Codex 与 Claude Code 上都存在。Codex 保留完整结构化扩展面；Claude Code 第一版只开放已通过真实 CLI 验证的 lifecycle/discovery 子集。FS 不把任一 Provider 的全部内部命令一比一暴露出来。
 
 ### `routing.status`
 
@@ -156,6 +158,7 @@ Cloud 只有一个创建入口 `session.create`，用 `mode=quick_chat|complete`
 | `session.watch` | 每账号复用一条 `/celsius/ws/user` pubsub 长连接，动态订阅/退订 `conversations` + 当前 `conversation-{uuid}`；`conversation-turn-complete` 等事件 → `session.watch` 事件（提示 refetch `session.get` 取内容） |
 | `session.callback.register` | Hub 内部先持久保存 mission/task/generation、发送前 completion 基线和可选本地交付路径；可保持未激活 |
 | `session.callback.arm` | Hub 在新任务已投递后持久激活 callback，并建立不会被普通 watch 空闲淘汰的订阅及一次基线围栏补漏 |
+| `session.callback.enqueue` | CHAT 已调用 `completion.notify` 后，Hub 主动把已持久化通知推入 Node 本地队列；目标 Codex 空闲立即唤醒，忙时在当前 Turn 结束后重试 |
 | `session.callback.unregister` | 按 source session + generation 撤销回调 owner，同时清除该来源尚未投递的事件 |
 | `session.callback.list` | 只读列出注册、pending 队列、固定 queue text、领取状态和恢复策略；可按 source 或 target 过滤 |
 | `session.callback.claim` | 按目标协调会话一次领取最多 64 条 pending；同一 claim 可幂等重读，租约 5 分钟 |
@@ -167,13 +170,13 @@ Cloud 只有一个创建入口 `session.create`，用 `mode=quick_chat|complete`
 
 ### `session.callback.*`
 
-`session.callback.register/arm` 只支持 `providerId=codex + backend=chatgpt_cloud`，并由 Hub 的 `codex_cloud_collaboration` 内部调用；公网 `ai_control` 不允许 AI 单独创建或激活回调路由。复用 CHAT 时，register 保存发送前最新 assistant/message identity 与 `armed=false`，Hub 保存任务绑定，再用任务代次稳定的 Provider message ID 幂等发送新 Prompt，最后 arm。arm 建立持久订阅并做一次补漏；只有当前 identity 不同于基线才生成完成通知，因此旧完成回合、订阅重放和发送前 catch-up 都不能占用本任务 generation。若进程在注册、发送或激活任一步崩溃，下一次 tick/dispatch 会使用同一 message ID 对账或续发原任务，再幂等 arm；不会只激活未发送的任务，也不会重复创建新回合。一个 source CHAT 同时只能有一个 owner；generation 对应一次真实尝试，更高 generation 替换旧代并清除旧 pending。`session.callback.unregister` 必须携带当前 generation；`session.callback.list` 可对账 owner、baseline identity、armed 与 pending。
+`session.callback.register/arm/enqueue/unregister/list/claim/ack` 是 `codex_cloud_collaboration` 的内部可靠性协议，不是 AI 需要手工拼装的公开工作流。Hub 用它登记 callback owner、发送前基线和 generation；CHAT 的 `completion.notify` 到达后，Hub 先持久化，再通过 `enqueue` 主动交给 Node。Node 用持久队列处理目标会话忙和重启恢复，重复通知与领取保持幂等，旧 generation 不会覆盖新任务。
 
-Cloud 的 `conversation.turn.complete` 按登记类型形成兜底记录并写入 Node data-dir 下的 `agent/session-callbacks.json`，再按期限唤醒协调会话。`local_file` 只保存登记的 Node 本地路径引用，绝不复制或上传文件；`text` 只保存最多 2000 个 Unicode 字符且最多 8192 个 UTF-8 字节的短文本；`status` 不保存正文。持久索引损坏或 pending/registration 序列不一致时 fail-closed，不会用空状态覆盖。复用 CHAT 的 realtime terminal 事件先读取当前会话 identity 与基线确认，防止旧 websocket 事件误报；新建 CHAT 可直接采用 Provider 稳定 event key。Node 队列对每个 mission/task/generation 只保留一个 canonical completion，generation 升级后才允许新的真实尝试再次完成。同一协调会话的多个 CHAT 可通过一次 `session.callback.claim` 批量领取；一次最多 64 条且内联文本总计不超过 64 KiB，claim ID 与 5 分钟租约持久化，超时自动释放，只有完成 Hub notify/验收/ack 后才调用 `session.callback.ack` 移除 Node 通知。队列不携带 Prompt、Provider payload、Token 或原始错误。
+公开调用统一使用 `codex_cloud_collaboration action=dispatch`：传入 `machineId`、现有本地 Codex 的 `callbackSessionId`、绝对 `workingDirectory`、任务 `prompt` 和稳定 `idempotencyKey`。可选 `targetSessionId` 只续发指定可见 CHAT；省略时创建一个可见 `quick_chat`。Fast Spider 不区分“单主控”“主控加协调者”或“单 AI”模式，三者都只是把任务发给 CHAT，再把结果回调给 `callbackSessionId`。
 
-投递策略是 `Cloud CHAT self-callback / Node fallback`：任务先固定 `callbackType=local_file|text|status`。文件型结果由 Cloud CHAT 通过 FS 直接写到登记的 Node 本地路径，再只发路径型通知；这个固定 `resultPath` 是回调专用输出槽，即使任务为 `read_only` 或未列出 `file.write` 也只允许写这一处，不授权其它文件写入。短结果直接文本回调；无正文任务只回状态。只要调用方需要“创建或续发 CHAT 后稍后得到结果”，即使只有一个简单任务也使用 `codex_cloud_collaboration`，不能用裸 `ai_control quick_chat + session.get/watch/result` 轮询来模拟回调。`task.dispatch` 成功会返回 `awaitMode=callback`、`activePollingAllowed=false`、`callerShouldYield=true` 和 `nextAction=end_turn`；调度只返回简短派发回执并结束当前 Turn。Node 只在主动回调缺失、断线或漏通知时恢复，并保持同一种类型。本地 pending/claim 队列由新事件、目标 Turn 结束、claim/ack 变化和精确到期时间唤醒，不再按固定周期扫描。单 Codex 简单协作把同一个现有 Codex ID 同时登记为 controller、dispatcher 和回调目标，完成事件到达后立即尝试唤醒该 ID；目标仍忙时通知保留在持久队列，并在目标 Turn 结束后重试。普通多角色模式的 pending 最早存在约 5 分钟且目标调度会话空闲时才发送不含正文的 nudge；此后同一目标最多约每 10 分钟再提醒一次，只有真实投递或落盘错误才约 30 秒重试。Provider 状态恢复查询以约 30 分钟为最低频率，仅在启动后的首次恢复、官方长连接发生过中断或当前仍离线时合成漏掉的 terminal callback；长连接持续健康时不会周期性重读全部 CHAT。Node 重启后恢复持久订阅、pending、claim 与 nudge 状态；注册和注销会直接在同一条账号级长连接上更新 topic，watcher 生命周期带 generation 围栏，旧代注销不会关闭新 owner 的订阅。协调会话只处理登记路径、受限短文本或状态，不抓取完整会话网页；实际业务网页仍由对应 Cloud CHAT 读取和操作。
+CHAT 完成前通过同一个 `codex_cloud_collaboration action=completion.notify` 回传结果。默认短文本最多 2000 个 Unicode 字符和 8192 个 UTF-8 字节；文件型结果只写入 Hub 预登记的 Node 本地 callback slot；状态型不带正文。正常路径为 `completion.notify → Hub 持久化 → Node 主动唤醒 callbackSessionId → Codex claim/ack`。Provider realtime、启动补漏和低频状态读取只是兜底；未来新建的 CHAT/任务不保证被外部定时查询覆盖，因此 FS 主动回调不能省略。dispatch 返回 `callerShouldYield=true` 和 `nextAction=end_turn` 后，调用方结束当前 Turn 等待回调，不用轮询模拟协作。
 
-`codex_cloud_collaboration` 的卡住恢复由调度 AI 决策：默认 heartbeat 30 分钟、stall 60 分钟，并要求至少两次无进展检查才标记疑似卡住。每个自检回合只读取一次持久状态、执行至多一个有界动作，随后立即空闲；`tick` 在无动作时返回 `idle=true + nextCheckAt`，过早调用 `status.poll` 只返回 `not_due + nextPollAt`，不会调用 Node 或 Provider；只有状态到期且必要时才真正执行 `status.poll`；若 Provider 已完成则走结果恢复，若仍在运行则 `chat.continue` 发送固定“请继续”，在观察到新进展前不重复发送。后续观察到新 cursor 会清零 `continueAttempts` 并恢复正常调度；继续后仍无进展、Provider 失败/取消或状态不确定时，返回 `chat_recovery_decision`/`controller_decision`，允许主控决定人工接手或换代，但服务不会自动创建替代 CHAT。回调、状态检查、继续或 Cloud CHAT 本身遇到的问题/疑问，应先读取并以 file revision CAS 调用 `working_context markdown.append`，追加到 `docs/progress/04-open-issues.md`；若读取返回 `NOT_FOUND`，先调用 `plan.init` 且设置 `initializeMarkdown=true` 初始化 Markdown 工作区。禁止记录凭据、原始 Provider payload、完整聊天记录或长日志。
+目标、进度、阻塞和下一步属于 AI 的上下文管理。确需跨会话复用时，用 `working_context get/set` 维护一段简短文本；简单任务不必建立资料室。不得写入凭据、原始 Provider payload、完整聊天记录、源码全文或长日志。
 
 ### `session.send`
 
@@ -431,9 +434,9 @@ Codex 产品层存在 Automations/定时任务体验，但当前验证的 Codex 
 
 ## 16. 本地 Edge App Window
 
-Node loopback UI 继续使用 Edge App Window，不引入 Electron/Wails。0.4.2 一级导航为概览/连接、任务与进度、AI 与路由、组件、诊断：
+Node loopback UI 继续使用 Edge App Window，不引入 Electron/Wails。一级导航为概览/连接、项目上下文、AI 与路由、组件、诊断：
 
-- 任务与进度复用本地 `working.context` Plan/Task/Markdown actions，不复制第二套状态机。
+- 项目上下文只读写本地 `working.context get/set/clear` 的一段普通文本。
 - AI 与路由、诊断只返回显式 allowlist DTO；页面加载不自动执行真实模型健康测试。
 - 组件中心只允许 `browser` 与 `search-ripgrep`，安装/更新必须手动点击并复用 component manager；状态响应不公开组件根目录、安装绝对路径或 Hub 凭据。
 - 搜索与文件自检只在 NodeUI data-dir 下建立隔离临时目录，通过同一 Node local capability 调用 code.search、file.read 2.0 与 file.write preview，结束后清理；不读写用户项目、不下载组件、不执行 AI。

@@ -103,6 +103,8 @@ func (m *AgentManager) controlChatGPTCloud(ctx context.Context, action string, i
 		return m.sessionCallbackRegister(ctx, input)
 	case "session.callback.arm":
 		return m.sessionCallbackArm(ctx, input)
+	case "session.callback.enqueue":
+		return m.sessionCallbackEnqueue(input)
 	case "session.callback.unregister":
 		return m.sessionCallbackUnregister(input)
 	case "session.callback.list":

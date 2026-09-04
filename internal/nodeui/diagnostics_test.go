@@ -26,11 +26,8 @@ func TestDiagnosticsLoopbackAllowlistWorkspaceAndReadOnlyDiscovery(t *testing.T)
 		t.Fatal(err)
 	}
 	initialized := client.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{
-		RequestId: "diagnostics-test-init", Capability: "working.context", Action: "plan.init",
-		Params: map[string]any{
-			"projectPath": projectPath, "planId": "fs-041", "goal": "diagnostics test",
-			"targetVersion": "0.4.1", "initializeMarkdown": true,
-		},
+		RequestId: "diagnostics-test-init", Capability: "working.context", Action: "set",
+		Params: map[string]any{"projectPath": projectPath, "text": "diagnostics test"},
 	})
 	if initialized.Error != nil {
 		t.Fatalf("initialize working plan: %+v", initialized.Error)
@@ -54,7 +51,6 @@ func TestDiagnosticsLoopbackAllowlistWorkspaceAndReadOnlyDiscovery(t *testing.T)
 	fake := &fakeAIController{}
 	app.agentController = fake
 	app.config.WorkingProjectPath = projectPath
-	app.config.WorkingPlanID = "fs-041"
 	app.config.HubURL = "https://private.example/private?token=" + aiSensitiveMarker
 	app.config.BrowserSidecarDir = browserPath
 	app.config.LocalBridgeEnabled = true
@@ -110,7 +106,7 @@ func TestDiagnosticsLoopbackAllowlistWorkspaceAndReadOnlyDiscovery(t *testing.T)
 	if view.Agent.CCSwitch.CurrentRoute != "codex: cc_switch" {
 		t.Fatalf("unexpected current route: %q", view.Agent.CCSwitch.CurrentRoute)
 	}
-	if !view.Workspace.Bound || !view.Workspace.Readable || !view.Workspace.Exists || view.Workspace.Revision == "" || view.Workspace.MarkdownFiles != 6 {
+	if !view.Workspace.Bound || !view.Workspace.Readable || !view.Workspace.Exists || view.Workspace.Revision == "" {
 		t.Fatalf("unexpected workspace diagnostics: %+v", view.Workspace)
 	}
 	if !view.Local.LocalBridgeConfigured || !view.Local.BrowserConfigured || !view.Local.BrowserPresent || !view.Local.ComponentRootPresent {
@@ -193,12 +189,12 @@ func TestDiagnosticsWorkspaceUsesOnlyReadOnlyLocalWorkingActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := string(raw)
-	for _, required := range []string{`Action: "plan.get"`, `Action: "markdown.list"`} {
+	for _, required := range []string{`Action: "get"`} {
 		if !strings.Contains(source, required) {
 			t.Fatalf("diagnostics workspace missing %s", required)
 		}
 	}
-	for _, forbidden := range []string{`Action: "plan.init"`, `Action: "plan.sync"`, `Action: "task.update"`, `Action: "markdown.append"`} {
+	for _, forbidden := range []string{`Action: "plan.init"`, `Action: "plan.get"`, `Action: "plan.sync"`, `Action: "task.update"`, `Action: "markdown.list"`, `Action: "markdown.append"`, `Action: "progress.watch"`} {
 		if strings.Contains(source, forbidden) {
 			t.Fatalf("diagnostics workspace contains mutating action %s", forbidden)
 		}

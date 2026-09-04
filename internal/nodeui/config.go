@@ -29,7 +29,6 @@ type LocalConfig struct {
 	ChatGPTDefaultModel             string `json:"chatgptDefaultModel"`
 	ChatGPTDefaultThinking          string `json:"chatgptDefaultThinking"`
 	WorkingProjectPath              string `json:"workingProjectPath,omitempty"`
-	WorkingPlanID                   string `json:"workingPlanId,omitempty"`
 }
 
 func defaultLocalConfig(machineName string) LocalConfig {
@@ -84,8 +83,7 @@ func saveLocalConfig(dataDir string, cfg LocalConfig) error {
 		return err
 	}
 	cfg.WorkingProjectPath = strings.TrimSpace(cfg.WorkingProjectPath)
-	cfg.WorkingPlanID = strings.TrimSpace(cfg.WorkingPlanID)
-	if len(cfg.HubURL) > 2048 || len(cfg.MachineName) > 128 || len(cfg.BrowserSidecarDir) > 4096 || len(cfg.ChatGPTDefaultModel) > 256 || len(cfg.WorkingProjectPath) > 4096 || len(cfg.WorkingPlanID) > 128 {
+	if len(cfg.HubURL) > 2048 || len(cfg.MachineName) > 128 || len(cfg.BrowserSidecarDir) > 4096 || len(cfg.ChatGPTDefaultModel) > 256 || len(cfg.WorkingProjectPath) > 4096 {
 		return errors.New("local config field exceeds limit")
 	}
 	raw, err := json.MarshalIndent(cfg, "", "  ")

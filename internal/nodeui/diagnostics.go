@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"strings"
 	"time"
@@ -76,11 +75,9 @@ type diagnosticCCSwitchView struct {
 type diagnosticWorkspaceView struct {
 	Bound         bool   `json:"bound"`
 	ProjectStatus string `json:"projectStatus"`
-	PlanID        string `json:"planId,omitempty"`
 	Readable      bool   `json:"readable"`
 	Exists        bool   `json:"exists"`
 	Revision      string `json:"revision,omitempty"`
-	MarkdownFiles int    `json:"markdownFiles"`
 }
 
 type diagnosticLocalView struct {
@@ -283,43 +280,24 @@ func diagnosticProviderRuntime(provider, route map[string]any, includeAuth bool)
 
 func (a *App) buildDiagnosticWorkspace(ctx context.Context, cfg LocalConfig) diagnosticWorkspaceView {
 	view := diagnosticWorkspaceView{ProjectStatus: "not_bound"}
-	projectPath, planID := strings.TrimSpace(cfg.WorkingProjectPath), strings.TrimSpace(cfg.WorkingPlanID)
-	if projectPath == "" || planID == "" {
+	projectPath := strings.TrimSpace(cfg.WorkingProjectPath)
+	if projectPath == "" {
 		return view
 	}
 	view.Bound, view.ProjectStatus = true, "bound_project"
-	view.PlanID = publicAIText(planID, 128)
 	client, err := node.New(node.Config{DataDir: a.opts.DataDir, Version: a.opts.Version, Logger: a.opts.Logger})
 	if err != nil {
 		return view
 	}
-	params := map[string]any{"projectPath": projectPath, "planId": planID}
-	result := client.HandleLocalCapability(ctx, protocolv1.CapabilityRequest{RequestId: "nodeui-diagnostics-working", Capability: "working.context", Action: "plan.get", Params: params})
+	params := map[string]any{"projectPath": projectPath}
+	result := client.HandleLocalCapability(ctx, protocolv1.CapabilityRequest{RequestId: "nodeui-diagnostics-working", Capability: "working.context", Action: "get", Params: params})
 	if result.Error != nil {
 		return view
 	}
 	view.Readable = true
 	view.Exists, _ = result.Result["exists"].(bool)
 	view.Revision = publicRevision(result.Result["revision"])
-	if !view.Exists {
-		return view
-	}
-	listed := client.HandleLocalCapability(ctx, protocolv1.CapabilityRequest{RequestId: "nodeui-diagnostics-markdown", Capability: "working.context", Action: "markdown.list", Params: params})
-	if listed.Error == nil {
-		view.MarkdownFiles = diagnosticSliceLength(listed.Result["markdown"])
-	}
 	return view
-}
-
-func diagnosticSliceLength(value any) int {
-	if value == nil {
-		return 0
-	}
-	current := reflect.ValueOf(value)
-	if current.Kind() != reflect.Slice && current.Kind() != reflect.Array {
-		return 0
-	}
-	return current.Len()
 }
 
 func diagnosticHubHost(raw string) string {

@@ -468,7 +468,6 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		ChatGPTDefaultModel:             old.ChatGPTDefaultModel,
 		ChatGPTDefaultThinking:          old.ChatGPTDefaultThinking,
 		WorkingProjectPath:              old.WorkingProjectPath,
-		WorkingPlanID:                   old.WorkingPlanID,
 	}
 	if req.ChatGPTDefaultConfigurationMode != nil {
 		next.ChatGPTDefaultConfigurationMode = *req.ChatGPTDefaultConfigurationMode
