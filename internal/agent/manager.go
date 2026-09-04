@@ -78,6 +78,7 @@ type agentControlParams struct {
 	CallbackMissionID        string              `json:"callbackMissionId,omitempty"`
 	CallbackTaskID           string              `json:"callbackTaskId,omitempty"`
 	CallbackGeneration       int64               `json:"callbackGeneration,omitempty"`
+	CallbackType             string              `json:"callbackType,omitempty"`
 	CallbackDeliverablePath  string              `json:"callbackDeliverablePath,omitempty"`
 	CallbackBaselineIdentity string              `json:"callbackBaselineIdentity,omitempty"`
 	CallbackArmRequired      bool                `json:"callbackArmRequired,omitempty"`

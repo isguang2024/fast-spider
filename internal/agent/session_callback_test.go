@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/isguang2024/fast-spider/internal/node"
+	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
 
 func testCallbackRegistration(source, target, task string, generation int64) sessionCallbackRegistration {
@@ -91,6 +92,39 @@ func TestCloudCallbackUsesLocalDeliverableWithoutReadingCHAT(t *testing.T) {
 	event = manager.completeCloudCallbackResult(testCallbackEvent("source-missing", 2))
 	if event.ResultStatus != "failed" || event.DeliverableStatus != "missing" || event.ResultID != "" {
 		t.Fatalf("missing deliverable event=%#v", event)
+	}
+}
+
+func TestSessionCallbackQueuePersistsBoundedTextWithoutUploading(t *testing.T) {
+	dataDir := t.TempDir()
+	store := newSessionCallbackStore(dataDir)
+	registration := testCallbackRegistration("source-text", "target-text", "task-text", 1)
+	registration.CallbackType = protocolv1.CloudCallbackTypeText
+	if _, _, err := store.register(registration); err != nil {
+		t.Fatal(err)
+	}
+	event := testCallbackEvent("source-text", 1)
+	event.CallbackType = protocolv1.CloudCallbackTypeText
+	event.CallbackOutcome = "completed"
+	event.ResultText = "短文本结果"
+	if queued, err := store.enqueue(event); err != nil || !queued {
+		t.Fatalf("queued=%v err=%v", queued, err)
+	}
+	reloaded := newSessionCallbackStore(dataDir)
+	claimID, claimed, err := reloaded.claim("target-text", "claim-text", 64, time.Now().UTC())
+	if err != nil || claimID != "claim-text" || len(claimed) != 1 {
+		t.Fatalf("claim=%q events=%#v err=%v", claimID, claimed, err)
+	}
+	if claimed[0].CallbackType != protocolv1.CloudCallbackTypeText || claimed[0].ResultText != event.ResultText || claimed[0].CallbackOutcome != "completed" || claimed[0].DeliverablePath != "" {
+		t.Fatalf("claimed=%#v", claimed[0])
+	}
+	mapped := sessionCallbackEventMap(claimed[0], time.Now().UTC(), true)
+	if mapped["text"] != event.ResultText || mapped["callbackType"] != protocolv1.CloudCallbackTypeText {
+		t.Fatalf("mapped=%#v", mapped)
+	}
+	listed := sessionCallbackEventMap(claimed[0], time.Now().UTC(), false)
+	if listed["textAvailable"] != true || listed["text"] != nil {
+		t.Fatalf("listed callback leaked text=%#v", listed)
 	}
 }
 

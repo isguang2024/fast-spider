@@ -102,6 +102,26 @@ func TestCodexAppServerCommandArgsSelectExternalProxy(t *testing.T) {
 	}
 }
 
+func TestCodexAppServerEnvironmentPreservesProxyExceptionsAndAddsLoopback(t *testing.T) {
+	got := codexAppServerEnvironment([]string{
+		"PATH=test-path",
+		"NO_PROXY=example.com, 127.0.0.1",
+		"no_proxy=internal.test,EXAMPLE.com",
+		"OTHER=value",
+	})
+	want := []string{
+		"PATH=test-path",
+		"OTHER=value",
+		"NO_PROXY=example.com,127.0.0.1,internal.test,localhost",
+		"no_proxy=example.com,127.0.0.1,internal.test,localhost",
+		"LOG_FORMAT=json",
+		"RUST_LOG=warn",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("managed app-server environment=%#v, want %#v", got, want)
+	}
+}
+
 func TestCodexAppServerSocketPathRequiresAbsolutePath(t *testing.T) {
 	t.Setenv(codexAppServerSocketEnv, "")
 	if got, err := codexAppServerSocketPath(); err != nil || got != "" {

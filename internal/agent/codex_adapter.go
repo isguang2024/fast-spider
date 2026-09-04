@@ -273,6 +273,43 @@ func codexExecutableCandidates() []string {
 	return paths
 }
 
+func codexAppServerEnvironment(base []string) []string {
+	environment := make([]string, 0, len(base)+4)
+	noProxyValues := make([]string, 0, 4)
+	seenNoProxy := make(map[string]struct{})
+	addNoProxy := func(raw string) {
+		for _, value := range strings.Split(raw, ",") {
+			value = strings.TrimSpace(value)
+			if value == "" {
+				continue
+			}
+			key := strings.ToLower(value)
+			if _, exists := seenNoProxy[key]; exists {
+				continue
+			}
+			seenNoProxy[key] = struct{}{}
+			noProxyValues = append(noProxyValues, value)
+		}
+	}
+	for _, entry := range base {
+		key, value, found := strings.Cut(entry, "=")
+		if found && strings.EqualFold(strings.TrimSpace(key), "NO_PROXY") {
+			addNoProxy(value)
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	addNoProxy("127.0.0.1")
+	addNoProxy("localhost")
+	noProxy := strings.Join(noProxyValues, ",")
+	return append(environment,
+		"NO_PROXY="+noProxy,
+		"no_proxy="+noProxy,
+		"LOG_FORMAT=json",
+		"RUST_LOG=warn",
+	)
+}
+
 func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 	release, err := a.acquireStartGate(ctx)
 	if err != nil {
@@ -324,7 +361,7 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 	if home, homeErr := os.UserHomeDir(); homeErr == nil && home != "" {
 		cmd.Dir = home
 	}
-	cmd.Env = append(os.Environ(), "LOG_FORMAT=json", "RUST_LOG=warn")
+	cmd.Env = codexAppServerEnvironment(os.Environ())
 	node.ConfigureProcessTree(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

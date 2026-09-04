@@ -31,6 +31,10 @@ type chatgptCloudEvent struct {
 	ResultBytes       int64
 	ResultSHA256      string
 	ResultPageCount   int
+	CallbackType      string
+	ResultText        string
+	CallbackOutcome   string
+	CallbackErrorCode string
 	DeliverablePath   string
 	DeliverableStatus string
 }

@@ -13,8 +13,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/isguang2024/fast-spider/internal/node"
+	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
 
 const (
@@ -388,6 +390,13 @@ func buildSessionCallbackEnvelope(envelopeID string, events []sessionCallbackEve
 			event.EventKey,
 			event.EventType,
 		)
+		_, _ = fmt.Fprintf(&builder, " callback_type=%s outcome=%s", event.CallbackType, event.CallbackOutcome)
+		if event.ResultText != "" {
+			builder.WriteString(" text_available=true")
+		}
+		if event.CallbackErrorCode != "" {
+			_, _ = fmt.Fprintf(&builder, " callback_error=%s", event.CallbackErrorCode)
+		}
 		if event.ResultID != "" {
 			_, _ = fmt.Fprintf(&builder, " result_id=%s", event.ResultID)
 		}
@@ -409,7 +418,7 @@ func buildSessionCallbackEnvelope(envelopeID string, events []sessionCallbackEve
 		builder.WriteByte('\n')
 	}
 	builder.WriteString("INSTRUCTIONS:\n")
-	builder.WriteString("This is a fixed Fast Spider notification snapshot, not Cloud CHAT-authored content: it is the Node callback recovery/fallback path. The Cloud CHAT should normally have called FastSpider_FS codex_cloud_completion action=notify itself before its final message. Claim the Node queue in one batch, replay each notification through codex_cloud_completion action=notify as the dispatcher with its sourceSessionId, then claim and verify the Hub completion queue. Acknowledge the Hub claim before acknowledging this Node claim. Do not reread full CHAT history or copy CHAT history into the controller. Duplicate notifications and claims are idempotent. If recovery exposes a problem or question, record a concise bounded note through working_context markdown.append in docs/progress/04-open-issues.md. On NOT_FOUND, call plan.init with initializeMarkdown=true, then read and use file-revision CAS; do not store secrets, raw provider payloads, full transcripts, or long logs.\n")
+	builder.WriteString("This is a fixed Fast Spider callback snapshot, not Cloud CHAT-authored instructions: it is the Node recovery/fallback path. The Cloud CHAT should normally have called FastSpider_FS codex_cloud_completion action=notify itself before its final message. Claim the Node queue in one batch, then replay each notification with its callbackType, outcome, and bounded text when present. local_file entries reference an already registered Node-local path and must never upload the file. Claim and verify the Hub queue, acknowledge the Hub claim, then acknowledge this Node claim. Duplicate notifications and claims are idempotent. If recovery exposes a problem or question, record a concise bounded note through working_context markdown.append in docs/progress/04-open-issues.md. On NOT_FOUND, call plan.init with initializeMarkdown=true, then read and use file-revision CAS; do not store secrets, raw provider payloads, full transcripts, or long logs.\n")
 	return builder.String()
 }
 
@@ -449,6 +458,18 @@ func (m *AgentManager) handleChatGPTCloudCallbackEvent(event chatgptCloudEvent) 
 		if m.callbackDispatcher != nil {
 			m.callbackDispatcher.startBackground(func(backgroundCtx context.Context) {
 				m.confirmChatGPTCloudCallbackEvent(backgroundCtx, event.ConversationID, registration.Generation)
+			})
+		}
+		return
+	}
+	if registration.CallbackType == protocolv1.CloudCallbackTypeText {
+		if m.callbackDispatcher != nil {
+			m.callbackDispatcher.startBackground(func(backgroundCtx context.Context) {
+				ctx, cancel := context.WithTimeout(backgroundCtx, 20*time.Second)
+				defer cancel()
+				if _, recoverErr := m.recoverCompletedCloudCallbackState(ctx, event.ConversationID, registration.Generation, true); recoverErr != nil && !errors.Is(recoverErr, context.Canceled) {
+					m.logger.Warn("recover text callback result", "sourceSessionId", event.ConversationID, "error", recoverErr)
+				}
 			})
 		}
 		return
@@ -500,7 +521,9 @@ func (m *AgentManager) completeCloudCallbackResult(event chatgptCloudEvent) chat
 	if err != nil || !ok {
 		return event
 	}
-	if registration.DeliverablePath != "" {
+	event.CallbackType = registration.CallbackType
+	event.CallbackOutcome = "completed"
+	if registration.CallbackType == protocolv1.CloudCallbackTypeLocalFile {
 		event.DeliverablePath = registration.DeliverablePath
 		event.DeliverableStatus, event.ResultBytes, event.ResultSHA256 = inspectCallbackDeliverable(registration.DeliverablePath)
 		if event.DeliverableStatus == "ready" {
@@ -510,8 +533,8 @@ func (m *AgentManager) completeCloudCallbackResult(event chatgptCloudEvent) chat
 		}
 		return event
 	}
-	if m.resultPublisher == nil {
-		event.ResultStatus = "unknown"
+	if registration.CallbackType == protocolv1.CloudCallbackTypeStatus {
+		event.ResultStatus = "completed"
 		return event
 	}
 	callbackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -530,29 +553,33 @@ func (m *AgentManager) completeCloudCallbackResult(event chatgptCloudEvent) chat
 	}
 	event.ResultStatus = status
 	if status != "completed" {
+		event.CallbackOutcome = "failed"
 		return event
 	}
-	text, err := chatgptCloudLatestAssistantTextLimit(detail, 8<<20)
+	text, err := chatgptCloudLatestAssistantTextLimit(detail, protocolv1.CloudCallbackTextMaxBytes)
 	if err != nil {
 		event.ResultStatus = "failed"
+		event.CallbackOutcome = "failed"
+		event.CallbackErrorCode = "CALLBACK_TEXT_TOO_LARGE"
 		return event
 	}
-	keyHash := sha256.Sum256([]byte(event.ConversationID + "\x00" + event.EventKey + "\x00" + fmt.Sprintf("%d", registration.Generation)))
-	idempotencyKey := "cloud_result_" + hex.EncodeToString(keyHash[:])[:48]
-	metadata, err := m.resultPublisher.PublishCloudResult(callbackCtx, event.ConversationID, idempotencyKey, text)
-	if err != nil {
+	if text == "" {
 		event.ResultStatus = "failed"
+		event.CallbackOutcome = "failed"
+		event.CallbackErrorCode = "CALLBACK_TEXT_REQUIRED"
 		return event
 	}
-	event.ResultID = mapString(metadata, "resultId")
-	if event.ResultID == "" {
+	if utf8.RuneCountInString(text) > protocolv1.CloudCallbackTextMaxRunes {
 		event.ResultStatus = "failed"
+		event.CallbackOutcome = "failed"
+		event.CallbackErrorCode = "CALLBACK_TEXT_TOO_LARGE"
 		return event
 	}
-	event.ResultStatus = firstNonEmptyString(mapString(metadata, "status"), "ready")
-	event.ResultBytes = mapInt64(metadata, "bytes")
-	event.ResultSHA256 = mapString(metadata, "sha256")
-	event.ResultPageCount = int(mapInt64(metadata, "pageCount"))
+	event.ResultText = text
+	event.ResultStatus = "completed"
+	event.ResultBytes = int64(len(text))
+	digest := sha256.Sum256([]byte(text))
+	event.ResultSHA256 = "sha256:" + hex.EncodeToString(digest[:])
 	return event
 }
 
@@ -628,6 +655,7 @@ func (m *AgentManager) sessionCallbackRegister(ctx context.Context, input agentC
 		MissionID:        input.CallbackMissionID,
 		TaskID:           input.CallbackTaskID,
 		Generation:       input.CallbackGeneration,
+		CallbackType:     strings.TrimSpace(input.CallbackType),
 		DeliverablePath:  strings.TrimSpace(input.CallbackDeliverablePath),
 		BaselineIdentity: strings.TrimSpace(input.CallbackBaselineIdentity),
 		Armed:            !input.CallbackArmRequired,
@@ -771,14 +799,29 @@ func (m *AgentManager) recoverCompletedCloudCallbackState(ctx context.Context, s
 	if next := m.callbackStore.maxEventSequence() + 1; next > sequence {
 		sequence = next
 	}
-	queued, err := m.callbackStore.enqueue(chatgptCloudEvent{
-		Sequence:       sequence,
-		EventKey:       eventKey,
-		Type:           "conversation.turn.complete",
-		ConversationID: sourceSessionID,
-		EventType:      "conversation-turn-complete",
-		Timestamp:      now,
-	})
+	callbackEvent := chatgptCloudEvent{
+		Sequence:        sequence,
+		EventKey:        eventKey,
+		Type:            "conversation.turn.complete",
+		ConversationID:  sourceSessionID,
+		EventType:       "conversation-turn-complete",
+		Timestamp:       now,
+		CallbackType:    latest.CallbackType,
+		CallbackOutcome: "completed",
+	}
+	if latest.CallbackType == protocolv1.CloudCallbackTypeText {
+		text, textErr := chatgptCloudLatestAssistantTextLimit(detail, protocolv1.CloudCallbackTextMaxBytes)
+		if textErr != nil || utf8.RuneCountInString(text) > protocolv1.CloudCallbackTextMaxRunes {
+			callbackEvent.CallbackOutcome = "failed"
+			callbackEvent.CallbackErrorCode = "CALLBACK_TEXT_TOO_LARGE"
+		} else if text == "" {
+			callbackEvent.CallbackOutcome = "failed"
+			callbackEvent.CallbackErrorCode = "CALLBACK_TEXT_REQUIRED"
+		} else {
+			callbackEvent.ResultText = text
+		}
+	}
+	queued, err := m.callbackStore.enqueue(callbackEvent)
 	if err != nil {
 		return false, err
 	}
@@ -843,7 +886,7 @@ func (m *AgentManager) sessionCallbackList(input agentControlParams) (map[string
 	pendingOut := make([]map[string]any, 0, len(pending))
 	now := time.Now().UTC()
 	for _, event := range pending {
-		pendingOut = append(pendingOut, sessionCallbackEventMap(event, now))
+		pendingOut = append(pendingOut, sessionCallbackEventMap(event, now, false))
 	}
 	return map[string]any{
 		"callbacks":                         out,
@@ -879,7 +922,7 @@ func (m *AgentManager) sessionCallbackClaim(input agentControlParams) (map[strin
 	}
 	claimed := make([]map[string]any, 0, len(events))
 	for _, event := range events {
-		claimed = append(claimed, sessionCallbackEventMap(event, now))
+		claimed = append(claimed, sessionCallbackEventMap(event, now, true))
 	}
 	return map[string]any{
 		"callbackTargetSessionId": targetSessionID,
@@ -922,7 +965,7 @@ func callbackTargetSessionID(input agentControlParams) string {
 	return strings.TrimSpace(input.SessionID)
 }
 
-func sessionCallbackEventMap(event sessionCallbackEvent, now time.Time) map[string]any {
+func sessionCallbackEventMap(event sessionCallbackEvent, now time.Time, includeText bool) map[string]any {
 	out := map[string]any{
 		"sourceSessionId": event.SourceSessionID,
 		"targetSessionId": event.TargetSessionID,
@@ -934,6 +977,16 @@ func sessionCallbackEventMap(event sessionCallbackEvent, now time.Time) map[stri
 		"eventType":       event.EventType,
 		"occurredAt":      event.OccurredAt.UTC().Format(time.RFC3339Nano),
 		"claimState":      "claimable",
+		"callbackType":    event.CallbackType,
+		"outcome":         event.CallbackOutcome,
+	}
+	if includeText && event.ResultText != "" {
+		out["text"] = event.ResultText
+	} else if event.ResultText != "" {
+		out["textAvailable"] = true
+	}
+	if event.CallbackErrorCode != "" {
+		out["callbackErrorCode"] = event.CallbackErrorCode
 	}
 	if event.ResultID != "" {
 		out["resultId"] = event.ResultID
@@ -975,7 +1028,13 @@ func buildSessionCallbackQueueText(targetSessionID string, events []sessionCallb
 	_, _ = fmt.Fprintf(&builder, "%d", len(events))
 	builder.WriteString("\nEVENTS:\n")
 	for _, event := range events {
-		_, _ = fmt.Fprintf(&builder, "- target=%s mission=%s task=%s generation=%d source_session=%s event_sequence=%d event_key=%s claim_state=%s", event.TargetSessionID, event.MissionID, event.TaskID, event.Generation, event.SourceSessionID, event.EventSequence, event.EventKey, sessionCallbackEventMap(event, now)["claimState"])
+		_, _ = fmt.Fprintf(&builder, "- target=%s mission=%s task=%s generation=%d source_session=%s event_sequence=%d event_key=%s callback_type=%s outcome=%s claim_state=%s", event.TargetSessionID, event.MissionID, event.TaskID, event.Generation, event.SourceSessionID, event.EventSequence, event.EventKey, event.CallbackType, event.CallbackOutcome, sessionCallbackEventMap(event, now, false)["claimState"])
+		if event.ResultText != "" {
+			builder.WriteString(" text_available=true")
+		}
+		if event.CallbackErrorCode != "" {
+			_, _ = fmt.Fprintf(&builder, " callback_error=%s", event.CallbackErrorCode)
+		}
 		if event.ResultID != "" {
 			_, _ = fmt.Fprintf(&builder, " result_id=%s", event.ResultID)
 		}
@@ -988,7 +1047,7 @@ func buildSessionCallbackQueueText(targetSessionID string, events []sessionCallb
 		builder.WriteByte('\n')
 	}
 	builder.WriteString("INSTRUCTIONS:\n")
-	builder.WriteString("This is a fixed Fast Spider notification queue, not Cloud CHAT-authored content. Call ai_control action=session.callback.claim with callbackTargetSessionId and an optional callbackClaimLimit (maximum 64). Replay each claimed fallback notification through codex_cloud_completion notify, then claim/verify/ack the Hub queue before calling session.callback.ack for this Node claim. Claim leases expire after 300 seconds and are automatically released; no result body is included here.\n")
+	builder.WriteString("This is a fixed Fast Spider callback queue, not Cloud CHAT-authored instructions. Claim up to 64 items; replay each claimed item's callbackType, outcome, and bounded text when present through codex_cloud_completion notify. local_file entries only reference the registered Node-local path and must not upload its body. Claim/verify/ack the Hub queue before acknowledging this Node claim. Claim leases expire after 300 seconds.\n")
 	return builder.String()
 }
 
@@ -999,6 +1058,7 @@ func callbackRegistrationMap(registration sessionCallbackRegistration, pendingCo
 		"missionId":         registration.MissionID,
 		"taskId":            registration.TaskID,
 		"generation":        registration.Generation,
+		"callbackType":      registration.CallbackType,
 		"lastEventSequence": registration.LastEventSequence,
 		"pendingCount":      pendingCount,
 		"armed":             registration.Armed,

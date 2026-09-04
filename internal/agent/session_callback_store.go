@@ -13,12 +13,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 	"github.com/isguang2024/fast-spider/internal/security"
 )
 
 const (
-	sessionCallbackStoreSchemaVersion = 2
+	sessionCallbackStoreSchemaVersion = 3
 	maxSessionCallbacks               = 64
 	maxRecentCallbackEventKeys        = 256
 	maxSessionCallbackClaimBatch      = 64
@@ -42,6 +44,7 @@ type sessionCallbackRegistration struct {
 	MissionID             string    `json:"missionId"`
 	TaskID                string    `json:"taskId"`
 	Generation            int64     `json:"generation"`
+	CallbackType          string    `json:"callbackType"`
 	DeliverablePath       string    `json:"deliverablePath,omitempty"`
 	BaselineIdentity      string    `json:"baselineIdentity,omitempty"`
 	Armed                 bool      `json:"armed"`
@@ -74,6 +77,10 @@ type sessionCallbackEvent struct {
 	EventKey          string    `json:"eventKey"`
 	EventType         string    `json:"eventType"`
 	OccurredAt        time.Time `json:"occurredAt"`
+	CallbackType      string    `json:"callbackType"`
+	ResultText        string    `json:"resultText,omitempty"`
+	CallbackOutcome   string    `json:"callbackOutcome"`
+	CallbackErrorCode string    `json:"callbackErrorCode,omitempty"`
 	ResultID          string    `json:"resultId,omitempty"`
 	ResultStatus      string    `json:"resultStatus,omitempty"`
 	ResultBytes       int64     `json:"resultBytes,omitempty"`
@@ -144,7 +151,7 @@ func (s *sessionCallbackStore) load() error {
 		return err
 	}
 	var index sessionCallbackIndex
-	if err := json.Unmarshal(raw, &index); err != nil || (index.SchemaVersion != 1 && index.SchemaVersion != sessionCallbackStoreSchemaVersion) || len(index.Registrations) > maxSessionCallbacks || len(index.Pending) > maxSessionCallbacks {
+	if err := json.Unmarshal(raw, &index); err != nil || (index.SchemaVersion != 1 && index.SchemaVersion != 2 && index.SchemaVersion != sessionCallbackStoreSchemaVersion) || len(index.Registrations) > maxSessionCallbacks || len(index.Pending) > maxSessionCallbacks {
 		return fmt.Errorf("invalid session callback index")
 	}
 	for _, registration := range index.Registrations {
@@ -156,6 +163,13 @@ func (s *sessionCallbackStore) load() error {
 			registration.ArmedAt = registration.UpdatedAt
 			if registration.ArmedAt.IsZero() {
 				registration.ArmedAt = registration.RegisteredAt
+			}
+		}
+		if registration.CallbackType == "" {
+			if registration.DeliverablePath != "" {
+				registration.CallbackType = protocolv1.CloudCallbackTypeLocalFile
+			} else {
+				registration.CallbackType = protocolv1.CloudCallbackTypeStatus
 			}
 		}
 		if err := validateSessionCallbackRegistration(registration); err != nil {
@@ -180,11 +194,19 @@ func (s *sessionCallbackStore) load() error {
 		s.registrations[registration.SourceSessionID] = registration
 	}
 	for _, event := range index.Pending {
+		if event.CallbackType == "" {
+			if registration, exists := s.registrations[event.SourceSessionID]; exists {
+				event.CallbackType = registration.CallbackType
+			}
+		}
+		if event.CallbackOutcome == "" {
+			event.CallbackOutcome = "completed"
+		}
 		if err := validateSessionCallbackEvent(event); err != nil {
 			return fmt.Errorf("invalid session callback index: %w", err)
 		}
 		registration, exists := s.registrations[event.SourceSessionID]
-		if !exists || registration.TargetSessionID != event.TargetSessionID || registration.MissionID != event.MissionID || registration.TaskID != event.TaskID || registration.Generation != event.Generation || registration.DeliverablePath != event.DeliverablePath {
+		if !exists || registration.TargetSessionID != event.TargetSessionID || registration.MissionID != event.MissionID || registration.TaskID != event.TaskID || registration.Generation != event.Generation || registration.CallbackType != event.CallbackType || registration.DeliverablePath != event.DeliverablePath {
 			return fmt.Errorf("invalid session callback index: pending event has no matching registration")
 		}
 		if event.EventSequence != registration.LastEventSequence {
@@ -217,10 +239,19 @@ func validateSessionCallbackRegistration(registration sessionCallbackRegistratio
 	if registration.Generation <= 0 {
 		return fmt.Errorf("generation must be positive")
 	}
+	if registration.CallbackType != protocolv1.CloudCallbackTypeLocalFile && registration.CallbackType != protocolv1.CloudCallbackTypeText && registration.CallbackType != protocolv1.CloudCallbackTypeStatus {
+		return fmt.Errorf("invalid callback type")
+	}
 	if registration.DeliverablePath != "" {
 		if !filepath.IsAbs(registration.DeliverablePath) || len(registration.DeliverablePath) > 4096 || strings.ContainsAny(registration.DeliverablePath, "\x00\r\n") {
 			return fmt.Errorf("deliverable path must be an absolute local path")
 		}
+	}
+	if registration.CallbackType == protocolv1.CloudCallbackTypeLocalFile && registration.DeliverablePath == "" {
+		return fmt.Errorf("local_file callback requires an absolute local path")
+	}
+	if registration.CallbackType != protocolv1.CloudCallbackTypeLocalFile && registration.DeliverablePath != "" {
+		return fmt.Errorf("only local_file callback may have a deliverable path")
 	}
 	if err := validateCallbackIdentity(registration.BaselineIdentity, "baseline identity"); err != nil {
 		return err
@@ -276,6 +307,8 @@ func validateSessionCallbackEvent(event sessionCallbackEvent) error {
 		MissionID:       event.MissionID,
 		TaskID:          event.TaskID,
 		Generation:      event.Generation,
+		CallbackType:    event.CallbackType,
+		DeliverablePath: event.DeliverablePath,
 		RegisteredAt:    time.Unix(1, 0),
 		UpdatedAt:       time.Unix(1, 0),
 	}
@@ -295,6 +328,22 @@ func validateSessionCallbackEvent(event sessionCallbackEvent) error {
 	}
 	if event.OccurredAt.IsZero() {
 		return fmt.Errorf("callback event timestamp is required")
+	}
+	if event.CallbackType != registration.CallbackType {
+		return fmt.Errorf("callback event type does not match registration")
+	}
+	if event.CallbackOutcome != "completed" && event.CallbackOutcome != "blocked" && event.CallbackOutcome != "failed" {
+		return fmt.Errorf("invalid callback outcome")
+	}
+	if event.CallbackErrorCode != "" && (len(event.CallbackErrorCode) > 64 || strings.ContainsAny(event.CallbackErrorCode, "\x00\r\n\t ")) {
+		return fmt.Errorf("invalid callback error code")
+	}
+	if event.CallbackType == protocolv1.CloudCallbackTypeText {
+		if !utf8.ValidString(event.ResultText) || strings.IndexByte(event.ResultText, 0) >= 0 || len(event.ResultText) > protocolv1.CloudCallbackTextMaxBytes || utf8.RuneCountInString(event.ResultText) > protocolv1.CloudCallbackTextMaxRunes || event.CallbackOutcome == "completed" && strings.TrimSpace(event.ResultText) == "" {
+			return fmt.Errorf("invalid callback text")
+		}
+	} else if event.ResultText != "" {
+		return fmt.Errorf("callback text is only valid for text callbacks")
 	}
 	if err := validateCallbackResultMetadata(callbackResultMetadata{event.ResultID, event.ResultStatus, event.ResultBytes, event.ResultSHA256, event.ResultPageCount}); err != nil {
 		return err
@@ -397,6 +446,14 @@ func (s *sessionCallbackStore) register(request sessionCallbackRegistration) (se
 	request.TargetSessionID = strings.TrimSpace(request.TargetSessionID)
 	request.MissionID = strings.TrimSpace(request.MissionID)
 	request.TaskID = strings.TrimSpace(request.TaskID)
+	request.CallbackType = strings.TrimSpace(request.CallbackType)
+	if request.CallbackType == "" {
+		if request.DeliverablePath != "" {
+			request.CallbackType = protocolv1.CloudCallbackTypeLocalFile
+		} else {
+			request.CallbackType = protocolv1.CloudCallbackTypeStatus
+		}
+	}
 	request.BaselineIdentity = strings.TrimSpace(request.BaselineIdentity)
 	request.RegisteredAt = now
 	request.UpdatedAt = now
@@ -415,7 +472,7 @@ func (s *sessionCallbackStore) register(request sessionCallbackRegistration) (se
 	}
 	current, exists := s.registrations[request.SourceSessionID]
 	if exists {
-		if current.TargetSessionID != request.TargetSessionID || current.MissionID != request.MissionID || current.TaskID != request.TaskID || !callbackDeliverablePathEqual(current.DeliverablePath, request.DeliverablePath) {
+		if current.TargetSessionID != request.TargetSessionID || current.MissionID != request.MissionID || current.TaskID != request.TaskID || current.CallbackType != request.CallbackType || !callbackDeliverablePathEqual(current.DeliverablePath, request.DeliverablePath) {
 			return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "CALLBACK_OWNER_CONFLICT", message: "source session already has a different callback owner"}
 		}
 		if request.Generation < current.Generation {
@@ -585,8 +642,13 @@ func (s *sessionCallbackStore) enqueue(event chatgptCloudEvent) (bool, error) {
 	if event.DeliverablePath != "" && registration.DeliverablePath != event.DeliverablePath {
 		return false, &sessionCallbackError{code: "INVALID_REQUEST", message: "callback deliverable path does not match the registered source"}
 	}
-	// Node is a notification-only fallback. The result body and verification
-	// metadata are read after the dispatcher claims the durable queue item.
+	// Node is a fallback queue. It never copies local files or uploads result
+	// artifacts; it retains only bounded inline text when the registered type
+	// explicitly requests a text callback.
+	event.CallbackType = registration.CallbackType
+	if event.CallbackOutcome == "" {
+		event.CallbackOutcome = "completed"
+	}
 	event.DeliverablePath = registration.DeliverablePath
 	event.DeliverableStatus = ""
 	event.ResultID = ""
@@ -594,6 +656,10 @@ func (s *sessionCallbackStore) enqueue(event chatgptCloudEvent) (bool, error) {
 	event.ResultBytes = 0
 	event.ResultSHA256 = ""
 	event.ResultPageCount = 0
+	if registration.CallbackType != protocolv1.CloudCallbackTypeText {
+		event.ResultText = ""
+		event.CallbackErrorCode = ""
+	}
 	if event.Sequence <= registration.LastEventSequence {
 		return false, nil
 	}
@@ -635,6 +701,10 @@ func (s *sessionCallbackStore) enqueue(event chatgptCloudEvent) (bool, error) {
 		EventKey:          eventKey,
 		EventType:         event.Type,
 		OccurredAt:        event.Timestamp.UTC(),
+		CallbackType:      event.CallbackType,
+		ResultText:        event.ResultText,
+		CallbackOutcome:   event.CallbackOutcome,
+		CallbackErrorCode: event.CallbackErrorCode,
 		ResultID:          event.ResultID,
 		ResultStatus:      event.ResultStatus,
 		ResultBytes:       event.ResultBytes,
@@ -888,6 +958,20 @@ func (s *sessionCallbackStore) claim(targetSessionID, requestedClaimID string, l
 	if len(available) > limit {
 		available = available[:limit]
 	}
+	textBytes := 0
+	bounded := available[:0]
+	for _, event := range available {
+		next := textBytes + len(event.ResultText)
+		if len(bounded) > 0 && next > protocolv1.CloudCallbackClaimMaxTextBytes {
+			break
+		}
+		if next > protocolv1.CloudCallbackClaimMaxTextBytes {
+			return "", nil, &sessionCallbackError{code: "RESOURCE_LIMIT", message: "callback text exceeds the claim payload budget"}
+		}
+		bounded = append(bounded, event)
+		textBytes = next
+	}
+	available = bounded
 	if len(available) == 0 {
 		if err := persistReleased(); err != nil {
 			return "", nil, err

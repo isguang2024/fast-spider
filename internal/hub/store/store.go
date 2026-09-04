@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 	_ "modernc.org/sqlite"
@@ -206,6 +207,8 @@ type CloudCompletionNotificationRecord struct {
 	Generation       int64
 	NotificationKind string
 	Outcome          string
+	CallbackType     string
+	ResultText       string
 	SourceSessionID  string
 	TargetSessionID  string
 	DeliverablePath  string
@@ -1251,7 +1254,7 @@ func (s *Store) UpdateCloudCollaboration(ctx context.Context, ownerID, collabora
 }
 
 const cloudCompletionNotificationColumns = `notification_id, owner_id, collaboration_id, task_id, generation,
-		notification_kind, outcome, source_session_id, target_session_id, COALESCE(deliverable_path,''), state,
+		notification_kind, outcome, callback_type, COALESCE(result_text,''), source_session_id, target_session_id, COALESCE(deliverable_path,''), state,
 		COALESCE(claim_id,''), claimed_at, acked_at, created_at, updated_at`
 
 func scanCloudCompletionNotification(scanner interface{ Scan(...any) error }) (CloudCompletionNotificationRecord, error) {
@@ -1260,7 +1263,7 @@ func scanCloudCompletionNotification(scanner interface{ Scan(...any) error }) (C
 	var createdAt, updatedAt int64
 	if err := scanner.Scan(
 		&rec.NotificationID, &rec.OwnerID, &rec.CollaborationID, &rec.TaskID, &rec.Generation,
-		&rec.NotificationKind, &rec.Outcome, &rec.SourceSessionID, &rec.TargetSessionID, &rec.DeliverablePath, &rec.State,
+		&rec.NotificationKind, &rec.Outcome, &rec.CallbackType, &rec.ResultText, &rec.SourceSessionID, &rec.TargetSessionID, &rec.DeliverablePath, &rec.State,
 		&rec.ClaimID, &claimedAt, &ackedAt, &createdAt, &updatedAt,
 	); err != nil {
 		return CloudCompletionNotificationRecord{}, err
@@ -1279,12 +1282,15 @@ func scanCloudCompletionNotification(scanner interface{ Scan(...any) error }) (C
 }
 
 func (s *Store) EnqueueCloudCompletionNotification(ctx context.Context, rec CloudCompletionNotificationRecord) (CloudCompletionNotificationRecord, bool, error) {
+	if err := normalizeAndValidateCloudCompletionRecord(&rec); err != nil {
+		return CloudCompletionNotificationRecord{}, false, err
+	}
 	result, err := s.db.ExecContext(ctx, `INSERT INTO cloud_completion_notifications(
-		notification_id,owner_id,collaboration_id,task_id,generation,notification_kind,outcome,
+		notification_id,owner_id,collaboration_id,task_id,generation,notification_kind,outcome,callback_type,result_text,
 		source_session_id,target_session_id,deliverable_path,state,created_at,updated_at
-	) VALUES(?,?,?,?,?,?,?,?,?,?, 'pending',?,?)
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?, 'pending',?,?)
 	ON CONFLICT(owner_id,collaboration_id,task_id,generation,notification_kind) DO NOTHING`,
-		rec.NotificationID, rec.OwnerID, rec.CollaborationID, rec.TaskID, rec.Generation, rec.NotificationKind, rec.Outcome,
+		rec.NotificationID, rec.OwnerID, rec.CollaborationID, rec.TaskID, rec.Generation, rec.NotificationKind, rec.Outcome, rec.CallbackType, rec.ResultText,
 		rec.SourceSessionID, rec.TargetSessionID, rec.DeliverablePath, rec.CreatedAt.Unix(), rec.UpdatedAt.Unix())
 	if err != nil {
 		return CloudCompletionNotificationRecord{}, false, err
@@ -1297,7 +1303,7 @@ func (s *Store) EnqueueCloudCompletionNotification(ctx context.Context, rec Clou
 	if err != nil {
 		return CloudCompletionNotificationRecord{}, false, err
 	}
-	if stored.NotificationID != rec.NotificationID || stored.Outcome != rec.Outcome || stored.SourceSessionID != rec.SourceSessionID || stored.TargetSessionID != rec.TargetSessionID || stored.DeliverablePath != rec.DeliverablePath {
+	if stored.NotificationID != rec.NotificationID || stored.Outcome != rec.Outcome || stored.CallbackType != rec.CallbackType || stored.ResultText != rec.ResultText || stored.SourceSessionID != rec.SourceSessionID || stored.TargetSessionID != rec.TargetSessionID || stored.DeliverablePath != rec.DeliverablePath {
 		return CloudCompletionNotificationRecord{}, false, ErrConflict
 	}
 	return stored, inserted == 0, nil
@@ -1307,13 +1313,16 @@ func (s *Store) EnqueueCloudCompletionNotification(ctx context.Context, rec Clou
 // notification after the same task generation later completes. Active claims
 // remain immutable until their lease expires; acknowledged records are final.
 func (s *Store) UpgradeCloudCompletionNotification(ctx context.Context, rec CloudCompletionNotificationRecord, expiredClaimCutoff time.Time) (CloudCompletionNotificationRecord, bool, error) {
+	if err := normalizeAndValidateCloudCompletionRecord(&rec); err != nil {
+		return CloudCompletionNotificationRecord{}, false, err
+	}
 	result, err := s.db.ExecContext(ctx, `UPDATE cloud_completion_notifications
-		SET outcome='completed',state='pending',claim_id=NULL,claimed_at=NULL,updated_at=?
+		SET outcome='completed',result_text=?,state='pending',claim_id=NULL,claimed_at=NULL,updated_at=?
 		WHERE owner_id=? AND collaboration_id=? AND task_id=? AND generation=? AND notification_kind=?
-		AND notification_id=? AND source_session_id=? AND target_session_id=? AND COALESCE(deliverable_path,'')=?
+		AND notification_id=? AND callback_type=? AND source_session_id=? AND target_session_id=? AND COALESCE(deliverable_path,'')=?
 		AND outcome IN ('failed','blocked') AND (state='pending' OR (state='claimed' AND claimed_at<=?))`,
-		rec.UpdatedAt.Unix(), rec.OwnerID, rec.CollaborationID, rec.TaskID, rec.Generation, rec.NotificationKind,
-		rec.NotificationID, rec.SourceSessionID, rec.TargetSessionID, rec.DeliverablePath, expiredClaimCutoff.Unix())
+		rec.ResultText, rec.UpdatedAt.Unix(), rec.OwnerID, rec.CollaborationID, rec.TaskID, rec.Generation, rec.NotificationKind,
+		rec.NotificationID, rec.CallbackType, rec.SourceSessionID, rec.TargetSessionID, rec.DeliverablePath, expiredClaimCutoff.Unix())
 	if err != nil {
 		return CloudCompletionNotificationRecord{}, false, err
 	}
@@ -1325,10 +1334,37 @@ func (s *Store) UpgradeCloudCompletionNotification(ctx context.Context, rec Clou
 	if err != nil {
 		return CloudCompletionNotificationRecord{}, false, err
 	}
-	if affected != 1 || stored.Outcome != "completed" || stored.NotificationID != rec.NotificationID || stored.SourceSessionID != rec.SourceSessionID || stored.TargetSessionID != rec.TargetSessionID || stored.DeliverablePath != rec.DeliverablePath {
+	if affected != 1 || stored.Outcome != "completed" || stored.NotificationID != rec.NotificationID || stored.CallbackType != rec.CallbackType || stored.ResultText != rec.ResultText || stored.SourceSessionID != rec.SourceSessionID || stored.TargetSessionID != rec.TargetSessionID || stored.DeliverablePath != rec.DeliverablePath {
 		return CloudCompletionNotificationRecord{}, false, ErrConflict
 	}
 	return stored, false, nil
+}
+
+func normalizeAndValidateCloudCompletionRecord(rec *CloudCompletionNotificationRecord) error {
+	if rec.CallbackType == "" {
+		if rec.DeliverablePath != "" {
+			rec.CallbackType = protocolv1.CloudCallbackTypeLocalFile
+		} else {
+			rec.CallbackType = protocolv1.CloudCallbackTypeStatus
+		}
+	}
+	switch rec.CallbackType {
+	case protocolv1.CloudCallbackTypeLocalFile:
+		if rec.DeliverablePath == "" || rec.ResultText != "" {
+			return ErrConflict
+		}
+	case protocolv1.CloudCallbackTypeText:
+		if rec.DeliverablePath != "" || !utf8.ValidString(rec.ResultText) || strings.IndexByte(rec.ResultText, 0) >= 0 || len(rec.ResultText) > protocolv1.CloudCallbackTextMaxBytes || utf8.RuneCountInString(rec.ResultText) > protocolv1.CloudCallbackTextMaxRunes || (rec.Outcome == "completed" && strings.TrimSpace(rec.ResultText) == "") {
+			return ErrConflict
+		}
+	case protocolv1.CloudCallbackTypeStatus:
+		if rec.DeliverablePath != "" || rec.ResultText != "" {
+			return ErrConflict
+		}
+	default:
+		return ErrConflict
+	}
+	return nil
 }
 
 func (s *Store) getCloudCompletionNotificationByTask(ctx context.Context, ownerID, collaborationID, taskID string, generation int64, kind string) (CloudCompletionNotificationRecord, error) {
@@ -1340,7 +1376,7 @@ func (s *Store) getCloudCompletionNotificationByTask(ctx context.Context, ownerI
 	return rec, err
 }
 
-func (s *Store) ClaimCloudCompletionNotifications(ctx context.Context, ownerID, targetSessionID, claimID string, limit int, now time.Time, lease time.Duration) ([]CloudCompletionNotificationRecord, error) {
+func (s *Store) ClaimCloudCompletionNotifications(ctx context.Context, ownerID, targetSessionID, claimID string, limit, maxTextBytes int, now time.Time, lease time.Duration) ([]CloudCompletionNotificationRecord, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -1378,6 +1414,22 @@ func (s *Store) ClaimCloudCompletionNotifications(ctx context.Context, ownerID, 
 		WHERE owner_id=? AND target_session_id=? AND state='pending' ORDER BY created_at,notification_id LIMIT ?`, ownerID, targetSessionID, limit)
 	if err != nil {
 		return nil, err
+	}
+	if maxTextBytes > 0 {
+		textBytes := 0
+		selected := available[:0]
+		for _, notification := range available {
+			next := textBytes + len(notification.ResultText)
+			if len(selected) > 0 && next > maxTextBytes {
+				break
+			}
+			if next > maxTextBytes {
+				return nil, ErrResourceLimit
+			}
+			selected = append(selected, notification)
+			textBytes = next
+		}
+		available = selected
 	}
 	for i := range available {
 		result, updateErr := tx.ExecContext(ctx, `UPDATE cloud_completion_notifications SET state='claimed',claim_id=?,claimed_at=?,updated_at=?

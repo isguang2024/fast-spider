@@ -40,8 +40,18 @@ var ResultPoolCapability = CapabilityDescriptor{
 	Actions: []string{"create", "attachPage", "commit", "getManifest", "readPage", "lookup", "abort", "fail"},
 }
 
+const (
+	CloudCallbackTypeLocalFile = "local_file"
+	CloudCallbackTypeText      = "text"
+	CloudCallbackTypeStatus    = "status"
+
+	CloudCallbackTextMaxRunes      = 2000
+	CloudCallbackTextMaxBytes      = 8 << 10
+	CloudCallbackClaimMaxTextBytes = 64 << 10
+)
+
 var AgentCapability = CapabilityDescriptor{
-	CapabilityId: "agent.control", Version: "1.4",
+	CapabilityId: "agent.control", Version: "1.5",
 	Actions: []string{"routing.status", "providers.list", "provider.readiness", "models.list", "provider.capabilities", "projects.list", "skills.list", "hooks.list", "permissions.list", "plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list", "session.list", "session.get", "session.create", "session.send", "session.steer", "session.respond", "session.watch", "session.callback.register", "session.callback.arm", "session.callback.unregister", "session.callback.list", "session.callback.claim", "session.callback.ack", "session.cancel", "session.result", "session.rename", "session.archive", "session.unarchive", "session.delete", "session.fork", "session.compact", "session.rollback", "session.goal.get", "session.goal.set", "session.goal.clear", "session.settings.update", "session.review"},
 }
 

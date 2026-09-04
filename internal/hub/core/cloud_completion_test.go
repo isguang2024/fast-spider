@@ -10,6 +10,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/isguang2024/fast-spider/internal/hub/store"
+	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
 
 func TestCloudCompletionDistinguishesMissingCollaborationAndTask(t *testing.T) {
@@ -34,6 +37,143 @@ func TestCloudCompletionDistinguishesMissingCollaborationAndTask(t *testing.T) {
 	capabilityErr = nil
 	if !errors.As(err, &capabilityErr) || capabilityErr.Code != "TASK_NOT_FOUND" {
 		t.Fatalf("missing task error=%v", err)
+	}
+}
+
+func TestCloudCompletionSupportsBoundedTextAndStatusCallbacks(t *testing.T) {
+	service, ownerID, machineID, _ := newCloudCollaborationTestService(t)
+	ctx := context.Background()
+	created, err := service.CloudCollaboration(ctx, ownerID, CloudCollaborationRequest{
+		Action: "create", MachineID: machineID, IdempotencyKey: "completion-typed-callbacks-001",
+		ControllerSessionID: "codex-controller", DispatcherSessionID: "codex-dispatcher",
+		Title: "Typed callbacks", Goal: "Return bounded results", DoneWhen: "Both callbacks are acknowledged",
+		WorkingDirectory: t.TempDir(), AllowedActions: []string{"chat.create", "file.read"}, MaxActiveChats: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collaborationID := created["collaborationId"].(string)
+	current, err := service.CloudCollaboration(ctx, ownerID, CloudCollaborationRequest{
+		Action: "lease.acquire", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(created, "revision"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range []struct {
+		id           string
+		callbackType string
+	}{
+		{id: "task-text", callbackType: protocolv1.CloudCallbackTypeText},
+		{id: "task-status", callbackType: protocolv1.CloudCallbackTypeStatus},
+	} {
+		current, err = service.CloudCollaboration(ctx, ownerID, CloudCollaborationRequest{
+			Action: "task.add", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(current, "revision"),
+			TaskID: task.id, Title: task.id, Prompt: "Return the requested callback.", AccessMode: "read_only", CallbackType: task.callbackType, AllowedActions: []string{"chat.create", "file.read"},
+		})
+		if err != nil {
+			t.Fatalf("add %s: %v", task.id, err)
+		}
+		current, err = service.CloudCollaboration(ctx, ownerID, CloudCollaborationRequest{
+			Action: "task.dispatch", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(current, "revision"), TaskID: task.id,
+		})
+		if err != nil {
+			t.Fatalf("dispatch %s: %v", task.id, err)
+		}
+	}
+	_, err = service.CloudCompletion(ctx, ownerID, CloudCompletionRequest{
+		Action: "notify", CollaborationID: collaborationID, TaskID: "task-text", ActorSessionID: "$self", Outcome: "completed", CallbackType: protocolv1.CloudCallbackTypeText, Text: strings.Repeat("界", protocolv1.CloudCallbackTextMaxRunes+1),
+	})
+	var capabilityErr *CapabilityCallError
+	if !errors.As(err, &capabilityErr) || capabilityErr.Code != "CALLBACK_TEXT_TOO_LARGE" {
+		t.Fatalf("oversized text error=%v", err)
+	}
+	textResult := "已完成，结果保存在短文本回调中。"
+	notified, err := service.CloudCompletion(ctx, ownerID, CloudCompletionRequest{
+		Action: "notify", CollaborationID: collaborationID, TaskID: "task-text", ActorSessionID: "$self", Outcome: "completed", CallbackType: protocolv1.CloudCallbackTypeText, Text: textResult,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	notification := notified["notification"].(map[string]any)
+	if notification["textAvailable"] != true || notification["text"] != nil {
+		t.Fatalf("notify response leaked text=%#v", notification)
+	}
+	if _, err := service.CloudCompletion(ctx, ownerID, CloudCompletionRequest{
+		Action: "notify", CollaborationID: collaborationID, TaskID: "task-status", ActorSessionID: "$self", Outcome: "completed", CallbackType: protocolv1.CloudCallbackTypeStatus, Text: "not allowed",
+	}); err == nil {
+		t.Fatal("status callback accepted text")
+	}
+	if _, err := service.CloudCompletion(ctx, ownerID, CloudCompletionRequest{
+		Action: "notify", CollaborationID: collaborationID, TaskID: "task-status", ActorSessionID: "$self", Outcome: "completed", CallbackType: protocolv1.CloudCallbackTypeStatus,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := service.CloudCompletion(ctx, ownerID, CloudCompletionRequest{Action: "claim", ActorSessionID: "codex-dispatcher", ClaimID: "claim-typed-callbacks", Limit: 2})
+	if err != nil || claimed["claimedCount"] != 2 {
+		t.Fatalf("claim=%#v err=%v", claimed, err)
+	}
+	items := claimed["claimed"].([]map[string]any)
+	acks := make([]CloudCompletionAckItem, 0, len(items))
+	seenText, seenStatus := false, false
+	for _, item := range items {
+		acks = append(acks, CloudCompletionAckItem{NotificationID: item["notificationId"].(string)})
+		switch item["callbackType"] {
+		case protocolv1.CloudCallbackTypeText:
+			seenText = item["text"] == textResult && item["deliverablePath"] == nil
+		case protocolv1.CloudCallbackTypeStatus:
+			_, hasText := item["text"]
+			_, hasPath := item["deliverablePath"]
+			seenStatus = !hasText && !hasPath
+		}
+	}
+	if !seenText || !seenStatus {
+		t.Fatalf("typed claim=%#v", items)
+	}
+	if _, err := service.CloudCompletion(ctx, ownerID, CloudCompletionRequest{Action: "ack", ActorSessionID: "codex-dispatcher", ClaimID: "claim-typed-callbacks", Acknowledgements: acks}); err != nil {
+		t.Fatal(err)
+	}
+	_, state, err := service.loadCloudCollaboration(ctx, ownerID, collaborationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range state.Tasks {
+		if task.Status != "done" {
+			t.Fatalf("task=%+v", task)
+		}
+		if task.CallbackType == protocolv1.CloudCallbackTypeText && (task.ResultText != textResult || task.ResultSHA256 == "") {
+			t.Fatalf("text task=%+v", task)
+		}
+		if task.CallbackType == protocolv1.CloudCallbackTypeStatus && (task.ResultText != "" || task.ResultSHA256 != "") {
+			t.Fatalf("status task=%+v", task)
+		}
+	}
+}
+
+func TestCloudCompletionFailedTextWithoutBodyHasNoSyntheticDigest(t *testing.T) {
+	notification := store.CloudCompletionNotificationRecord{
+		CallbackType: protocolv1.CloudCallbackTypeText,
+		Outcome:      "failed",
+	}
+	ack, err := resolveCloudCompletionAcknowledgement(notification, CloudCompletionAckItem{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ack.ResultBytes != 0 || ack.ResultSHA256 != "" || ack.ResultStatus != "failed" {
+		t.Fatalf("ack=%#v", ack)
+	}
+}
+
+func TestCloudCollaborationBootstrapDefinesLocalFileCallbackSlot(t *testing.T) {
+	resultPath := filepath.Join(t.TempDir(), ".fast-spider-result-test.md")
+	prompt := cloudCollaborationBootstrap("collab-test", cloudCollaborationState{
+		WorkingDirectory: t.TempDir(),
+	}, cloudCollaborationTask{
+		ID: "task-file", Generation: 1, CallbackType: protocolv1.CloudCallbackTypeLocalFile, ResultPath: resultPath, AccessMode: "read_only",
+	})
+	for _, needle := range []string{resultPath, "callback-only output slot", "accessMode=read_only", "no permission to write any other path", "Do not upload"} {
+		if !strings.Contains(prompt, needle) {
+			t.Fatalf("bootstrap missing %q: %s", needle, prompt)
+		}
 	}
 }
 

@@ -15,6 +15,11 @@ semantic versioning for public releases.
 - Make reused CHAT dispatch restart-safe with a stable provider message ID:
   retries reconcile or resume the same turn before arming the callback, and
   status recovery cannot mistake the previous completed turn for the new task.
+- Add durable typed collaboration callbacks: `local_file` references a result
+  written directly through FS to a registered Node-local path without uploading
+  it, `text` is limited to 2000 Unicode characters/8192 UTF-8 bytes, and `status`
+  carries no payload. Batch claims remain capped at 64 records and now also cap
+  total inline text at 64 KiB.
 
 ## 0.4.53 - 2026-09-04
 

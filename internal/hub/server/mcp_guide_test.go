@@ -83,7 +83,7 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		}
 		if name == "codex_cloud_completion" {
 			guideText := strings.Join(append(append(append([]string{guide.Summary}, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
-			for _, needle := range []string{"notification", "actorSessionId=$self", "64", "five-minute", "verifies", "ack", "Node fallback", "result bodies"} {
+			for _, needle := range []string{"callbackType", "actorSessionId=$self", "local_file", "2000", "8192", "64 KiB", "five-minute", "verifies", "ack", "Node fallback", "does not upload"} {
 				if !strings.Contains(guideText, needle) {
 					t.Fatalf("codex_cloud_completion guide missing %q: %+v", needle, guide)
 				}

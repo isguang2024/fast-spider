@@ -231,6 +231,7 @@ type cloudCollaborationParams struct {
 	AccessMode          string                        `json:"accessMode,omitempty"`
 	WriteScope          string                        `json:"writeScope,omitempty"`
 	DeliverablePath     string                        `json:"deliverablePath,omitempty"`
+	CallbackType        string                        `json:"callbackType,omitempty"`
 	EventID             string                        `json:"eventId,omitempty"`
 	EventType           string                        `json:"eventType,omitempty"`
 	ResultID            string                        `json:"resultId,omitempty"`
@@ -249,6 +250,7 @@ type cloudCollaborationParams struct {
 	InactiveVerified    bool                          `json:"inactiveVerified,omitempty"`
 	SourceSessionID     string                        `json:"sourceSessionId,omitempty"`
 	Outcome             string                        `json:"outcome,omitempty"`
+	Text                string                        `json:"text,omitempty"`
 	ClaimID             string                        `json:"claimId,omitempty"`
 	Acknowledgements    []cloudCompletionAckItemInput `json:"acknowledgements,omitempty"`
 }
@@ -260,6 +262,8 @@ type cloudCompletionInput struct {
 	ActorSessionID   string                        `json:"actorSessionId"`
 	SourceSessionID  string                        `json:"sourceSessionId,omitempty"`
 	Outcome          string                        `json:"outcome,omitempty"`
+	CallbackType     string                        `json:"callbackType,omitempty"`
+	Text             string                        `json:"text,omitempty"`
 	ClaimID          string                        `json:"claimId,omitempty"`
 	Limit            int                           `json:"limit,omitempty"`
 	Acknowledgements []cloudCompletionAckItemInput `json:"acknowledgements,omitempty"`
@@ -657,15 +661,15 @@ func (s *Server) newMCPHandler() http.Handler {
 	})
 }
 
-const mcpServerInstructions = `FastSpider_FS is a development control plane. With @FastSpider_FS, try a read-only tool before judging availability.
+const mcpServerInstructions = `@FastSpider_FS is a development control plane; try read-only first.
 
-Tools may be lazy. If absent, use api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), machine_list. Never load all 22 schemas or request login before checking.
+Lazy tools: api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Never load all 22 schemas.
 
-Map: capability_list,machine_list,machine_get; audit_log,operation_log; code_search,file_read,file_edit; shell_run,build_control,job_watch,job_cancel; git_control; browser_control,screenshot_take; ai_control; codex_cloud_collaboration,codex_cloud_completion; working_context; thinking_team; artifact_get. Load one view=capability or view=tool|workflow|error guide. Local Codex may report desktopBridge, nativeConversationStreaming=unsupported, and Desktop owner/control bridge.
+Map: capability_list,machine_list,machine_get; audit_log,operation_log; code_search,file_read,file_edit; shell_run,build_control,job_watch,job_cancel; git_control; browser_control,screenshot_take; ai_control; codex_cloud_collaboration,codex_cloud_completion; working_context; thinking_team; artifact_get. Load one view=capability or view=tool|workflow|error. Local Codex: desktopBridge, nativeConversationStreaming=unsupported, Desktop owner/control bridge.
 
-AI: Cloud CHAT is optional assistance. Use an exact Codex or ChatGPT sessionId regardless of creator; local Codex uses metadataOnly=true and sends only when idle. Never replace a busy target. Without an ID, create a clean session for unrelated work; never list, search, or guess an old one. session.list is request-only. backend=chatgpt_cloud is a visible ChatGPT CHAT. targetSessionId reuses it; omission creates a new quick_chat. CHAT may continue a known Codex ID via session.get/send. CHAT writes its result then calls codex_cloud_completion notify; the dispatcher claims up to 64 durable notices, verifies, and acks. Callback routes are collaboration-managed: reused CHATs save the old completion baseline unarmed, send, then arm. Do not call session.callback.register/arm directly. Node callback delivery is event/deadline driven fallback; 30-minute fallbacks run only without a healthy shared realtime connection. A scheduler turn performs one bounded action then idles; early status.poll returns not_due. Stall recovery sends “请继续”.
+AI: Cloud CHAT is optional assistance. Use an exact Codex or ChatGPT sessionId regardless of creator; local Codex uses metadataOnly=true and sends only when idle. Never replace a busy target. Without an ID, create a clean session; never list, search, or guess an old one. session.list is request-only. backend=chatgpt_cloud is a visible ChatGPT CHAT. targetSessionId reuses it; omission creates a new quick_chat. CHAT may continue a known Codex ID. task.add selects local_file, text, or status. local_file writes the registered Node-local path without upload; text is at most 2000 characters/8192 bytes; status has no payload. The dispatcher claims up to 64 durable callbacks and 64 KiB inline text, verifies, then acks. Collaboration owns callback routes: save baseline unarmed, send, arm. Node callback delivery is event/deadline driven fallback; 30-minute fallbacks require no healthy shared realtime connection. Scheduler turns take one bounded action then idle; early status.poll is not_due. Stalls receive “请继续”.
 
-Ops: unknown machineId -> machine_list. Finish jobId via job_watch. File edits use read/SHA/preview/CAS; close browsers. Windows shell_run uses powershell.exe or cmd.exe argv, e.g. tzutil /g, not a separate PowerShell tool.`
+Ops: unknown machineId -> machine_list; finish jobId with job_watch; edits use read/SHA/preview/CAS; close browsers. Windows shell_run uses powershell.exe or cmd.exe argv, e.g. tzutil /g, not a separate PowerShell tool.`
 
 func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	server := mcp.NewServer(

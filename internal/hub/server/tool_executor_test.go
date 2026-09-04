@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/isguang2024/fast-spider/internal/hub/core"
+	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
 
 func TestValidateCloudCompletionToolInputReturnsRequestErrors(t *testing.T) {
@@ -17,6 +19,9 @@ func TestValidateCloudCompletionToolInputReturnsRequestErrors(t *testing.T) {
 		{Action: "unknown", ActorSessionID: "dispatcher"},
 		{Action: "notify", ActorSessionID: "$self", TaskID: "task-1", Outcome: "completed"},
 		{Action: "notify", ActorSessionID: "$self", CollaborationID: "collab-1", TaskID: "task-1", Outcome: "completed", SourceSessionID: "chat-1"},
+		{Action: "notify", ActorSessionID: "$self", CollaborationID: "collab-1", TaskID: "task-1", Outcome: "completed", CallbackType: "unknown"},
+		{Action: "notify", ActorSessionID: "$self", CollaborationID: "collab-1", TaskID: "task-1", Outcome: "completed", CallbackType: protocolv1.CloudCallbackTypeStatus, Text: "not allowed"},
+		{Action: "notify", ActorSessionID: "$self", CollaborationID: "collab-1", TaskID: "task-1", Outcome: "completed", CallbackType: protocolv1.CloudCallbackTypeText, Text: strings.Repeat("界", protocolv1.CloudCallbackTextMaxRunes+1)},
 		{Action: "claim", ActorSessionID: "bad actor"},
 		{Action: "ack", ActorSessionID: "dispatcher", ClaimID: "bad claim"},
 	}
@@ -29,6 +34,8 @@ func TestValidateCloudCompletionToolInputReturnsRequestErrors(t *testing.T) {
 	}
 	for _, input := range []cloudCompletionInput{
 		{Action: "notify", ActorSessionID: "$self", CollaborationID: "collab-1", TaskID: "task-1", Outcome: "completed"},
+		{Action: "notify", ActorSessionID: "$self", CollaborationID: "collab-1", TaskID: "task-1", Outcome: "completed", CallbackType: protocolv1.CloudCallbackTypeText, Text: "short result"},
+		{Action: "notify", ActorSessionID: "$self", CollaborationID: "collab-1", TaskID: "task-1", Outcome: "completed", CallbackType: protocolv1.CloudCallbackTypeStatus},
 		{Action: "notify", ActorSessionID: "dispatcher", SourceSessionID: "chat-1", CollaborationID: "collab-1", TaskID: "task-1", Outcome: "failed"},
 		{Action: "claim", ActorSessionID: "dispatcher", Limit: 64},
 		{Action: "ack", ActorSessionID: "dispatcher", ClaimID: "claim-1"},

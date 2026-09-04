@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
 
 func TestConnectionTokenSchemaRetiresLegacyTables(t *testing.T) {
@@ -121,6 +123,7 @@ func TestCloudCompletionQueuePersistsBatchesDeduplicatesAndRecoversClaims(t *tes
 		return st
 	}
 	st := open()
+	defer st.Close()
 	if _, err := st.db.ExecContext(ctx, "INSERT INTO owners(id, display_name, created_at) VALUES(?,?,?)", "usr_completion", "Owner", now.Unix()); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +154,7 @@ func TestCloudCompletionQueuePersistsBatchesDeduplicatesAndRecoversClaims(t *tes
 			}
 		}
 	}
-	claimed, err := st.ClaimCloudCompletionNotifications(ctx, "usr_completion", "dispatcher-1", "claim-first", 64, now.Add(2*time.Minute), 5*time.Minute)
+	claimed, err := st.ClaimCloudCompletionNotifications(ctx, "usr_completion", "dispatcher-1", "claim-first", 64, 64<<10, now.Add(2*time.Minute), 5*time.Minute)
 	if err != nil || len(claimed) != 64 {
 		t.Fatalf("first claim count=%d err=%v", len(claimed), err)
 	}
@@ -174,7 +177,7 @@ func TestCloudCompletionQueuePersistsBatchesDeduplicatesAndRecoversClaims(t *tes
 	if err != nil || !alreadyAcked || len(acknowledged) != 64 {
 		t.Fatalf("reloaded acknowledged claim count=%d acked=%v err=%v", len(acknowledged), alreadyAcked, err)
 	}
-	remaining, err := st.ClaimCloudCompletionNotifications(ctx, "usr_completion", "dispatcher-1", "claim-remaining", 64, now.Add(4*time.Minute), 5*time.Minute)
+	remaining, err := st.ClaimCloudCompletionNotifications(ctx, "usr_completion", "dispatcher-1", "claim-remaining", 64, 64<<10, now.Add(4*time.Minute), 5*time.Minute)
 	if err != nil || len(remaining) != 6 {
 		t.Fatalf("remaining count=%d err=%v", len(remaining), err)
 	}
@@ -189,7 +192,7 @@ func TestCloudCompletionQueuePersistsBatchesDeduplicatesAndRecoversClaims(t *tes
 	if acked, err := st.AcknowledgeCloudCompletionClaim(ctx, "usr_completion", "dispatcher-1", "claim-remaining", now.Add(10*time.Minute), 5*time.Minute); !errors.Is(err, ErrExpired) || acked != 0 {
 		t.Fatalf("expired claim ack count=%d err=%v", acked, err)
 	}
-	reclaimed, err := st.ClaimCloudCompletionNotifications(ctx, "usr_completion", "dispatcher-1", "claim-after-restart-expiry", 64, now.Add(10*time.Minute), 5*time.Minute)
+	reclaimed, err := st.ClaimCloudCompletionNotifications(ctx, "usr_completion", "dispatcher-1", "claim-after-restart-expiry", 64, 64<<10, now.Add(10*time.Minute), 5*time.Minute)
 	if err != nil || len(reclaimed) != 6 {
 		t.Fatalf("reclaimed count=%d err=%v", len(reclaimed), err)
 	}
@@ -216,7 +219,7 @@ func TestCloudCompletionNotificationUpgradeRequiresUnackedOrExpiredClaim(t *test
 	if _, _, err := st.EnqueueCloudCompletionNotification(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.ClaimCloudCompletionNotifications(ctx, rec.OwnerID, rec.TargetSessionID, "claim-upgrade", 1, now.Add(time.Minute), 5*time.Minute); err != nil {
+	if _, err := st.ClaimCloudCompletionNotifications(ctx, rec.OwnerID, rec.TargetSessionID, "claim-upgrade", 1, 64<<10, now.Add(time.Minute), 5*time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	completed := rec
@@ -228,6 +231,56 @@ func TestCloudCompletionNotificationUpgradeRequiresUnackedOrExpiredClaim(t *test
 	upgraded, replayed, err := st.UpgradeCloudCompletionNotification(ctx, completed, now.Add(2*time.Minute))
 	if err != nil || replayed || upgraded.Outcome != "completed" || upgraded.State != "pending" || upgraded.ClaimID != "" {
 		t.Fatalf("upgraded=%+v replayed=%v err=%v", upgraded, replayed, err)
+	}
+}
+
+func TestCloudCompletionTextClaimPersistsAndHonorsPayloadBudget(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 4, 5, 0, 0, 0, time.UTC)
+	dbPath := filepath.Join(t.TempDir(), "hub.db")
+	open := func() *Store {
+		st, err := Open(ctx, dbPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+	st := open()
+	if _, err := st.db.ExecContext(ctx, "INSERT INTO owners(id, display_name, created_at) VALUES(?,?,?)", "usr_text", "Owner", now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `INSERT INTO machines(id, owner_id, display_name, status, os, arch, node_version, created_at, updated_at) VALUES(?,?,?,'active','windows','amd64','test',?,?)`, "mach_text", "usr_text", "Node", now.Unix(), now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `INSERT INTO cloud_collaborations(collaboration_id,owner_id,machine_id,idempotency_key,request_hash,status,state_json,revision,created_at,updated_at) VALUES(?,?,?,?,?,'active','{}',1,?,?)`, "collab_text", "usr_text", "mach_text", "text-key-001", "hash", now.Unix(), now.Unix()); err != nil {
+		t.Fatal(err)
+	}
+	payload := strings.Repeat("😀", 2000)
+	for i := 0; i < 10; i++ {
+		rec := CloudCompletionNotificationRecord{
+			NotificationID: "completion_text_" + strconv.Itoa(i), OwnerID: "usr_text", CollaborationID: "collab_text", TaskID: "task-text-" + strconv.Itoa(i),
+			Generation: 1, NotificationKind: "completion", Outcome: "completed", CallbackType: protocolv1.CloudCallbackTypeText, ResultText: payload,
+			SourceSessionID: "chat-text-" + strconv.Itoa(i), TargetSessionID: "dispatcher-text", CreatedAt: now.Add(time.Duration(i) * time.Second), UpdatedAt: now.Add(time.Duration(i) * time.Second),
+		}
+		if _, _, err := st.EnqueueCloudCompletionNotification(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	claimed, err := st.ClaimCloudCompletionNotifications(ctx, "usr_text", "dispatcher-text", "claim-text", 64, 64<<10, now.Add(time.Minute), 5*time.Minute)
+	if err != nil || len(claimed) != 8 {
+		t.Fatalf("claimed=%d err=%v", len(claimed), err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st = open()
+	defer st.Close()
+	reloaded, alreadyAcked, err := st.GetCloudCompletionClaim(ctx, "usr_text", "dispatcher-text", "claim-text", now.Add(2*time.Minute), 5*time.Minute)
+	if err != nil || alreadyAcked || len(reloaded) != 8 {
+		t.Fatalf("reloaded=%d acked=%v err=%v", len(reloaded), alreadyAcked, err)
+	}
+	if reloaded[0].ResultText != payload || reloaded[0].CallbackType != protocolv1.CloudCallbackTypeText {
+		t.Fatalf("first=%+v", reloaded[0])
 	}
 }
 

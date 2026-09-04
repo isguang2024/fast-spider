@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/isguang2024/fast-spider/internal/hub/core"
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
@@ -207,7 +208,7 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 		if strings.HasPrefix(input.Action, "completion.") {
 			completionInput := cloudCompletionInput{
 				Action: strings.TrimPrefix(input.Action, "completion."), CollaborationID: params.CollaborationID, TaskID: params.TaskID,
-				ActorSessionID: params.ActorSessionID, SourceSessionID: params.SourceSessionID, Outcome: params.Outcome,
+				ActorSessionID: params.ActorSessionID, SourceSessionID: params.SourceSessionID, Outcome: params.Outcome, CallbackType: params.CallbackType, Text: params.Text,
 				ClaimID: params.ClaimID, Limit: params.Limit, Acknowledgements: params.Acknowledgements,
 			}
 			if err := validateCloudCompletionToolInput(completionInput); err != nil {
@@ -222,7 +223,7 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 			}
 			result, err := e.service.CloudCompletion(ctx, ownerID, core.CloudCompletionRequest{
 				Action: completionInput.Action, CollaborationID: completionInput.CollaborationID, TaskID: completionInput.TaskID,
-				ActorSessionID: completionInput.ActorSessionID, SourceSessionID: completionInput.SourceSessionID, Outcome: completionInput.Outcome,
+				ActorSessionID: completionInput.ActorSessionID, SourceSessionID: completionInput.SourceSessionID, Outcome: completionInput.Outcome, CallbackType: completionInput.CallbackType, Text: completionInput.Text,
 				ClaimID: completionInput.ClaimID, Limit: completionInput.Limit, Acknowledgements: acknowledgements,
 			})
 			if err != nil {
@@ -243,7 +244,7 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 			Title: params.Title, Goal: params.Goal, Scope: params.Scope, DoneWhen: params.DoneWhen, WorkingDirectory: params.WorkingDirectory, AllowedActions: params.AllowedActions,
 			MaxDepth: params.MaxDepth, MaxActiveChats: params.MaxActiveChats, MaxCreates: params.MaxCreates, HeartbeatMinutes: params.HeartbeatMinutes, StallMinutes: params.StallMinutes, Deadline: deadline,
 			GoalID: params.GoalID, GoalStatus: params.GoalStatus, TaskID: params.TaskID, TaskStatus: params.TaskStatus, ParentSessionID: params.ParentSessionID, TargetSessionID: params.TargetSessionID, Prompt: params.Prompt, AccessMode: params.AccessMode, WriteScope: params.WriteScope,
-			DeliverablePath: params.DeliverablePath, EventID: params.EventID, EventSequence: params.EventSequence, EventType: params.EventType, EventGeneration: params.EventGeneration, ResultID: params.ResultID, ResultStatus: params.ResultStatus, ResultBytes: params.ResultBytes, ResultSHA256: params.ResultSHA256, DeliverableStatus: params.DeliverableStatus,
+			DeliverablePath: params.DeliverablePath, CallbackType: params.CallbackType, EventID: params.EventID, EventSequence: params.EventSequence, EventType: params.EventType, EventGeneration: params.EventGeneration, ResultID: params.ResultID, ResultStatus: params.ResultStatus, ResultBytes: params.ResultBytes, ResultSHA256: params.ResultSHA256, DeliverableStatus: params.DeliverableStatus,
 			DecisionID: params.DecisionID, DecisionStatus: params.DecisionStatus, Question: params.Question, Options: params.Options, Recommendation: params.Recommendation, Checkpoint: params.Checkpoint, InactiveVerified: params.InactiveVerified, Limit: params.Limit,
 		})
 		if err != nil {
@@ -268,7 +269,7 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 		}
 		result, err := e.service.CloudCompletion(ctx, ownerID, core.CloudCompletionRequest{
 			Action: input.Action, CollaborationID: input.CollaborationID, TaskID: input.TaskID,
-			ActorSessionID: input.ActorSessionID, SourceSessionID: input.SourceSessionID, Outcome: input.Outcome,
+			ActorSessionID: input.ActorSessionID, SourceSessionID: input.SourceSessionID, Outcome: input.Outcome, CallbackType: input.CallbackType, Text: input.Text,
 			ClaimID: input.ClaimID, Limit: input.Limit, Acknowledgements: acknowledgements,
 		})
 		if err != nil {
@@ -604,6 +605,16 @@ func validateCloudCompletionToolInput(input cloudCompletionInput) error {
 		}
 		if input.Outcome != "completed" && input.Outcome != "blocked" && input.Outcome != "failed" {
 			return &toolRequestError{message: "outcome must be completed, blocked, or failed for notify"}
+		}
+		callbackType := strings.TrimSpace(input.CallbackType)
+		if callbackType != "" && callbackType != protocolv1.CloudCallbackTypeLocalFile && callbackType != protocolv1.CloudCallbackTypeText && callbackType != protocolv1.CloudCallbackTypeStatus {
+			return &toolRequestError{message: "callbackType must be local_file, text, or status for notify"}
+		}
+		if !utf8.ValidString(input.Text) || strings.IndexByte(input.Text, 0) >= 0 || len(input.Text) > protocolv1.CloudCallbackTextMaxBytes || utf8.RuneCountInString(input.Text) > protocolv1.CloudCallbackTextMaxRunes {
+			return &toolRequestError{message: "text exceeds the callback limit of 2000 Unicode characters or 8192 UTF-8 bytes"}
+		}
+		if callbackType != "" && callbackType != protocolv1.CloudCallbackTypeText && input.Text != "" {
+			return &toolRequestError{message: "text is allowed only when callbackType is text"}
 		}
 		if input.ActorSessionID == "$self" {
 			if strings.TrimSpace(input.SourceSessionID) != "" {
