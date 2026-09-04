@@ -185,9 +185,9 @@ CC Switch 使用 `PRAGMA table_info` 对唯一支持 schema 计算 fingerprint �
 
 ### Codex
 
-Codex Adapter 直接运行本机 `codex app-server --stdio`。Provider 凭据与 ChatGPT/Codex 本地认证只留在 Node 本机。Codex 的 Harness model catalog 与 CC Switch upstream route 分开返回，不把两层模型名称强行合并。
+Codex Adapter 为 FS 自建/headless Thread 保留本机 `codex app-server --stdio`，同时可通过 Codex Desktop IPC 向已有 Desktop owner 定向续发 Turn。Provider 凭据与 ChatGPT/Codex 本地认证只留在 Node 本机。Codex 的 Harness model catalog 与 CC Switch upstream route 分开返回，不把两层模型名称强行合并。
 
-`session.create` / `session.send` 使用 Codex 原生 Turn `UserInput`：text、skill、image、localImage、mention；`session.steer` 使用同一输入集合，但只追加到调用方明确给出的 active `turnId`，不隐式修改 model/cwd/outputSchema。Skill 输入使用 `name + absolute path`，不是把 Skill 内容拼接进 prompt。图片可统一指定 `imageDetail=auto|low|high|original`。`outputSchema` 作为有界 JSON Schema 直接传给 `turn/start`，用于约束该 Turn 最终 assistant message；`session.result` 仍保留真实 raw `finalAgentMessage`，不伪装为已完成 typed decode。
+`session.create` / `session.send` 使用 Codex 原生 Turn `UserInput`：text、skill、image、localImage、mention。已登记的 Codex Desktop Thread 在 `session.send` 时优先经 `codex-ipc` owner discovery 读取 stream snapshot；仅当 `threadRuntimeStatus=idle` 时才用 `thread-follower-start-turn` 进入真实 Desktop owner。active 或其它非 idle 状态返回 `AGENT_SESSION_BUSY`，callback 继续留在 Node 队列等待重试，不会插入当前 Turn；只有 owner 不可用或不兼容时才回退 Node app-server。`session.steer` 使用同一输入集合，但只追加到调用方明确给出的 active `turnId`，不隐式修改 model/cwd/outputSchema。Skill 输入使用 `name + absolute path`，不是把 Skill 内容拼接进 prompt。图片可统一指定 `imageDetail=auto|low|high|original`。`outputSchema` 作为有界 JSON Schema 直接传给 Turn，用于约束该 Turn 最终 assistant message；`session.result` 仍保留真实 raw `finalAgentMessage`，不伪装为已完成 typed decode。
 
 发现面还包括 `provider.capabilities`（当前 Provider 的 webSearch/imageGeneration/namespaceTools）、`hooks.list`（含 enabled/source/trustStatus）、`permissions.list`、`plugins.installed` 和有界摘要形式的 `mcp.status.list`。MCP 状态只返回 server/auth/tool names/resource 摘要，不把每个 Tool 的完整 JSON Schema 通过 WSS 重复搬运。
 
@@ -200,7 +200,7 @@ Codex Adapter 直接运行本机 `codex app-server --stdio`。Provider 凭据与
 - `session.review` 只暴露 `uncommittedChanges`、`baseBranch`、`commit`、`custom` 四种原生 target，以及 `inline|detached` delivery。
 - Plugin 是能力包。FS 可以列出 Marketplace、已安装 Plugin、读取 Plugin 与 Plugin Skill，但不向 `turn/start` 发明 `pluginId`；真正明确挂到 Turn 的是原生 Skill input，其他 Plugin App/MCP 能力由 Codex 安装后的运行环境决定。
 - `session.respond` 只处理受控的 Codex Server Request：request_user_input、单次 command/file approval 和 MCP elicitation；不开放 session-wide approval widening，也不开放任意 permission object。`session.watch/get` 同时返回当前 `pendingRequests` 快照，断线或事件截断后仍可恢复 requestId。Permission 升级继续通过已命名 Permission Profile 管理。
-- Codex app-server 进程重启后，Adapter 在下一次 Turn/Review 前自动 `thread/resume(threadId)`；这是内部恢复逻辑，不增加需要调用方手工维护的 resume action。
+- Codex app-server 进程重启后，Adapter 在下一次由其执行的 Turn/Review 前自动 `thread/resume(threadId)`；Desktop owner 路由不依赖该进程。
 - Codex 自带 `fs/*`、`command/exec/*`、`process/*`、`thread/shellCommand`、`mcpServer/tool/call` 等第二执行面不通过 `ai_control` 暴露，文件/Shell/Git/Build 继续走 Fast Spider 自己的 Capability、Job 与 Audit 链。
 
 ### Claude Code

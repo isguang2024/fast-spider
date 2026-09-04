@@ -520,7 +520,7 @@ func simpleCloudDispatchReceipt(out map[string]any, callbackSessionID, taskID st
 		"awaitMode": "callback", "activePollingAllowed": false, "callerShouldYield": true,
 		"nextAction": "end_turn", "replayed": replayed,
 	}
-	for _, key := range []string{"collaborationId", "status", "createInDoubt", "callbackPending", "reusedSession", "targetSessionId"} {
+	for _, key := range []string{"collaborationId", "status", "createInDoubt", "deliveryInDoubt", "callbackPending", "reusedSession", "targetSessionId"} {
 		if value, ok := out[key]; ok {
 			receipt[key] = value
 		}
@@ -1022,7 +1022,7 @@ func cloudCollaborationAddTask(state *cloudCollaborationState, req CloudCollabor
 		return store.ErrUnauthorized
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	idemSum := sha256.Sum256([]byte(id + "\x00" + fmt.Sprintf("%d", state.Generation)))
+	idemSum := sha256.Sum256([]byte(strings.TrimSpace(req.CollaborationID) + "\x00" + id + "\x00" + fmt.Sprintf("%d", state.Generation)))
 	resultPath := ""
 	if callbackType == protocolv1.CloudCallbackTypeLocalFile {
 		resultPath = deliverablePath
@@ -1311,6 +1311,28 @@ func (s *Service) deliverCloudCollaborationExistingTask(ctx context.Context, own
 		chat.CallbackArmed = true
 	}
 	if sendErr != nil {
+		if cloudCollaborationDeliveryWasRejected(sendErr) {
+			if unregisterErr := s.unregisterCloudCollaborationTaskCallback(ctx, ownerID, rec, &state, task.ID); unregisterErr != nil {
+				task.Status = "blocked"
+				task.DeliveryStatus = "rejected"
+				chat.Status = "release_pending"
+				task.UpdatedAt = s.now().UTC().Format(time.RFC3339)
+				if _, saveErr := s.saveCloudCollaboration(ctx, ownerID, rec, state); saveErr != nil {
+					return nil, saveErr
+				}
+				return nil, fmt.Errorf("%w; callback cleanup failed: %v", sendErr, unregisterErr)
+			}
+			chat.Status = "released"
+			task.Status = "queued"
+			task.ChatSessionID = ""
+			task.SessionMode = ""
+			task.DeliveryStatus = "pending"
+			task.UpdatedAt = s.now().UTC().Format(time.RFC3339)
+			if _, saveErr := s.saveCloudCollaboration(ctx, ownerID, rec, state); saveErr != nil {
+				return nil, saveErr
+			}
+			return nil, sendErr
+		}
 		task.DeliveryStatus = "in_doubt"
 		out, saveErr := s.saveCloudCollaboration(ctx, ownerID, rec, state)
 		if saveErr != nil {
@@ -1342,6 +1364,19 @@ func (s *Service) deliverCloudCollaborationExistingTask(ctx context.Context, own
 		}
 	}
 	return out, nil
+}
+
+func cloudCollaborationDeliveryWasRejected(err error) bool {
+	var capabilityErr *CapabilityCallError
+	if !errors.As(err, &capabilityErr) {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(capabilityErr.Code)) {
+	case "CONNECTION_LOST", "DEADLINE_EXCEEDED":
+		return false
+	default:
+		return true
+	}
 }
 
 func (s *Service) persistCloudCollaborationCreatedChat(ctx context.Context, ownerID string, rec store.CloudCollaborationRecord, state cloudCollaborationState, createdTask cloudCollaborationTask, sessionID string) (store.CloudCollaborationRecord, cloudCollaborationState, map[string]any, error) {

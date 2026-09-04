@@ -27,6 +27,7 @@ type cloudCollaborationTestNode struct {
 	calls     []protocolv1.CapabilityRequest
 	onCall    func(protocolv1.CapabilityRequest)
 	responses map[string]map[string]any
+	errors    map[string]*protocolv1.ProtocolError
 	creates   int
 }
 
@@ -82,6 +83,21 @@ func (n *cloudCollaborationTestNode) setResponse(action string, response map[str
 	n.responses[action] = response
 }
 
+func (n *cloudCollaborationTestNode) setError(action string, response *protocolv1.ProtocolError) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.errors == nil {
+		n.errors = map[string]*protocolv1.ProtocolError{}
+	}
+	n.errors[action] = response
+}
+
+func (n *cloudCollaborationTestNode) responseError(action string) *protocolv1.ProtocolError {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.errors[action]
+}
+
 func (n *cloudCollaborationTestNode) snapshotCalls() []protocolv1.CapabilityRequest {
 	n.mu.Lock()
 	defer n.mu.Unlock()
@@ -135,7 +151,11 @@ func newCloudCollaborationTestService(t *testing.T) (*Service, string, string, *
 			if readErr := wsjson.Read(ctx, conn, &req); readErr != nil {
 				return
 			}
-			response := protocolv1.CapabilityResponse{MessageType: protocolv1.MessageCapabilityResponse, RequestId: req.RequestId, TraceId: req.TraceId, Result: testNode.respond(req), Timestamp: protocolv1.Timestamp(time.Now())}
+			result := testNode.respond(req)
+			response := protocolv1.CapabilityResponse{MessageType: protocolv1.MessageCapabilityResponse, RequestId: req.RequestId, TraceId: req.TraceId, Result: result, Error: testNode.responseError(req.Action), Timestamp: protocolv1.Timestamp(time.Now())}
+			if response.Error != nil {
+				response.Result = nil
+			}
 			if writeErr := wsjson.Write(ctx, conn, response); writeErr != nil {
 				return
 			}
@@ -712,6 +732,76 @@ func TestCodexCloudCollaborationReusesOnlyExplicitChatAndReleasesIt(t *testing.T
 	}
 }
 
+func TestCodexCloudCollaborationRejectedReuseSendReturnsErrorAndReleasesRoute(t *testing.T) {
+	service, ownerID, machineID, node := newCloudCollaborationTestService(t)
+	created, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "create", MachineID: machineID, IdempotencyKey: "codex-collab-rejected-send-001", ControllerSessionID: "codex-controller", DispatcherSessionID: "codex-dispatcher",
+		Title: "Rejected send", Goal: "Return the rejection", DoneWhen: "No false active state", WorkingDirectory: t.TempDir(), AllowedActions: []string{"chat.send", "file.read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collaborationID := created["collaborationId"].(string)
+	leased, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "lease.acquire", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(created, "revision")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	added, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "task.add", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(leased, "revision"),
+		TaskID: "task-rejected", Title: "Reuse selected CHAT", Prompt: "Complete this task.", AccessMode: "read_only", TargetSessionID: "rejected-cloud-chat", AllowedActions: []string{"chat.send", "file.read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.setResponse("session.get", map[string]any{"session": map[string]any{
+		"sessionId": "rejected-cloud-chat", "providerId": "codex", "backend": "chatgpt_cloud", "visibility": "visible", "externalIdType": "chatgpt_conversation", "status": "completed",
+		"currentNode": "assistant-old", "messages": []map[string]any{{"id": "assistant-old", "role": "assistant"}},
+	}})
+	node.setResponse("session.callback.list", map[string]any{"callbacks": []any{}})
+	node.setError("session.send", &protocolv1.ProtocolError{Code: "INVALID_REQUEST", Message: "idempotencyKey was reused with different session.send content", Retryable: false})
+	_, err = service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "task.dispatch", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(added, "revision"), TaskID: "task-rejected",
+	})
+	var capabilityErr *CapabilityCallError
+	if !errors.As(err, &capabilityErr) || capabilityErr.Code != "INVALID_REQUEST" {
+		t.Fatalf("dispatch error=%v", err)
+	}
+	_, state, loadErr := service.loadCloudCollaboration(context.Background(), ownerID, collaborationID)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if len(state.Tasks) != 1 || state.Tasks[0].Status != "queued" || state.Tasks[0].DeliveryStatus != "pending" || state.Tasks[0].ChatSessionID != "" {
+		t.Fatalf("rejected task state=%#v", state.Tasks)
+	}
+	if len(state.Chats) != 1 || state.Chats[0].Status != "released" || state.Chats[0].CallbackRegistered || state.Chats[0].CallbackArmed {
+		t.Fatalf("rejected chat state=%#v", state.Chats)
+	}
+	if countCloudCollaborationCalls(node.snapshotCalls(), "session.callback.unregister") != 1 {
+		t.Fatalf("rejected send did not release callback route: %#v", node.snapshotCalls())
+	}
+}
+
+func TestCloudCollaborationDeliveryWasRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "provider rejection", err: &CapabilityCallError{Code: "INVALID_REQUEST", Retryable: false}, want: true},
+		{name: "busy rejection", err: &CapabilityCallError{Code: "AGENT_SESSION_BUSY", Retryable: false}, want: true},
+		{name: "connection lost", err: &CapabilityCallError{Code: "CONNECTION_LOST", Retryable: false}, want: false},
+		{name: "deadline", err: &CapabilityCallError{Code: "DEADLINE_EXCEEDED", Retryable: false}, want: false},
+		{name: "unknown local error", err: errors.New("unknown"), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cloudCollaborationDeliveryWasRejected(tc.err); got != tc.want {
+				t.Fatalf("cloudCollaborationDeliveryWasRejected(%v)=%v want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestValidateReusableCloudCollaborationSession(t *testing.T) {
 	base := map[string]any{"session": map[string]any{"sessionId": "chat-1", "providerId": "codex", "backend": "chatgpt_cloud", "visibility": "visible", "externalIdType": "chatgpt_conversation", "status": "completed"}}
 	if err := validateReusableCloudCollaborationSession(base, "chat-1"); err != nil {
@@ -995,5 +1085,21 @@ func TestCodexCloudCollaborationSimpleDispatchUsesOneCallbackSession(t *testing.
 	}
 	if replayed["replayed"] != true || countCloudCollaborationCalls(node.snapshotCalls(), "session.create") != 1 {
 		t.Fatalf("replayed=%#v calls=%#v", replayed, node.snapshotCalls())
+	}
+
+	secondReq := req
+	secondReq.IdempotencyKey = "simple-cloud-dispatch-002"
+	secondReq.Prompt = "Implement a different change and run its tests."
+	if _, err := service.CloudCollaboration(context.Background(), ownerID, secondReq); err != nil {
+		t.Fatal(err)
+	}
+	keys := make([]string, 0, 2)
+	for _, call := range node.snapshotCalls() {
+		if call.Action == "session.create" {
+			keys = append(keys, mapString(call.Params, "idempotencyKey"))
+		}
+	}
+	if len(keys) != 2 || keys[0] == keys[1] {
+		t.Fatalf("simple dispatch internal idempotency keys=%#v", keys)
 	}
 }

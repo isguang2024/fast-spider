@@ -43,6 +43,13 @@ func TestCodexDesktopBridgeMetadataPublishesDefaultAndLimit(t *testing.T) {
 	if metadata["nativeConversationStreaming"] != "unsupported" || metadata["ownership"] != "loaded_local_threads_only" {
 		t.Fatalf("desktop bridge metadata=%#v", metadata)
 	}
+	wantOutbound := "app_server_only"
+	if runtime.GOOS == "windows" {
+		wantOutbound = "desktop_owner_then_app_server"
+	}
+	if metadata["outboundTurnRouting"] != wantOutbound {
+		t.Fatalf("desktop bridge outbound routing=%#v", metadata)
+	}
 	if runtime.GOOS == "windows" {
 		if metadata["enabled"] != true || metadata["state"] != "waiting_for_harness" {
 			t.Fatalf("Windows default metadata=%#v", metadata)

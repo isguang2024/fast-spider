@@ -99,25 +99,27 @@ type CodexAdapter struct {
 	executable   string
 	configErr    *ExecutionError
 
-	startGateMu      sync.Mutex
-	startGate        chan struct{}
-	lifecycleMu      sync.Mutex
-	loadLocksMu      sync.Mutex
-	loadLocks        map[string]*codexSessionLock
-	mu               sync.Mutex
-	rpcWriteMu       sync.Mutex
-	cmd              *exec.Cmd
-	stdin            io.WriteCloser
-	wsConn           *websocket.Conn
-	pending          map[int64]codexPending
-	nextID           int64
-	closed           bool
-	quarantined      bool
-	processDone      chan struct{}
-	generation       uint64
-	loaded           map[string]struct{}
-	loadedGeneration map[string]uint64
-	managedOnly      bool
+	startGateMu        sync.Mutex
+	startGate          chan struct{}
+	lifecycleMu        sync.Mutex
+	loadLocksMu        sync.Mutex
+	loadLocks          map[string]*codexSessionLock
+	desktopTurnLocksMu sync.Mutex
+	desktopTurnLocks   map[string]*codexSessionLock
+	mu                 sync.Mutex
+	rpcWriteMu         sync.Mutex
+	cmd                *exec.Cmd
+	stdin              io.WriteCloser
+	wsConn             *websocket.Conn
+	pending            map[int64]codexPending
+	nextID             int64
+	closed             bool
+	quarantined        bool
+	processDone        chan struct{}
+	generation         uint64
+	loaded             map[string]struct{}
+	loadedGeneration   map[string]uint64
+	managedOnly        bool
 
 	eventMu              sync.Mutex
 	events               []AgentEvent
@@ -137,6 +139,7 @@ type CodexAdapter struct {
 	notificationBeforeCommit func(uint64)
 	desktopBridge            *codexDesktopBridge
 	desktopBridgeEnabled     *bool
+	desktopRequestDial       func() (io.ReadWriteCloser, error)
 }
 
 func NewCodexAdapter(logger *slog.Logger) *CodexAdapter {

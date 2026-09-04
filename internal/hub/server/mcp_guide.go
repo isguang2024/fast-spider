@@ -365,7 +365,7 @@ func aiControlSessionSelectionRules() []string {
 		"Use the current Codex or CHAT directly when it already has the required tools and context; delegating to ChatGPT Cloud is optional, not a mandatory coding stage",
 		"If the request means create or continue a Cloud CHAT and receive the result later, use codex_cloud_collaboration even when there is only one simple task; bare ai_control quick_chat is for direct interactive lifecycle control and has no durable controller callback",
 		"When the user supplies an exact Codex or ChatGPT sessionId, validate and use that exact ID regardless of which earlier Codex or CHAT created it",
-		"For a known local Codex ID, call session.get with metadataOnly=true, then session.send only when idle; if the explicit target is busy, wait or report AGENT_SESSION_BUSY and never create a substitute",
+		"For a known local Codex ID, call session.get with metadataOnly=true, then session.send only when idle; registered Desktop threads route to their Desktop owner first, verify its stream snapshot is idle, and use the managed app-server only when no compatible owner is available; report AGENT_SESSION_BUSY and never create a substitute or inject input into an active Turn",
 		"When no sessionId is supplied and the new task is unrelated to current context, create a new appropriately scoped session; do not call session.list, search, or guess an old session",
 		"A known ChatGPT conversation can be continued with session.send backend=chatgpt_cloud (or appType=chatgpt); mode=quick_chat returns after acceptance, while complete waits for the turn response",
 	}

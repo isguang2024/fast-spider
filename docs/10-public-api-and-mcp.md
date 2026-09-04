@@ -46,7 +46,7 @@ Current 不提供目录列表工具；`audit_log` 只读查询 Hub 本地 `audit
 
 Codex 保留 Provider/Model、Skills/Hooks/Permission Profiles/Plugins/MCP discovery、Thread/Goal/Settings/Review、原生多类型 Turn、`outputSchema`、steer/respond 和 app-server auto-resume。Claude Code 第一版提供 models/capabilities 与 session list/get/create/send/watch/cancel/result/rename/archive/unarchive，使用原生 UUID + `stream-json` + `--resume`，Prompt 经 stdin。FS 不映射 Codex 的 `fs/*`/`command/exec/*`/`mcpServer/tool/call`，也不提供 CC Switch Provider/Token/Takeover 写入或 Claude permission bypass 第二执行链。
 
-Windows Node UI 首次启动由本机配置选择 Codex 会话模式：共享模式（推荐）不附加 Codex Desktop owner/control bridge，FS 接管模式才启用它。该本机选择优先于环境变量；无 Node UI 配置的 headless 进程仍可用 `FAST_SPIDER_CODEX_DESKTOP_BRIDGE=0` 关闭默认 bridge。FS 原有的 app-server 创建和执行路径不变。公开 MCP 的 `ai_control` 可通过 `providers.list`、`provider.readiness` 读取 `desktopBridge` 状态。
+Windows Node UI 首次启动由本机配置选择 Codex 会话模式：共享模式（推荐）不认领 FS 已加载 Thread，FS 接管模式才启用 owner/control bridge。该选择不影响向已有 Desktop Thread 发消息：`ai_control session.send` 和 callback nudge 会先通过 Codex Desktop IPC 发现真实 owner 并创建 Turn；只有没有兼容 owner 时才回退 Node 管理的 app-server。该本机选择优先于环境变量；无 Node UI 配置的 headless 进程仍可用 `FAST_SPIDER_CODEX_DESKTOP_BRIDGE=0` 控制认领行为。公开 MCP 的 `ai_control` 可通过 `providers.list`、`provider.readiness` 读取 `desktopBridge` 状态。
 
 ## ChatGPT 调用与工具发现
 
@@ -74,7 +74,7 @@ Codex/Claude Code 的会话能力不是独立顶层工具；统一位于 `ai_con
 
 会话 ID 是可复用地址，不绑定最初创建它的 Codex、CHAT 或 collaboration。用户明确给出 Codex/CHAT ID 时，调用方先验证并只使用该 ID；本地 Codex 可用 `session.get(metadataOnly=true)` 快速核对，空闲后再 `session.send`，显式目标忙时返回/等待 `AGENT_SESSION_BUSY`，不得偷偷新建替代会话。用户没有给 ID 且任务与当前上下文无关联时，应创建全新会话，禁止先 `session.list`、搜索或猜测旧会话；只有用户明确要求查找、列举或挑选历史会话时才调用列表。当前 Codex 或 CHAT 自身能完成任务时直接完成，Cloud CHAT 只是可选协作者，不是代码任务的强制前置步骤。ChatGPT Cloud 的既有会话续发同样支持 `mode=quick_chat|complete`：quick 在 Provider 接受后返回，并可带稳定 `idempotencyKey` 以固定 message ID 对账和恢复；complete 等待本轮响应。
 
-需要稍后回调的任务统一使用 `codex_cloud_collaboration action=dispatch`。公开调用只需给出 `machineId`、现有本地 Codex 的 `callbackSessionId`、`workingDirectory`、任务 `prompt` 和稳定 `idempotencyKey`；可选 `targetSessionId` 表示只续发那个可见 CHAT，省略则新建一个可见 `quick_chat`。FS 不再要求调用方先创建 controller/dispatcher、抢 lease、增加 goal/task 再 dispatch；一个主控、主控加协调者或单 AI 都使用同一条协议，角色关系留在调用方上下文里。
+需要稍后回调的任务统一使用 `codex_cloud_collaboration action=dispatch`。公开调用只需给出 `machineId`、现有本地 Codex 的 `callbackSessionId`、`workingDirectory`、任务 `prompt` 和稳定 `idempotencyKey`；可选 `targetSessionId` 表示只续发那个可见 CHAT，省略则新建一个可见 `quick_chat`。内部 `session.send` 幂等键同时绑定 collaboration、task 和 generation，跨批次复用同一 CHAT 不会撞用旧任务的 message ID；Node 明确拒绝的发送会原样返回错误并释放本次 callback route，只有断线或超时等无法确认副作用结果时才保留 `deliveryInDoubt`。FS 不再要求调用方先创建 controller/dispatcher、抢 lease、增加 goal/task 再 dispatch；一个主控、主控加协调者或单 AI 都使用同一条协议，角色关系留在调用方上下文里。
 
 CHAT 收到的是一份直接任务说明，可按范围使用 Fast Spider 的文件、Shell、Git、浏览器和测试能力。完成前使用同一个 `codex_cloud_collaboration` 的 `completion.notify` 回传短文本、固定本地文件槽或纯状态。Hub 先把完成通知写入持久队列，再调用 Node 的内部 callback 入队动作；Node 本地落盘后，目标 Codex 空闲就立即收到唤醒，目标正忙则保留到当前 Turn 结束后再投递。dispatch 返回 `callerShouldYield=true` 与 `nextAction=end_turn` 后，调用方结束当前 Turn 等待回调，不用 `session.get/watch/result` 轮询。
 

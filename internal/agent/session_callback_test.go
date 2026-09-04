@@ -2,7 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1339,6 +1342,9 @@ func TestSessionCallbackRegisterAcceptsProjectlessDesktopThreadAndCanSend(t *tes
 	if err := os.WriteFile(manager.codexStatePath, []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	manager.codex.desktopRequestDial = func() (io.ReadWriteCloser, error) {
+		return nil, errors.New("Desktop owner unavailable in app-server fallback test")
+	}
 	var turnStart map[string]any
 	manager.codex.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
 		switch method {
@@ -1387,25 +1393,22 @@ func TestSessionCallbackNudgePrefersDesktopRegistryWhenThreadReadFails(t *testin
 	if err := os.WriteFile(manager.codexStatePath, []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	var turnStart map[string]any
-	manager.codex.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
-		switch method {
-		case "thread/read":
-			return nil, fmt.Errorf("invalid argument")
-		case "thread/resume":
-			return map[string]any{"thread": map[string]any{"id": params["threadId"]}}, nil
-		case "turn/start":
-			turnStart = params
-			return map[string]any{"turn": map[string]any{"id": "turn-callback"}}, nil
-		default:
-			return nil, fmt.Errorf("unexpected Codex request %s %#v", method, params)
-		}
+	client, server := net.Pipe()
+	manager.codex.desktopRequestDial = singleCodexDesktopDial(client)
+	requests, serverErr := serveCodexDesktopTurn(t, server, "dispatcher-projectless", "idle", "turn-callback", "")
+	manager.codex.requestOverride = func(_ context.Context, method string, _ map[string]any) (map[string]any, error) {
+		return nil, fmt.Errorf("callback nudge must not use app-server: %s", method)
 	}
 	if err := manager.callbackDispatcher.send(context.Background(), "dispatcher-projectless", "callback"); err != nil {
 		t.Fatal(err)
 	}
-	if turnStart["threadId"] != "dispatcher-projectless" || turnStart["cwd"] != rootHint {
-		t.Fatalf("turn/start params=%#v", turnStart)
+	request := <-requests
+	turnRequest := mapValueMap(mapValueMap(mapValueMap(request, "params"), "turnStart"), "request")
+	if turnRequest["threadId"] != "dispatcher-projectless" || turnRequest["cwd"] != rootHint {
+		t.Fatalf("callback Desktop turn params=%#v", turnRequest)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1456,7 +1459,7 @@ func TestSessionGetMetadataOnlySkipsTurnHistory(t *testing.T) {
 	}
 }
 
-func TestSessionGetMetadataOnlyCanPreferDesktopRegistry(t *testing.T) {
+func TestSessionGetMetadataOnlyPrefersDesktopRegistry(t *testing.T) {
 	dataDir := t.TempDir()
 	manager := New(dataDir, nil)
 	defer manager.Close(context.Background())
@@ -1470,7 +1473,7 @@ func TestSessionGetMetadataOnlyCanPreferDesktopRegistry(t *testing.T) {
 		return nil, fmt.Errorf("unexpected Codex request %s %#v", method, params)
 	}
 	got, err := manager.Control(context.Background(), "session.get", map[string]any{
-		"providerId": "codex", "sessionId": "registered-thread", "metadataOnly": true, "preferDesktopRegistry": true,
+		"providerId": "codex", "sessionId": "registered-thread", "metadataOnly": true,
 	})
 	if err != nil {
 		t.Fatal(err)

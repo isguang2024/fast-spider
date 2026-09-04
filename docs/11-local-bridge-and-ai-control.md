@@ -172,7 +172,7 @@ Cloud 只有一个创建入口 `session.create`，用 `mode=quick_chat|complete`
 
 `session.callback.register/arm/enqueue/unregister/list/claim/ack` 是 `codex_cloud_collaboration` 的内部可靠性协议，不是 AI 需要手工拼装的公开工作流。Hub 用它登记 callback owner、发送前基线和 generation；CHAT 的 `completion.notify` 到达后，Hub 先持久化，再通过 `enqueue` 主动交给 Node。Node 用持久队列处理目标会话忙和重启恢复，重复通知与领取保持幂等，旧 generation 不会覆盖新任务。
 
-公开调用统一使用 `codex_cloud_collaboration action=dispatch`：传入 `machineId`、现有本地 Codex 的 `callbackSessionId`、绝对 `workingDirectory`、任务 `prompt` 和稳定 `idempotencyKey`。可选 `targetSessionId` 只续发指定可见 CHAT；省略时创建一个可见 `quick_chat`。Fast Spider 不区分“单主控”“主控加协调者”或“单 AI”模式，三者都只是把任务发给 CHAT，再把结果回调给 `callbackSessionId`。
+公开调用统一使用 `codex_cloud_collaboration action=dispatch`：传入 `machineId`、现有本地 Codex 的 `callbackSessionId`、绝对 `workingDirectory`、任务 `prompt` 和稳定 `idempotencyKey`。可选 `targetSessionId` 只续发指定可见 CHAT；省略时创建一个可见 `quick_chat`。Hub 派生的内部发送键绑定 collaboration、task 和 generation；明确的 `session.send` 拒绝会撤销本次 callback route 并返回错误，不会伪装为 `active`，只有连接丢失或 deadline 等无法判断 Turn 是否启动的结果才进入 `deliveryInDoubt`。Fast Spider 不区分“单主控”“主控加协调者”或“单 AI”模式，三者都只是把任务发给 CHAT，再把结果回调给 `callbackSessionId`。
 
 CHAT 完成前通过同一个 `codex_cloud_collaboration action=completion.notify` 回传结果。默认短文本最多 2000 个 Unicode 字符和 8192 个 UTF-8 字节；文件型结果只写入 Hub 预登记的 Node 本地 callback slot；状态型不带正文。正常路径为 `completion.notify → Hub 持久化 → Node 主动唤醒 callbackSessionId → Codex claim/ack`。Provider realtime、启动补漏和低频状态读取只是兜底；未来新建的 CHAT/任务不保证被外部定时查询覆盖，因此 FS 主动回调不能省略。dispatch 返回 `callerShouldYield=true` 和 `nextAction=end_turn` 后，调用方结束当前 Turn 等待回调，不用轮询模拟协作。
 
@@ -279,7 +279,7 @@ Plugin 是 Codex 的能力包，可包含 Skills、Apps、MCP servers、Hooks �
 
 `session.rollback` 的参数是 `numTurns`（1–1000），表示从 Thread 末尾删除 N 个 Codex turns。**它只修改 Codex 对话历史，不回滚本地工作树文件，也不等价于 Git reset/revert。**因此 rollback 之后仍应以 Git/文件系统事实判断代码状态。
 
-Codex app-server 默认是由 Fast Spider 管理的本机子进程。Fast Spider 记录当前进程内已加载 Thread；若 app-server 崩溃或被重启，下一次 Turn/Review 前自动调用官方 `thread/resume(threadId)` 重新加载持久 Thread，再继续操作。调用方无需维护第二个 resume 状态机，也不需要新增公开 `session.resume`。Windows Node UI 首次启动由本机配置选择是否连接当前用户的 Codex Desktop owner/follower IPC：共享模式（推荐）关闭，FS 接管模式启用；该本机设置优先于环境变量。没有 Node UI 配置的 headless 进程仍可用 `FAST_SPIDER_CODEX_DESKTOP_BRIDGE=0` 明确关闭默认 bridge。它只认领当前 adapter 已加载的本地 Thread，终态或归档后通过 `thread/unsubscribe` 自动释放，并提供 follower 控制转发；它不替代 FS 自己的 app-server，也尚不能生成 Desktop renderer 私有的完整 `conversationState` snapshot/patch，因此不承诺 Desktop 原生界面实时显示完整内容。`providers.list`、`provider.readiness`、`provider.capabilities` 和本地 Codex `session.create/send` 结果都会返回 `desktopBridge` 状态与该限制。
+Fast Spider 自建或 headless Codex Thread 仍由 Node 管理的 app-server 执行；进程重启后，下一次 Turn/Review 前自动调用官方 `thread/resume(threadId)`。已有 Codex Desktop Thread 则采用另一条优先链路：`session.get(metadataOnly=true)` 先从 Desktop 注册表确认身份，`session.send` 与 callback nudge 再通过 `codex-ipc` 执行 owner discovery，并把 `thread-follower-start-turn` 精确定向给返回的 owner。owner 不可用或不支持外部输入时才回退 app-server；一旦 start-turn 已发出，响应丢失也不会再回退，以免重复创建 Turn。Windows Node UI 的共享/FS 接管模式只控制 FS 是否认领自己已加载的 Thread，不关闭这个出站 owner 路由。当前仍不能生成 Desktop renderer 私有的完整 `conversationState` snapshot/patch，因此不承诺 FS 自建 Thread 在 Desktop 中实时显示完整内容。`providers.list`、`provider.readiness`、`provider.capabilities` 和本地 Codex `session.create/send` 结果都会返回 `desktopBridge` 状态与该限制。
 
 实验性共享 app-server owner 模式仍可通过绝对 `FAST_SPIDER_CODEX_APP_SERVER_SOCKET` 接入外部 `codex app-server --listen unix://...`，此时 Fast Spider 只管理 proxy 客户端，不直接修改 Codex 状态文件；它与 Desktop owner/control bridge 是不同层：前者替换 app-server transport，后者只是附加的 Desktop IPC 控制路由。
 

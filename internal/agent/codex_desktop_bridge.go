@@ -98,6 +98,10 @@ func (a *CodexAdapter) desktopBridgeConfiguration() (enabled, defaultEnabled boo
 
 func (a *CodexAdapter) desktopBridgeMetadata() map[string]any {
 	enabled, defaultEnabled, configurationSource, configErr := a.desktopBridgeConfiguration()
+	outboundTurnRouting := "app_server_only"
+	if runtime.GOOS == "windows" {
+		outboundTurnRouting = "desktop_owner_then_app_server"
+	}
 	out := map[string]any{
 		"enabled":                     enabled,
 		"defaultEnabled":              defaultEnabled,
@@ -105,6 +109,7 @@ func (a *CodexAdapter) desktopBridgeMetadata() map[string]any {
 		"ownership":                   "loaded_local_threads_only",
 		"automaticRelease":            "thread_unsubscribe_on_terminal_or_archive",
 		"controlRouting":              "supported",
+		"outboundTurnRouting":         outboundTurnRouting,
 		"nativeConversationStreaming": "unsupported",
 		"stability":                   "private_codex_desktop_ipc",
 	}

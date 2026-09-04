@@ -409,11 +409,7 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		var thread map[string]any
 		var err error
 		if input.MetadataOnly {
-			if input.PreferDesktopRegistry {
-				thread, err = m.authorizedThreadMetadataPreferDesktopRegistry(ctx, input.SessionID)
-			} else {
-				thread, err = m.authorizedThreadMetadata(ctx, input.SessionID)
-			}
+			thread, err = m.authorizedThreadMetadataPreferDesktopRegistry(ctx, input.SessionID)
 		} else {
 			thread, err = m.authorizedThread(ctx, input.SessionID)
 		}
@@ -1453,9 +1449,60 @@ func (m *AgentManager) cleanupRejectedInitialTurn(sessionID string, idempotencyP
 }
 
 func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams) (map[string]any, error) {
+	if err := validateTurnInputs(input); err != nil {
+		return nil, err
+	}
+	snapshot, snapshotErr := readCodexDesktopSnapshot(m.codexStatePath)
+	if snapshotErr != nil {
+		m.logger.Warn("read Codex Desktop project metadata", "error", snapshotErr)
+	}
+	registered, desktopRegistered := snapshot.Threads[input.SessionID]
+	if desktopRegistered {
+		if m.codex.ActiveTurn(input.SessionID) != "" {
+			return nil, node.ErrAgentSessionBusy
+		}
+		assignment := snapshot.Assignments[input.SessionID]
+		workingDirectory := firstNonEmptyString(assignment.WorkingDirectory, registered.WorkingDirectory, registered.ProjectDirectory)
+		var err error
+		if strings.TrimSpace(input.WorkingDirectory) != "" {
+			workingDirectory, err = requiredAgentDirectory(input.WorkingDirectory)
+			if err != nil {
+				return nil, err
+			}
+		}
+		project := resolveAgentProjectContext(ctx, workingDirectory)
+		projectDirectory := firstNonEmptyString(assignment.ProjectDirectory, registered.ProjectDirectory)
+		if projectDirectory != "" && (!project.IsGitRepository || !sameAgentPath(projectDirectory, project.ProjectDirectory)) {
+			return nil, fmt.Errorf("workingDirectory belongs to a different project; create a new session instead")
+		}
+		selectedModel := strings.TrimSpace(input.Model)
+		turnResult, desktopErr := m.codex.startDesktopOwnedTurn(ctx, input.SessionID, buildAgentTurnInputsWithDetail(input.Prompt, input.Skills, input.Images, input.LocalImages, input.Mentions, input.ImageDetail), codexTurnOptions{
+			WorkingDirectory: workingDirectory,
+			Model:            selectedModel,
+			Effort:           input.Thinking,
+			Summary:          input.Summary,
+			Personality:      input.Personality,
+			ServiceTier:      input.ServiceTier,
+			OutputSchema:     input.OutputSchema,
+		})
+		if desktopErr == nil {
+			return map[string]any{
+				"sessionId":     input.SessionID,
+				"turnId":        mapNestedString(turnResult, "turn", "id"),
+				"model":         selectedModel,
+				"executionMode": "codex_desktop_ipc",
+				"owner":         "codex_desktop",
+				"phase":         "running",
+				"desktopBridge": m.codex.desktopBridgeMetadata(),
+			}, nil
+		}
+		if !errors.Is(desktopErr, errCodexDesktopOwnerUnavailable) {
+			return nil, desktopErr
+		}
+	}
 	var thread map[string]any
 	var err error
-	if input.PreferDesktopRegistry {
+	if input.PreferDesktopRegistry || desktopRegistered {
 		thread, err = m.authorizedThreadMetadataPreferDesktopRegistry(ctx, input.SessionID)
 	} else {
 		thread, err = m.authorizedThread(ctx, input.SessionID)
@@ -1465,10 +1512,6 @@ func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams
 	}
 	if threadHasActiveTurn(thread) || m.codex.ActiveTurn(input.SessionID) != "" {
 		return nil, node.ErrAgentSessionBusy
-	}
-	snapshot, snapshotErr := readCodexDesktopSnapshot(m.codexStatePath)
-	if snapshotErr != nil {
-		m.logger.Warn("read Codex Desktop project metadata", "error", snapshotErr)
 	}
 	assignment := snapshot.Assignments[input.SessionID]
 	workingDirectory := assignment.WorkingDirectory
@@ -1496,9 +1539,6 @@ func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams
 		if err != nil {
 			return nil, err
 		}
-	}
-	if err := validateTurnInputs(input); err != nil {
-		return nil, err
 	}
 	turnResult, err := m.codex.StartTurnWithOptions(ctx, input.SessionID, buildAgentTurnInputsWithDetail(input.Prompt, input.Skills, input.Images, input.LocalImages, input.Mentions, input.ImageDetail), codexTurnOptions{
 		WorkingDirectory: workingDirectory,
