@@ -455,6 +455,38 @@ func TestSessionCallbackDispatcherWakesAtPendingDeadline(t *testing.T) {
 	}
 }
 
+func TestSessionCallbackDispatcherImmediatelyWakesSingleSessionTarget(t *testing.T) {
+	store := newSessionCallbackStore(t.TempDir())
+	registration := testCallbackRegistration("source-direct", "target-direct", "task-direct", 1)
+	registration.ImmediateWake = true
+	if _, _, err := store.register(registration); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := store.enqueue(testCallbackEvent("source-direct", 1)); err != nil || !queued {
+		t.Fatalf("enqueue queued=%v err=%v", queued, err)
+	}
+
+	sent := make(chan string, 1)
+	dispatcher := newSessionCallbackDispatcher(store, nil, func(string) bool { return false }, func(_ context.Context, target, prompt string) error {
+		if target != "target-direct" {
+			t.Errorf("callback target=%q", target)
+		}
+		sent <- prompt
+		return nil
+	}, nil)
+	dispatcher.start()
+	defer dispatcher.close(context.Background())
+
+	select {
+	case prompt := <-sent:
+		if !strings.Contains(prompt, "FAST_SPIDER_SESSION_CALLBACK_NUDGE_V1") || !strings.Contains(prompt, "session.callback.claim") {
+			t.Fatalf("unexpected direct callback nudge=%q", prompt)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("single-session callback did not wake the target immediately")
+	}
+}
+
 func TestSessionCallbackProviderRecoveryOnlyReadsAfterStartupOrRealtimeGap(t *testing.T) {
 	store := newSessionCallbackStore(t.TempDir())
 	if _, _, err := store.register(testCallbackRegistration("source-recovery", "target-recovery", "task-recovery", 1)); err != nil {

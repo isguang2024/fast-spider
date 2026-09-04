@@ -47,6 +47,7 @@ type sessionCallbackRegistration struct {
 	CallbackType          string    `json:"callbackType"`
 	DeliverablePath       string    `json:"deliverablePath,omitempty"`
 	BaselineIdentity      string    `json:"baselineIdentity,omitempty"`
+	ImmediateWake         bool      `json:"immediateWake,omitempty"`
 	Armed                 bool      `json:"armed"`
 	ArmedAt               time.Time `json:"armedAt,omitempty"`
 	LastEventSequence     int64     `json:"lastEventSequence,omitempty"`
@@ -88,6 +89,7 @@ type sessionCallbackEvent struct {
 	ResultPageCount   int       `json:"resultPageCount,omitempty"`
 	DeliverablePath   string    `json:"deliverablePath,omitempty"`
 	DeliverableStatus string    `json:"deliverableStatus,omitempty"`
+	ImmediateWake     bool      `json:"immediateWake,omitempty"`
 	ClaimID           string    `json:"claimId,omitempty"`
 	ClaimedAt         time.Time `json:"claimedAt,omitempty"`
 }
@@ -206,7 +208,7 @@ func (s *sessionCallbackStore) load() error {
 			return fmt.Errorf("invalid session callback index: %w", err)
 		}
 		registration, exists := s.registrations[event.SourceSessionID]
-		if !exists || registration.TargetSessionID != event.TargetSessionID || registration.MissionID != event.MissionID || registration.TaskID != event.TaskID || registration.Generation != event.Generation || registration.CallbackType != event.CallbackType || registration.DeliverablePath != event.DeliverablePath {
+		if !exists || registration.TargetSessionID != event.TargetSessionID || registration.MissionID != event.MissionID || registration.TaskID != event.TaskID || registration.Generation != event.Generation || registration.CallbackType != event.CallbackType || registration.DeliverablePath != event.DeliverablePath || registration.ImmediateWake != event.ImmediateWake {
 			return fmt.Errorf("invalid session callback index: pending event has no matching registration")
 		}
 		if event.EventSequence != registration.LastEventSequence {
@@ -472,7 +474,7 @@ func (s *sessionCallbackStore) register(request sessionCallbackRegistration) (se
 	}
 	current, exists := s.registrations[request.SourceSessionID]
 	if exists {
-		if current.TargetSessionID != request.TargetSessionID || current.MissionID != request.MissionID || current.TaskID != request.TaskID || current.CallbackType != request.CallbackType || !callbackDeliverablePathEqual(current.DeliverablePath, request.DeliverablePath) {
+		if current.TargetSessionID != request.TargetSessionID || current.MissionID != request.MissionID || current.TaskID != request.TaskID || current.CallbackType != request.CallbackType || current.ImmediateWake != request.ImmediateWake || !callbackDeliverablePathEqual(current.DeliverablePath, request.DeliverablePath) {
 			return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "CALLBACK_OWNER_CONFLICT", message: "source session already has a different callback owner"}
 		}
 		if request.Generation < current.Generation {
@@ -712,6 +714,7 @@ func (s *sessionCallbackStore) enqueue(event chatgptCloudEvent) (bool, error) {
 		ResultPageCount:   event.ResultPageCount,
 		DeliverablePath:   event.DeliverablePath,
 		DeliverableStatus: event.DeliverableStatus,
+		ImmediateWake:     registration.ImmediateWake,
 	}
 	if err := validateSessionCallbackEvent(pending); err != nil {
 		return false, err

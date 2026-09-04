@@ -83,6 +83,7 @@ type agentControlParams struct {
 	CallbackDeliverablePath  string              `json:"callbackDeliverablePath,omitempty"`
 	CallbackBaselineIdentity string              `json:"callbackBaselineIdentity,omitempty"`
 	CallbackArmRequired      bool                `json:"callbackArmRequired,omitempty"`
+	CallbackImmediateWake    bool                `json:"callbackImmediateWake,omitempty"`
 	CallbackClaimID          string              `json:"callbackClaimId,omitempty"`
 	CallbackClaimLimit       int                 `json:"callbackClaimLimit,omitempty"`
 	modelProvided            bool

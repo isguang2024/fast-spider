@@ -329,6 +329,14 @@ func (d *sessionCallbackDispatcher) dispatchOnce() time.Time {
 			continue
 		}
 		firstNudgeAt := oldest.UTC().Add(sessionCallbackNudgeAfter)
+		for _, event := range claimable {
+			if event.ImmediateWake {
+				candidate := event.OccurredAt.UTC()
+				if candidate.Before(firstNudgeAt) {
+					firstNudgeAt = candidate
+				}
+			}
+		}
 		if now.Before(firstNudgeAt) {
 			schedule(firstNudgeAt)
 			continue
@@ -658,6 +666,7 @@ func (m *AgentManager) sessionCallbackRegister(ctx context.Context, input agentC
 		CallbackType:     strings.TrimSpace(input.CallbackType),
 		DeliverablePath:  strings.TrimSpace(input.CallbackDeliverablePath),
 		BaselineIdentity: strings.TrimSpace(input.CallbackBaselineIdentity),
+		ImmediateWake:    input.CallbackImmediateWake,
 		Armed:            !input.CallbackArmRequired,
 	})
 	if err != nil {
@@ -687,6 +696,7 @@ func (m *AgentManager) sessionCallbackRegister(ctx context.Context, input agentC
 		"fallbackStatusPollIntervalSeconds": int64(sessionCallbackRecoveryInterval / time.Second),
 		"fallbackNudgeAfterSeconds":         int64(sessionCallbackNudgeAfter / time.Second),
 		"fallbackNudgeIntervalSeconds":      int64(sessionCallbackNudgeInterval / time.Second),
+		"immediateWake":                     registration.ImmediateWake,
 	}, nil
 }
 
@@ -1063,6 +1073,7 @@ func callbackRegistrationMap(registration sessionCallbackRegistration, pendingCo
 		"pendingCount":      pendingCount,
 		"armed":             registration.Armed,
 		"baselineSet":       registration.BaselineIdentity != "",
+		"immediateWake":     registration.ImmediateWake,
 		"registeredAt":      registration.RegisteredAt.UTC().Format(time.RFC3339Nano),
 		"updatedAt":         registration.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}

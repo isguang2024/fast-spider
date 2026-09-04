@@ -321,19 +321,19 @@ func (s *Service) CloudCollaboration(ctx context.Context, ownerID string, req Cl
 			return nil, err
 		}
 	case "decision.resolve":
-		if role != "controller" {
+		if !cloudCollaborationCanControl(state, role) {
 			return nil, store.ErrUnauthorized
 		}
 		if err := cloudCollaborationResolveDecision(&state, req); err != nil {
 			return nil, err
 		}
 	case "pause":
-		if role != "controller" {
+		if !cloudCollaborationCanControl(state, role) {
 			return nil, store.ErrUnauthorized
 		}
 		state.Status = "paused"
 	case "resume":
-		if role != "controller" {
+		if !cloudCollaborationCanControl(state, role) {
 			return nil, store.ErrUnauthorized
 		}
 		state.Status = "active"
@@ -362,7 +362,7 @@ func (s *Service) CloudCollaboration(ctx context.Context, ownerID string, req Cl
 		}
 		return s.cloudCollaborationDeleteChat(ctx, ownerID, rec, state, req)
 	case "close":
-		if role != "controller" {
+		if !cloudCollaborationCanControl(state, role) {
 			return nil, store.ErrUnauthorized
 		}
 		return s.cloudCollaborationClose(ctx, ownerID, rec, state)
@@ -392,7 +392,7 @@ func cloudCollaborationDispatchReceipt(out map[string]any, role string) map[stri
 }
 
 func (s *Service) createCloudCollaboration(ctx context.Context, ownerID string, req CloudCollaborationRequest) (map[string]any, error) {
-	if len(req.IdempotencyKey) < 12 || len(req.IdempotencyKey) > 128 || strings.TrimSpace(req.MachineID) == "" || strings.TrimSpace(req.ControllerSessionID) == "" || strings.TrimSpace(req.DispatcherSessionID) == "" || strings.TrimSpace(req.ControllerSessionID) == strings.TrimSpace(req.DispatcherSessionID) {
+	if len(req.IdempotencyKey) < 12 || len(req.IdempotencyKey) > 128 || strings.TrimSpace(req.MachineID) == "" || strings.TrimSpace(req.ControllerSessionID) == "" || strings.TrimSpace(req.DispatcherSessionID) == "" {
 		return nil, store.ErrConflict
 	}
 	if err := validateCloudCollaborationLimits(req); err != nil {
@@ -422,8 +422,10 @@ func (s *Service) createCloudCollaboration(ctx context.Context, ownerID string, 
 	if err := s.validateCodexLocalCollaborationSession(ctx, ownerID, req.MachineID, req.ControllerSessionID); err != nil {
 		return nil, err
 	}
-	if err := s.validateCodexLocalCollaborationSession(ctx, ownerID, req.MachineID, req.DispatcherSessionID); err != nil {
-		return nil, err
+	if strings.TrimSpace(req.DispatcherSessionID) != strings.TrimSpace(req.ControllerSessionID) {
+		if err := s.validateCodexLocalCollaborationSession(ctx, ownerID, req.MachineID, req.DispatcherSessionID); err != nil {
+			return nil, err
+		}
 	}
 	id, err := security.RandomOpaque("collab_")
 	if err != nil {
@@ -521,10 +523,10 @@ func authorizeCloudCollaborationActor(state cloudCollaborationState, sessionID, 
 	sessionID = strings.TrimSpace(sessionID)
 	role := ""
 	switch sessionID {
-	case state.ControllerSessionID:
-		role = "controller"
 	case state.DispatcherSessionID:
 		role = "dispatcher"
+	case state.ControllerSessionID:
+		role = "controller"
 	default:
 		for _, chat := range state.Chats {
 			if chat.SessionID == sessionID && chat.Status != "archived" && chat.Status != "deleted" {
@@ -537,6 +539,10 @@ func authorizeCloudCollaborationActor(state cloudCollaborationState, sessionID, 
 		return "", store.ErrUnauthorized
 	}
 	return role, nil
+}
+
+func cloudCollaborationCanControl(state cloudCollaborationState, role string) bool {
+	return role == "controller" || role == "dispatcher" && state.ControllerSessionID == state.DispatcherSessionID
 }
 
 // resolveCloudCollaborationSelfActor binds the explicit "$self" marker to the
@@ -1240,6 +1246,7 @@ func (s *Service) registerCloudCollaborationCallback(ctx context.Context, ownerI
 		"callbackTaskId": task.ID, "callbackGeneration": task.Generation,
 		"callbackType":             task.CallbackType,
 		"callbackDeliverablePath":  cloudCollaborationTaskResultPath(task),
+		"callbackImmediateWake":    state.ControllerSessionID == state.DispatcherSessionID,
 		"callbackBaselineIdentity": strings.TrimSpace(baselineIdentity), "callbackArmRequired": true,
 	})
 }

@@ -328,6 +328,58 @@ func TestCodexCloudCollaborationRequiresLocalCodexAndUsesDeliverableCallback(t *
 	}
 }
 
+func TestCodexCloudCollaborationSingleSessionUsesImmediateCallbackWake(t *testing.T) {
+	service, ownerID, machineID, node := newCloudCollaborationTestService(t)
+	root := filepath.Join(t.TempDir(), "project")
+	created, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "create", MachineID: machineID, IdempotencyKey: "codex-collab-single-session-001", ControllerSessionID: "codex-callback-target", DispatcherSessionID: "codex-callback-target",
+		Title: "Simple task", Goal: "Return a short result", DoneWhen: "The result is acknowledged", WorkingDirectory: root, AllowedActions: []string{"chat.create", "file.read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collaborationID := mapString(created, "collaborationId")
+	leased, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "lease.acquire", CollaborationID: collaborationID, ActorSessionID: "codex-callback-target", ActorRole: "dispatcher", ExpectedRevision: numberField(created, "revision")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paused, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "pause", CollaborationID: collaborationID, ActorSessionID: "codex-callback-target", ActorRole: "dispatcher", ExpectedRevision: numberField(leased, "revision")})
+	if err != nil || paused["status"] != "paused" {
+		t.Fatalf("single-session pause=%#v err=%v", paused, err)
+	}
+	resumed, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "resume", CollaborationID: collaborationID, ActorSessionID: "codex-callback-target", ActorRole: "dispatcher", ExpectedRevision: numberField(paused, "revision")})
+	if err != nil || resumed["status"] != "active" {
+		t.Fatalf("single-session resume=%#v err=%v", resumed, err)
+	}
+	added, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "task.add", CollaborationID: collaborationID, ActorSessionID: "codex-callback-target", ActorRole: "dispatcher", ExpectedRevision: numberField(resumed, "revision"),
+		TaskID: "task-simple", Title: "Simple", Prompt: "Return OK.", AccessMode: "read_only", CallbackType: protocolv1.CloudCallbackTypeText, AllowedActions: []string{"chat.create", "file.read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatched, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "task.dispatch", CollaborationID: collaborationID, ActorSessionID: "codex-callback-target", ActorRole: "dispatcher", ExpectedRevision: numberField(added, "revision"), TaskID: "task-simple"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dispatched["callerShouldYield"] != true || dispatched["nextAction"] != "end_turn" {
+		t.Fatalf("single-session dispatch receipt=%#v", dispatched)
+	}
+	getCalls := 0
+	immediateWake := false
+	for _, call := range node.snapshotCalls() {
+		if call.Action == "session.get" && call.Params["sessionId"] == "codex-callback-target" {
+			getCalls++
+		}
+		if call.Action == "session.callback.register" {
+			immediateWake, _ = call.Params["callbackImmediateWake"].(bool)
+		}
+	}
+	if getCalls != 1 || !immediateWake {
+		t.Fatalf("single-session validation calls=%d immediateWake=%v calls=%#v", getCalls, immediateWake, node.snapshotCalls())
+	}
+}
+
 func TestCodexCloudCollaborationPollRecoversMissedCallbackAndCloses(t *testing.T) {
 	service, ownerID, machineID, node := newCloudCollaborationTestService(t)
 	created, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
