@@ -41,6 +41,14 @@ func testCallbackEvent(source string, sequence int64) chatgptCloudEvent {
 	}
 }
 
+func testDesktopCallbackDelivery() sessionCallbackDeliveryResult {
+	return sessionCallbackDeliveryResult{
+		ExecutionMode: "codex_desktop_ipc",
+		Owner:         "codex_desktop",
+		TurnID:        "turn-callback-test",
+	}
+}
+
 func TestCallbackDeliverablePathEqualityUsesPlatformPathSemantics(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "results", "final.md")
@@ -364,12 +372,12 @@ func TestSessionCallbackManagerObserverInboxDispatchesAfterCoordinatorIdle(t *te
 		return active
 	}
 	sent := make(chan string, 1)
-	manager.callbackDispatcher.send = func(_ context.Context, target, prompt string) error {
+	manager.callbackDispatcher.send = func(_ context.Context, target, prompt string) (sessionCallbackDeliveryResult, error) {
 		if target != "coordinator-local" {
 			t.Errorf("callback target=%q", target)
 		}
 		sent <- prompt
-		return nil
+		return testDesktopCallbackDelivery(), nil
 	}
 	manager.chatgptCloud.realtime.emit("source-integration", "conversation-turn-complete", "provider_evt_integration")
 	grouped, err := manager.callbackStore.pendingByTarget()
@@ -439,9 +447,9 @@ func TestSessionCallbackDispatcherWakesAtPendingDeadline(t *testing.T) {
 	store.mu.Unlock()
 
 	sent := make(chan time.Time, 1)
-	dispatcher := newSessionCallbackDispatcher(store, nil, func(string) bool { return false }, func(context.Context, string, string) error {
+	dispatcher := newSessionCallbackDispatcher(store, nil, func(string) bool { return false }, func(context.Context, string, string) (sessionCallbackDeliveryResult, error) {
 		sent <- time.Now()
-		return nil
+		return testDesktopCallbackDelivery(), nil
 	}, nil)
 	dispatcher.start()
 	defer dispatcher.close(context.Background())
@@ -470,12 +478,12 @@ func TestSessionCallbackDispatcherImmediatelyWakesSingleSessionTarget(t *testing
 	}
 
 	sent := make(chan string, 1)
-	dispatcher := newSessionCallbackDispatcher(store, nil, func(string) bool { return false }, func(_ context.Context, target, prompt string) error {
+	dispatcher := newSessionCallbackDispatcher(store, nil, func(string) bool { return false }, func(_ context.Context, target, prompt string) (sessionCallbackDeliveryResult, error) {
 		if target != "target-direct" {
 			t.Errorf("callback target=%q", target)
 		}
 		sent <- prompt
-		return nil
+		return testDesktopCallbackDelivery(), nil
 	}, nil)
 	dispatcher.start()
 	defer dispatcher.close(context.Background())
@@ -501,12 +509,12 @@ func TestSessionCallbackHubEnqueueWakesTargetWithoutProviderEvent(t *testing.T) 
 	}
 	manager.callbackDispatcher.active = func(string) bool { return false }
 	sent := make(chan string, 1)
-	manager.callbackDispatcher.send = func(_ context.Context, target, prompt string) error {
+	manager.callbackDispatcher.send = func(_ context.Context, target, prompt string) (sessionCallbackDeliveryResult, error) {
 		if target != "target-hub" {
 			t.Errorf("callback target=%q", target)
 		}
 		sent <- prompt
-		return nil
+		return testDesktopCallbackDelivery(), nil
 	}
 
 	result, err := manager.Control(context.Background(), "session.callback.enqueue", map[string]any{
@@ -663,12 +671,12 @@ func TestSessionCallbackDispatcherBatchesAndWaitsForIdleTarget(t *testing.T) {
 		store,
 		nil,
 		func(string) bool { return active },
-		func(_ context.Context, target, prompt string) error {
+		func(_ context.Context, target, prompt string) (sessionCallbackDeliveryResult, error) {
 			if target != "coordinator" {
 				t.Fatalf("target=%q", target)
 			}
 			prompts = append(prompts, prompt)
-			return nil
+			return testDesktopCallbackDelivery(), nil
 		},
 		nil,
 	)
@@ -715,12 +723,12 @@ func TestSessionCallbackDispatcherKeepsBusyDeliveryPending(t *testing.T) {
 		store,
 		nil,
 		func(string) bool { return false },
-		func(context.Context, string, string) error {
+		func(context.Context, string, string) (sessionCallbackDeliveryResult, error) {
 			sends++
 			if busy {
-				return node.ErrAgentSessionBusy
+				return sessionCallbackDeliveryResult{}, node.ErrAgentSessionBusy
 			}
-			return nil
+			return testDesktopCallbackDelivery(), nil
 		},
 		nil,
 	)
@@ -744,6 +752,52 @@ func TestSessionCallbackDispatcherKeepsBusyDeliveryPending(t *testing.T) {
 	}
 }
 
+func TestSessionCallbackDispatcherRequiresDesktopDeliveryConfirmation(t *testing.T) {
+	store := newSessionCallbackStore(t.TempDir())
+	registration := testCallbackRegistration("source-desktop-required", "coordinator", "task-desktop", 1)
+	registration.ImmediateWake = true
+	if _, _, err := store.register(registration); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.enqueue(testCallbackEvent("source-desktop-required", 1)); err != nil {
+		t.Fatal(err)
+	}
+	delivery := sessionCallbackDeliveryResult{ExecutionMode: "app_server", Owner: "node_agent_bridge", TurnID: "turn-app-server"}
+	dispatcher := newSessionCallbackDispatcher(
+		store,
+		nil,
+		func(string) bool { return false },
+		func(context.Context, string, string) (sessionCallbackDeliveryResult, error) {
+			return delivery, nil
+		},
+		nil,
+	)
+	if nextWake := dispatcher.dispatchOnce(); nextWake.IsZero() {
+		t.Fatal("unconfirmed callback delivery did not schedule a retry")
+	}
+	items, _, err := store.registrationsSnapshot("source-desktop-required", "")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("registrations=%#v err=%v", items, err)
+	}
+	if !items[0].LastNudgeAt.IsZero() || items[0].LastNudgeEnvelope != "" {
+		t.Fatalf("unconfirmed delivery recorded nudge: %#v", items[0])
+	}
+	grouped, err := store.pendingByTarget()
+	if err != nil || len(grouped["coordinator"]) != 1 {
+		t.Fatalf("unconfirmed delivery changed pending queue=%#v err=%v", grouped, err)
+	}
+
+	delivery = testDesktopCallbackDelivery()
+	dispatcher.dispatchOnce()
+	items, _, err = store.registrationsSnapshot("source-desktop-required", "")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("registrations after Desktop delivery=%#v err=%v", items, err)
+	}
+	if items[0].LastNudgeExecutionMode != "codex_desktop_ipc" || items[0].LastNudgeOwner != "codex_desktop" || items[0].LastNudgeTurnID != "turn-callback-test" {
+		t.Fatalf("Desktop delivery proof was not recorded: %#v", items[0])
+	}
+}
+
 func TestSessionCallbackDispatcherRetriesActiveTargetWithoutTerminalSignal(t *testing.T) {
 	store := newSessionCallbackStore(t.TempDir())
 	registration := testCallbackRegistration("source-active", "coordinator", "task-active", 1)
@@ -754,9 +808,9 @@ func TestSessionCallbackDispatcherRetriesActiveTargetWithoutTerminalSignal(t *te
 	if _, err := store.enqueue(testCallbackEvent("source-active", 1)); err != nil {
 		t.Fatal(err)
 	}
-	dispatcher := newSessionCallbackDispatcher(store, nil, func(string) bool { return true }, func(context.Context, string, string) error {
+	dispatcher := newSessionCallbackDispatcher(store, nil, func(string) bool { return true }, func(context.Context, string, string) (sessionCallbackDeliveryResult, error) {
 		t.Fatal("active target received callback")
-		return nil
+		return sessionCallbackDeliveryResult{}, nil
 	}, nil)
 	nextWake := dispatcher.dispatchOnce()
 	if nextWake.IsZero() {
@@ -858,10 +912,10 @@ func TestSessionCallbackProviderReplayCannotReplaceInFlightPendingEnvelope(t *te
 	}
 	sendStarted := make(chan struct{})
 	releaseSend := make(chan struct{})
-	dispatcher := newSessionCallbackDispatcher(store, nil, nil, func(context.Context, string, string) error {
+	dispatcher := newSessionCallbackDispatcher(store, nil, nil, func(context.Context, string, string) (sessionCallbackDeliveryResult, error) {
 		close(sendStarted)
 		<-releaseSend
-		return nil
+		return testDesktopCallbackDelivery(), nil
 	}, nil)
 	done := make(chan struct{})
 	go func() {
@@ -1399,8 +1453,12 @@ func TestSessionCallbackNudgePrefersDesktopRegistryWhenThreadReadFails(t *testin
 	manager.codex.requestOverride = func(_ context.Context, method string, _ map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("callback nudge must not use app-server: %s", method)
 	}
-	if err := manager.callbackDispatcher.send(context.Background(), "dispatcher-projectless", "callback"); err != nil {
+	delivery, err := manager.callbackDispatcher.send(context.Background(), "dispatcher-projectless", "callback")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if delivery.ExecutionMode != "codex_desktop_ipc" || delivery.Owner != "codex_desktop" || delivery.TurnID != "turn-callback" {
+		t.Fatalf("callback delivery=%#v", delivery)
 	}
 	request := <-requests
 	turnRequest := mapValueMap(mapValueMap(mapValueMap(request, "params"), "turnStart"), "request")
@@ -1409,6 +1467,32 @@ func TestSessionCallbackNudgePrefersDesktopRegistryWhenThreadReadFails(t *testin
 	}
 	if err := <-serverErr; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSessionCallbackNudgeDoesNotFallbackToAppServerWhenDesktopOwnerUnavailable(t *testing.T) {
+	dataDir := t.TempDir()
+	manager := New(dataDir, nil)
+	defer manager.Close(context.Background())
+	rootHint := t.TempDir()
+	manager.codexStatePath = filepath.Join(dataDir, codexDesktopStateFilename)
+	state := fmt.Sprintf(`{"local-projects":{},"thread-project-assignments":{},"projectless-thread-ids":["dispatcher-projectless"],"thread-workspace-root-hints":{"dispatcher-projectless":%q}}`, rootHint)
+	if err := os.WriteFile(manager.codexStatePath, []byte(state), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager.codex.desktopRequestDial = func() (io.ReadWriteCloser, error) {
+		return nil, errors.New("Desktop owner unavailable")
+	}
+	appServerCalled := false
+	manager.codex.requestOverride = func(_ context.Context, method string, _ map[string]any) (map[string]any, error) {
+		appServerCalled = true
+		return nil, fmt.Errorf("callback nudge must not use app-server: %s", method)
+	}
+	if _, err := manager.callbackDispatcher.send(context.Background(), "dispatcher-projectless", "callback"); err == nil || !errors.Is(err, errCodexDesktopOwnerUnavailable) {
+		t.Fatalf("callback send error=%v", err)
+	}
+	if appServerCalled {
+		t.Fatal("callback nudge fell back to app-server after Desktop owner was unavailable")
 	}
 }
 

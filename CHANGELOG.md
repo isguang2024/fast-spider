@@ -3,6 +3,15 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.60 - 2026-09-05
+
+- Require Codex Desktop IPC confirmation before marking Cloud CHAT callback
+  nudges as delivered to a local Codex task. Desktop-owned callback targets no
+  longer fall back to app-server delivery when the Desktop owner is temporarily
+  unavailable; the durable callback queue stays pending for retry instead.
+- Record the callback nudge delivery proof (`executionMode`, `owner`, and
+  `turnId`) in the local callback registry for diagnosis and recovery.
+
 ## 0.4.55 - 2026-09-04
 
 - Keep typed Cloud CHAT callbacks usable before a ChatGPT connector schema

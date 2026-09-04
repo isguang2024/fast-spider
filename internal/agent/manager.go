@@ -32,6 +32,7 @@ type agentControlParams struct {
 	Mode                     string              `json:"mode,omitempty"`
 	MetadataOnly             bool                `json:"metadataOnly,omitempty"`
 	PreferDesktopRegistry    bool                `json:"preferDesktopRegistry,omitempty"`
+	RequireDesktopIPC        bool                `json:"-"`
 	Prompt                   string              `json:"prompt,omitempty"`
 	WorkingDirectory         string              `json:"workingDirectory,omitempty"`
 	Model                    string              `json:"model,omitempty"`
@@ -186,9 +187,12 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 		callbackStore,
 		logger,
 		func(sessionID string) bool { return manager.codex.ActiveTurn(sessionID) != "" },
-		func(ctx context.Context, sessionID, prompt string) error {
-			_, err := manager.sessionSend(ctx, agentControlParams{SessionID: sessionID, Prompt: prompt, PreferDesktopRegistry: true})
-			return err
+		func(ctx context.Context, sessionID, prompt string) (sessionCallbackDeliveryResult, error) {
+			result, err := manager.sessionSend(ctx, agentControlParams{SessionID: sessionID, Prompt: prompt, PreferDesktopRegistry: true, RequireDesktopIPC: true})
+			if err != nil {
+				return sessionCallbackDeliveryResult{}, err
+			}
+			return sessionCallbackDeliveryResultFromSessionSend(result), nil
 		},
 		func(ctx context.Context, sessionID string, generation int64) error {
 			return manager.chatgptCloud.EnsureCallbackRealtimeForGeneration(ctx, sessionID, generation)
@@ -1486,9 +1490,13 @@ func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams
 			OutputSchema:     input.OutputSchema,
 		})
 		if desktopErr == nil {
+			turnID := mapNestedString(turnResult, "turn", "id")
+			if input.RequireDesktopIPC && turnID == "" {
+				return nil, fmt.Errorf("Codex Desktop IPC did not return a turnId")
+			}
 			return map[string]any{
 				"sessionId":     input.SessionID,
-				"turnId":        mapNestedString(turnResult, "turn", "id"),
+				"turnId":        turnID,
 				"model":         selectedModel,
 				"executionMode": "codex_desktop_ipc",
 				"owner":         "codex_desktop",
@@ -1499,6 +1507,12 @@ func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams
 		if !errors.Is(desktopErr, errCodexDesktopOwnerUnavailable) {
 			return nil, desktopErr
 		}
+		if input.RequireDesktopIPC {
+			return nil, desktopErr
+		}
+	}
+	if input.RequireDesktopIPC && !desktopRegistered {
+		return nil, fmt.Errorf("%w: target session is not registered in Codex Desktop", errCodexDesktopOwnerUnavailable)
 	}
 	var thread map[string]any
 	var err error

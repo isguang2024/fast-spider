@@ -35,7 +35,7 @@ type sessionCallbackDispatcher struct {
 	store  *sessionCallbackStore
 	logger *slog.Logger
 	active func(string) bool
-	send   func(context.Context, string, string) error
+	send   func(context.Context, string, string) (sessionCallbackDeliveryResult, error)
 	ensure func(context.Context, string, int64) error
 	// recoverStatus performs one bounded provider status read for a registered
 	// Cloud CHAT. It is intentionally separate from ensure so tests and callers
@@ -59,11 +59,32 @@ type sessionCallbackDispatcher struct {
 	recoveredRequests           uint64
 }
 
+type sessionCallbackDeliveryResult struct {
+	ExecutionMode string
+	Owner         string
+	TurnID        string
+}
+
+func sessionCallbackDeliveryResultFromSessionSend(result map[string]any) sessionCallbackDeliveryResult {
+	return sessionCallbackDeliveryResult{
+		ExecutionMode: mapString(result, "executionMode"),
+		Owner:         mapString(result, "owner"),
+		TurnID:        mapString(result, "turnId"),
+	}
+}
+
+func validateSessionCallbackDesktopDelivery(result sessionCallbackDeliveryResult) error {
+	if result.ExecutionMode == "codex_desktop_ipc" && result.Owner == "codex_desktop" && strings.TrimSpace(result.TurnID) != "" {
+		return nil
+	}
+	return fmt.Errorf("callback nudge delivery was not confirmed by Codex Desktop IPC")
+}
+
 func newSessionCallbackDispatcher(
 	store *sessionCallbackStore,
 	logger *slog.Logger,
 	active func(string) bool,
-	send func(context.Context, string, string) error,
+	send func(context.Context, string, string) (sessionCallbackDeliveryResult, error),
 	ensure func(context.Context, string, int64) error,
 ) *sessionCallbackDispatcher {
 	if logger == nil {
@@ -358,7 +379,7 @@ func (d *sessionCallbackDispatcher) dispatchOnce() time.Time {
 		envelopeID := sessionCallbackEnvelopeID(target, claimable)
 		prompt := buildSessionCallbackNudge(target, len(claimable), envelopeID)
 		ctx, cancel := context.WithTimeout(d.rootCtx, 2*time.Minute)
-		sendErr := d.send(ctx, target, prompt)
+		delivery, sendErr := d.send(ctx, target, prompt)
 		cancel()
 		if errors.Is(sendErr, node.ErrAgentSessionBusy) {
 			schedule(retryAt())
@@ -371,8 +392,21 @@ func (d *sessionCallbackDispatcher) dispatchOnce() time.Time {
 			schedule(retryAt())
 			continue
 		}
+		if err := validateSessionCallbackDesktopDelivery(delivery); err != nil {
+			d.logger.Warn(
+				"deliver session callback nudge without Desktop IPC confirmation",
+				"targetSessionId", target,
+				"envelopeId", envelopeID,
+				"executionMode", delivery.ExecutionMode,
+				"owner", delivery.Owner,
+				"turnId", delivery.TurnID,
+				"error", err,
+			)
+			schedule(retryAt())
+			continue
+		}
 		sentAt := time.Now().UTC()
-		if err := d.store.recordNudge(target, envelopeID, sentAt); err != nil {
+		if err := d.store.recordNudge(target, envelopeID, delivery, sentAt); err != nil {
 			d.logger.Warn("record session callback nudge", "targetSessionId", target, "envelopeId", envelopeID, "error", err)
 			schedule(retryAt())
 			continue
@@ -1179,6 +1213,9 @@ func callbackRegistrationMap(registration sessionCallbackRegistration, pendingCo
 	if !registration.LastNudgeAt.IsZero() {
 		out["lastNudgeAt"] = registration.LastNudgeAt.UTC().Format(time.RFC3339Nano)
 		out["lastNudgeEnvelopeId"] = registration.LastNudgeEnvelope
+		out["lastNudgeExecutionMode"] = registration.LastNudgeExecutionMode
+		out["lastNudgeOwner"] = registration.LastNudgeOwner
+		out["lastNudgeTurnId"] = registration.LastNudgeTurnID
 	}
 	return out
 }

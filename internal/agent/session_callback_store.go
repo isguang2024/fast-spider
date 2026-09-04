@@ -39,33 +39,36 @@ func (e *sessionCallbackError) CapabilityError() (string, string, bool) {
 }
 
 type sessionCallbackRegistration struct {
-	SourceSessionID       string    `json:"sourceSessionId"`
-	TargetSessionID       string    `json:"targetSessionId"`
-	MissionID             string    `json:"missionId"`
-	TaskID                string    `json:"taskId"`
-	Generation            int64     `json:"generation"`
-	CallbackType          string    `json:"callbackType"`
-	DeliverablePath       string    `json:"deliverablePath,omitempty"`
-	BaselineIdentity      string    `json:"baselineIdentity,omitempty"`
-	ImmediateWake         bool      `json:"immediateWake,omitempty"`
-	Armed                 bool      `json:"armed"`
-	ArmedAt               time.Time `json:"armedAt,omitempty"`
-	LastEventSequence     int64     `json:"lastEventSequence,omitempty"`
-	LastEventKey          string    `json:"lastEventKey,omitempty"`
-	RecentEventKeys       []string  `json:"recentEventKeys,omitempty"`
-	LastFallbackEventKey  string    `json:"lastFallbackEventKey,omitempty"`
-	LastFallbackEventAt   time.Time `json:"lastFallbackEventAt,omitempty"`
-	LastDeliveredAt       time.Time `json:"lastDeliveredAt,omitempty"`
-	LastDeliveredEnvelope string    `json:"lastDeliveredEnvelope,omitempty"`
-	LastNudgeAt           time.Time `json:"lastNudgeAt,omitempty"`
-	LastNudgeEnvelope     string    `json:"lastNudgeEnvelope,omitempty"`
-	LastResultID          string    `json:"lastResultId,omitempty"`
-	LastResultStatus      string    `json:"lastResultStatus,omitempty"`
-	LastResultBytes       int64     `json:"lastResultBytes,omitempty"`
-	LastResultSHA256      string    `json:"lastResultSHA256,omitempty"`
-	LastResultPageCount   int       `json:"lastResultPageCount,omitempty"`
-	RegisteredAt          time.Time `json:"registeredAt"`
-	UpdatedAt             time.Time `json:"updatedAt"`
+	SourceSessionID        string    `json:"sourceSessionId"`
+	TargetSessionID        string    `json:"targetSessionId"`
+	MissionID              string    `json:"missionId"`
+	TaskID                 string    `json:"taskId"`
+	Generation             int64     `json:"generation"`
+	CallbackType           string    `json:"callbackType"`
+	DeliverablePath        string    `json:"deliverablePath,omitempty"`
+	BaselineIdentity       string    `json:"baselineIdentity,omitempty"`
+	ImmediateWake          bool      `json:"immediateWake,omitempty"`
+	Armed                  bool      `json:"armed"`
+	ArmedAt                time.Time `json:"armedAt,omitempty"`
+	LastEventSequence      int64     `json:"lastEventSequence,omitempty"`
+	LastEventKey           string    `json:"lastEventKey,omitempty"`
+	RecentEventKeys        []string  `json:"recentEventKeys,omitempty"`
+	LastFallbackEventKey   string    `json:"lastFallbackEventKey,omitempty"`
+	LastFallbackEventAt    time.Time `json:"lastFallbackEventAt,omitempty"`
+	LastDeliveredAt        time.Time `json:"lastDeliveredAt,omitempty"`
+	LastDeliveredEnvelope  string    `json:"lastDeliveredEnvelope,omitempty"`
+	LastNudgeAt            time.Time `json:"lastNudgeAt,omitempty"`
+	LastNudgeEnvelope      string    `json:"lastNudgeEnvelope,omitempty"`
+	LastNudgeExecutionMode string    `json:"lastNudgeExecutionMode,omitempty"`
+	LastNudgeOwner         string    `json:"lastNudgeOwner,omitempty"`
+	LastNudgeTurnID        string    `json:"lastNudgeTurnId,omitempty"`
+	LastResultID           string    `json:"lastResultId,omitempty"`
+	LastResultStatus       string    `json:"lastResultStatus,omitempty"`
+	LastResultBytes        int64     `json:"lastResultBytes,omitempty"`
+	LastResultSHA256       string    `json:"lastResultSHA256,omitempty"`
+	LastResultPageCount    int       `json:"lastResultPageCount,omitempty"`
+	RegisteredAt           time.Time `json:"registeredAt"`
+	UpdatedAt              time.Time `json:"updatedAt"`
 }
 
 type sessionCallbackEvent struct {
@@ -296,6 +299,15 @@ func validateSessionCallbackRegistration(registration sessionCallbackRegistratio
 	if !registration.LastNudgeAt.IsZero() && registration.LastNudgeEnvelope == "" {
 		return fmt.Errorf("callback nudge timestamp has no envelope ID")
 	}
+	if err := validateCallbackSafeToken(registration.LastNudgeExecutionMode, "callback nudge execution mode"); err != nil {
+		return err
+	}
+	if err := validateCallbackSafeToken(registration.LastNudgeOwner, "callback nudge owner"); err != nil {
+		return err
+	}
+	if err := validateCallbackSafeToken(registration.LastNudgeTurnID, "callback nudge turn ID"); err != nil {
+		return err
+	}
 	if err := validateCallbackResultMetadata(callbackResultMetadata{registration.LastResultID, registration.LastResultStatus, registration.LastResultBytes, registration.LastResultSHA256, registration.LastResultPageCount}); err != nil {
 		return err
 	}
@@ -407,6 +419,16 @@ func validateCallbackIdentity(value, label string) error {
 	}
 	if len(value) > 256 || strings.ContainsAny(value, "\x00\r\n") {
 		return fmt.Errorf("invalid callback %s", label)
+	}
+	return nil
+}
+
+func validateCallbackSafeToken(value, label string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > 128 || strings.ContainsAny(value, "\x00\r\n\t ") {
+		return fmt.Errorf("invalid %s", label)
 	}
 	return nil
 }
@@ -1120,9 +1142,18 @@ func (s *sessionCallbackStore) nudgeSchedule(targetSessionID string, now time.Ti
 	return !now.Before(next), next, nil
 }
 
-func (s *sessionCallbackStore) recordNudge(targetSessionID, envelopeID string, now time.Time) error {
+func (s *sessionCallbackStore) recordNudge(targetSessionID, envelopeID string, delivery sessionCallbackDeliveryResult, now time.Time) error {
 	targetSessionID = strings.TrimSpace(targetSessionID)
 	if err := validateSessionCallbackClaimID(envelopeID); err != nil {
+		return &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
+	}
+	if err := validateCallbackSafeToken(delivery.ExecutionMode, "callback nudge execution mode"); err != nil {
+		return &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
+	}
+	if err := validateCallbackSafeToken(delivery.Owner, "callback nudge owner"); err != nil {
+		return &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
+	}
+	if err := validateCallbackSafeToken(delivery.TurnID, "callback nudge turn ID"); err != nil {
 		return &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
 	}
 	now = now.UTC()
@@ -1139,6 +1170,9 @@ func (s *sessionCallbackStore) recordNudge(targetSessionID, envelopeID string, n
 		}
 		registration.LastNudgeAt = now
 		registration.LastNudgeEnvelope = envelopeID
+		registration.LastNudgeExecutionMode = delivery.ExecutionMode
+		registration.LastNudgeOwner = delivery.Owner
+		registration.LastNudgeTurnID = delivery.TurnID
 		registration.UpdatedAt = now
 		s.registrations[source] = registration
 		updated++
