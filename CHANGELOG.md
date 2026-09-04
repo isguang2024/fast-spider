@@ -3,6 +3,16 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.61 - 2026-09-05
+
+- Treat Cloud CHAT callback nudges as delivered only after Fast Spider has a
+  confirmed local Codex turn (`executionMode`, `owner`, and non-empty `turnId`).
+  Desktop IPC remains preferred, while unclaimed VS Code/Desktop panels can fall
+  back to the local Codex app-server instead of leaving the callback queue stuck.
+- Accept confirmed Codex turn delivery from Desktop IPC, Node-owned app-server,
+  or the configured external app-server socket; unknown owners or missing
+  `turnId` still keep the callback pending for retry.
+
 ## 0.4.60 - 2026-09-05
 
 - Require Codex Desktop IPC confirmation before marking Cloud CHAT callback

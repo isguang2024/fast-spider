@@ -32,7 +32,7 @@ type agentControlParams struct {
 	Mode                     string              `json:"mode,omitempty"`
 	MetadataOnly             bool                `json:"metadataOnly,omitempty"`
 	PreferDesktopRegistry    bool                `json:"preferDesktopRegistry,omitempty"`
-	RequireDesktopIPC        bool                `json:"-"`
+	RequireConfirmedTurnID   bool                `json:"-"`
 	Prompt                   string              `json:"prompt,omitempty"`
 	WorkingDirectory         string              `json:"workingDirectory,omitempty"`
 	Model                    string              `json:"model,omitempty"`
@@ -188,7 +188,7 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 		logger,
 		func(sessionID string) bool { return manager.codex.ActiveTurn(sessionID) != "" },
 		func(ctx context.Context, sessionID, prompt string) (sessionCallbackDeliveryResult, error) {
-			result, err := manager.sessionSend(ctx, agentControlParams{SessionID: sessionID, Prompt: prompt, PreferDesktopRegistry: true, RequireDesktopIPC: true})
+			result, err := manager.sessionSend(ctx, agentControlParams{SessionID: sessionID, Prompt: prompt, PreferDesktopRegistry: true, RequireConfirmedTurnID: true})
 			if err != nil {
 				return sessionCallbackDeliveryResult{}, err
 			}
@@ -1491,7 +1491,7 @@ func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams
 		})
 		if desktopErr == nil {
 			turnID := mapNestedString(turnResult, "turn", "id")
-			if input.RequireDesktopIPC && turnID == "" {
+			if input.RequireConfirmedTurnID && turnID == "" {
 				return nil, fmt.Errorf("Codex Desktop IPC did not return a turnId")
 			}
 			return map[string]any{
@@ -1507,12 +1507,6 @@ func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams
 		if !errors.Is(desktopErr, errCodexDesktopOwnerUnavailable) {
 			return nil, desktopErr
 		}
-		if input.RequireDesktopIPC {
-			return nil, desktopErr
-		}
-	}
-	if input.RequireDesktopIPC && !desktopRegistered {
-		return nil, fmt.Errorf("%w: target session is not registered in Codex Desktop", errCodexDesktopOwnerUnavailable)
 	}
 	var thread map[string]any
 	var err error
@@ -1567,6 +1561,9 @@ func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams
 		return nil, err
 	}
 	turnID := mapNestedString(turnResult, "turn", "id")
+	if input.RequireConfirmedTurnID && turnID == "" {
+		return nil, fmt.Errorf("local Codex app-server delivery did not return a turnId")
+	}
 	executionMode, owner := m.codex.executionMetadata()
 	return map[string]any{
 		"sessionId":     input.SessionID,

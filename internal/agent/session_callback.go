@@ -73,11 +73,27 @@ func sessionCallbackDeliveryResultFromSessionSend(result map[string]any) session
 	}
 }
 
-func validateSessionCallbackDesktopDelivery(result sessionCallbackDeliveryResult) error {
-	if result.ExecutionMode == "codex_desktop_ipc" && result.Owner == "codex_desktop" && strings.TrimSpace(result.TurnID) != "" {
+func validateSessionCallbackLocalCodexTurnDelivery(result sessionCallbackDeliveryResult) error {
+	if strings.TrimSpace(result.TurnID) == "" {
+		return fmt.Errorf("callback nudge delivery did not return a local Codex turnId")
+	}
+	if isConfirmedLocalCodexTurnOwner(result.ExecutionMode, result.Owner) {
 		return nil
 	}
-	return fmt.Errorf("callback nudge delivery was not confirmed by Codex Desktop IPC")
+	return fmt.Errorf("callback nudge delivery was not confirmed by a local Codex turn")
+}
+
+func isConfirmedLocalCodexTurnOwner(executionMode, owner string) bool {
+	switch executionMode {
+	case "codex_desktop_ipc":
+		return owner == "codex_desktop"
+	case "bridge_owned":
+		return owner == "node_agent_bridge"
+	case "external_app_server":
+		return owner == "external_app_server"
+	default:
+		return false
+	}
 }
 
 func newSessionCallbackDispatcher(
@@ -392,9 +408,9 @@ func (d *sessionCallbackDispatcher) dispatchOnce() time.Time {
 			schedule(retryAt())
 			continue
 		}
-		if err := validateSessionCallbackDesktopDelivery(delivery); err != nil {
+		if err := validateSessionCallbackLocalCodexTurnDelivery(delivery); err != nil {
 			d.logger.Warn(
-				"deliver session callback nudge without Desktop IPC confirmation",
+				"deliver session callback nudge without local Codex turn confirmation",
 				"targetSessionId", target,
 				"envelopeId", envelopeID,
 				"executionMode", delivery.ExecutionMode,

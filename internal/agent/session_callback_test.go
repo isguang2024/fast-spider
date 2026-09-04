@@ -49,6 +49,37 @@ func testDesktopCallbackDelivery() sessionCallbackDeliveryResult {
 	}
 }
 
+func testBridgeOwnedCallbackDelivery() sessionCallbackDeliveryResult {
+	return sessionCallbackDeliveryResult{
+		ExecutionMode: "bridge_owned",
+		Owner:         "node_agent_bridge",
+		TurnID:        "turn-callback-app-server",
+	}
+}
+
+func TestValidateSessionCallbackLocalCodexTurnDelivery(t *testing.T) {
+	tests := []struct {
+		name    string
+		result  sessionCallbackDeliveryResult
+		wantErr bool
+	}{
+		{name: "desktop IPC", result: testDesktopCallbackDelivery()},
+		{name: "node app server", result: testBridgeOwnedCallbackDelivery()},
+		{name: "external app server", result: sessionCallbackDeliveryResult{ExecutionMode: "external_app_server", Owner: "external_app_server", TurnID: "turn-external"}},
+		{name: "empty turn id", result: sessionCallbackDeliveryResult{ExecutionMode: "bridge_owned", Owner: "node_agent_bridge"}, wantErr: true},
+		{name: "unknown execution mode", result: sessionCallbackDeliveryResult{ExecutionMode: "app_server", Owner: "node_agent_bridge", TurnID: "turn-unknown"}, wantErr: true},
+		{name: "wrong owner", result: sessionCallbackDeliveryResult{ExecutionMode: "bridge_owned", Owner: "codex_desktop", TurnID: "turn-wrong-owner"}, wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateSessionCallbackLocalCodexTurnDelivery(test.result)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("validation error=%v wantErr=%v", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestCallbackDeliverablePathEqualityUsesPlatformPathSemantics(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "results", "final.md")
@@ -752,7 +783,7 @@ func TestSessionCallbackDispatcherKeepsBusyDeliveryPending(t *testing.T) {
 	}
 }
 
-func TestSessionCallbackDispatcherRequiresDesktopDeliveryConfirmation(t *testing.T) {
+func TestSessionCallbackDispatcherRequiresConfirmedLocalCodexTurnDelivery(t *testing.T) {
 	store := newSessionCallbackStore(t.TempDir())
 	registration := testCallbackRegistration("source-desktop-required", "coordinator", "task-desktop", 1)
 	registration.ImmediateWake = true
@@ -787,14 +818,26 @@ func TestSessionCallbackDispatcherRequiresDesktopDeliveryConfirmation(t *testing
 		t.Fatalf("unconfirmed delivery changed pending queue=%#v err=%v", grouped, err)
 	}
 
-	delivery = testDesktopCallbackDelivery()
+	delivery = sessionCallbackDeliveryResult{ExecutionMode: "bridge_owned", Owner: "node_agent_bridge"}
+	if nextWake := dispatcher.dispatchOnce(); nextWake.IsZero() {
+		t.Fatal("delivery without turnId did not schedule a retry")
+	}
+	items, _, err = store.registrationsSnapshot("source-desktop-required", "")
+	if err != nil || len(items) != 1 {
+		t.Fatalf("registrations after empty turnId delivery=%#v err=%v", items, err)
+	}
+	if !items[0].LastNudgeAt.IsZero() || items[0].LastNudgeEnvelope != "" {
+		t.Fatalf("empty turnId delivery recorded nudge: %#v", items[0])
+	}
+
+	delivery = testBridgeOwnedCallbackDelivery()
 	dispatcher.dispatchOnce()
 	items, _, err = store.registrationsSnapshot("source-desktop-required", "")
 	if err != nil || len(items) != 1 {
-		t.Fatalf("registrations after Desktop delivery=%#v err=%v", items, err)
+		t.Fatalf("registrations after app-server delivery=%#v err=%v", items, err)
 	}
-	if items[0].LastNudgeExecutionMode != "codex_desktop_ipc" || items[0].LastNudgeOwner != "codex_desktop" || items[0].LastNudgeTurnID != "turn-callback-test" {
-		t.Fatalf("Desktop delivery proof was not recorded: %#v", items[0])
+	if items[0].LastNudgeExecutionMode != "bridge_owned" || items[0].LastNudgeOwner != "node_agent_bridge" || items[0].LastNudgeTurnID != "turn-callback-app-server" {
+		t.Fatalf("app-server delivery proof was not recorded: %#v", items[0])
 	}
 }
 
@@ -1470,10 +1513,11 @@ func TestSessionCallbackNudgePrefersDesktopRegistryWhenThreadReadFails(t *testin
 	}
 }
 
-func TestSessionCallbackNudgeDoesNotFallbackToAppServerWhenDesktopOwnerUnavailable(t *testing.T) {
+func TestSessionCallbackNudgeFallsBackToAppServerWhenDesktopOwnerUnavailable(t *testing.T) {
 	dataDir := t.TempDir()
 	manager := New(dataDir, nil)
 	defer manager.Close(context.Background())
+	t.Setenv(codexAppServerSocketEnv, "")
 	rootHint := t.TempDir()
 	manager.codexStatePath = filepath.Join(dataDir, codexDesktopStateFilename)
 	state := fmt.Sprintf(`{"local-projects":{},"thread-project-assignments":{},"projectless-thread-ids":["dispatcher-projectless"],"thread-workspace-root-hints":{"dispatcher-projectless":%q}}`, rootHint)
@@ -1483,16 +1527,30 @@ func TestSessionCallbackNudgeDoesNotFallbackToAppServerWhenDesktopOwnerUnavailab
 	manager.codex.desktopRequestDial = func() (io.ReadWriteCloser, error) {
 		return nil, errors.New("Desktop owner unavailable")
 	}
-	appServerCalled := false
-	manager.codex.requestOverride = func(_ context.Context, method string, _ map[string]any) (map[string]any, error) {
-		appServerCalled = true
-		return nil, fmt.Errorf("callback nudge must not use app-server: %s", method)
+	var turnStart map[string]any
+	manager.codex.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
+		switch method {
+		case "thread/resume":
+			return map[string]any{"thread": map[string]any{"id": "dispatcher-projectless"}}, nil
+		case "turn/start":
+			turnStart = params
+			return map[string]any{"turn": map[string]any{"id": "turn-fallback-callback"}}, nil
+		default:
+			return nil, fmt.Errorf("unexpected Codex request %s", method)
+		}
 	}
-	if _, err := manager.callbackDispatcher.send(context.Background(), "dispatcher-projectless", "callback"); err == nil || !errors.Is(err, errCodexDesktopOwnerUnavailable) {
-		t.Fatalf("callback send error=%v", err)
+	delivery, err := manager.callbackDispatcher.send(context.Background(), "dispatcher-projectless", "callback")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if appServerCalled {
-		t.Fatal("callback nudge fell back to app-server after Desktop owner was unavailable")
+	if delivery.ExecutionMode != "bridge_owned" || delivery.Owner != "node_agent_bridge" || delivery.TurnID != "turn-fallback-callback" {
+		t.Fatalf("fallback delivery=%#v", delivery)
+	}
+	if turnStart == nil {
+		t.Fatal("callback nudge did not fall back to app-server turn/start")
+	}
+	if turnStart["threadId"] != "dispatcher-projectless" || turnStart["cwd"] != rootHint {
+		t.Fatalf("fallback turn/start params=%#v", turnStart)
 	}
 }
 
