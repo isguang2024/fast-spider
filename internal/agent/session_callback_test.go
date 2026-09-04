@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -41,18 +39,10 @@ func testCallbackEvent(source string, sequence int64) chatgptCloudEvent {
 	}
 }
 
-func testDesktopCallbackDelivery() sessionCallbackDeliveryResult {
+func testAppServerCallbackDelivery() sessionCallbackDeliveryResult {
 	return sessionCallbackDeliveryResult{
-		ExecutionMode: "codex_desktop_ipc",
-		Owner:         "codex_desktop",
-		TurnID:        "turn-callback-test",
-	}
-}
-
-func testBridgeOwnedCallbackDelivery() sessionCallbackDeliveryResult {
-	return sessionCallbackDeliveryResult{
-		ExecutionMode: "bridge_owned",
-		Owner:         "node_agent_bridge",
+		ExecutionMode: "codex_app_server",
+		Owner:         "fast_spider_node",
 		TurnID:        "turn-callback-app-server",
 	}
 }
@@ -63,12 +53,10 @@ func TestValidateSessionCallbackLocalCodexTurnDelivery(t *testing.T) {
 		result  sessionCallbackDeliveryResult
 		wantErr bool
 	}{
-		{name: "desktop IPC", result: testDesktopCallbackDelivery()},
-		{name: "node app server", result: testBridgeOwnedCallbackDelivery()},
-		{name: "external app server", result: sessionCallbackDeliveryResult{ExecutionMode: "external_app_server", Owner: "external_app_server", TurnID: "turn-external"}},
-		{name: "empty turn id", result: sessionCallbackDeliveryResult{ExecutionMode: "bridge_owned", Owner: "node_agent_bridge"}, wantErr: true},
-		{name: "unknown execution mode", result: sessionCallbackDeliveryResult{ExecutionMode: "app_server", Owner: "node_agent_bridge", TurnID: "turn-unknown"}, wantErr: true},
-		{name: "wrong owner", result: sessionCallbackDeliveryResult{ExecutionMode: "bridge_owned", Owner: "codex_desktop", TurnID: "turn-wrong-owner"}, wantErr: true},
+		{name: "node app server", result: testAppServerCallbackDelivery()},
+		{name: "empty turn id", result: sessionCallbackDeliveryResult{ExecutionMode: "codex_app_server", Owner: "fast_spider_node"}, wantErr: true},
+		{name: "unknown execution mode", result: sessionCallbackDeliveryResult{ExecutionMode: "app_server", Owner: "fast_spider_node", TurnID: "turn-unknown"}, wantErr: true},
+		{name: "wrong owner", result: sessionCallbackDeliveryResult{ExecutionMode: "codex_app_server", Owner: "codex_desktop", TurnID: "turn-wrong-owner"}, wantErr: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -408,7 +396,7 @@ func TestSessionCallbackManagerObserverInboxDispatchesAfterCoordinatorIdle(t *te
 			t.Errorf("callback target=%q", target)
 		}
 		sent <- prompt
-		return testDesktopCallbackDelivery(), nil
+		return testAppServerCallbackDelivery(), nil
 	}
 	manager.chatgptCloud.realtime.emit("source-integration", "conversation-turn-complete", "provider_evt_integration")
 	grouped, err := manager.callbackStore.pendingByTarget()
@@ -480,7 +468,7 @@ func TestSessionCallbackDispatcherWakesAtPendingDeadline(t *testing.T) {
 	sent := make(chan time.Time, 1)
 	dispatcher := newSessionCallbackDispatcher(store, nil, func(string) bool { return false }, func(context.Context, string, string) (sessionCallbackDeliveryResult, error) {
 		sent <- time.Now()
-		return testDesktopCallbackDelivery(), nil
+		return testAppServerCallbackDelivery(), nil
 	}, nil)
 	dispatcher.start()
 	defer dispatcher.close(context.Background())
@@ -514,7 +502,7 @@ func TestSessionCallbackDispatcherImmediatelyWakesSingleSessionTarget(t *testing
 			t.Errorf("callback target=%q", target)
 		}
 		sent <- prompt
-		return testDesktopCallbackDelivery(), nil
+		return testAppServerCallbackDelivery(), nil
 	}, nil)
 	dispatcher.start()
 	defer dispatcher.close(context.Background())
@@ -545,7 +533,7 @@ func TestSessionCallbackHubEnqueueWakesTargetWithoutProviderEvent(t *testing.T) 
 			t.Errorf("callback target=%q", target)
 		}
 		sent <- prompt
-		return testDesktopCallbackDelivery(), nil
+		return testAppServerCallbackDelivery(), nil
 	}
 
 	result, err := manager.Control(context.Background(), "session.callback.enqueue", map[string]any{
@@ -707,7 +695,7 @@ func TestSessionCallbackDispatcherBatchesAndWaitsForIdleTarget(t *testing.T) {
 				t.Fatalf("target=%q", target)
 			}
 			prompts = append(prompts, prompt)
-			return testDesktopCallbackDelivery(), nil
+			return testAppServerCallbackDelivery(), nil
 		},
 		nil,
 	)
@@ -759,7 +747,7 @@ func TestSessionCallbackDispatcherKeepsBusyDeliveryPending(t *testing.T) {
 			if busy {
 				return sessionCallbackDeliveryResult{}, node.ErrAgentSessionBusy
 			}
-			return testDesktopCallbackDelivery(), nil
+			return testAppServerCallbackDelivery(), nil
 		},
 		nil,
 	)
@@ -793,7 +781,7 @@ func TestSessionCallbackDispatcherRequiresConfirmedLocalCodexTurnDelivery(t *tes
 	if _, err := store.enqueue(testCallbackEvent("source-desktop-required", 1)); err != nil {
 		t.Fatal(err)
 	}
-	delivery := sessionCallbackDeliveryResult{ExecutionMode: "app_server", Owner: "node_agent_bridge", TurnID: "turn-app-server"}
+	delivery := sessionCallbackDeliveryResult{ExecutionMode: "app_server", Owner: "fast_spider_node", TurnID: "turn-app-server"}
 	dispatcher := newSessionCallbackDispatcher(
 		store,
 		nil,
@@ -818,7 +806,7 @@ func TestSessionCallbackDispatcherRequiresConfirmedLocalCodexTurnDelivery(t *tes
 		t.Fatalf("unconfirmed delivery changed pending queue=%#v err=%v", grouped, err)
 	}
 
-	delivery = sessionCallbackDeliveryResult{ExecutionMode: "bridge_owned", Owner: "node_agent_bridge"}
+	delivery = sessionCallbackDeliveryResult{ExecutionMode: "codex_app_server", Owner: "fast_spider_node"}
 	if nextWake := dispatcher.dispatchOnce(); nextWake.IsZero() {
 		t.Fatal("delivery without turnId did not schedule a retry")
 	}
@@ -830,13 +818,13 @@ func TestSessionCallbackDispatcherRequiresConfirmedLocalCodexTurnDelivery(t *tes
 		t.Fatalf("empty turnId delivery recorded nudge: %#v", items[0])
 	}
 
-	delivery = testBridgeOwnedCallbackDelivery()
+	delivery = testAppServerCallbackDelivery()
 	dispatcher.dispatchOnce()
 	items, _, err = store.registrationsSnapshot("source-desktop-required", "")
 	if err != nil || len(items) != 1 {
 		t.Fatalf("registrations after app-server delivery=%#v err=%v", items, err)
 	}
-	if items[0].LastNudgeExecutionMode != "bridge_owned" || items[0].LastNudgeOwner != "node_agent_bridge" || items[0].LastNudgeTurnID != "turn-callback-app-server" {
+	if items[0].LastNudgeExecutionMode != "codex_app_server" || items[0].LastNudgeOwner != "fast_spider_node" || items[0].LastNudgeTurnID != "turn-callback-app-server" {
 		t.Fatalf("app-server delivery proof was not recorded: %#v", items[0])
 	}
 }
@@ -958,7 +946,7 @@ func TestSessionCallbackProviderReplayCannotReplaceInFlightPendingEnvelope(t *te
 	dispatcher := newSessionCallbackDispatcher(store, nil, nil, func(context.Context, string, string) (sessionCallbackDeliveryResult, error) {
 		close(sendStarted)
 		<-releaseSend
-		return testDesktopCallbackDelivery(), nil
+		return testAppServerCallbackDelivery(), nil
 	}, nil)
 	done := make(chan struct{})
 	go func() {
@@ -1411,7 +1399,7 @@ func TestSessionCallbackFallbackStatusReadSynthesizesMissedCompletion(t *testing
 	}
 }
 
-func TestSessionCallbackRegisterAcceptsProjectlessDesktopThreadAndCanSend(t *testing.T) {
+func TestSessionCallbackRegisterAcceptsAppServerThreadAndCanSend(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/backend-api/conversation/source-cloud" {
 			http.NotFound(w, r)
@@ -1434,19 +1422,11 @@ func TestSessionCallbackRegisterAcceptsProjectlessDesktopThreadAndCanSend(t *tes
 	manager.chatgptCloud.realtime.http = server.Client()
 
 	rootHint := t.TempDir()
-	manager.codexStatePath = filepath.Join(dataDir, codexDesktopStateFilename)
-	state := fmt.Sprintf(`{"local-projects":{},"thread-project-assignments":{},"projectless-thread-ids":["dispatcher-projectless"],"thread-workspace-root-hints":{"dispatcher-projectless":%q}}`, rootHint)
-	if err := os.WriteFile(manager.codexStatePath, []byte(state), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	manager.codex.desktopRequestDial = func() (io.ReadWriteCloser, error) {
-		return nil, errors.New("Desktop owner unavailable in app-server fallback test")
-	}
 	var turnStart map[string]any
 	manager.codex.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
 		switch method {
 		case "thread/read":
-			return nil, node.ErrAgentSessionNotFound
+			return map[string]any{"thread": map[string]any{"id": "dispatcher-projectless", "cwd": rootHint}}, nil
 		case "thread/resume":
 			return map[string]any{"thread": map[string]any{"id": params["threadId"]}}, nil
 		case "turn/start":
@@ -1472,64 +1452,28 @@ func TestSessionCallbackRegisterAcceptsProjectlessDesktopThreadAndCanSend(t *tes
 	if session["sessionId"] != "dispatcher-projectless" || session["providerId"] != "codex" || session["backend"] != sessionBackendCodexLocal {
 		t.Fatalf("projectless session.get=%#v", got)
 	}
-	if _, err := manager.sessionSend(context.Background(), agentControlParams{SessionID: "dispatcher-projectless", Prompt: "callback"}); err != nil {
+	delivery, err := manager.callbackDispatcher.send(context.Background(), "dispatcher-projectless", "callback")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if delivery.ExecutionMode != "codex_app_server" || delivery.Owner != "fast_spider_node" || delivery.TurnID != "turn-projectless" {
+		t.Fatalf("callback delivery=%#v", delivery)
 	}
 	if turnStart["threadId"] != "dispatcher-projectless" || turnStart["cwd"] != rootHint {
 		t.Fatalf("turn/start params=%#v", turnStart)
 	}
 }
 
-func TestSessionCallbackNudgePrefersDesktopRegistryWhenThreadReadFails(t *testing.T) {
+func TestSessionCallbackNudgeUsesOnlyAppServer(t *testing.T) {
 	dataDir := t.TempDir()
 	manager := New(dataDir, nil)
 	defer manager.Close(context.Background())
 	rootHint := t.TempDir()
-	manager.codexStatePath = filepath.Join(dataDir, codexDesktopStateFilename)
-	state := fmt.Sprintf(`{"local-projects":{},"thread-project-assignments":{},"projectless-thread-ids":["dispatcher-projectless"],"thread-workspace-root-hints":{"dispatcher-projectless":%q}}`, rootHint)
-	if err := os.WriteFile(manager.codexStatePath, []byte(state), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	client, server := net.Pipe()
-	manager.codex.desktopRequestDial = singleCodexDesktopDial(client)
-	requests, serverErr := serveCodexDesktopTurn(t, server, "dispatcher-projectless", "idle", "turn-callback", "")
-	manager.codex.requestOverride = func(_ context.Context, method string, _ map[string]any) (map[string]any, error) {
-		return nil, fmt.Errorf("callback nudge must not use app-server: %s", method)
-	}
-	delivery, err := manager.callbackDispatcher.send(context.Background(), "dispatcher-projectless", "callback")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if delivery.ExecutionMode != "codex_desktop_ipc" || delivery.Owner != "codex_desktop" || delivery.TurnID != "turn-callback" {
-		t.Fatalf("callback delivery=%#v", delivery)
-	}
-	request := <-requests
-	turnRequest := mapValueMap(mapValueMap(mapValueMap(request, "params"), "turnStart"), "request")
-	if turnRequest["threadId"] != "dispatcher-projectless" || turnRequest["cwd"] != rootHint {
-		t.Fatalf("callback Desktop turn params=%#v", turnRequest)
-	}
-	if err := <-serverErr; err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestSessionCallbackNudgeFallsBackToAppServerWhenDesktopOwnerUnavailable(t *testing.T) {
-	dataDir := t.TempDir()
-	manager := New(dataDir, nil)
-	defer manager.Close(context.Background())
-	t.Setenv(codexAppServerSocketEnv, "")
-	rootHint := t.TempDir()
-	manager.codexStatePath = filepath.Join(dataDir, codexDesktopStateFilename)
-	state := fmt.Sprintf(`{"local-projects":{},"thread-project-assignments":{},"projectless-thread-ids":["dispatcher-projectless"],"thread-workspace-root-hints":{"dispatcher-projectless":%q}}`, rootHint)
-	if err := os.WriteFile(manager.codexStatePath, []byte(state), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	manager.codex.desktopRequestDial = func() (io.ReadWriteCloser, error) {
-		return nil, errors.New("Desktop owner unavailable")
-	}
 	var turnStart map[string]any
 	manager.codex.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
 		switch method {
+		case "thread/read":
+			return map[string]any{"thread": map[string]any{"id": "dispatcher-projectless", "cwd": rootHint}}, nil
 		case "thread/resume":
 			return map[string]any{"thread": map[string]any{"id": "dispatcher-projectless"}}, nil
 		case "turn/start":
@@ -1543,23 +1487,64 @@ func TestSessionCallbackNudgeFallsBackToAppServerWhenDesktopOwnerUnavailable(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if delivery.ExecutionMode != "bridge_owned" || delivery.Owner != "node_agent_bridge" || delivery.TurnID != "turn-fallback-callback" {
-		t.Fatalf("fallback delivery=%#v", delivery)
+	if delivery.ExecutionMode != "codex_app_server" || delivery.Owner != "fast_spider_node" || delivery.TurnID != "turn-fallback-callback" {
+		t.Fatalf("app-server delivery=%#v", delivery)
 	}
 	if turnStart == nil {
-		t.Fatal("callback nudge did not fall back to app-server turn/start")
+		t.Fatal("callback nudge did not use app-server turn/start")
 	}
 	if turnStart["threadId"] != "dispatcher-projectless" || turnStart["cwd"] != rootHint {
 		t.Fatalf("fallback turn/start params=%#v", turnStart)
 	}
 }
 
-func TestAuthorizedThreadFallbackRequiresRegisteredDesktopThreadAndNotFoundError(t *testing.T) {
+func TestSessionCallbackNudgeUnarchivesArchivedTargetBeforeAppServerRetry(t *testing.T) {
+	dataDir := t.TempDir()
+	manager := New(dataDir, nil)
+	defer manager.Close(context.Background())
+	rootHint := t.TempDir()
+	var methods []string
+	resumeCalls := 0
+	manager.codex.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
+		methods = append(methods, method)
+		if params["threadId"] != "dispatcher-archived" {
+			t.Fatalf("unexpected params=%#v", params)
+		}
+		switch method {
+		case "thread/read":
+			return map[string]any{"thread": map[string]any{"id": "dispatcher-archived", "cwd": rootHint, "archived": true}}, nil
+		case "thread/resume":
+			resumeCalls++
+			if resumeCalls == 1 {
+				return nil, errors.New("session dispatcher-archived is archived. Run `codex unarchive dispatcher-archived` to unarchive it first")
+			}
+			return map[string]any{"thread": map[string]any{"id": "dispatcher-archived"}}, nil
+		case "thread/unarchive":
+			return map[string]any{}, nil
+		case "turn/start":
+			return map[string]any{"turn": map[string]any{"id": "turn-after-unarchive"}}, nil
+		default:
+			return nil, fmt.Errorf("unexpected Codex request %s", method)
+		}
+	}
+	delivery, err := manager.callbackDispatcher.send(context.Background(), "dispatcher-archived", "callback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delivery.ExecutionMode != "codex_app_server" || delivery.Owner != "fast_spider_node" || delivery.TurnID != "turn-after-unarchive" {
+		t.Fatalf("callback delivery=%#v", delivery)
+	}
+	if got, want := strings.Join(methods, ","), "thread/read,thread/resume,thread/unarchive,thread/resume,turn/start"; got != want {
+		t.Fatalf("Codex methods=%q want=%q", got, want)
+	}
+}
+
+func TestAuthorizedThreadRequiresAppServerRead(t *testing.T) {
 	dataDir := t.TempDir()
 	manager := New(dataDir, nil)
 	defer manager.Close(context.Background())
 	manager.codexStatePath = filepath.Join(dataDir, codexDesktopStateFilename)
-	if err := os.WriteFile(manager.codexStatePath, []byte(`{"local-projects":{},"thread-project-assignments":{},"projectless-thread-ids":["known-thread"]}`), 0o600); err != nil {
+	if err := os.WriteFile(manager.codexStatePath, []byte(`{"local-projects":{},"projectless-thread-ids":["known-thread"]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	manager.codex.requestOverride = func(_ context.Context, _ string, params map[string]any) (map[string]any, error) {
@@ -1601,28 +1586,28 @@ func TestSessionGetMetadataOnlySkipsTurnHistory(t *testing.T) {
 	}
 }
 
-func TestSessionGetMetadataOnlyPrefersDesktopRegistry(t *testing.T) {
+func TestSessionGetMetadataOnlyDoesNotUseDesktopRegistry(t *testing.T) {
 	dataDir := t.TempDir()
 	manager := New(dataDir, nil)
 	defer manager.Close(context.Background())
-	rootHint := t.TempDir()
 	manager.codexStatePath = filepath.Join(dataDir, codexDesktopStateFilename)
-	state := fmt.Sprintf(`{"local-projects":{},"thread-project-assignments":{},"projectless-thread-ids":["registered-thread"],"thread-workspace-root-hints":{"registered-thread":%q}}`, rootHint)
+	state := `{"local-projects":{},"projectless-thread-ids":["registered-thread"]}`
 	if err := os.WriteFile(manager.codexStatePath, []byte(state), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	called := false
 	manager.codex.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
-		return nil, fmt.Errorf("unexpected Codex request %s %#v", method, params)
+		called = true
+		if method != "thread/read" || params["threadId"] != "registered-thread" {
+			t.Fatalf("unexpected Codex request %s %#v", method, params)
+		}
+		return nil, node.ErrAgentSessionNotFound
 	}
-	got, err := manager.Control(context.Background(), "session.get", map[string]any{
+	_, err := manager.Control(context.Background(), "session.get", map[string]any{
 		"providerId": "codex", "sessionId": "registered-thread", "metadataOnly": true,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	session, _ := got["session"].(map[string]any)
-	if session["sessionId"] != "registered-thread" || session["backend"] != sessionBackendCodexLocal || !sameAgentPath(mapString(session, "workingDirectory"), rootHint) {
-		t.Fatalf("desktop-registry metadata=%#v", got)
+	if !isAgentSessionNotFound(err) || !called {
+		t.Fatalf("metadata-only session.get error=%v called=%v", err, called)
 	}
 }
 

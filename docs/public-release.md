@@ -67,7 +67,7 @@ bash scripts/public-export.sh \
   --require-license
 ```
 
-When all local runtimes are available, also run:
+For release-critical changes, also run the diff-aware extended gate:
 
 ```bash
 bash scripts/release-gate.sh --full

@@ -249,7 +249,7 @@ func TestMCPServerInstructionsStayBoundedAndCoverCapabilityMap(t *testing.T) {
 		"shell_run", "build_control", "job_watch", "job_cancel", "git_control", "browser_control", "screenshot_take",
 		"ai_control", "codex_cloud_collaboration", "working_context", "thinking_team", "artifact_get", "view=tool|workflow|error", "view=capability",
 		`query="fsprobe"`, "Never load all 21 schemas", "powershell.exe", "tzutil /g", "not a separate PowerShell tool", "Cloud CHAT",
-		"desktopBridge", "nativeConversationStreaming=unsupported", "Desktop owner/control bridge", "Cloud CHAT is optional assistance", "callbackSessionId", "targetSessionId", "omission creates one quick_chat", "bounded text callback", "Controller/coordinator roles", "not separate Fast Spider transport modes",
+		"Node-owned codex app-server --stdio", "backend=codex_local", "Cloud CHAT is optional assistance", "callbackSessionId", "targetSessionId", "omission creates one quick_chat", "bounded text callback", "Controller/coordinator roles", "not separate Fast Spider transport modes",
 	} {
 		if !strings.Contains(mcpServerInstructions, needle) {
 			t.Fatalf("instructions missing %q", needle)

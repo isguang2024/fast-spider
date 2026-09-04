@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -104,8 +103,6 @@ type configRequest struct {
 	AutoStartEnabled                bool    `json:"autoStartEnabled"`
 	AutoUpdateEnabled               bool    `json:"autoUpdateEnabled"`
 	AllowInsecureLocalHub           bool    `json:"allowInsecureLocalHub"`
-	CodexDesktopBridgeEnabled       bool    `json:"codexDesktopBridgeEnabled"`
-	CodexDesktopBridgeConfigured    bool    `json:"codexDesktopBridgeConfigured"`
 	ChatGPTDefaultConfigurationMode *string `json:"chatgptDefaultConfigurationMode"`
 	ChatGPTDefaultCreateMode        *string `json:"chatgptDefaultCreateMode"`
 	ChatGPTDefaultModel             *string `json:"chatgptDefaultModel"`
@@ -148,7 +145,6 @@ func New(opts Options) (*App, error) {
 		opts.Logger.Warn("operation log store unavailable", "error", err)
 	}
 	agentController := agent.New(opts.DataDir, opts.Logger)
-	agentController.SetCodexDesktopBridgeEnabled(cfg.CodexDesktopBridgeEnabled)
 	agentController.SetChatGPTCloudCreateDefaults(cfg.ChatGPTDefaultConfigurationMode, cfg.ChatGPTDefaultCreateMode, cfg.ChatGPTDefaultModel, cfg.ChatGPTDefaultThinking)
 	return &App{
 		opts:            opts,
@@ -461,8 +457,6 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		AutoStartEnabled:                req.AutoStartEnabled,
 		AutoUpdateEnabled:               req.AutoUpdateEnabled,
 		AllowInsecureLocalHub:           req.AllowInsecureLocalHub,
-		CodexDesktopBridgeEnabled:       req.CodexDesktopBridgeEnabled,
-		CodexDesktopBridgeConfigured:    req.CodexDesktopBridgeConfigured,
 		ChatGPTDefaultConfigurationMode: old.ChatGPTDefaultConfigurationMode,
 		ChatGPTDefaultCreateMode:        old.ChatGPTDefaultCreateMode,
 		ChatGPTDefaultModel:             old.ChatGPTDefaultModel,
@@ -493,10 +487,6 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, errors.New("当前系统暂不支持开机自动启动"))
 		return
 	}
-	if next.CodexDesktopBridgeEnabled && runtime.GOOS != "windows" {
-		writeAPIError(w, http.StatusBadRequest, errors.New("Codex Desktop 会话接管仅支持 Windows"))
-		return
-	}
 	if err := setAutostart(next.AutoStartEnabled, a.opts.DataDir); err != nil {
 		writeAPIError(w, http.StatusBadRequest, err)
 		return
@@ -510,11 +500,6 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	a.config = next
 	a.mu.Unlock()
-	if old.CodexDesktopBridgeEnabled != next.CodexDesktopBridgeEnabled {
-		if controller, ok := a.agentController.(interface{ SetCodexDesktopBridgeEnabled(bool) }); ok {
-			controller.SetCodexDesktopBridgeEnabled(next.CodexDesktopBridgeEnabled)
-		}
-	}
 	if controller, ok := a.agentController.(interface {
 		SetChatGPTCloudCreateDefaults(string, string, string, string)
 	}); ok {

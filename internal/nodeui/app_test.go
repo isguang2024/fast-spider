@@ -81,16 +81,13 @@ func TestLocalConfigV1LoadsIntoCurrentVersionWithoutLosingExistingSettings(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Version != localConfigVersion || cfg.MachineName != "Legacy Node" || cfg.HubURL != "https://hub.example" || !cfg.LocalBridgeEnabled || cfg.AutoStartEnabled || cfg.AutoUpdateEnabled || cfg.CodexDesktopBridgeEnabled || cfg.CodexDesktopBridgeConfigured || cfg.ChatGPTDefaultConfigurationMode != "auto" || cfg.ChatGPTDefaultCreateMode != "complete" || cfg.ChatGPTDefaultModel != "" || cfg.ChatGPTDefaultThinking != "" {
+	if cfg.Version != localConfigVersion || cfg.MachineName != "Legacy Node" || cfg.HubURL != "https://hub.example" || !cfg.LocalBridgeEnabled || cfg.AutoStartEnabled || cfg.AutoUpdateEnabled || cfg.ChatGPTDefaultConfigurationMode != "auto" || cfg.ChatGPTDefaultCreateMode != "complete" || cfg.ChatGPTDefaultModel != "" || cfg.ChatGPTDefaultThinking != "" {
 		t.Fatalf("legacy config migration mismatch: %+v", cfg)
 	}
 }
 
-func TestDefaultLocalConfigStartsWithSharedCodexDesktopSessions(t *testing.T) {
+func TestDefaultLocalConfigPreservesChatGPTCreateDefaults(t *testing.T) {
 	cfg := defaultLocalConfig("Test Node")
-	if cfg.CodexDesktopBridgeEnabled || cfg.CodexDesktopBridgeConfigured {
-		t.Fatalf("new local config must wait for an explicit shared/managed choice: %+v", cfg)
-	}
 	if cfg.ChatGPTDefaultConfigurationMode != "auto" || cfg.ChatGPTDefaultCreateMode != "complete" || cfg.ChatGPTDefaultModel != "" || cfg.ChatGPTDefaultThinking != "" {
 		t.Fatalf("new local config must preserve existing ChatGPT create defaults: %+v", cfg)
 	}
@@ -225,25 +222,25 @@ func TestLocalUIConfigPreservesRegistrationHubWhenHubFieldIsOmitted(t *testing.T
 	}
 }
 
-func TestLocalUIConfigSavesCodexDesktopSessionMode(t *testing.T) {
-	app, err := New(Options{DataDir: t.TempDir(), Version: "ui-test", MachineName: "Test Node", Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+func TestLegacyCodexDesktopBridgeFieldsAreIgnoredAndRemovedOnSave(t *testing.T) {
+	dataDir := t.TempDir()
+	legacy := `{"version":6,"machineName":"Test Node","localBridgeEnabled":true,"codexDesktopBridgeEnabled":true,"codexDesktopBridgeConfigured":true,"chatgptDefaultConfigurationMode":"auto","chatgptDefaultCreateMode":"complete"}`
+	if err := os.WriteFile(filepath.Join(dataDir, "config.json"), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadLocalConfig(dataDir, "fallback")
 	if err != nil {
 		t.Fatal(err)
 	}
-	body, err := json.Marshal(configRequest{MachineName: "Test Node", LocalBridgeEnabled: true, CodexDesktopBridgeConfigured: true})
+	if err := saveLocalConfig(dataDir, cfg); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dataDir, "config.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/config", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Fast-Spider-UI-Token", app.uiToken)
-	response := httptest.NewRecorder()
-	app.handler().ServeHTTP(response, req)
-	if response.Code != http.StatusOK {
-		t.Fatalf("config status=%d body=%s", response.Code, response.Body.String())
-	}
-	if !app.config.CodexDesktopBridgeConfigured || app.config.CodexDesktopBridgeEnabled {
-		t.Fatalf("shared session mode was not saved: %+v", app.config)
+	if strings.Contains(string(raw), "codexDesktopBridge") {
+		t.Fatalf("legacy Codex Desktop bridge fields survived save: %s", raw)
 	}
 }
 

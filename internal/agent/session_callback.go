@@ -84,16 +84,7 @@ func validateSessionCallbackLocalCodexTurnDelivery(result sessionCallbackDeliver
 }
 
 func isConfirmedLocalCodexTurnOwner(executionMode, owner string) bool {
-	switch executionMode {
-	case "codex_desktop_ipc":
-		return owner == "codex_desktop"
-	case "bridge_owned":
-		return owner == "node_agent_bridge"
-	case "external_app_server":
-		return owner == "external_app_server"
-	default:
-		return false
-	}
+	return executionMode == "codex_app_server" && owner == "fast_spider_node"
 }
 
 func newSessionCallbackDispatcher(

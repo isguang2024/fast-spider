@@ -30,14 +30,6 @@ func (m *AgentManager) providers(ctx context.Context) map[string]any {
 		discovery.route = m.ccswitch.InspectApp
 	}
 	result := discoverProviders(ctx, m.registry, discovery)
-	providers, _ := result["providers"].([]any)
-	for _, raw := range providers {
-		provider, _ := raw.(map[string]any)
-		if mapString(provider, "providerId") == "codex" {
-			provider["desktopBridge"] = m.codex.desktopBridgeMetadata()
-			break
-		}
-	}
 	return result
 }
 

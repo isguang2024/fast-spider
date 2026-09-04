@@ -37,18 +37,7 @@ const localUIHTML = `<!doctype html>
       </nav>
       <main class="content">
         <section id="tab-connect" class="section active">
-		  <div id="codex-session-mode-panel" class="panel" hidden>
-			<h2>选择 Codex 会话模式</h2>
-			<p class="copy">这项设置只保存在本机。共享模式不会让 Fast Spider 认领 Codex Desktop 会话；FS 接管模式会启用 Desktop owner/control 联动，已由 FS 加载的会话可能需要在 FS 中继续操作。</p>
-			<form id="codex-session-mode-form">
-			  <div class="grid">
-				<label class="switch"><input name="startup-codex-session-mode" type="radio" value="shared" checked><span><strong>共享模式（推荐）</strong><br><small class="hint">FS 创建本地会话，但不通过 Desktop IPC 认领它们，Codex Desktop 不会因 FS 锁定会话。</small></span></label>
-				<label class="switch"><input name="startup-codex-session-mode" type="radio" value="managed"><span><strong>FS 接管模式</strong><br><small class="hint">启用 Desktop owner/control 联动，适合需要由 FS 继续处理中断、审批等操作的场景。</small></span></label>
-			  </div>
-			  <div class="actions"><button class="primary" type="submit">保存并继续</button></div>
-			</form>
-		  </div>
-          <div id="registration-panel" class="panel">
+	          <div id="registration-panel" class="panel">
             <h2>首次连接</h2>
             <p class="copy">只需要登记一次。填写后台生成的连接密钥和客户端名称，成功后这台电脑会自动使用自己的设备密钥连接，后续启动不再要求输入连接密钥。</p>
             <form id="connect-form">
@@ -168,8 +157,6 @@ const localUIHTML = `<!doctype html>
               <div class="grid">
                 <label class="field"><span>客户端名称</span><input id="config-name" maxlength="128" required><small class="hint">保存后会自动同步到 Hub；管理员备注只在 Web 后台维护。</small></label>
                 <label class="switch"><input id="config-bridge" type="checkbox"><span><strong>Local Bridge</strong><br><small class="hint">允许当前系统用户的本地 AI 客户端调用 Node。</small></span></label>
-				<label class="switch"><input id="config-codex-session-shared" name="config-codex-session-mode" type="radio" value="shared"><span><strong>Codex 共享模式（推荐）</strong><br><small class="hint">不让 FS 通过 Codex Desktop IPC 认领已加载会话，避免 Desktop 显示“已在另一个应用中打开”。</small></span></label>
-				<label class="switch"><input id="config-codex-session-managed" name="config-codex-session-mode" type="radio" value="managed"><span><strong>Codex FS 接管模式</strong><br><small class="hint">启用 Desktop owner/control 联动；适合需要 FS 接管已加载本地会话的场景。</small></span></label>
                 <label class="switch"><input id="config-autostart" type="checkbox"><span><strong>登录 Windows 后自动启动</strong><br><small class="hint">登录后隐藏启动到系统托盘，不弹出配置页面；仍然是同一个 EXE。</small></span></label>
 	                <label class="switch"><input id="config-autoupdate" type="checkbox"><span><strong>自动更新</strong><br><small class="hint">后台检查并下载新版本；下次启动时自动完成替换。</small></span></label>
 					<div class="config-subsection"><strong>ChatGPT Cloud 默认创建</strong><small class="hint">仅在创建请求没有明确填写时使用；单次创建的选择优先，续聊仍继承原会话。</small></div>
@@ -288,9 +275,6 @@ const localUIHTML = `<!doctype html>
     if (status.runtimeStatus === 'external_running' && status.runtimeError) message(status.runtimeError);
 
     const cfg = status.config || {};
-		$('codex-session-mode-panel').hidden = !!cfg.codexDesktopBridgeConfigured;
-		const codexManaged = !!cfg.codexDesktopBridgeEnabled;
-		document.querySelector('input[name="startup-codex-session-mode"][value="' + (codexManaged ? 'managed' : 'shared') + '"]').checked = true;
     if (!status.registered && (!document.activeElement || !['connect-hub','connect-name','connect-token'].includes(document.activeElement.id))) {
       $('connect-hub').value = cfg.hubUrl || '';
       $('connect-name').value = cfg.machineName || '';
@@ -302,8 +286,6 @@ const localUIHTML = `<!doctype html>
       $('config-autostart').checked = !!status.autoStartEnabled;
       $('config-autoupdate').checked = !!cfg.autoUpdateEnabled;
       $('config-insecure').checked = !!cfg.allowInsecureLocalHub;
-				$('config-codex-session-shared').checked = !codexManaged;
-				$('config-codex-session-managed').checked = codexManaged;
 				setSelectValueWithFallback($('config-chatgpt-mode'),cfg.chatgptDefaultCreateMode || 'complete','已保存的返回模式');
 				setSelectValueWithFallback($('config-chatgpt-configuration-mode'),cfg.chatgptDefaultConfigurationMode || 'auto','已保存的配置方式');
 				if (chatGPTCatalogData) renderChatGPTDefaultOptions(chatGPTCatalogData);
@@ -580,23 +562,14 @@ const localUIHTML = `<!doctype html>
 	$('config-form').addEventListener('submit', async event => {
     event.preventDefault(); if (busy) return; busy=true; const submit = event.currentTarget.querySelector('button[type="submit"]'); submit.disabled=true;
     try {
-      const data = await api('/api/config',{method:'POST',body:JSON.stringify(localConfigPayload($('config-codex-session-managed').checked, true))});
+	      const data = await api('/api/config',{method:'POST',body:JSON.stringify(localConfigPayload())});
       configDirty = false; renderStatus(data); message('本地配置已保存。');
     } catch (e) { message(e.message,true); } finally { busy=false; submit.disabled=false; }
   });
 
-	function localConfigPayload(codexDesktopBridgeEnabled, codexDesktopBridgeConfigured) {
-				return {machineName:$('config-name').value,browserSidecarDir:$('config-browser').value,localBridgeEnabled:$('config-bridge').checked,autoStartEnabled:$('config-autostart').checked,autoUpdateEnabled:$('config-autoupdate').checked,allowInsecureLocalHub:$('config-insecure').checked,codexDesktopBridgeEnabled:codexDesktopBridgeEnabled,codexDesktopBridgeConfigured:codexDesktopBridgeConfigured,chatgptDefaultConfigurationMode:$('config-chatgpt-configuration-mode').value,chatgptDefaultCreateMode:$('config-chatgpt-mode').value,chatgptDefaultModel:$('config-chatgpt-model').value,chatgptDefaultThinking:$('config-chatgpt-thinking').value};
-		}
-
-	$('codex-session-mode-form').addEventListener('submit', async event => {
-		event.preventDefault(); if (busy) return; busy=true; const submit = event.currentTarget.querySelector('button[type="submit"]'); submit.disabled=true;
-		try {
-			const selected = document.querySelector('input[name="startup-codex-session-mode"]:checked').value === 'managed';
-			const data = await api('/api/config',{method:'POST',body:JSON.stringify(localConfigPayload(selected, true))});
-			configDirty = false; renderStatus(data); message(selected ? '已启用 FS 接管模式。' : '已启用 Codex 共享模式；FS 不会再认领本地 Desktop 会话。');
-		} catch (e) { message(e.message,true); } finally { busy=false; submit.disabled=false; }
-	});
+		function localConfigPayload() {
+					return {machineName:$('config-name').value,browserSidecarDir:$('config-browser').value,localBridgeEnabled:$('config-bridge').checked,autoStartEnabled:$('config-autostart').checked,autoUpdateEnabled:$('config-autoupdate').checked,allowInsecureLocalHub:$('config-insecure').checked,chatgptDefaultConfigurationMode:$('config-chatgpt-configuration-mode').value,chatgptDefaultCreateMode:$('config-chatgpt-mode').value,chatgptDefaultModel:$('config-chatgpt-model').value,chatgptDefaultThinking:$('config-chatgpt-thinking').value};
+			}
 	$('chatgpt-advanced-add').addEventListener('click',()=>{const box=$('chatgpt-advanced-list');const empty=box.querySelector('.empty');if(empty)empty.remove();box.appendChild(advancedModelRow({thinking:chatGPTThinkingOptions.map(option=>option.id)}));});
 	$('chatgpt-advanced-form').addEventListener('submit',async event=>{
 	  event.preventDefault();if(chatGPTAdvancedBusy)return;chatGPTAdvancedBusy=true;const submit=event.currentTarget.querySelector('button[type="submit"]');submit.disabled=true;

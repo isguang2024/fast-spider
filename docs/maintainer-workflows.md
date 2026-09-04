@@ -45,7 +45,7 @@ bash scripts/release-gate.sh
 ```
 
 Security-sensitive or release-critical changes also use the extended local
-gate when its platform runtimes are available:
+gate. It automatically selects only the affected real-runtime E2E groups:
 
 ```bash
 bash scripts/release-gate.sh --full
@@ -55,8 +55,8 @@ bash scripts/release-gate.sh --full
 
 1. Confirm the intended version and user-visible change set.
 2. Run the public hygiene check and core release gate.
-3. Run the full gate for changes that depend on real browser, AI harness, WSL
-   or platform-specific behavior.
+3. Run the full gate; use `FAST_SPIDER_GATE_ALL_E2E=1` only when every local
+   runtime must be requalified regardless of the changed paths.
 4. Update the changelog and release notes with verified facts only.
 5. Tag the reviewed `main` commit and publish matching artifacts.
 6. Keep rollback material separate from the public repository.

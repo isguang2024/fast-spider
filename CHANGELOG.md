@@ -5,13 +5,19 @@ semantic versioning for public releases.
 
 ## 0.4.61 - 2026-09-05
 
-- Treat Cloud CHAT callback nudges as delivered only after Fast Spider has a
-  confirmed local Codex turn (`executionMode`, `owner`, and non-empty `turnId`).
-  Desktop IPC remains preferred, while unclaimed VS Code/Desktop panels can fall
-  back to the local Codex app-server instead of leaving the callback queue stuck.
-- Accept confirmed Codex turn delivery from Desktop IPC, Node-owned app-server,
-  or the configured external app-server socket; unknown owners or missing
-  `turnId` still keep the callback pending for retry.
+- Route every local Codex operation through the Node's single long-running
+  `codex app-server --stdio`; remove Desktop IPC ownership/follower routing,
+  external app-server sockets, and shared/takeover configuration.
+- Report local delivery only as `executionMode=codex_app_server` and
+  `owner=fast_spider_node`, with a real `sessionId` and `turnId` before success.
+- If a durable callback targets an archived local Codex task, unarchive and
+  resume it before retrying the app-server turn instead of dropping the wakeup.
+- Reuse the same app-server for ChatGPT Cloud authentication and local Codex
+  lifecycle calls, while retaining Codex Desktop state only as read-only project
+  list metadata.
+- Make the extended release gate diff-aware: common tests and builds run once,
+  while real WSL, Browser, CC Switch, Claude, and Codex E2E groups run only when
+  their owning paths changed; `FAST_SPIDER_GATE_ALL_E2E=1` still forces all.
 
 ## 0.4.60 - 2026-09-05
 

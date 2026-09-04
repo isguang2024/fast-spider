@@ -292,7 +292,7 @@ func TestSessionCreateVisibilityRoundTripAndListFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if startCount != 1 || replayed["idempotencyStatus"] != "replayed" || replayed["externalThreadId"] != "thread-internal" {
+	if startCount != 1 || replayed["idempotencyStatus"] != "replayed" || replayed["externalThreadId"] != "thread-internal" || replayed["executionMode"] != "codex_app_server" || replayed["owner"] != "fast_spider_node" {
 		t.Fatalf("same-process replay count=%d result=%#v", startCount, replayed)
 	}
 	restarted := New(dataDir, nil)
@@ -304,7 +304,7 @@ func TestSessionCreateVisibilityRoundTripAndListFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if startCount != 1 || restartedReplay["idempotencyStatus"] != "replayed" || restartedReplay["visibility"] != sessionVisibilityInternal {
+	if startCount != 1 || restartedReplay["idempotencyStatus"] != "replayed" || restartedReplay["visibility"] != sessionVisibilityInternal || restartedReplay["executionMode"] != "codex_app_server" || restartedReplay["owner"] != "fast_spider_node" {
 		t.Fatalf("restart replay count=%d result=%#v", startCount, restartedReplay)
 	}
 	if _, err := restarted.Control(context.Background(), "session.create", map[string]any{

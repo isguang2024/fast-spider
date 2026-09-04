@@ -39,9 +39,9 @@ Fast Spider 不捆绑用户的 AI 账号或 Provider：
 
 - Codex Harness 要求本机已有可执行的 Codex CLI/app-server。
 - Windows 上若 Codex Desktop 提供 `%LOCALAPPDATA%/OpenAI/Codex/bin/<runtime>/codex.exe`，Node 优先使用最近更新且可正常执行的 Desktop runtime，以保证它与 Desktop 写入的 `CODEX_HOME` 配置格式一致；否则回退到 `PATH`。可用绝对路径环境变量 `FAST_SPIDER_CODEX_EXECUTABLE` 明确覆盖该选择。
-- 共享 app-server owner 的实验入口（仅测试分支/显式配置）：设置绝对路径环境变量 `FAST_SPIDER_CODEX_APP_SERVER_SOCKET` 后，Node 不再启动独立 `app-server --stdio`，而是通过 `codex app-server proxy --sock <path>` 转发 WebSocket RPC；Node 不写入 Codex SQLite/rollout，也不负责停止 socket owner。该 socket owner 需由外部先以 `codex app-server --listen unix://<path>` 启动。
-- Windows Node UI 首次启动会要求选择 Codex 会话模式，并将其写入本机 `config.json`：**共享模式**（推荐）关闭 Desktop owner/follower bridge，避免 FS 认领已加载会话导致 Desktop 显示“已在另一个应用中打开”；**FS 接管模式**启用 bridge，以便 Desktop follower 将控制请求路由给 FS。该本地客户端设置优先于环境变量；没有 Node UI 配置的 headless `run`/automation 进程仍以 `FAST_SPIDER_CODEX_DESKTOP_BRIDGE`（Windows 默认启用，`=0` 关闭，`=1` 显式启用）为兼容回退。Node 仍按原方式管理自己的 app-server，同时连接当前用户的固定本机管道 `\\.\pipe\codex-ipc` 并在断线后自动重连；只为本 adapter 已加载的会话响应 `thread-owner-discovery`，Turn 完成或归档触发 `thread/unsubscribe` 后立即停止认领。当前支持从 Desktop follower 转发启动、追加、中断和 compact Turn，以及命令/文件审批、用户输入与 MCP elicitation 响应。
-- Desktop bridge 使用的是 Codex Desktop 26.820 的内部 IPC 契约，不是公开稳定 API。当前实现尚不能生成 Desktop renderer 所需的私有 `conversationState` snapshot/patch，因此它只完成 owner 发现与控制路由基础，不能宣称 FS 创建的会话已经能在 Desktop 原生界面完整实时显示；Desktop 或应用内工具若绕过 follower IPC 直接连接自己的 app-server，仍会得到 active writer。升级 Desktop 后必须先运行针对当前版本的 IPC E2E 再启用该实验配置。
+- Node 始终启动一个长期运行的 `codex app-server --stdio`，并固定加入 `NO_PROXY=127.0.0.1,localhost` 与对应的小写变量。Desktop IPC、外部 app-server socket/proxy、共享/接管模式均不再支持。
+- 云端创建本地 Codex 任务使用 `ai_control session.create providerId=codex backend=codex_local`，同时提供绝对 `workingDirectory` 和稳定 `idempotencyKey`；Hub 与 Local Bridge 最终进入同一个 Node app-server 生命周期实现。
+- Codex Desktop 状态文件仅作为只读项目列表来源；Node 不写入 Desktop 项目、任务分配或归档状态。任务存在性和可读性以 app-server `thread/read` 为准。
 - Claude Code Harness 要求本机已有 `claude` CLI；Fast Spider 只探测版本/安全的 auth 配置并运行原生 Session。
 - CC Switch 若安装，则 `~/.cc-switch/cc-switch.db` 作为只读 Routing SSOT；Fast Spider 不创建、迁移或修改该数据库，也不负责启动/更新 CC Switch。
 - Node data-dir 中的 `agent/claude-code-sessions.json` 只是 Fast Spider 本地控制索引；Claude 原生会话、CC Switch 数据和 Provider 凭据仍由各自产品管理。
@@ -125,7 +125,7 @@ spiderctl staging-prune --dir /tmp --layout server --through <last-completed-ver
 每次发布至少确认：
 
 - Git 工作树与目标提交明确。
-- `release-gate.sh --full` 通过。
+- diff-aware `release-gate.sh --full` 通过；只有需要全 runtime 重新资格检查时才设置 `FAST_SPIDER_GATE_ALL_E2E=1`。
 - Hub/spiderctl/Node 构建哈希明确。
 - systemd active/running。
 - 本机与公网 livez/readyz 均 200。

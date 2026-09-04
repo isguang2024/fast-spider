@@ -28,9 +28,7 @@ func TestReadinessResultExposesExplicitCreateLayers(t *testing.T) {
 	}
 }
 
-func TestReadinessResultPublishesCodexDesktopBridgeMetadata(t *testing.T) {
-	t.Setenv(codexDesktopBridgeEnv, "0")
-	manager := &AgentManager{codex: NewCodexAdapter(nil)}
+func TestReadinessResultDoesNotPublishDesktopBridgeMetadata(t *testing.T) {
 	layers := map[string]readinessLayer{
 		"routing":        {State: "ready", ReasonCode: "OK"},
 		"provider":       {State: "ready", ReasonCode: "OK"},
@@ -38,10 +36,9 @@ func TestReadinessResultPublishesCodexDesktopBridgeMetadata(t *testing.T) {
 		"sessionBackend": {State: "ready", ReasonCode: "OK"},
 		"readyCreate":    {State: "ready", ReasonCode: "READY"},
 	}
-	result := manager.readinessResultWithDesktopBridge("codex", "safe", layers, time.Now())
-	desktopBridge, _ := result["desktopBridge"].(map[string]any)
-	if desktopBridge["state"] != "disabled" || desktopBridge["nativeConversationStreaming"] != "unsupported" {
-		t.Fatalf("desktopBridge=%#v", desktopBridge)
+	result := readinessResult("codex", "safe", layers, time.Now())
+	if _, exists := result["desktopBridge"]; exists {
+		t.Fatalf("readiness still exposes desktopBridge=%#v", result["desktopBridge"])
 	}
 }
 
@@ -123,20 +120,11 @@ func TestClassifyChatGPTCloudAuthError(t *testing.T) {
 	}
 }
 
-func TestManagerUsesManagedAppServerForChatGPTAuth(t *testing.T) {
+func TestManagerSharesSingleAppServerForChatGPTAuth(t *testing.T) {
 	manager := New(t.TempDir(), nil)
 	defer manager.Close(t.Context())
-	if manager.chatgptAuth == nil || manager.chatgptAuth == manager.codex {
-		t.Fatal("chatgpt_cloud auth adapter was not isolated from local session control")
-	}
-	if socketPath, err := manager.chatgptAuth.appServerSocketPath(); err != nil || socketPath != "" {
-		t.Fatalf("chatgpt auth app-server socket=(%q, %v), want managed stdio", socketPath, err)
-	}
-	manager.chatgptAuth.mu.Lock()
-	bridgeEnabled := manager.chatgptAuth.desktopBridgeEnabled
-	manager.chatgptAuth.mu.Unlock()
-	if bridgeEnabled == nil || *bridgeEnabled {
-		t.Fatal("chatgpt auth adapter must not attach to the Desktop bridge")
+	if manager.codex == nil || manager.chatgptCloud == nil {
+		t.Fatal("manager did not initialize the shared Codex app-server and ChatGPT Cloud adapter")
 	}
 }
 

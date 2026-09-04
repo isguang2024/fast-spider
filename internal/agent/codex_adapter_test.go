@@ -92,13 +92,9 @@ func TestCodexExecutableCandidatesIgnoreMissingOrRelativeLocalAppData(t *testing
 	}
 }
 
-func TestCodexAppServerCommandArgsSelectExternalProxy(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "app-server.sock")
-	if got := codexAppServerCommandArgs(socketPath); !reflect.DeepEqual(got, []string{"app-server", "proxy", "--sock", socketPath}) {
-		t.Fatalf("external app-server args=%#v", got)
-	}
-	if got := codexAppServerCommandArgs(""); !reflect.DeepEqual(got, []string{"app-server", "--stdio"}) {
-		t.Fatalf("managed app-server args=%#v", got)
+func TestCodexAppServerCommandAlwaysUsesStdio(t *testing.T) {
+	if got := codexAppServerCommandArgs(); !reflect.DeepEqual(got, []string{"app-server", "--stdio"}) {
+		t.Fatalf("app-server args=%#v", got)
 	}
 }
 
@@ -122,33 +118,11 @@ func TestCodexAppServerEnvironmentPreservesProxyExceptionsAndAddsLoopback(t *tes
 	}
 }
 
-func TestCodexAppServerSocketPathRequiresAbsolutePath(t *testing.T) {
-	t.Setenv(codexAppServerSocketEnv, "")
-	if got, err := codexAppServerSocketPath(); err != nil || got != "" {
-		t.Fatalf("empty app-server socket=(%q, %v)", got, err)
-	}
-	t.Setenv(codexAppServerSocketEnv, "relative.sock")
-	if _, err := codexAppServerSocketPath(); err == nil {
-		t.Fatal("relative app-server socket was accepted")
-	}
-	socketPath := filepath.Join(t.TempDir(), "app-server.sock")
-	t.Setenv(codexAppServerSocketEnv, socketPath)
-	got, err := codexAppServerSocketPath()
-	if err != nil || got != socketPath {
-		t.Fatalf("absolute app-server socket=(%q, %v)", got, err)
-	}
-}
-
-func TestCodexManagedAppServerOnlyIgnoresExternalSocket(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "app-server.sock")
-	t.Setenv(codexAppServerSocketEnv, socketPath)
+func TestCodexExecutionMetadataIsNodeOwnedAppServer(t *testing.T) {
 	adapter := NewCodexAdapter(nil)
-	if got, err := adapter.appServerSocketPath(); err != nil || got != socketPath {
-		t.Fatalf("default socket=(%q, %v)", got, err)
-	}
-	adapter.SetManagedAppServerOnly()
-	if got, err := adapter.appServerSocketPath(); err != nil || got != "" {
-		t.Fatalf("managed-only socket=(%q, %v)", got, err)
+	mode, owner := adapter.executionMetadata()
+	if mode != "codex_app_server" || owner != "fast_spider_node" {
+		t.Fatalf("execution metadata=(%q, %q)", mode, owner)
 	}
 }
 

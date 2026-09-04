@@ -61,13 +61,15 @@ func TestLocalBridgeCodexProductE2E(t *testing.T) {
 	if providers["providers"] == nil {
 		t.Fatalf("providers.list=%#v", providers)
 	}
-	created := callAgent(t, ctx, dataDir, "session.create", map[string]any{"workingDirectory": root, "prompt": "只回复 FASTSPIDER_SESSION_CREATE_OK"})
+	assertSingleCodexExecutionMode(t, providers)
+	created := callAgent(t, ctx, dataDir, "session.create", map[string]any{"workingDirectory": root, "prompt": "只回复 FASTSPIDER_SESSION_CREATE_OK", "idempotencyKey": "product-e2e-create-01"})
 	sessionID, _ := created["sessionId"].(string)
 	turnID, _ := created["turnId"].(string)
 	model, _ := created["model"].(string)
 	if sessionID == "" || turnID == "" || model == "" {
 		t.Fatalf("session.create=%#v", created)
 	}
+	assertNodeOwnedCodexResult(t, created)
 	defer func() {
 		archiveCtx, archiveCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer archiveCancel()
@@ -92,6 +94,7 @@ func TestLocalBridgeCodexProductE2E(t *testing.T) {
 	if sendTurnID == "" {
 		t.Fatalf("session.send=%#v", sent)
 	}
+	assertNodeOwnedCodexResult(t, sent)
 	sendFinal, cursor := waitAgentFinal(t, ctx, dataDir, sessionID, sendTurnID, cursor)
 	if !strings.Contains(sendFinal, "FASTSPIDER_SESSION_SEND_OK") {
 		t.Fatalf("unexpected send final message %q", sendFinal)
@@ -123,7 +126,7 @@ func TestLocalBridgeCodexProductE2E(t *testing.T) {
 		t.Fatalf("fork modified original final message %q", originalFinal)
 	}
 
-	cancelCreated := callAgent(t, ctx, dataDir, "session.create", map[string]any{"workingDirectory": root})
+	cancelCreated := callAgent(t, ctx, dataDir, "session.create", map[string]any{"workingDirectory": root, "idempotencyKey": "product-e2e-cancel-01"})
 	cancelSessionID, _ := cancelCreated["sessionId"].(string)
 	if cancelSessionID == "" {
 		t.Fatalf("cancel session.create=%#v", cancelCreated)
@@ -159,6 +162,123 @@ func TestLocalBridgeCodexProductE2E(t *testing.T) {
 	}
 
 	t.Logf("PRODUCT_E2E_OK model=%s sessionId=%s turnId=%s forkSessionId=%s cancelSessionId=%s", model, sessionID, turnID, forkID, cancelSessionID)
+}
+
+func TestLocalBridgeCodexProductE2EResumesAfterNodeRestart(t *testing.T) {
+	if os.Getenv("FAST_SPIDER_CODEX_E2E") != "1" {
+		t.Skip("set FAST_SPIDER_CODEX_E2E=1 to run the real Local Bridge to Codex product E2E")
+	}
+	base := t.TempDir()
+	dataDir := filepath.Join(base, "data")
+	root := filepath.Join(base, "project")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	first := startProductLocalRuntime(t, dataDir)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+	created := callAgent(t, ctx, dataDir, "session.create", map[string]any{
+		"workingDirectory": root, "prompt": "只回复 FASTSPIDER_NODE_RESTART_CREATED", "idempotencyKey": "product-e2e-restart-01",
+	})
+	sessionID, _ := created["sessionId"].(string)
+	createTurnID, _ := created["turnId"].(string)
+	if sessionID == "" || createTurnID == "" {
+		t.Fatalf("session.create=%#v", created)
+	}
+	assertNodeOwnedCodexResult(t, created)
+	if final, _ := waitAgentFinal(t, ctx, dataDir, sessionID, createTurnID, 0); !strings.Contains(final, "FASTSPIDER_NODE_RESTART_CREATED") {
+		t.Fatalf("unexpected create final message %q", final)
+	}
+	first.stop(t)
+
+	second := startProductLocalRuntime(t, dataDir)
+	defer second.stop(t)
+	if got := callAgent(t, ctx, dataDir, "session.get", map[string]any{"sessionId": sessionID}); got["session"] == nil {
+		t.Fatalf("session.get after restart=%#v", got)
+	}
+	sent := callAgent(t, ctx, dataDir, "session.send", map[string]any{"sessionId": sessionID, "prompt": "只回复 FASTSPIDER_NODE_RESTART_RESUME_OK"})
+	turnID, _ := sent["turnId"].(string)
+	if turnID == "" {
+		t.Fatalf("session.send after restart=%#v", sent)
+	}
+	assertNodeOwnedCodexResult(t, sent)
+	final, _ := waitAgentFinal(t, ctx, dataDir, sessionID, turnID, 0)
+	if !strings.Contains(final, "FASTSPIDER_NODE_RESTART_RESUME_OK") {
+		t.Fatalf("unexpected restart final message %q", final)
+	}
+	callAgent(t, ctx, dataDir, "session.archive", map[string]any{"sessionId": sessionID})
+}
+
+type productLocalRuntime struct {
+	agent  *agent.AgentManager
+	cancel context.CancelFunc
+	done   chan error
+	closed bool
+}
+
+func startProductLocalRuntime(t *testing.T, dataDir string) *productLocalRuntime {
+	t.Helper()
+	agentController := agent.New(dataDir, nil)
+	client, err := node.New(node.Config{DataDir: dataDir, Version: "product-e2e", Agent: agentController})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridgeCtx, bridgeCancel := context.WithCancel(context.Background())
+	bridgeDone := make(chan error, 1)
+	go func() { bridgeDone <- localbridge.Run(bridgeCtx, dataDir, client.HandleLocalCapability) }()
+	return &productLocalRuntime{agent: agentController, cancel: bridgeCancel, done: bridgeDone}
+}
+
+func (r *productLocalRuntime) stop(t *testing.T) {
+	t.Helper()
+	if r == nil || r.closed {
+		return
+	}
+	r.closed = true
+	r.cancel()
+	select {
+	case err := <-r.done:
+		if err != nil {
+			t.Fatalf("local bridge shutdown: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("local bridge did not stop")
+	}
+	closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := r.agent.Close(closeCtx); err != nil {
+		t.Fatalf("close agent controller: %v", err)
+	}
+}
+
+func assertNodeOwnedCodexResult(t *testing.T, result map[string]any) {
+	t.Helper()
+	if result["executionMode"] != "codex_app_server" || result["owner"] != "fast_spider_node" {
+		t.Fatalf("Codex execution metadata=%#v", result)
+	}
+	for _, field := range []string{"desktopBridge", "desktopProjectSynced"} {
+		if _, exists := result[field]; exists {
+			t.Fatalf("Codex result still contains %s: %#v", field, result)
+		}
+	}
+}
+
+func assertSingleCodexExecutionMode(t *testing.T, providers map[string]any) {
+	t.Helper()
+	items, _ := providers["providers"].([]any)
+	for _, raw := range items {
+		provider, _ := raw.(map[string]any)
+		if provider["providerId"] != "codex" {
+			continue
+		}
+		modes, _ := provider["executionModes"].([]any)
+		if len(modes) != 1 || modes[0] != "codex_app_server" {
+			t.Fatalf("Codex executionModes=%#v", provider["executionModes"])
+		}
+		return
+	}
+	t.Fatal("Codex provider was not returned")
 }
 
 func waitAgentFinal(t *testing.T, ctx context.Context, dataDir, sessionID, turnID string, cursor int64) (string, int64) {

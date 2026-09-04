@@ -54,7 +54,7 @@ func TestCodexArchiveLifecycleLoadsThreadBeforeChangingArchiveState(t *testing.T
 		wantLoaded bool
 	}{
 		{name: "archive", archive: true, method: "thread/archive", wantCalls: "thread/resume,thread/archive,thread/unsubscribe"},
-		{name: "unarchive", archive: false, method: "thread/unarchive", wantCalls: "thread/resume,thread/unarchive", wantLoaded: true},
+		{name: "unarchive", archive: false, method: "thread/unarchive", wantCalls: "thread/unarchive,thread/resume", wantLoaded: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			adapter := NewCodexAdapter(nil)

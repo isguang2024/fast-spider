@@ -23,7 +23,7 @@ Provider Token、Codex/ChatGPT 本地认证和其他 Provider secret 只保留�
 当前内置两个 AI Harness：
 
 ```text
-providerId=codex        -> Codex app-server --stdio + Windows 默认 Desktop owner/control bridge
+providerId=codex        -> Node 唯一长期运行的 Codex app-server --stdio
 providerId=claude_code  -> Claude Code CLI stream-json
 ```
 
@@ -279,9 +279,9 @@ Plugin 是 Codex 的能力包，可包含 Skills、Apps、MCP servers、Hooks �
 
 `session.rollback` 的参数是 `numTurns`（1–1000），表示从 Thread 末尾删除 N 个 Codex turns。**它只修改 Codex 对话历史，不回滚本地工作树文件，也不等价于 Git reset/revert。**因此 rollback 之后仍应以 Git/文件系统事实判断代码状态。
 
-Fast Spider 自建或 headless Codex Thread 仍由 Node 管理的 app-server 执行；进程重启后，下一次 Turn/Review 前自动调用官方 `thread/resume(threadId)`。已有 Codex Desktop Thread 则采用另一条优先链路：`session.get(metadataOnly=true)` 先从 Desktop 注册表确认身份，`session.send` 与 callback nudge 再通过 `codex-ipc` 执行 owner discovery，并把 `thread-follower-start-turn` 精确定向给返回的 owner。owner 不可用或不支持外部输入时才回退 app-server；一旦 start-turn 已发出，响应丢失也不会再回退，以免重复创建 Turn。Windows Node UI 的共享/FS 接管模式只控制 FS 是否认领自己已加载的 Thread，不关闭这个出站 owner 路由。当前仍不能生成 Desktop renderer 私有的完整 `conversationState` snapshot/patch，因此不承诺 FS 自建 Thread 在 Desktop 中实时显示完整内容。`providers.list`、`provider.readiness`、`provider.capabilities` 和本地 Codex `session.create/send` 结果都会返回 `desktopBridge` 状态与该限制。
+Node 只启动并长期持有一个 `codex app-server --stdio`。读取和列表使用 `thread/read`、`thread/list`；创建使用 `thread/start`，有首条输入时紧接 `turn/start`；续发先按当前 generation 的 loaded 状态执行 `thread/resume`，再执行 `turn/start`。app-server 重启后 loaded generation 会失效，下一次操作自动重新 resume，不存在第二条 Desktop IPC 或共享 socket 执行链。
 
-实验性共享 app-server owner 模式仍可通过绝对 `FAST_SPIDER_CODEX_APP_SERVER_SOCKET` 接入外部 `codex app-server --listen unix://...`，此时 Fast Spider 只管理 proxy 客户端，不直接修改 Codex 状态文件；它与 Desktop owner/control bridge 是不同层：前者替换 app-server transport，后者只是附加的 Desktop IPC 控制路由。
+远程创建本地 Codex 任务继续使用公开 `ai_control session.create`，参数为 `providerId=codex`、`backend=codex_local`、绝对 `workingDirectory` 和必需的 `idempotencyKey`。Hub 只做权限、审计、超时与转发；Node 与本机调用使用同一实现。普通 `session.send` 遇到归档任务明确报错，由调用方先执行 `session.unarchive`；durable callback 为确保通知可达，可自动执行 `thread/unarchive → thread/resume → turn/start`。创建和发送只有取得真实 `sessionId`/`turnId` 才报告成功。
 
 ## 10. Goal
 

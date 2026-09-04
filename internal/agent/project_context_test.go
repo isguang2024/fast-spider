@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
-	"time"
 )
 
 func TestResolveAgentProjectContextGroupsLinkedWorktreeUnderPrimaryRoot(t *testing.T) {
@@ -66,10 +65,9 @@ func TestCodexLocalProjectIDMatchesDesktopConventionOnWindows(t *testing.T) {
 	}
 }
 
-func TestSyncCodexDesktopProjectReusesProjectAndAssignsWorktree(t *testing.T) {
+func TestReadCodexDesktopSnapshotReadsProjectsOnly(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), codexDesktopStateFilename)
 	projectRoot := filepath.Join(t.TempDir(), "project")
-	worktreeRoot := filepath.Join(t.TempDir(), "worktree")
 	existingID := "existing-project-id"
 	initial := map[string]any{
 		"local-projects": map[string]any{
@@ -78,10 +76,11 @@ func TestSyncCodexDesktopProjectReusesProjectAndAssignsWorktree(t *testing.T) {
 				"createdAt": json.Number("123"), "updatedAt": json.Number("123"),
 			},
 		},
-		"project-order":              []any{existingID},
-		"projectless-thread-ids":     []any{"thread-1", "other-thread"},
-		"thread-project-assignments": map[string]any{},
-		"unrelated":                  map[string]any{"kept": true},
+		"project-order":          []any{existingID},
+		"projectless-thread-ids": []any{"thread-1"},
+		"thread-project-assignments": map[string]any{
+			"thread-2": map[string]any{"projectId": existingID, "cwd": projectRoot},
+		},
 	}
 	raw, err := json.Marshal(initial)
 	if err != nil {
@@ -90,89 +89,15 @@ func TestSyncCodexDesktopProjectReusesProjectAndAssignsWorktree(t *testing.T) {
 	if err := os.WriteFile(statePath, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	project := agentProjectContext{
-		WorkingDirectory: worktreeRoot,
-		ProjectDirectory: projectRoot,
-		ProjectID:        codexLocalProjectID(projectRoot),
-		IsGitRepository:  true,
-	}
-	projectID, changed, err := syncCodexDesktopProject(statePath, "thread-1", project, time.UnixMilli(456))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !changed || projectID != existingID {
-		t.Fatalf("projectId=%q changed=%v", projectID, changed)
-	}
 	snapshot, err := readCodexDesktopSnapshot(statePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assignment := snapshot.Assignments["thread-1"]
-	if assignment.ProjectID != existingID || !sameAgentPath(assignment.ProjectDirectory, projectRoot) || !sameAgentPath(assignment.WorkingDirectory, worktreeRoot) {
-		t.Fatalf("assignment=%+v", assignment)
+	if len(snapshot.Projects) != 1 || snapshot.Projects[0].ProjectID != existingID || !sameAgentPath(snapshot.Projects[0].ProjectDirectory, projectRoot) {
+		t.Fatalf("projects=%#v", snapshot.Projects)
 	}
-	updatedRaw, err := os.ReadFile(statePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	updated, err := decodeCodexDesktopState(updatedRaw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	projectless := stringSlice(updated["projectless-thread-ids"])
-	if len(projectless) != 1 || projectless[0] != "other-thread" {
-		t.Fatalf("projectless-thread-ids=%#v", projectless)
-	}
-	sidebarOrders, _ := updated["sidebar-project-thread-orders"].(map[string]any)
-	sidebarProject, _ := sidebarOrders[existingID].(map[string]any)
-	if threadIDs := stringSlice(sidebarProject["threadIds"]); len(threadIDs) != 1 || threadIDs[0] != "thread-1" {
-		t.Fatalf("sidebar threadIds=%#v", threadIDs)
-	}
-	unrelated, _ := updated["unrelated"].(map[string]any)
-	if kept, _ := unrelated["kept"].(bool); !kept {
-		t.Fatal("unrelated state was not preserved")
-	}
-}
-
-func TestSyncCodexDesktopProjectSkipsNonGitDirectory(t *testing.T) {
-	statePath := filepath.Join(t.TempDir(), codexDesktopStateFilename)
-	if err := os.WriteFile(statePath, []byte(`{"local-projects":{}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	projectID, changed, err := syncCodexDesktopProject(statePath, "thread", agentProjectContext{WorkingDirectory: t.TempDir()}, time.Now())
-	if err != nil || changed || projectID != "" {
-		t.Fatalf("projectId=%q changed=%v err=%v", projectID, changed, err)
-	}
-}
-
-func TestReadCodexDesktopSnapshotIncludesProjectlessThreads(t *testing.T) {
-	statePath := filepath.Join(t.TempDir(), codexDesktopStateFilename)
-	rootHint := filepath.Join(t.TempDir(), "projectless-root")
-	outputDirectory := filepath.Join(rootHint, "task", "outputs")
-	state := map[string]any{
-		"local-projects":                        map[string]any{},
-		"thread-project-assignments":            map[string]any{},
-		"projectless-thread-ids":                []any{"projectless-thread"},
-		"thread-workspace-root-hints":           map[string]any{"projectless-thread": rootHint},
-		"thread-projectless-output-directories": map[string]any{"projectless-thread": outputDirectory},
-	}
-	raw, err := json.Marshal(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(statePath, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	snapshot, err := readCodexDesktopSnapshot(statePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	thread, ok := snapshot.Threads["projectless-thread"]
-	if !ok || !thread.Projectless || !sameAgentPath(thread.WorkingDirectory, rootHint) || !sameAgentPath(thread.OutputDirectory, outputDirectory) {
-		t.Fatalf("projectless thread=%+v exists=%v", thread, ok)
-	}
-	if _, assigned := snapshot.Assignments["projectless-thread"]; assigned {
-		t.Fatal("projectless thread was treated as a project assignment")
+	if snapshot.ProjectIDByKey[agentPathKey(projectRoot)] != existingID {
+		t.Fatalf("project lookup=%#v", snapshot.ProjectIDByKey)
 	}
 }
 

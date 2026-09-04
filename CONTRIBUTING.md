@@ -29,7 +29,7 @@ bash scripts/public-release-check.sh
 bash scripts/release-gate.sh
 ```
 
-When all required local runtimes are available:
+For release-critical changes, run the diff-aware extended gate:
 
 ```bash
 bash scripts/release-gate.sh --full

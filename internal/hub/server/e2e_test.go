@@ -251,7 +251,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	if !strings.Contains(aiControlDescription, "ChatGPT cloud CHAT") {
 		t.Fatalf("ai_control description does not advertise ChatGPT CHAT creation: %q", aiControlDescription)
 	}
-	for _, needle := range []string{"desktopBridge", "Desktop owner/control bridge", "nativeConversationStreaming=unsupported"} {
+	for _, needle := range []string{"Node-owned codex app-server --stdio", "backend=codex_local"} {
 		if !strings.Contains(initResult.Instructions, needle) {
 			t.Fatalf("MCP server instructions missing %q: %q", needle, initResult.Instructions)
 		}

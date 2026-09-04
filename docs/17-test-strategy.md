@@ -52,7 +52,8 @@ MCP 调用诊断门禁必须通过真实 SDK 请求确认 initialize、tools/lis
 
 ## Release Gate
 
-`bash scripts/release-gate.sh --full` 继续作为发布前硬门槛，覆盖：
+`bash scripts/release-gate.sh --full` 继续作为发布前硬门槛，但不再重复
+`go test ./...` 已覆盖的历史版本专项。它覆盖：
 
 - git whitespace / worktree + index secret scan
 - synthetic scanner redaction self-test / full object database history scan（full）
@@ -62,23 +63,11 @@ MCP 调用诊断门禁必须通过真实 SDK 请求确认 initialize、tools/lis
 - Windows amd64 / Linux amd64 构建
 - backup/restore E2E
 - Local Bridge E2E
-- repeated Node regression
-- Task Workspace 专项
-- Managed ripgrep/native 搜索专项
-- file_read 2.0 专项
-- file_edit 2.1 + response-size/CAS/preview 专项
-- 0.4.16 冷 MCP Client 分层指南、17 工具/文档对账与有界结果专项
-- 0.4.16 MCP SDK 调用诊断、Owner 隔离、敏感字段与登录后台专项
-- 0.4.17 ChatGPT 长会话恢复专项：initialize 常驻指令 <= 2 KiB、唯一 `fsprobe` 只发现 `machine_list`、完整目录 <= 48 KiB、连接入口与单工具各 <= 8 KiB、禁止健康检查全量物化 17 个 Schema、认证 MCP 请求到达时间与 OAuth 续期路径
-- 0.4.18 生命周期/缓存/秘密门禁专项：OAuth 历史保留、Presentation/Artifact 清理可重试、Release manifest 取消与替换失效、staging 原子隔离、Node/Agent 代际关闭、Browser/组件清理持续性、路径/ZIP/历史秘密扫描与脱敏
-- Node updater staging/cleanup、0.4.3 consumed-current cleanup 与 reconnect/backoff 临时 E2E
-- 0.4.4 Windows legacy install artifacts cleanup 专项
-- 0.4.5 release backup prune 专项
-- 0.4.6 release staging prune 专项
-- real Browser E2E（snapshot refs、ref batch、snapshotAfter、stale-ref 快速失败、危险 scheme 拒绝）
-- real CC Switch routing read-only E2E
-- real Claude Code CLI E2E
-- Local Bridge multi-provider discovery E2E
-- real Local Bridge → Codex product E2E（create/get/list/watch/result/send/fork/cancel、watch cursor/终态一致性、取消后继续发送）
+- 发布 HEAD 历史秘密扫描（full）
+- 按当前 diff 自动选择的 real WSL / Browser / CC Switch / Claude Code E2E
+- 影响 Provider/Local Bridge 时的 multi-provider discovery E2E
+- 影响 Codex 链路时的 real Local Bridge → Codex product E2E
+
+如需人工执行所有真实 runtime E2E，设置 `FAST_SPIDER_GATE_ALL_E2E=1`。
 
 测试中不得重新引入旧目录对象或目录白名单来让旧断言通过。

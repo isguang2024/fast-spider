@@ -18,15 +18,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/coder/websocket"
 	"github.com/isguang2024/fast-spider/internal/node"
 )
 
 const (
 	codexRPCLineLimit       = 8 << 20
 	codexEventLimit         = 1000
-	codexAppServerSocketEnv = "FAST_SPIDER_CODEX_APP_SERVER_SOCKET"
-	codexDesktopBridgeEnv   = "FAST_SPIDER_CODEX_DESKTOP_BRIDGE"
 	codexAppServerStopWait  = 5 * time.Second
 	codexInterruptRetryWait = 50 * time.Millisecond
 	codexInterruptAttempts  = 5
@@ -70,7 +67,6 @@ type codexPending struct {
 type codexProcess struct {
 	cmd        *exec.Cmd
 	stdin      io.WriteCloser
-	wsConn     *websocket.Conn
 	done       chan struct{}
 	generation uint64
 }
@@ -99,27 +95,23 @@ type CodexAdapter struct {
 	executable   string
 	configErr    *ExecutionError
 
-	startGateMu        sync.Mutex
-	startGate          chan struct{}
-	lifecycleMu        sync.Mutex
-	loadLocksMu        sync.Mutex
-	loadLocks          map[string]*codexSessionLock
-	desktopTurnLocksMu sync.Mutex
-	desktopTurnLocks   map[string]*codexSessionLock
-	mu                 sync.Mutex
-	rpcWriteMu         sync.Mutex
-	cmd                *exec.Cmd
-	stdin              io.WriteCloser
-	wsConn             *websocket.Conn
-	pending            map[int64]codexPending
-	nextID             int64
-	closed             bool
-	quarantined        bool
-	processDone        chan struct{}
-	generation         uint64
-	loaded             map[string]struct{}
-	loadedGeneration   map[string]uint64
-	managedOnly        bool
+	startGateMu      sync.Mutex
+	startGate        chan struct{}
+	lifecycleMu      sync.Mutex
+	loadLocksMu      sync.Mutex
+	loadLocks        map[string]*codexSessionLock
+	mu               sync.Mutex
+	rpcWriteMu       sync.Mutex
+	cmd              *exec.Cmd
+	stdin            io.WriteCloser
+	pending          map[int64]codexPending
+	nextID           int64
+	closed           bool
+	quarantined      bool
+	processDone      chan struct{}
+	generation       uint64
+	loaded           map[string]struct{}
+	loadedGeneration map[string]uint64
 
 	eventMu              sync.Mutex
 	events               []AgentEvent
@@ -137,9 +129,6 @@ type CodexAdapter struct {
 	unloadThreadOverride     func(context.Context, string) error
 	unloadBeforeSend         func(codexProcess)
 	notificationBeforeCommit func(uint64)
-	desktopBridge            *codexDesktopBridge
-	desktopBridgeEnabled     *bool
-	desktopRequestDial       func() (io.ReadWriteCloser, error)
 }
 
 func NewCodexAdapter(logger *slog.Logger) *CodexAdapter {
@@ -167,33 +156,6 @@ func (a *CodexAdapter) SetEventObserver(observer func(AgentEvent)) {
 	a.eventMu.Lock()
 	a.eventObserver = observer
 	a.eventMu.Unlock()
-}
-
-func (a *CodexAdapter) SetManagedAppServerOnly() {
-	a.mu.Lock()
-	a.managedOnly = true
-	a.mu.Unlock()
-}
-
-// SetCodexDesktopBridgeEnabled lets the local Node client own the session
-// ownership mode. Command-line Node processes keep using the environment
-// fallback because they never call this method.
-func (a *CodexAdapter) SetCodexDesktopBridgeEnabled(enabled bool) {
-	a.mu.Lock()
-	a.desktopBridgeEnabled = &enabled
-	bridge := a.desktopBridge
-	if !enabled {
-		a.desktopBridge = nil
-	}
-	started := !a.closed && a.cmd != nil && a.cmd.Process != nil && a.cmd.ProcessState == nil
-	a.mu.Unlock()
-	if bridge != nil && !enabled {
-		bridge.Close()
-		return
-	}
-	if enabled && started {
-		_ = a.ensureDesktopBridge()
-	}
 }
 
 func (a *CodexAdapter) Availability(ctx context.Context) (string, error) {
@@ -313,6 +275,14 @@ func codexAppServerEnvironment(base []string) []string {
 	)
 }
 
+func codexAppServerCommandArgs() []string {
+	return []string{"app-server", "--stdio"}
+}
+
+func (a *CodexAdapter) executionMetadata() (string, string) {
+	return "codex_app_server", "fast_spider_node"
+}
+
 func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 	release, err := a.acquireStartGate(ctx)
 	if err != nil {
@@ -347,10 +317,6 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 		}
 	}
 
-	socketPath, err := a.appServerSocketPath()
-	if err != nil {
-		return err
-	}
 	if _, err := a.Availability(ctx); err != nil {
 		return err
 	}
@@ -360,7 +326,7 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 	if path == "" {
 		return fmt.Errorf("%w: compatible Codex executable was not resolved", node.ErrAgentProviderUnavailable)
 	}
-	cmd := exec.Command(path, codexAppServerCommandArgs(socketPath)...)
+	cmd := exec.Command(path, codexAppServerCommandArgs()...)
 	if home, homeErr := os.UserHomeDir(); homeErr == nil && home != "" {
 		cmd.Dir = home
 	}
@@ -390,19 +356,7 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 	}
 	go a.stderrLoop(stderr)
 	go a.waitLoop(cmd, generation, done)
-	if socketPath != "" {
-		wsConn, dialErr := dialCodexAppServerProxy(ctx, stdin, stdout)
-		if dialErr != nil {
-			_ = a.stopProcessTarget(context.Background(), codexProcess{cmd: cmd, stdin: stdin, done: done, generation: generation})
-			return fmt.Errorf("connect Codex app-server proxy: %w", dialErr)
-		}
-		a.mu.Lock()
-		a.wsConn = wsConn
-		a.mu.Unlock()
-		go a.readWebSocketLoop(wsConn, generation)
-	} else {
-		go a.readLoop(stdout, generation)
-	}
+	go a.readLoop(stdout, generation)
 
 	initCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -420,10 +374,6 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 		return fmt.Errorf("initialize Codex app-server: %w", err)
 	}
 	if err := a.notify("initialized", nil); err != nil {
-		_ = a.stopProcess(context.Background(), cmd)
-		return err
-	}
-	if err := a.ensureDesktopBridge(); err != nil {
 		_ = a.stopProcess(context.Background(), cmd)
 		return err
 	}
@@ -456,13 +406,8 @@ func (a *CodexAdapter) Close(ctx context.Context) error {
 	a.mu.Lock()
 	a.closed = true
 	cmd := a.cmd
-	desktopBridge := a.desktopBridge
-	a.desktopBridge = nil
 	a.mu.Unlock()
 	a.lifecycleMu.Unlock()
-	if desktopBridge != nil {
-		desktopBridge.Close()
-	}
 	if cmd == nil {
 		return nil
 	}
@@ -481,7 +426,6 @@ func (a *CodexAdapter) publishStartedProcess(cmd *exec.Cmd, stdin io.WriteCloser
 	generation := a.generation
 	a.cmd = cmd
 	a.stdin = stdin
-	a.wsConn = nil
 	a.processDone = done
 	a.quarantined = false
 	a.configErr = nil
@@ -494,7 +438,7 @@ func (a *CodexAdapter) stopProcess(ctx context.Context, cmd *exec.Cmd) error {
 		a.mu.Unlock()
 		return nil
 	}
-	target := codexProcess{cmd: cmd, stdin: a.stdin, wsConn: a.wsConn, done: a.processDone, generation: a.generation}
+	target := codexProcess{cmd: cmd, stdin: a.stdin, done: a.processDone, generation: a.generation}
 	a.mu.Unlock()
 	return a.stopProcessTarget(ctx, target)
 }
@@ -508,9 +452,6 @@ func (a *CodexAdapter) stopProcessTarget(ctx context.Context, target codexProces
 	cmd := target.cmd
 	if cmd == nil {
 		return nil
-	}
-	if target.wsConn != nil {
-		_ = target.wsConn.Close(websocket.StatusNormalClosure, "Fast Spider stopping")
 	}
 	if target.stdin != nil {
 		_ = target.stdin.Close()
@@ -602,14 +543,13 @@ func (a *CodexAdapter) request(ctx context.Context, method string, params map[st
 	pending := codexPending{ch: make(chan codexRPCMessage, 1), generation: generation}
 	a.pending[id] = pending
 	stdin := a.stdin
-	wsConn := a.wsConn
 	a.mu.Unlock()
 
 	message := map[string]any{"id": id, "method": method}
 	if params != nil {
 		message["params"] = params
 	}
-	if err := a.writeMessage(ctx, wsConn, stdin, message); err != nil {
+	if err := a.writeMessage(stdin, message); err != nil {
 		a.removePending(id)
 		return nil, err
 	}
@@ -652,7 +592,7 @@ func (a *CodexAdapter) requestOnTarget(ctx context.Context, target codexProcess,
 	}
 	a.lifecycleMu.Lock()
 	a.mu.Lock()
-	if !a.isCurrentGenerationLocked(target.generation) || a.cmd != target.cmd || a.stdin != target.stdin || a.wsConn != target.wsConn || a.processDone != target.done {
+	if !a.isCurrentGenerationLocked(target.generation) || a.cmd != target.cmd || a.stdin != target.stdin || a.processDone != target.done {
 		a.mu.Unlock()
 		a.lifecycleMu.Unlock()
 		return nil, node.ErrAgentProviderUnavailable
@@ -668,7 +608,7 @@ func (a *CodexAdapter) requestOnTarget(ctx context.Context, target codexProcess,
 	if params != nil {
 		message["params"] = params
 	}
-	if err := a.writeMessage(ctx, target.wsConn, target.stdin, message); err != nil {
+	if err := a.writeMessage(target.stdin, message); err != nil {
 		a.removePending(id)
 		return nil, err
 	}
@@ -703,7 +643,7 @@ func (a *CodexAdapter) quarantineProcess(generation uint64) {
 		return
 	}
 	a.quarantined = true
-	target := codexProcess{cmd: a.cmd, stdin: a.stdin, wsConn: a.wsConn, done: a.processDone, generation: generation}
+	target := codexProcess{cmd: a.cmd, stdin: a.stdin, done: a.processDone, generation: generation}
 	stopOverride := a.stopProcessOverride
 	stopTargetOverride := a.stopTargetOverride
 	a.mu.Unlock()
@@ -735,31 +675,20 @@ func (a *CodexAdapter) quarantineProcess(generation uint64) {
 func (a *CodexAdapter) notify(method string, params map[string]any) error {
 	a.mu.Lock()
 	stdin := a.stdin
-	wsConn := a.wsConn
 	a.mu.Unlock()
-	if stdin == nil && wsConn == nil {
+	if stdin == nil {
 		return node.ErrAgentProviderUnavailable
 	}
 	message := map[string]any{"method": method}
 	if params != nil {
 		message["params"] = params
 	}
-	return a.writeMessage(context.Background(), wsConn, stdin, message)
+	return a.writeMessage(stdin, message)
 }
 
-func (a *CodexAdapter) writeMessage(ctx context.Context, wsConn *websocket.Conn, stdin io.Writer, value any) error {
+func (a *CodexAdapter) writeMessage(stdin io.Writer, value any) error {
 	a.rpcWriteMu.Lock()
 	defer a.rpcWriteMu.Unlock()
-	if wsConn != nil {
-		raw, err := json.Marshal(value)
-		if err != nil {
-			return err
-		}
-		if len(raw) > codexRPCLineLimit {
-			return fmt.Errorf("Codex RPC request exceeds limit")
-		}
-		return wsConn.Write(ctx, websocket.MessageText, raw)
-	}
 	if stdin == nil {
 		return node.ErrAgentProviderUnavailable
 	}
@@ -803,34 +732,6 @@ func (a *CodexAdapter) readLoop(reader io.Reader, generation ...uint64) {
 	}
 	if err := scanner.Err(); err != nil {
 		a.logger.Debug("Codex app-server stdout ended", "error", err)
-	}
-}
-
-func (a *CodexAdapter) readWebSocketLoop(conn *websocket.Conn, generation ...uint64) {
-	gen := a.currentGeneration()
-	if len(generation) > 0 {
-		gen = generation[0]
-	}
-	for {
-		messageType, reader, err := conn.Reader(context.Background())
-		if err != nil {
-			a.logger.Debug("Codex app-server websocket ended", "error", err)
-			return
-		}
-		if messageType != websocket.MessageText && messageType != websocket.MessageBinary {
-			a.logger.Debug("invalid Codex app-server websocket message type", "messageType", messageType)
-			continue
-		}
-		raw, err := io.ReadAll(io.LimitReader(reader, codexRPCLineLimit+1))
-		if err != nil {
-			a.logger.Debug("read Codex app-server websocket message", "error", err)
-			return
-		}
-		if len(raw) > codexRPCLineLimit {
-			a.logger.Debug("Codex app-server websocket message exceeds limit")
-			return
-		}
-		a.handleRPCMessageForGeneration(gen, raw)
 	}
 }
 
@@ -963,7 +864,7 @@ func (a *CodexAdapter) handleServerRequestForGeneration(generation uint64, id js
 		a.lifecycleMu.Unlock()
 		return
 	}
-	target := codexProcess{cmd: a.cmd, stdin: a.stdin, wsConn: a.wsConn, done: a.processDone, generation: generation}
+	target := codexProcess{cmd: a.cmd, stdin: a.stdin, done: a.processDone, generation: generation}
 	a.serverMu.Lock()
 	if _, duplicate := a.serverRequests[requestID]; duplicate {
 		a.serverMu.Unlock()
@@ -1102,7 +1003,7 @@ func (a *CodexAdapter) replyServerRequestErrorForGeneration(generation uint64, i
 		a.mu.Unlock()
 		return
 	}
-	target := codexProcess{cmd: a.cmd, stdin: a.stdin, wsConn: a.wsConn, done: a.processDone, generation: generation}
+	target := codexProcess{cmd: a.cmd, stdin: a.stdin, done: a.processDone, generation: generation}
 	a.mu.Unlock()
 	a.replyServerRequestErrorTarget(target, id, code, message)
 }
@@ -1119,20 +1020,19 @@ func (a *CodexAdapter) captureProcessForGenerationLocked(generation uint64) (cod
 	if !a.isCurrentGenerationLocked(generation) {
 		return codexProcess{}, false
 	}
-	return codexProcess{cmd: a.cmd, stdin: a.stdin, wsConn: a.wsConn, done: a.processDone, generation: generation}, true
+	return codexProcess{cmd: a.cmd, stdin: a.stdin, done: a.processDone, generation: generation}, true
 }
 
 func (a *CodexAdapter) replyServerRequestErrorTarget(target codexProcess, id json.RawMessage, code int, message string) {
 	stdin := target.stdin
-	wsConn := target.wsConn
-	if stdin == nil && wsConn == nil {
+	if stdin == nil {
 		return
 	}
 	var rawID any
 	if err := json.Unmarshal(id, &rawID); err != nil {
 		return
 	}
-	_ = a.writeMessage(context.Background(), wsConn, stdin, map[string]any{
+	_ = a.writeMessage(stdin, map[string]any{
 		"id": rawID,
 		"error": map[string]any{
 			"code":    code,
@@ -1163,7 +1063,6 @@ func (a *CodexAdapter) finishProcess(cmd *exec.Cmd, generation uint64, done chan
 	if isCurrent {
 		a.cmd = nil
 		a.stdin = nil
-		a.wsConn = nil
 		a.processDone = nil
 		a.quarantined = false
 		a.configErr = nil
@@ -1259,7 +1158,7 @@ func (a *CodexAdapter) handleNotificationForGeneration(generation uint64, method
 		a.lifecycleMu.Unlock()
 		return
 	}
-	target := codexProcess{cmd: a.cmd, stdin: a.stdin, wsConn: a.wsConn, done: a.processDone, generation: generation}
+	target := codexProcess{cmd: a.cmd, stdin: a.stdin, done: a.processDone, generation: generation}
 	a.mu.Unlock()
 	var params map[string]any
 	_ = json.Unmarshal(raw, &params)
@@ -1574,6 +1473,14 @@ func isCodexThreadNotMaterialized(err error) bool {
 	return strings.Contains(message, "not materialized yet") && strings.Contains(message, "includeturns")
 }
 
+func isCodexThreadArchived(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(executionDebugText(err))
+	return strings.Contains(message, "is archived") && strings.Contains(message, "unarchive")
+}
+
 func (a *CodexAdapter) StartThread(ctx context.Context, workingDirectory, projectDirectory, model, thinking string) (map[string]any, error) {
 	return a.StartThreadWithOptions(ctx, workingDirectory, projectDirectory, model, thinking, false)
 }
@@ -1652,7 +1559,7 @@ func (a *CodexAdapter) unloadThreadForGeneration(ctx context.Context, target cod
 	}
 	a.lifecycleMu.Lock()
 	a.mu.Lock()
-	valid := a.isCurrentGenerationLocked(target.generation) && a.cmd == target.cmd && a.stdin == target.stdin && a.wsConn == target.wsConn && a.processDone == target.done && a.loadedForGenerationLocked(sessionID, target.generation)
+	valid := a.isCurrentGenerationLocked(target.generation) && a.cmd == target.cmd && a.stdin == target.stdin && a.processDone == target.done && a.loadedForGenerationLocked(sessionID, target.generation)
 	a.mu.Unlock()
 	a.lifecycleMu.Unlock()
 	if !valid {
@@ -1946,16 +1853,15 @@ func (a *CodexAdapter) RespondPendingRequest(ctx context.Context, sessionID, req
 		return nil, node.ErrAgentProviderUnavailable
 	}
 	stdin := a.stdin
-	wsConn := a.wsConn
 	a.mu.Unlock()
-	if stdin == nil && wsConn == nil {
+	if stdin == nil {
 		return nil, node.ErrAgentProviderUnavailable
 	}
 	var rawID any
 	if err := json.Unmarshal(pending.RawID, &rawID); err != nil {
 		return nil, fmt.Errorf("decode pending Codex request id: %w", err)
 	}
-	if err := a.writeMessage(ctx, wsConn, stdin, map[string]any{"id": rawID, "result": result}); err != nil {
+	if err := a.writeMessage(stdin, map[string]any{"id": rawID, "result": result}); err != nil {
 		return nil, err
 	}
 	a.serverMu.Lock()
@@ -2224,11 +2130,19 @@ func (a *CodexAdapter) ArchiveThread(ctx context.Context, sessionID string) erro
 }
 
 func (a *CodexAdapter) UnarchiveThread(ctx context.Context, sessionID string) error {
-	if err := a.ensureThreadLoaded(ctx, sessionID); err != nil {
+	if strings.TrimSpace(sessionID) == "" {
+		return fmt.Errorf("sessionId is required")
+	}
+	unlock := a.lockSessionLoad(sessionID)
+	defer unlock()
+	if _, err := a.request(ctx, "thread/unarchive", map[string]any{"threadId": sessionID}); err != nil {
 		return err
 	}
-	_, err := a.request(ctx, "thread/unarchive", map[string]any{"threadId": sessionID})
-	return err
+	a.mu.Lock()
+	delete(a.loaded, sessionID)
+	delete(a.loadedGeneration, sessionID)
+	a.mu.Unlock()
+	return a.ensureThreadLoadedLocked(ctx, sessionID)
 }
 func (a *CodexAdapter) DeleteThread(ctx context.Context, sessionID string) error {
 	unlock := a.lockSessionLoad(sessionID)

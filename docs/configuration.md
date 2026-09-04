@@ -50,8 +50,6 @@ Node connection settings and reconnect external MCP/OAuth clients.
 | `FAST_SPIDER_PUBLIC_BASE_URL` | service launcher | Canonical external URL passed to `--public-base-url`; keep it outside the public source tree. |
 | `FAST_SPIDER_OAUTH_REDIRECT_HOSTS` | service launcher | OAuth redirect host allowlist passed to `--oauth-redirect-hosts`. |
 | `FAST_SPIDER_CODEX_EXECUTABLE` | no | Absolute path override for the Codex executable used by Node. |
-| `FAST_SPIDER_CODEX_APP_SERVER_SOCKET` | no | Optional explicit socket path for an externally owned Codex app-server proxy. |
-| `FAST_SPIDER_CODEX_DESKTOP_BRIDGE` | no | Compatibility fallback for headless Node processes without Node UI local configuration. Set `0`/`false` to disable the local Codex Desktop owner/control IPC bridge; set `1`/`true` to require it explicitly on Windows. The Node UI's Codex session-mode setting takes precedence. It does not replace Fast Spider's app-server and does not yet provide native Desktop live-history streaming. |
 | `FAST_SPIDER_WSL_DISTRIBUTION` | tests only | Selects the WSL distribution for local full-gate tests. |
 | `FAST_SPIDER_WSL_TEST_CWD` | tests only | Selects a Windows path used by WSL runtime tests. |
 | `FAST_SPIDER_HUB_BIN` | `share` only | Optional absolute or PATH-resolvable Hub executable used when `share` cannot use the source tree. |

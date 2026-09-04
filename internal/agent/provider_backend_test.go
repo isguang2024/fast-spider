@@ -158,8 +158,7 @@ func TestProviderDiscoveryRunsIndependentReadOnlyProbesInParallel(t *testing.T) 
 	}
 }
 
-func TestProvidersListPublishesCodexDesktopBridgeMetadata(t *testing.T) {
-	t.Setenv(codexDesktopBridgeEnv, "0")
+func TestProvidersListPublishesSingleCodexExecutionMode(t *testing.T) {
 	codex := NewCodexAdapter(nil)
 	codex.versionCache.set("version", versionProbe{version: "codex-test"})
 	claude := NewClaudeCodeAdapter(t.TempDir(), nil, nil)
@@ -173,9 +172,12 @@ func TestProvidersListPublishesCodexDesktopBridgeMetadata(t *testing.T) {
 		t.Fatalf("providers=%#v", providers)
 	}
 	codexProvider, _ := providers[0].(map[string]any)
-	desktopBridge, _ := codexProvider["desktopBridge"].(map[string]any)
-	if desktopBridge["enabled"] != false || desktopBridge["state"] != "disabled" || desktopBridge["nativeConversationStreaming"] != "unsupported" {
-		t.Fatalf("Codex desktopBridge=%#v", desktopBridge)
+	modes, _ := codexProvider["executionModes"].([]string)
+	if len(modes) != 1 || modes[0] != "codex_app_server" {
+		t.Fatalf("Codex executionModes=%#v", codexProvider["executionModes"])
+	}
+	if _, exists := codexProvider["desktopBridge"]; exists {
+		t.Fatalf("Codex provider still exposes desktopBridge=%#v", codexProvider["desktopBridge"])
 	}
 }
 

@@ -46,7 +46,7 @@ Current 不提供目录列表工具；`audit_log` 只读查询 Hub 本地 `audit
 
 Codex 保留 Provider/Model、Skills/Hooks/Permission Profiles/Plugins/MCP discovery、Thread/Goal/Settings/Review、原生多类型 Turn、`outputSchema`、steer/respond 和 app-server auto-resume。Claude Code 第一版提供 models/capabilities 与 session list/get/create/send/watch/cancel/result/rename/archive/unarchive，使用原生 UUID + `stream-json` + `--resume`，Prompt 经 stdin。FS 不映射 Codex 的 `fs/*`/`command/exec/*`/`mcpServer/tool/call`，也不提供 CC Switch Provider/Token/Takeover 写入或 Claude permission bypass 第二执行链。
 
-Windows Node UI 首次启动由本机配置选择 Codex 会话模式：共享模式（推荐）不认领 FS 已加载 Thread，FS 接管模式才启用 owner/control bridge。该选择不影响向已有 Desktop Thread 发消息：`ai_control session.send` 和 callback nudge 会先通过 Codex Desktop IPC 发现真实 owner 并创建 Turn；只有没有兼容 owner 时才回退 Node 管理的 app-server。该本机选择优先于环境变量；无 Node UI 配置的 headless 进程仍可用 `FAST_SPIDER_CODEX_DESKTOP_BRIDGE=0` 控制认领行为。公开 MCP 的 `ai_control` 可通过 `providers.list`、`provider.readiness` 读取 `desktopBridge` 状态。
+本地 Codex 只有一条执行链：Hub（远程调用时）转发到 Node，Node 通过自己长期持有的 `codex app-server --stdio` 执行 `thread/read|start|resume` 与 `turn/start`。`providers.list.executionModes` 只返回 `codex_app_server`，本地创建与发送结果只返回 `owner=fast_spider_node`；发送成功必须包含真实 `turnId`。云端创建本地任务仍使用 `ai_control session.create providerId=codex backend=codex_local`，并提供绝对 `workingDirectory` 和必需的 `idempotencyKey`。Codex Desktop 状态文件只用于只读 `projects.list`，不参与会话授权、发送兜底、创建同步或状态写入。
 
 ## ChatGPT 调用与工具发现
 

@@ -22,8 +22,6 @@ type LocalConfig struct {
 	AutoStartEnabled                bool   `json:"autoStartEnabled"`
 	AutoUpdateEnabled               bool   `json:"autoUpdateEnabled"`
 	AllowInsecureLocalHub           bool   `json:"allowInsecureLocalHub"`
-	CodexDesktopBridgeEnabled       bool   `json:"codexDesktopBridgeEnabled"`
-	CodexDesktopBridgeConfigured    bool   `json:"codexDesktopBridgeConfigured"`
 	ChatGPTDefaultConfigurationMode string `json:"chatgptDefaultConfigurationMode"`
 	ChatGPTDefaultCreateMode        string `json:"chatgptDefaultCreateMode"`
 	ChatGPTDefaultModel             string `json:"chatgptDefaultModel"`
@@ -37,8 +35,6 @@ func defaultLocalConfig(machineName string) LocalConfig {
 		HubURL:                          defaultHubURL,
 		MachineName:                     strings.TrimSpace(machineName),
 		LocalBridgeEnabled:              true,
-		CodexDesktopBridgeEnabled:       false,
-		CodexDesktopBridgeConfigured:    false,
 		ChatGPTDefaultConfigurationMode: "auto",
 		ChatGPTDefaultCreateMode:        "complete",
 	}
