@@ -322,7 +322,7 @@ func (s *Service) applyCloudCompletionAcknowledgement(ctx context.Context, owner
 			task.Status = "blocked"
 		}
 		task.UpdatedAt = now.Format(time.RFC3339)
-		if chatIdx := chatIndex(state, task.ChatSessionID); chatIdx >= 0 {
+		if chatIdx := chatTaskIndex(state, *task); chatIdx >= 0 {
 			if notification.Outcome == "completed" {
 				state.Chats[chatIdx].Status = "completed"
 			} else {

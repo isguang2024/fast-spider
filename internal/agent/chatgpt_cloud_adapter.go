@@ -660,16 +660,54 @@ func (a *ChatGPTCloudAdapter) Send(ctx context.Context, conversationID, parentMe
 // effort selected for the conversation's first assistant turn unless explicitly
 // overridden by the caller.
 func (a *ChatGPTCloudAdapter) SendWithThinking(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking string) (chatgptCloudTurnResult, error) {
+	body, parentMessageID, model, thinking, err := a.followUpBody(ctx, conversationID, parentMessageID, prompt, model, thinking)
+	if err != nil {
+		return chatgptCloudTurnResult{}, err
+	}
+	var result chatgptCloudTurnResult
+	if a.sendOverride != nil {
+		result, err = a.sendOverride(ctx, conversationID, parentMessageID, prompt, model, thinking)
+	} else {
+		result, err = a.sendTurn(ctx, body)
+	}
+	result.Model = strings.TrimSpace(model)
+	result.Thinking = strings.TrimSpace(thinking)
+	return result, err
+}
+
+// SendQuickWithThinking appends a follow-up and returns as soon as ChatGPT has
+// accepted the turn for the existing conversation. The response stream keeps
+// draining in the background, matching Quick chat creation semantics.
+func (a *ChatGPTCloudAdapter) SendQuickWithThinking(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking string) (chatgptCloudTurnResult, error) {
+	body, parentMessageID, model, thinking, err := a.followUpBody(ctx, conversationID, parentMessageID, prompt, model, thinking)
+	if err != nil {
+		return chatgptCloudTurnResult{}, err
+	}
+	var result chatgptCloudTurnResult
+	if a.sendOverride != nil {
+		result, err = a.sendOverride(ctx, conversationID, parentMessageID, prompt, model, thinking)
+	} else {
+		result, err = a.createQuickBody(ctx, body)
+	}
+	if result.ConversationID == "" {
+		result.ConversationID = conversationID
+	}
+	result.Model = strings.TrimSpace(model)
+	result.Thinking = strings.TrimSpace(thinking)
+	return result, err
+}
+
+func (a *ChatGPTCloudAdapter) followUpBody(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking string) (map[string]any, string, string, string, error) {
 	if conversationID == "" {
-		return chatgptCloudTurnResult{}, fmt.Errorf("conversationId is required")
+		return nil, "", "", "", fmt.Errorf("conversationId is required")
 	}
 	if strings.TrimSpace(prompt) == "" {
-		return chatgptCloudTurnResult{}, fmt.Errorf("message text is required")
+		return nil, "", "", "", fmt.Errorf("message text is required")
 	}
 	if parentMessageID == "" || strings.TrimSpace(model) == "" || strings.TrimSpace(thinking) == "" {
 		detail, err := a.Read(ctx, conversationID)
 		if err != nil {
-			return chatgptCloudTurnResult{}, fmt.Errorf("resolve follow-up state: %w", err)
+			return nil, "", "", "", fmt.Errorf("resolve follow-up state: %w", err)
 		}
 		if parentMessageID == "" {
 			parentMessageID = chatgptCloudLastAssistantID(detail)
@@ -686,18 +724,9 @@ func (a *ChatGPTCloudAdapter) SendWithThinking(ctx context.Context, conversation
 		}
 	}
 	if parentMessageID == "" {
-		return chatgptCloudTurnResult{}, fmt.Errorf("could not resolve a parent message for the conversation")
+		return nil, "", "", "", fmt.Errorf("could not resolve a parent message for the conversation")
 	}
-	var result chatgptCloudTurnResult
-	var err error
-	if a.sendOverride != nil {
-		result, err = a.sendOverride(ctx, conversationID, parentMessageID, prompt, model, thinking)
-	} else {
-		result, err = a.sendTurn(ctx, chatgptFollowUpBodyWithThinking(conversationID, parentMessageID, prompt, model, thinking))
-	}
-	result.Model = strings.TrimSpace(model)
-	result.Thinking = strings.TrimSpace(thinking)
-	return result, err
+	return chatgptFollowUpBodyWithThinking(conversationID, parentMessageID, prompt, model, thinking), parentMessageID, model, thinking, nil
 }
 
 // Steer appends a correction to an active compatible TPP turn through

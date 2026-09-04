@@ -147,6 +147,9 @@ func TestSessionCallbackStorePersistsCoalescesAndFencesGeneration(t *testing.T) 
 	if removed, err := reloaded.unregister("source-1", 1); err == nil || removed {
 		t.Fatalf("stale unregister removed=%v err=%v", removed, err)
 	}
+	if removed, err := reloaded.unregister("source-1", 2, testCallbackRegistration("source-1", "other-target", "task-1", 2)); err == nil || removed {
+		t.Fatalf("wrong-owner unregister removed=%v err=%v", removed, err)
+	}
 	if removed, err := reloaded.unregister("source-1", 2); err != nil || !removed {
 		t.Fatalf("unregister removed=%v err=%v", removed, err)
 	}
@@ -1001,6 +1004,31 @@ func TestAuthorizedThreadFallbackRequiresRegisteredDesktopThreadAndNotFoundError
 	}
 	if _, err := manager.authorizedThreadMetadata(context.Background(), "known-thread"); err == nil || !strings.Contains(err.Error(), "app server unavailable") {
 		t.Fatalf("provider failure was masked: %v", err)
+	}
+}
+
+func TestSessionGetMetadataOnlySkipsTurnHistory(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	workingDirectory := t.TempDir()
+	manager.codex.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
+		if method != "thread/read" {
+			return nil, fmt.Errorf("unexpected Codex request %s %#v", method, params)
+		}
+		if includeTurns, _ := params["includeTurns"].(bool); includeTurns {
+			t.Fatal("metadataOnly session.get requested turn history")
+		}
+		return map[string]any{"thread": map[string]any{"id": "metadata-thread", "cwd": workingDirectory}}, nil
+	}
+	got, err := manager.Control(context.Background(), "session.get", map[string]any{
+		"providerId": "codex", "sessionId": "metadata-thread", "metadataOnly": true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, _ := got["session"].(map[string]any)
+	if session["sessionId"] != "metadata-thread" || session["providerId"] != "codex" || session["backend"] != sessionBackendCodexLocal {
+		t.Fatalf("metadata-only session.get=%#v", got)
 	}
 }
 

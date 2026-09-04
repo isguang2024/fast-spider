@@ -242,7 +242,7 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 			MachineID: params.MachineID, IdempotencyKey: params.IdempotencyKey, RequestHash: params.RequestHash, ControllerSessionID: params.ControllerSessionID, DispatcherSessionID: params.DispatcherSessionID,
 			Title: params.Title, Goal: params.Goal, Scope: params.Scope, DoneWhen: params.DoneWhen, WorkingDirectory: params.WorkingDirectory, AllowedActions: params.AllowedActions,
 			MaxDepth: params.MaxDepth, MaxActiveChats: params.MaxActiveChats, MaxCreates: params.MaxCreates, HeartbeatMinutes: params.HeartbeatMinutes, StallMinutes: params.StallMinutes, Deadline: deadline,
-			GoalID: params.GoalID, GoalStatus: params.GoalStatus, TaskID: params.TaskID, TaskStatus: params.TaskStatus, ParentSessionID: params.ParentSessionID, Prompt: params.Prompt, AccessMode: params.AccessMode, WriteScope: params.WriteScope,
+			GoalID: params.GoalID, GoalStatus: params.GoalStatus, TaskID: params.TaskID, TaskStatus: params.TaskStatus, ParentSessionID: params.ParentSessionID, TargetSessionID: params.TargetSessionID, Prompt: params.Prompt, AccessMode: params.AccessMode, WriteScope: params.WriteScope,
 			DeliverablePath: params.DeliverablePath, EventID: params.EventID, EventSequence: params.EventSequence, EventType: params.EventType, EventGeneration: params.EventGeneration, ResultID: params.ResultID, ResultStatus: params.ResultStatus, ResultBytes: params.ResultBytes, ResultSHA256: params.ResultSHA256, DeliverableStatus: params.DeliverableStatus,
 			DecisionID: params.DecisionID, DecisionStatus: params.DecisionStatus, Question: params.Question, Options: params.Options, Recommendation: params.Recommendation, Checkpoint: params.Checkpoint, InactiveVerified: params.InactiveVerified, Limit: params.Limit,
 		})
@@ -480,7 +480,7 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 		}
 		params := map[string]any{
 			"providerId": input.ProviderID, "appType": input.AppType, "sessionId": input.SessionID, "turnId": input.TurnID, "requestId": input.RequestID,
-			"idempotencyKey": input.IdempotencyKey, "mode": input.Mode,
+			"idempotencyKey": input.IdempotencyKey, "mode": input.Mode, "metadataOnly": input.MetadataOnly,
 			"visibility": input.Visibility, "backend": input.Backend, "visibilityTarget": input.VisibilityTarget, "ephemeral": input.Ephemeral,
 			"prompt": input.Prompt, "workingDirectory": input.WorkingDirectory, "model": input.Model,
 			"thinking": input.Thinking, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds, "resultMode": input.ResultMode, "resultId": input.ResultID,

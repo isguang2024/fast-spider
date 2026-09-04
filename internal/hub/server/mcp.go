@@ -226,6 +226,7 @@ type cloudCollaborationParams struct {
 	TaskID              string                        `json:"taskId,omitempty"`
 	TaskStatus          string                        `json:"taskStatus,omitempty"`
 	ParentSessionID     string                        `json:"parentSessionId,omitempty"`
+	TargetSessionID     string                        `json:"targetSessionId,omitempty"`
 	Prompt              string                        `json:"prompt,omitempty"`
 	AccessMode          string                        `json:"accessMode,omitempty"`
 	WriteScope          string                        `json:"writeScope,omitempty"`
@@ -366,7 +367,7 @@ type screenshotTakeInput struct {
 type aiControlInput struct {
 	MCPResponseOptions
 	MachineID               string              `json:"machineId" jsonschema:"opaque Fast Spider machine ID"`
-	Action                  string              `json:"action" jsonschema:"session.create: providerId=codex, backend=chatgpt_cloud, visibility=visible, mode=quick_chat|complete; callback fallback: session.callback.list/claim/ack; see capability_list"`
+	Action                  string              `json:"action" jsonschema:"session.create supports providerId=codex, backend=chatgpt_cloud, visibility=visible; see capability_list"`
 	ProviderID              string              `json:"providerId,omitempty" jsonschema:"AI harness provider ID; defaults to codex"`
 	AppType                 string              `json:"appType,omitempty" jsonschema:"chatgpt selects ChatGPT cloud sessions; otherwise routing.status scope"`
 	SessionID               string              `json:"sessionId,omitempty" jsonschema:"opaque provider session ID; optional thread scope for mcp.status.list"`
@@ -379,6 +380,7 @@ type aiControlInput struct {
 	VisibilityTarget        string              `json:"visibilityTarget,omitempty" jsonschema:"session.create target: codex_local, claude_local, chatgpt_cloud, or none"`
 	Ephemeral               *bool               `json:"ephemeral,omitempty" jsonschema:"session.create: internal Codex default true; persistent internal=false"`
 	Mode                    string              `json:"mode,omitempty" jsonschema:"provider.readiness: passive|safe; chatgpt_cloud creation return mode remains quick_chat or complete for both preset and advanced configuration"`
+	MetadataOnly            bool                `json:"metadataOnly,omitempty" jsonschema:"session.get: omit turn history for a known local Codex"`
 	Prompt                  string              `json:"prompt,omitempty" jsonschema:"text for session.create/send/steer"`
 	WorkingDirectory        string              `json:"workingDirectory,omitempty" jsonschema:"absolute working directory; required for session.create"`
 	Model                   string              `json:"model,omitempty" jsonschema:"optional provider model ID; chatgpt_cloud session.send inherits the first turn model when omitted"`
@@ -655,13 +657,15 @@ func (s *Server) newMCPHandler() http.Handler {
 	})
 }
 
-const mcpServerInstructions = `FastSpider_FS is a remote development control plane. When selected as @FastSpider_FS, try a real read-only tool before judging UI text.
+const mcpServerInstructions = `FastSpider_FS is a development control plane. With @FastSpider_FS, try a read-only tool before judging availability.
 
 Tools may be lazy. If absent, use api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Never load all 22 schemas or request login before a real connection check.
 
-	Map: connection=capability_list,machine_list,machine_get; audit=audit_log,operation_log; files=code_search,file_read,file_edit; jobs=shell_run,build_control,job_watch,job_cancel; Git=git_control; browser=browser_control,screenshot_take; AI=ai_control; cloud=codex_cloud_collaboration,codex_cloud_completion; context=working_context; roles=thinking_team; artifacts=artifact_get. Cloud collaboration uses an existing visible ChatGPT CHAT (backend=chatgpt_cloud): it writes its result first, then calls codex_cloud_completion notify before final output and must not create a new Cloud Worker/CHAT. The dispatcher claims up to 64 durable notifications, verifies fixed results, and acknowledges the batch. Node callback delivery is fallback only. Local Codex may report desktopBridge, nativeConversationStreaming=unsupported, and Desktop owner/control bridge.
+Map: capability_list,machine_list,machine_get; audit_log,operation_log; code_search,file_read,file_edit; shell_run,build_control,job_watch,job_cancel; git_control; browser_control,screenshot_take; ai_control; codex_cloud_collaboration,codex_cloud_completion; working_context; thinking_team; artifact_get. Load one view=capability or view=tool|workflow|error guide. Local Codex may report desktopBridge, nativeConversationStreaming=unsupported, and Desktop owner/control bridge.
 
-Rules: Unknown machineId -> machine_list. Check with capability_list(view=overview)+machine_list. Load only one view=capability or view=tool|workflow|error guide. Codex history starts at ai_control(action=session.list), then get/watch/result. Callback fallback is list->claim->ack; stalled CHAT recovery sends “请继续” after status check; issue logging uses working_context plan.init initializeMarkdown=true on NOT_FOUND, then read/CAS append. Every shell/build jobId reaches terminal through job_watch; remove only caller-owned temporary outputs. File edits use read/SHA/preview/CAS. Close each browser session. On Windows shell_run names powershell.exe or cmd.exe in argv (for example tzutil /g), not a separate PowerShell tool. Attachments expire within 48h.`
+AI rules: Cloud CHAT is optional assistance; use the current Codex or CHAT directly when sufficient. For an exact Codex or ChatGPT sessionId, use that ID regardless of creator; local Codex may use metadataOnly=true, then session.send when idle. A busy target is never silently replaced. Without an ID, create a clean session for unrelated work and never list, search, or guess an old one; use session.list only when history discovery is requested. backend=chatgpt_cloud is an ordinary visible ChatGPT CHAT. In collaboration, targetSessionId reuses only that CHAT; omission creates a new quick_chat and the binding is a task lease. CHAT can continue a known Codex ID through ai_control session.get then session.send. CHAT writes its result before codex_cloud_completion notify; the dispatcher claims up to 64 durable notices, verifies, and acknowledges them. Node callback delivery is fallback only; stalled recovery sends “请继续” after status check.
+
+Operational rules: unknown machineId -> machine_list. Every shell/build jobId reaches terminal through job_watch. File edits use read/SHA/preview/CAS; close each browser session. On Windows shell_run names powershell.exe or cmd.exe in argv (for example tzutil /g), not a separate PowerShell tool.`
 
 func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	server := mcp.NewServer(

@@ -569,7 +569,11 @@ func (m *AgentManager) sessionCallbackUnregister(input agentControlParams) (map[
 		return nil, callbackStoreUnavailableError()
 	}
 	sourceSessionID := strings.TrimSpace(input.SessionID)
-	removed, err := m.callbackStore.unregister(sourceSessionID, input.CallbackGeneration)
+	removed, err := m.callbackStore.unregister(sourceSessionID, input.CallbackGeneration, sessionCallbackRegistration{
+		TargetSessionID: input.CallbackTargetSessionID,
+		MissionID:       input.CallbackMissionID,
+		TaskID:          input.CallbackTaskID,
+	})
 	if err != nil {
 		return nil, err
 	}

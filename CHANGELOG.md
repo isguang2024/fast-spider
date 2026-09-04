@@ -3,7 +3,12 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
-## Unreleased
+## 0.4.53 - 2026-09-04
+
+- Make Cloud CHAT assistance optional and session-ID driven: reuse only an exact
+  user-supplied CHAT regardless of its creator, otherwise create a clean
+  `quick_chat` without guessing history; support quick follow-up sends, fast
+  local Codex metadata checks, and precise callback release for reused CHATs.
 
 ## 0.4.40 - 2026-09-04
 

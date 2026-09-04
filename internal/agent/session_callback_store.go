@@ -422,7 +422,7 @@ func callbackDeliverablePathEqual(left, right string) bool {
 	return left == right
 }
 
-func (s *sessionCallbackStore) unregister(sourceSessionID string, generation int64) (bool, error) {
+func (s *sessionCallbackStore) unregister(sourceSessionID string, generation int64, expectedOwner ...sessionCallbackRegistration) (bool, error) {
 	sourceSessionID = strings.TrimSpace(sourceSessionID)
 	if err := validateCallbackOpaqueID(sourceSessionID, "source session ID", 256); err != nil {
 		return false, &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
@@ -441,6 +441,14 @@ func (s *sessionCallbackStore) unregister(sourceSessionID string, generation int
 	}
 	if current.Generation != generation {
 		return false, &sessionCallbackError{code: "CALLBACK_GENERATION_STALE", message: "callback generation does not match the registered owner"}
+	}
+	if len(expectedOwner) > 0 {
+		expected := expectedOwner[0]
+		if strings.TrimSpace(expected.TargetSessionID) != "" && current.TargetSessionID != strings.TrimSpace(expected.TargetSessionID) ||
+			strings.TrimSpace(expected.MissionID) != "" && current.MissionID != strings.TrimSpace(expected.MissionID) ||
+			strings.TrimSpace(expected.TaskID) != "" && current.TaskID != strings.TrimSpace(expected.TaskID) {
+			return false, &sessionCallbackError{code: "CALLBACK_OWNER_CONFLICT", message: "callback owner does not match the unregister request"}
+		}
 	}
 	previousPending, hadPending := s.pending[sourceSessionID]
 	delete(s.registrations, sourceSessionID)

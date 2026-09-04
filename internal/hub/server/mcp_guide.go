@@ -9,7 +9,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const mcpGuideVersion = "1.3"
+const mcpGuideVersion = "1.4"
 
 type mcpGuideCategory struct {
 	Name    string   `json:"name"`
@@ -198,7 +198,7 @@ var mcpToolGuides = map[string]mcpToolGuideEntry{
 		RecommendedNext: []string{"session.get", "session.watch", "session.result", "session.callback.list"}, CommonErrors: []string{"RUNTIME_UNAVAILABLE", "INVALID_REQUEST", "UNSUPPORTED_SESSION_PLUGIN_BINDING", "CALLBACK_OWNER_CONFLICT", "CALLBACK_GENERATION_STALE", "AGENT_CALLBACK_STORE_UNAVAILABLE"}, BoundedExamples: []map[string]any{{"machineId": "<machine-id>", "action": "session.list", "workingDirectory": "<absolute-project>"}, {"machineId": "<machine-id>", "action": "session.callback.register", "providerId": "codex", "backend": "chatgpt_cloud", "sessionId": "<cloud-chat-session>", "callbackTargetSessionId": "<dispatcher-session>", "callbackMissionId": "mission-1", "callbackTaskId": "task-1", "callbackGeneration": 1}},
 	},
 	"codex_cloud_collaboration": {
-		Description: "Codex 云端协作：persist bounded normal visible Cloud CHAT hierarchies through an available local Codex. The existing Cloud CHAT must complete its own task and callback through FastSpider_FS; never create another Cloud Worker/CHAT, fall back to another AI provider, or treat Node polling as the primary path.",
+		Description: "Codex 云端协作：按任务显式选择复用指定的普通可见 ChatGPT Cloud CHAT，或在未指定 ID 时新建隔离 CHAT；CHAT 是可选协作者，完成后通过 FastSpider_FS 通知，Node 仅作恢复兜底。",
 		WhenToUse:   []string{"Unattended multi-step work", "Local Codex coordinates existing Cloud CHAT sessions", "Cloud CHAT self-callback through FastSpider_FS", "Recovery across context limits or missed callbacks"}, RequiredInputs: []string{"Read capability_list(view=workflow,name=codex-cloud-collaboration) first", "create requires two existing local Codex controller/dispatcher sessions plus machineId, goal/doneWhen, workingDirectory, limits, allowedActions and idempotencyKey", "Cloud CHAT completion uses actorSessionId=$self and taskId; write the fixed local result before notification", "notify never carries result metadata; dispatcher claim/ack performs result verification", "collaboration mutations require revision and lease, but completion notify/claim/ack do not"},
 		SafeSequence: []string{"create performs local Codex + ChatGPT login readiness checks", "lease.acquire for the dispatcher", "goal.add and task.add; write tasks may assign deliverablePath inside writeScope", "task.dispatch creates one existing visible Cloud CHAT and must not create a new Cloud Worker/CHAT", "the Cloud CHAT calls codex_cloud_collaboration(action=get, actorSessionId=$self, actorRole=chat, taskId=...) to obtain the current task and fixed resultPath", "write the complete result to the fixed local resultPath before notification; the dispatcher verifies it after claim", "the same Cloud CHAT calls codex_cloud_completion notify with no body or result metadata; the dispatcher batch claims, verifies, and acknowledges it", "completion ack advances task state; archive is asynchronous and cannot block ack", "Node session.callback and tick/status.poll are recovery fallback only; duplicate event IDs/revisions are reconciled", "for a suspected stall, call status.poll first; if the provider is still running, chat.continue sends 请继续 and suppresses another send until progress is observed; otherwise request a controller decision instead of automatically creating a replacement CHAT", "if issue markdown returns NOT_FOUND, call working_context plan.init with initializeMarkdown=true; then read and CAS-append the bounded problem to docs/progress/04-open-issues.md", "close archives Cloud CHAT sessions by default"}, Returns: []string{"Controller-safe decision brief or dispatcher execution view", "bounded next actions", "persistent revision and collaboration status"}, RecommendedNext: []string{"codex_cloud_collaboration(action=tick)", "capability_list(view=workflow,name=codex-cloud-collaboration)"}, CommonErrors: []string{"RUNTIME_UNAVAILABLE", "INVALID_REQUEST", "CONFLICT", "UNAUTHORIZED", "RESOURCE_LIMIT", "EXPIRED"},
 		BoundedExamples: []map[string]any{{"action": "create", "params": map[string]any{"machineId": "<machine-id>", "controllerSessionId": "<local-codex-controller>", "dispatcherSessionId": "<local-codex-dispatcher>", "title": "研究任务", "goal": "完成研究", "doneWhen": "交付物验收通过", "workingDirectory": "<absolute-project>", "allowedActions": []string{"chat.create", "file.read", "file.write"}, "idempotencyKey": "codex-collaboration-001"}}},
@@ -253,7 +253,7 @@ var mcpToolSummaryDefinitions = []mcpToolSummary{
 	{Name: "browser_control", Category: "browser", Summary: "Operate isolated Chromium through accessibility snapshots and refs.", Guide: "capability_list(view=tool,name=browser_control)"},
 	{Name: "screenshot_take", Category: "browser", Summary: "Capture one-time desktop, display or window visual evidence.", Guide: "capability_list(view=tool,name=screenshot_take)"},
 	{Name: "ai_control", Category: "ai", Summary: "Discover/control Codex or Claude Code; Windows Codex reports its default Desktop bridge state.", Guide: "capability_list(view=tool,name=ai_control)"},
-	{Name: "codex_cloud_collaboration", Category: "codex-cloud-collaboration", Summary: "Coordinate existing visible Cloud CHAT hierarchies through local Codex; Cloud CHAT calls the primary FS callback and Node remains fallback recovery.", Guide: "capability_list(view=tool,name=codex_cloud_collaboration)"},
+	{Name: "codex_cloud_collaboration", Category: "codex-cloud-collaboration", Summary: "Optionally delegate to an exact existing CHAT or a new isolated CHAT; completion is durable and Node remains fallback recovery.", Guide: "capability_list(view=tool,name=codex_cloud_collaboration)"},
 	{Name: "codex_cloud_completion", Category: "codex-cloud-collaboration", Summary: "Persist notification-only CHAT completions and let the dispatcher batch claim, verify, and acknowledge them.", Guide: "capability_list(view=tool,name=codex_cloud_completion)"},
 	{Name: "working_context", Category: "context", Summary: "Persist bounded Plan, Task, evidence and Markdown project state.", Guide: "capability_list(view=tool,name=working_context)"},
 	{Name: "thinking_team", Category: "guidance", Summary: "Return calling-side role, department and workflow guidance.", Guide: "capability_list(view=tool,name=thinking_team)"},
@@ -352,6 +352,42 @@ func newMCPCapabilityGuide(serverVersion string, capabilities []protocolv1.Capab
 	return nil, fmt.Errorf("NOT_FOUND: unknown Node capability")
 }
 
+func aiControlSessionSelectionRules() []string {
+	return []string{
+		"Use the current Codex or CHAT directly when it already has the required tools and context; delegating to ChatGPT Cloud is optional, not a mandatory coding stage",
+		"When the user supplies an exact Codex or ChatGPT sessionId, validate and use that exact ID regardless of which earlier Codex or CHAT created it",
+		"For a known local Codex ID, call session.get with metadataOnly=true, then session.send only when idle; if the explicit target is busy, wait or report AGENT_SESSION_BUSY and never create a substitute",
+		"When no sessionId is supplied and the new task is unrelated to current context, create a new appropriately scoped session; do not call session.list, search, or guess an old session",
+		"A known ChatGPT conversation can be continued with session.send backend=chatgpt_cloud (or appType=chatgpt); mode=quick_chat returns after acceptance, while complete waits for the turn response",
+	}
+}
+
+func codexCloudCollaborationGuide() (string, []string, []string, []string) {
+	summary := "Optionally delegate bounded work to an exact existing normal visible ChatGPT Cloud CHAT or, when no targetSessionId is supplied, a new isolated quick_chat. Session IDs are reusable addresses rather than creator ownership; task association is temporary."
+	whenToUse := []string{"A current Codex needs optional Cloud CHAT assistance", "The user explicitly supplies a CHAT ID to continue", "A new unrelated delegated task needs a clean CHAT", "Recovery across restarts, context limits, or missed callbacks"}
+	requiredInputs := []string{
+		"Read capability_list(view=workflow,name=codex-cloud-collaboration) first",
+		"create requires two existing local Codex controller/dispatcher sessions plus machineId, goal/doneWhen, workingDirectory, limits, allowedActions and idempotencyKey",
+		"task.add or task.dispatch may include targetSessionId only when that exact visible ChatGPT Cloud CHAT must be reused; chat.send must be allowed",
+		"Cloud CHAT completion uses actorSessionId=$self and taskId; write the fixed local result before notification",
+	}
+	safeSequence := []string{
+		"First decide whether the current Codex can complete the task directly; use this collaboration only when CHAT assistance is useful or explicitly requested",
+		"create performs local Codex plus ChatGPT login readiness checks using metadata-only local session validation",
+		"dispatcher lease.acquire, then goal.add and task.add with inherited permissions and bounded write scope",
+		"If targetSessionId is present, validate and send only to that exact CHAT regardless of its original creator; reserve callback ownership before sending and never substitute another session when it is busy",
+		"If targetSessionId is absent, task.dispatch creates one new backend=chatgpt_cloud visibility=visible mode=quick_chat conversation; never call session.list or guess an old CHAT",
+		"The targetSessionId association is a per-task lease, not permanent ownership; reused CHATs are released rather than archived or deleted",
+		"Cloud CHAT calls codex_cloud_collaboration action=get with actorSessionId=$self and taskId, writes the fixed resultPath, then calls codex_cloud_completion notify without body or result metadata",
+		"The dispatcher batch claims up to 64 notifications, verifies fixed results, and acknowledges the batch; Hub persistence survives process or computer restart",
+		"Node session.callback and tick/status.poll are low-frequency recovery fallback only",
+		"For a suspected stall, status.poll first; chat.continue sends 请继续 only while still running and suppresses duplicates until progress; replacement requires an explicit controller decision",
+		"On NOT_FOUND initialize issue Markdown with working_context plan.init initializeMarkdown=true, then read and CAS-append a bounded note to docs/progress/04-open-issues.md",
+		"chat.rotate and chat.delete precisely unregister callback ownership; close archives newly created CHATs but only releases reused CHATs",
+	}
+	return summary, whenToUse, requiredInputs, safeSequence
+}
+
 var mcpWorkflowGuides = map[string]mcpWorkflowGuideEntry{
 	"connection-check":          {Summary: "Verify real MCP and Machine connectivity without making changes, including ChatGPT per-conversation connector recovery.", SafeSequence: []string{"If ChatGPT does not expose the FastSpider_FS namespace, use filtered connector discovery for the lightweight machine tools first (api_tool.list_resources(paths=[\"FastSpider_FS\"], query=\"fsprobe\") when available)", "Never materialize the full 19-tool schema just to test connectivity; load later tools only for the current action", "Do not ask for login/reauthorization solely because one conversation lost its namespace", "capability_list(view=overview)", "machine_list", "machine_get only when details are needed"}, Returns: []string{"Lightweight recovered connection tools, Hub guide/catalog and current Machine availability"}, RecommendedNext: []string{"Load only the specific tool required by the next action"}, CommonErrors: []string{"MACHINE_OFFLINE"}},
 	"file-edit":                 {Summary: "Locate, preview, CAS-write and verify a file change.", RequiredInputs: []string{"machineId", "absolute project/file path"}, SafeSequence: []string{"code_search", "file_read", "capture fileSha256", "file_edit preview", "file_edit(expectedFileSha256)", "file_read verification"}, Returns: []string{"Verified file change with before/after SHA"}, RecommendedNext: []string{"git-change when the project is versioned"}, CommonErrors: []string{"CONFLICT", "ABSOLUTE_PATH_REQUIRED"}},
@@ -414,7 +450,7 @@ func newMCPGuide(serverVersion, view, name string) (*mcpGuide, error) {
 			{Name: "Git", Summary: "Use allowlisted repository actions.", Tools: []string{"git_control"}},
 			{Name: "浏览器与桌面", Summary: "Automate Chromium or capture one-time visual evidence.", Tools: []string{"browser_control", "screenshot_take"}},
 			{Name: "本机 AI", Summary: "Discover/control Codex and Claude Code.", Tools: []string{"ai_control"}},
-			{Name: "Codex 云端协作", Summary: "Coordinate existing visible ChatGPT Cloud CHAT sessions with durable notification-only completion and Node fallback recovery.", Tools: []string{"codex_cloud_collaboration", "codex_cloud_completion"}},
+			{Name: "Codex 云端协作", Summary: "Optionally reuse an exact visible CHAT or create a new isolated CHAT, with durable notification-only completion and Node fallback recovery.", Tools: []string{"codex_cloud_collaboration", "codex_cloud_completion"}},
 			{Name: "项目上下文", Summary: "Maintain revisioned Plan/Task evidence.", Tools: []string{"working_context"}},
 			{Name: "多视角协作", Summary: "Return calling-side role/workflow guidance only.", Tools: []string{"thinking_team"}},
 			{Name: "文件与日志回显", Summary: "Return bounded native MCP content.", Tools: []string{"artifact_get", "result_get"}},
@@ -427,8 +463,10 @@ func newMCPGuide(serverVersion, view, name string) (*mcpGuide, error) {
 			"The low-level catalog reports capabilityId/version/actions and summaries.",
 			"For an unclear capability ID, load its capability guide and mcpTools mapping.",
 			"shell_run is the host/WSL process entry point; on Windows name the shell explicitly in argv.",
-			"Codex session history is ai_control(action=session.list), not a separate top-level tool.",
-			"Codex cloud collaboration is opt-in and separate from ordinary FS operations; Cloud CHAT is an ordinary visible account conversation, not ChatGPT Work.",
+			"Use the current Codex or CHAT directly when it can finish the task; Cloud CHAT assistance is opt-in, not mandatory.",
+			"Use an exact user-supplied session ID regardless of its creator; without an ID, create a clean session for unrelated work instead of listing or guessing an old one.",
+			"Codex session history is ai_control(action=session.list), but list only when the user actually asks to find or inspect sessions.",
+			"Codex cloud collaboration is separate from ordinary FS operations; Cloud CHAT is an ordinary visible account conversation, not ChatGPT Work.",
 			"A started process is not completion: follow every shell/build jobId with job_watch to a terminal state.",
 		}
 		base.RecommendedNext = []string{"machine_list", "capability_list(view=workflow,name=connection-check)"}
@@ -447,6 +485,12 @@ func newMCPGuide(serverVersion, view, name string) (*mcpGuide, error) {
 		}
 		base.Summary, base.WhenToUse, base.RequiredInputs, base.SafeSequence = entry.Description, entry.WhenToUse, entry.RequiredInputs, entry.SafeSequence
 		base.Returns, base.RecommendedNext, base.CommonErrors, base.BoundedExamples = entry.Returns, entry.RecommendedNext, entry.CommonErrors, entry.BoundedExamples
+		if name == "ai_control" {
+			base.SafeSequence = append(aiControlSessionSelectionRules(), base.SafeSequence...)
+		}
+		if name == "codex_cloud_collaboration" {
+			base.Summary, base.WhenToUse, base.RequiredInputs, base.SafeSequence = codexCloudCollaborationGuide()
+		}
 		return base, nil
 	case "workflow":
 		entry, ok := mcpWorkflowGuides[name]
@@ -458,6 +502,9 @@ func newMCPGuide(serverVersion, view, name string) (*mcpGuide, error) {
 		}
 		base.Summary, base.RequiredInputs, base.SafeSequence = entry.Summary, entry.RequiredInputs, entry.SafeSequence
 		base.Returns, base.RecommendedNext, base.CommonErrors, base.BoundedExamples = entry.Returns, entry.RecommendedNext, entry.CommonErrors, entry.BoundedExamples
+		if name == "codex-cloud-collaboration" {
+			base.Summary, _, base.RequiredInputs, base.SafeSequence = codexCloudCollaborationGuide()
+		}
 		return base, nil
 	case "error":
 		entry, ok := mcpErrorGuides[name]

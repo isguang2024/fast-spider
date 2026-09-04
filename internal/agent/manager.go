@@ -30,6 +30,7 @@ type agentControlParams struct {
 	VisibilityTarget        string              `json:"visibilityTarget,omitempty"`
 	Ephemeral               *bool               `json:"ephemeral,omitempty"`
 	Mode                    string              `json:"mode,omitempty"`
+	MetadataOnly            bool                `json:"metadataOnly,omitempty"`
 	Prompt                  string              `json:"prompt,omitempty"`
 	WorkingDirectory        string              `json:"workingDirectory,omitempty"`
 	Model                   string              `json:"model,omitempty"`
@@ -390,7 +391,13 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 		}
 		return m.sessionList(ctx, root, input.Limit)
 	case "session.get":
-		thread, err := m.authorizedThread(ctx, input.SessionID)
+		var thread map[string]any
+		var err error
+		if input.MetadataOnly {
+			thread, err = m.authorizedThreadMetadata(ctx, input.SessionID)
+		} else {
+			thread, err = m.authorizedThread(ctx, input.SessionID)
+		}
 		if err != nil {
 			return nil, err
 		}

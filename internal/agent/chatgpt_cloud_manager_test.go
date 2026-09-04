@@ -733,6 +733,25 @@ func TestChatGPTCloudSessionSendInheritsInitialSelection(t *testing.T) {
 	if model != "gpt-5-6-thinking" || thinking != "max" || result["model"] != model || result["thinking"] != thinking {
 		t.Fatalf("model=%q thinking=%q result=%#v", model, thinking, result)
 	}
+	if result["sendMode"] != "complete" {
+		t.Fatalf("default send mode result=%#v", result)
+	}
+	quick, err := manager.Control(context.Background(), "session.send", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "mode": "quick_chat",
+		"sessionId": "cloud-inherit-send", "prompt": "continue quickly",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quick["sendMode"] != "quick_chat" || quick["phase"] != "running" || quick["completionPending"] != true {
+		t.Fatalf("quick send result=%#v", quick)
+	}
+	if _, err := manager.Control(context.Background(), "session.send", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "mode": "fastest",
+		"sessionId": "cloud-inherit-send", "prompt": "invalid",
+	}); err == nil || err.Error() != "backend=chatgpt_cloud session.send mode must be complete or quick_chat" {
+		t.Fatalf("invalid send mode error=%v", err)
+	}
 }
 
 func TestChatGPTCloudSessionCreateRejectsUnknownThinking(t *testing.T) {

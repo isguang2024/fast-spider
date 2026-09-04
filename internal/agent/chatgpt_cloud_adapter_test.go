@@ -280,6 +280,82 @@ func TestChatGPTCloudAdapterCreateQuickSkipsPrepareAndReturnsBeforeCompletion(t 
 	}
 }
 
+func TestChatGPTCloudAdapterSendQuickSkipsPrepareAndReturnsBeforeCompletion(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	streamBody := &chatgptQuickStreamBody{
+		release: release, secondReadStarted: make(chan struct{}), closed: make(chan struct{}),
+	}
+	var requestBody map[string]any
+	prepareCalls := 0
+	client := &http.Client{Transport: chatgptRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		response := func(status int, body io.ReadCloser) *http.Response {
+			return &http.Response{StatusCode: status, Status: fmt.Sprintf("%d", status), Header: make(http.Header), Body: body, Request: req}
+		}
+		switch req.URL.Path {
+		case chatgptSentinelPreparePath:
+			return response(http.StatusOK, io.NopCloser(strings.NewReader(`{"prepare_token":"sentinel-quick-send","proofofwork":{"required":true,"seed":"seed","difficulty":"ffffffff"}}`))), nil
+		case chatgptConversationPrepare:
+			prepareCalls++
+			return response(http.StatusInternalServerError, io.NopCloser(strings.NewReader("unexpected prepare"))), nil
+		case "/backend-api/conversation/quick-conversation-1":
+			return response(http.StatusOK, io.NopCloser(strings.NewReader(`{"conversation_id":"quick-conversation-1","current_node":"assistant-1","default_model_slug":"gpt-5-6-thinking","mapping":{"assistant-1":{"id":"assistant-1","parent":null,"message":{"id":"assistant-1","author":{"role":"assistant"},"metadata":{"model_slug":"gpt-5-6-thinking","thinking_effort":"max"}}}}}`))), nil
+		case chatgptConversationPath:
+			if req.Method != http.MethodPost {
+				return response(http.StatusMethodNotAllowed, io.NopCloser(strings.NewReader("unexpected method"))), nil
+			}
+			if req.Header.Get("x-conduit-token") != "" {
+				t.Errorf("Quick send unexpectedly carried a conduit token")
+			}
+			if err := json.NewDecoder(req.Body).Decode(&requestBody); err != nil {
+				return nil, err
+			}
+			streamBody.ctx = req.Context()
+			return response(http.StatusOK, streamBody), nil
+		default:
+			return response(http.StatusNotFound, io.NopCloser(strings.NewReader("not found"))), nil
+		}
+	})}
+
+	adapter := NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token-quick-send", nil })
+	adapter.baseURL = "https://chatgpt.test"
+	adapter.http = client
+	type sendResult struct {
+		result chatgptCloudTurnResult
+		err    error
+	}
+	sent := make(chan sendResult, 1)
+	go func() {
+		result, err := adapter.SendQuickWithThinking(context.Background(), "quick-conversation-1", "", "continue", "", "")
+		sent <- sendResult{result: result, err: err}
+	}()
+	var outcome sendResult
+	select {
+	case outcome = <-sent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SendQuickWithThinking waited for the complete SSE stream")
+	}
+	if outcome.err != nil || outcome.result.ConversationID != "quick-conversation-1" || outcome.result.Model != "gpt-5-6-thinking" || outcome.result.Thinking != "max" {
+		t.Fatalf("quick send result=%+v err=%v", outcome.result, outcome.err)
+	}
+	if prepareCalls != 0 || mapString(requestBody, "conversation_id") != "quick-conversation-1" || mapString(requestBody, "parent_message_id") != "assistant-1" {
+		t.Fatalf("prepareCalls=%d requestBody=%#v", prepareCalls, requestBody)
+	}
+	select {
+	case <-streamBody.secondReadStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Quick send stream was not drained in the background")
+	}
+	unblock()
+	select {
+	case <-streamBody.closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Quick send stream was not closed after background drain")
+	}
+}
+
 func TestChatGPTCloudCreateBodiesCarryThinkingEffort(t *testing.T) {
 	quick := chatgptQuickChatBodyWithThinking("quick", "gpt-5-6-thinking", "extended")
 	if got := mapString(quick, "thinking_effort"); got != "extended" {

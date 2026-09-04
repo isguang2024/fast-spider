@@ -377,7 +377,19 @@ func (m *AgentManager) chatgptCloudSend(ctx context.Context, input agentControlP
 	if err != nil {
 		return nil, err
 	}
-	result, err := m.chatgptCloud.SendWithThinking(ctx, input.SessionID, "", input.Prompt, input.Model, selectedThinking)
+	sendMode := strings.ToLower(strings.TrimSpace(input.Mode))
+	if sendMode == "" {
+		sendMode = "complete"
+	}
+	if sendMode != "complete" && sendMode != "quick_chat" {
+		return nil, fmt.Errorf("backend=chatgpt_cloud session.send mode must be complete or quick_chat")
+	}
+	var result chatgptCloudTurnResult
+	if sendMode == "quick_chat" {
+		result, err = m.chatgptCloud.SendQuickWithThinking(ctx, input.SessionID, "", input.Prompt, input.Model, selectedThinking)
+	} else {
+		result, err = m.chatgptCloud.SendWithThinking(ctx, input.SessionID, "", input.Prompt, input.Model, selectedThinking)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -386,6 +398,10 @@ func (m *AgentManager) chatgptCloudSend(ctx context.Context, input agentControlP
 		"phase":     "running",
 		"model":     result.Model,
 		"thinking":  result.Thinking,
+		"sendMode":  sendMode,
+	}
+	if sendMode == "quick_chat" {
+		out["completionPending"] = true
 	}
 	if result.AsyncTaskID != "" {
 		out["asyncTaskId"] = result.AsyncTaskID
