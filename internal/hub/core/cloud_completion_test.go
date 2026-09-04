@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,31 @@ import (
 	"testing"
 	"time"
 )
+
+func TestCloudCompletionDistinguishesMissingCollaborationAndTask(t *testing.T) {
+	service, ownerID, machineID, _ := newCloudCollaborationTestService(t)
+	ctx := context.Background()
+	_, err := service.CloudCompletion(ctx, ownerID, CloudCompletionRequest{Action: "notify", CollaborationID: "missing-collaboration", TaskID: "task-1", ActorSessionID: "$self", Outcome: "completed"})
+	var capabilityErr *CapabilityCallError
+	if !errors.As(err, &capabilityErr) || capabilityErr.Code != "COLLABORATION_NOT_FOUND" {
+		t.Fatalf("missing collaboration error=%v", err)
+	}
+
+	created, err := service.CloudCollaboration(ctx, ownerID, CloudCollaborationRequest{
+		Action: "create", MachineID: machineID, IdempotencyKey: "completion-missing-task-001",
+		ControllerSessionID: "codex-controller", DispatcherSessionID: "codex-dispatcher",
+		Title: "Missing task", Goal: "Classify callback routes", DoneWhen: "Missing task is explicit",
+		WorkingDirectory: t.TempDir(), AllowedActions: []string{"chat.create", "file.read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.CloudCompletion(ctx, ownerID, CloudCompletionRequest{Action: "notify", CollaborationID: created["collaborationId"].(string), TaskID: "missing-task", ActorSessionID: "$self", Outcome: "completed"})
+	capabilityErr = nil
+	if !errors.As(err, &capabilityErr) || capabilityErr.Code != "TASK_NOT_FOUND" {
+		t.Fatalf("missing task error=%v", err)
+	}
+}
 
 func TestCloudCompletionConcurrentNotifyBatchClaimAndAck(t *testing.T) {
 	service, ownerID, machineID, _ := newCloudCollaborationTestService(t)

@@ -14,6 +14,7 @@ import (
 )
 
 const chatgptCreateReconcileTimeout = 30 * time.Second
+const chatgptCloudReadCacheTTL = 30 * time.Second
 
 const (
 	chatgptSessionGetDefaultLimit = 8
@@ -22,6 +23,18 @@ const (
 )
 
 type chatgptCloudSessionPluginBindingError struct{}
+
+type chatGPTCloudReadCacheEntry struct {
+	detail map[string]any
+	readAt time.Time
+}
+
+type chatGPTCloudReadCall struct {
+	done   chan struct{}
+	detail map[string]any
+	err    error
+	epoch  uint64
+}
 
 func (chatgptCloudSessionPluginBindingError) Error() string {
 	return "chatgpt_cloud session.create does not support per-session plugin binding; installed or catalog plugins are not session bindings"
@@ -88,6 +101,8 @@ func (m *AgentManager) controlChatGPTCloud(ctx context.Context, action string, i
 		return m.chatgptCloudWatch(ctx, input)
 	case "session.callback.register":
 		return m.sessionCallbackRegister(ctx, input)
+	case "session.callback.arm":
+		return m.sessionCallbackArm(ctx, input)
 	case "session.callback.unregister":
 		return m.sessionCallbackUnregister(input)
 	case "session.callback.list":
@@ -384,8 +399,17 @@ func (m *AgentManager) chatgptCloudSend(ctx context.Context, input agentControlP
 	if sendMode != "complete" && sendMode != "quick_chat" {
 		return nil, fmt.Errorf("backend=chatgpt_cloud session.send mode must be complete or quick_chat")
 	}
+	idempotencyKey := strings.TrimSpace(input.IdempotencyKey)
+	if idempotencyKey != "" && (len(idempotencyKey) < 12 || len(idempotencyKey) > 128 || strings.ContainsAny(idempotencyKey, "\x00\r\n")) {
+		return nil, fmt.Errorf("idempotencyKey must be 12 to 128 safe characters for backend=chatgpt_cloud session.send")
+	}
+	if idempotencyKey != "" && sendMode != "quick_chat" {
+		return nil, fmt.Errorf("idempotencyKey requires mode=quick_chat for backend=chatgpt_cloud session.send")
+	}
 	var result chatgptCloudTurnResult
-	if sendMode == "quick_chat" {
+	if sendMode == "quick_chat" && idempotencyKey != "" {
+		result, err = m.chatgptCloud.SendQuickIdempotentWithThinking(ctx, input.SessionID, "", input.Prompt, input.Model, selectedThinking, chatgptCloudSendRequestMessageID(input.SessionID, idempotencyKey))
+	} else if sendMode == "quick_chat" {
 		result, err = m.chatgptCloud.SendQuickWithThinking(ctx, input.SessionID, "", input.Prompt, input.Model, selectedThinking)
 	} else {
 		result, err = m.chatgptCloud.SendWithThinking(ctx, input.SessionID, "", input.Prompt, input.Model, selectedThinking)
@@ -393,6 +417,7 @@ func (m *AgentManager) chatgptCloudSend(ctx context.Context, input agentControlP
 	if err != nil {
 		return nil, err
 	}
+	m.invalidateChatGPTCloudRead(input.SessionID)
 	out := map[string]any{
 		"sessionId": result.ConversationID,
 		"phase":     "running",
@@ -403,10 +428,25 @@ func (m *AgentManager) chatgptCloudSend(ctx context.Context, input agentControlP
 	if sendMode == "quick_chat" {
 		out["completionPending"] = true
 	}
+	if idempotencyKey != "" {
+		out["idempotencyProtected"] = true
+		out["idempotencyStatus"] = "accepted"
+		if result.Replayed {
+			out["idempotencyStatus"] = "replayed"
+		}
+	}
 	if result.AsyncTaskID != "" {
 		out["asyncTaskId"] = result.AsyncTaskID
 	}
 	return out, nil
+}
+
+func chatgptCloudSendRequestMessageID(sessionID, idempotencyKey string) string {
+	sum := sha256.Sum256([]byte("chatgpt_cloud_send\x00" + strings.TrimSpace(sessionID) + "\x00" + strings.TrimSpace(idempotencyKey)))
+	b := sum[:16]
+	b[6] = (b[6] & 0x0f) | 0x50
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func normalizeChatGPTCloudThinking(value string) (string, error) {
@@ -431,6 +471,7 @@ func (m *AgentManager) chatgptCloudSteer(ctx context.Context, input agentControl
 	if err != nil {
 		return nil, err
 	}
+	m.invalidateChatGPTCloudRead(input.SessionID)
 	out := map[string]any{
 		"sessionId":   input.SessionID,
 		"asyncTaskId": result.AsyncTaskID,
@@ -455,7 +496,7 @@ func (m *AgentManager) chatgptCloudGet(ctx context.Context, input agentControlPa
 	if len(input.PageCursor) > 256 {
 		return nil, fmt.Errorf("backend=chatgpt_cloud session.get pageCursor must be at most 256 characters")
 	}
-	detail, err := m.chatgptCloud.Read(ctx, input.SessionID)
+	detail, err := m.readChatGPTCloud(ctx, input.SessionID, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -642,7 +683,7 @@ func (m *AgentManager) chatgptCloudResult(ctx context.Context, input agentContro
 	if strings.TrimSpace(input.SessionID) == "" {
 		return nil, fmt.Errorf("sessionId is required")
 	}
-	detail, err := m.chatgptCloud.Read(ctx, input.SessionID)
+	detail, err := m.readChatGPTCloud(ctx, input.SessionID, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -766,8 +807,10 @@ func (m *AgentManager) chatgptCloudWatch(ctx context.Context, input agentControl
 	if wait < 0 || wait > 15*time.Second {
 		return nil, fmt.Errorf("waitSeconds must be between 0 and 15")
 	}
-	if _, err := m.chatgptCloud.Read(ctx, input.SessionID); err != nil {
-		return nil, fmt.Errorf("validate ChatGPT cloud conversation: %w", err)
+	if !m.chatgptCloud.IsWatchingRealtime(input.SessionID) {
+		if _, err := m.readChatGPTCloud(ctx, input.SessionID, chatgptCloudReadCacheTTL); err != nil {
+			return nil, fmt.Errorf("validate ChatGPT cloud conversation: %w", err)
+		}
 	}
 	events, next, err := m.chatgptCloud.WatchRealtime(ctx, input.SessionID, input.Cursor, wait)
 	if err != nil {
@@ -784,6 +827,69 @@ func (m *AgentManager) chatgptCloudWatch(ctx context.Context, input agentControl
 		"sessionId": input.SessionID, "events": out, "cursor": next,
 		"note": "chatgpt_cloud realtime events signal a conversation update; refetch session.get for content",
 	}, nil
+}
+
+func (m *AgentManager) readChatGPTCloud(ctx context.Context, conversationID string, maxAge time.Duration) (map[string]any, error) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return nil, fmt.Errorf("sessionId is required")
+	}
+	now := time.Now()
+	m.chatgptReadMu.Lock()
+	if m.chatgptReadCache == nil {
+		m.chatgptReadCache = map[string]chatGPTCloudReadCacheEntry{}
+	}
+	if m.chatgptReadActive == nil {
+		m.chatgptReadActive = map[string]*chatGPTCloudReadCall{}
+	}
+	if m.chatgptReadEpoch == nil {
+		m.chatgptReadEpoch = map[string]uint64{}
+	}
+	epoch := m.chatgptReadEpoch[conversationID]
+	if cached, ok := m.chatgptReadCache[conversationID]; ok && maxAge > 0 && now.Sub(cached.readAt) <= maxAge {
+		detail := cached.detail
+		m.chatgptReadMu.Unlock()
+		return detail, nil
+	}
+	if active := m.chatgptReadActive[conversationID]; active != nil && active.epoch == epoch {
+		m.chatgptReadMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-active.done:
+			return active.detail, active.err
+		}
+	}
+	call := &chatGPTCloudReadCall{done: make(chan struct{}), epoch: epoch}
+	m.chatgptReadActive[conversationID] = call
+	m.chatgptReadMu.Unlock()
+
+	detail, err := m.chatgptCloud.Read(ctx, conversationID)
+	m.chatgptReadMu.Lock()
+	call.detail, call.err = detail, err
+	if err == nil && m.chatgptReadEpoch[conversationID] == call.epoch {
+		m.chatgptReadCache[conversationID] = chatGPTCloudReadCacheEntry{detail: detail, readAt: time.Now()}
+	}
+	if m.chatgptReadActive[conversationID] == call {
+		delete(m.chatgptReadActive, conversationID)
+	}
+	close(call.done)
+	m.chatgptReadMu.Unlock()
+	return detail, err
+}
+
+func (m *AgentManager) invalidateChatGPTCloudRead(conversationID string) {
+	if m == nil {
+		return
+	}
+	m.chatgptReadMu.Lock()
+	conversationID = strings.TrimSpace(conversationID)
+	delete(m.chatgptReadCache, conversationID)
+	if m.chatgptReadEpoch == nil {
+		m.chatgptReadEpoch = map[string]uint64{}
+	}
+	m.chatgptReadEpoch[conversationID]++
+	m.chatgptReadMu.Unlock()
 }
 
 // chatgptCloudLatestAssistantText extracts the newest assistant message text.

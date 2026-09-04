@@ -146,33 +146,34 @@ Cloud 只有一个创建入口 `session.create`，用 `mode=quick_chat|complete`
 |---|---|
 | `models.list` | `GET /backend-api/models`；返回实时 presets/thinking，加上 Node 本机配置的 `advancedModels`，与 Codex/工作模型分开 |
 | `session.create` | `mode=complete`：prepare 后等待完整 `POST /backend-api/f/conversation`；`mode=quick_chat`：跳过 prepare，拿到 conversation UUID 即返回，后台排空流 |
-| `session.send` | follow-up（`conversation_id` + `parent_message_id`=最后 assistant 消息，自动解析） |
+| `session.send` | follow-up（`conversation_id` + `parent_message_id`=最后 assistant 消息，自动解析）；`mode=quick_chat` 可带稳定 `idempotencyKey` 做重启安全投递 |
 | `session.get` | `GET /backend-api/conversation/{id}`；完整 mapping 只留在 Node，默认返回活动分支最近 8 条有界文本。响应的 `nextCursor` 可作为下一次 `pageCursor`，只取得更新消息，不重复注入历史；单次 `limit` 最大 32 |
 | `session.result` | 同上，按 async/terminal 事实返回 `running|completed|failed|canceled|unknown`；旧调用返回有界（64 KiB）`finalAgentMessage`，`resultMode=manifest|result-id` 用于只取 Result 元数据 |
 | `session.list` | 显式 `backend=chatgpt_cloud` 时有界调用 `GET /backend-api/conversations`；Provider 失败时只返回标记为不完整、非权威的 FS sidecar 已知项。省略 backend 的普通 Codex 列表仅合并受管 Cloud 会话，不扫描整个账号历史 |
 | `session.rename` | `POST /conversation/id/{id}/rename` |
 | `session.delete` | `DELETE /conversation/id/{id}` |
 | `session.cancel` | `POST /stop_conversation`（无活动轮时幂等返回） |
-| `session.watch` | `/celsius/ws/user` pubsub 订阅 `conversations` + `conversation-{uuid}`；`conversation-turn-complete` 等事件 → `session.watch` 事件（提示 refetch `session.get` 取内容） |
-| `session.callback.register` | 为一个 ChatGPT Cloud CHAT 注册唯一的本机 Codex 协调会话；持久保存 mission/task/generation/可选本地交付路径，并建立不会被普通 watch 空闲淘汰的订阅 |
+| `session.watch` | 每账号复用一条 `/celsius/ws/user` pubsub 长连接，动态订阅/退订 `conversations` + 当前 `conversation-{uuid}`；`conversation-turn-complete` 等事件 → `session.watch` 事件（提示 refetch `session.get` 取内容） |
+| `session.callback.register` | Hub 内部先持久保存 mission/task/generation、发送前 completion 基线和可选本地交付路径；可保持未激活 |
+| `session.callback.arm` | Hub 在新任务已投递后持久激活 callback，并建立不会被普通 watch 空闲淘汰的订阅及一次基线围栏补漏 |
 | `session.callback.unregister` | 按 source session + generation 撤销回调 owner，同时清除该来源尚未投递的事件 |
 | `session.callback.list` | 只读列出注册、pending 队列、固定 queue text、领取状态和恢复策略；可按 source 或 target 过滤 |
 | `session.callback.claim` | 按目标协调会话一次领取最多 64 条 pending；同一 claim 可幂等重读，租约 5 分钟 |
 | `session.callback.ack` | 按目标协调会话和 claim ID 批量确认已处理事件；确认后才从队列移除 |
 | `session.steer` | 活动兼容 TPP 轮：`POST /f/steer_turn`（`asyncTaskId` 映射为 `async_task_id`；普通已完成聊天无可 steer 的活动轮时明确报错） |
 
-实时同步基于 `/backend-api/celsius/ws/user` 的 pubsub（订阅 `conversations` + `conversation-{uuid}`，
+实时同步基于每账号一条 `/backend-api/celsius/ws/user` pubsub 长连接（动态订阅/退订 `conversations` + 当前 `conversation-{uuid}`，
 `conversation-turn-complete` 触发 refetch）——已实测：另一客户端写入后 `session.watch` 收到事件。
 
 ### `session.callback.*`
 
-`session.callback.register` 只支持 `providerId=codex + backend=chatgpt_cloud`。调用方提供 Cloud CHAT 的 `sessionId`、本机 Codex 协调/调度会话的 `callbackTargetSessionId`、`callbackMissionId`、`callbackTaskId` 和正整数 `callbackGeneration`。可选 `callbackDeliverablePath` 必须是 Node 本机绝对路径：终态回调直接验证该普通文件并返回路径、状态、大小和 SHA-256，不读取 CHAT 正文；未指定时才把最新 assistant 结果写入 Result Pool。对 `codex_cloud_collaboration`，Cloud CHAT 本身应通过 FastSpider_FS 的 `codex_cloud_collaboration` 调用 `event.ingest` 后再 `event.ack`；Node callback 仅保留为恢复兜底。Cloud CHAT 可用 `actorSessionId=$self + taskId` 让 Hub 绑定到已登记的当前会话。默认 target 不是用户正在对话的主控；协调会话负责并发批次、任务账本和有界摘要，主控只接收真正需要裁决的结果。一个 source Cloud CHAT 同时只能有一个 callback owner；相同 owner/代次/交付路径可幂等重放，更旧代次拒绝，更高代次会替换旧代并清除旧 pending。`session.callback.unregister` 必须携带当前 generation；`session.callback.list` 是可安全重试的只读查询。
+`session.callback.register/arm` 只支持 `providerId=codex + backend=chatgpt_cloud`，并由 Hub 的 `codex_cloud_collaboration` 内部调用；公网 `ai_control` 不允许 AI 单独创建或激活回调路由。复用 CHAT 时，register 保存发送前最新 assistant/message identity 与 `armed=false`，Hub 保存任务绑定，再用任务代次稳定的 Provider message ID 幂等发送新 Prompt，最后 arm。arm 建立持久订阅并做一次补漏；只有当前 identity 不同于基线才生成完成通知，因此旧完成回合、订阅重放和发送前 catch-up 都不能占用本任务 generation。若进程在注册、发送或激活任一步崩溃，下一次 tick/dispatch 会使用同一 message ID 对账或续发原任务，再幂等 arm；不会只激活未发送的任务，也不会重复创建新回合。一个 source CHAT 同时只能有一个 owner；generation 对应一次真实尝试，更高 generation 替换旧代并清除旧 pending。`session.callback.unregister` 必须携带当前 generation；`session.callback.list` 可对账 owner、baseline identity、armed 与 pending。
 
-Cloud 的 `conversation.turn.complete` 会先写入 Node data-dir 下的 `agent/session-callbacks.json`，再尝试唤醒协调会话。持久索引损坏或 pending/registration 序列不一致时回调读写 fail-closed，不会用空状态覆盖。注册会先落盘再在同一 owner/generation 临界区建立持久订阅；并发注销不能在快照后留下 orphan watcher。订阅建立失败时 durable registration 保留并由恢复循环续做。事件按 `generation + event key` 去重：优先使用 Provider payload 中真实存在的 event/turn/message ID，并持久保留最近 256 个稳定身份用于跨重连、跨重启去重；超过该有界历史的极旧重放允许按至少一次语义再次投递。缺少稳定 ID 时，Node 对 payload 派生键只做 15 秒短窗口重复抑制，不写入永久 recent-event 集合；短窗口可抑制双 topic 或紧邻重放，但相同 payload 在后续合法 Turn 会生成新的 key，极端窗口边界也允许重复而不允许漏掉合法完成事件。指定本地交付路径时，terminal 回调只检查文件并计算元数据；否则才重新读取最新 assistant，按最多 8 MiB 来源拆成不超过 1 MiB 的 Artifact 页，创建/attach/commit 一个 Result。队列只携带可选的 Result 或交付文件元数据，不携带正文、artifactId、Prompt、Provider payload、Token 或原始错误。Result 创建/提交响应丢失时用 lookup 对账，旧 generation 拒绝；捕获或发布失败仍投递安全错误状态元数据，绝不降级为整段正文。一个 Cloud CHAT 只保留最新 pending，同一协调会话的多个 Cloud CHAT 可通过一次 `session.callback.claim` 批量领取；claim ID 与 5 分钟租约持久化，超时自动释放，只有 `session.callback.ack` 才移除领取的事件。
+Cloud 的 `conversation.turn.complete` 只形成无正文通知并写入 Node data-dir 下的 `agent/session-callbacks.json`，再按期限唤醒协调会话。持久索引损坏或 pending/registration 序列不一致时 fail-closed，不会用空状态覆盖。复用 CHAT 的 realtime terminal 事件先读取当前会话 identity 与基线确认，防止旧 websocket 事件误报；新建 CHAT 可直接采用 Provider 稳定 event key。Node 队列对每个 mission/task/generation 只保留一个 canonical completion，generation 升级后才允许新的真实尝试再次完成。同一协调会话的多个 CHAT 可通过一次 `session.callback.claim` 批量领取；claim ID 与 5 分钟租约持久化，超时自动释放，只有完成 Hub notify/验收/ack 后才调用 `session.callback.ack` 移除 Node 通知。队列不携带正文、Prompt、Provider payload、Token 或原始错误。
 
-投递策略是 `Cloud CHAT self-callback / Node fallback`：Cloud CHAT 先完成 `event.ingest` → `event.ack`，Node 只在回调缺失、断线、漏通知时恢复。Node 每约 30 秒检查本地 pending/claim 状态，但不会因此查询 Cloud CHAT；pending 最早存在约 5 分钟且目标调度会话空闲时才发送无结果正文的 nudge，此后同一目标最多约每 10 分钟再提醒一次。Provider 状态恢复查询另以约 10 分钟低频执行，仅用于合成漏掉的 terminal callback。Node 重启后恢复持久订阅、pending、claim 与 nudge 状态；注册和注销的 watcher 生命周期带 generation 围栏，旧代注销不会关闭新 owner 的订阅。协调会话只处理 Result/本地交付物元数据和有界摘要，不抓取完整会话网页；实际业务网页仍由对应 Cloud CHAT 读取和操作。
+投递策略是 `Cloud CHAT self-callback / Node fallback`：Cloud CHAT 先写固定本地结果，再完成 `codex_cloud_completion notify`，Node 只在回调缺失、断线、漏通知时恢复。本地 pending/claim 队列由新事件、目标 Turn 结束、claim/ack 变化和精确到期时间唤醒，不再按固定周期扫描；pending 最早存在约 5 分钟且目标调度会话空闲时才发送无结果正文的 nudge，此后同一目标最多约每 10 分钟再提醒一次，只有真实投递或落盘错误才约 30 秒重试。Provider 状态恢复查询以约 30 分钟为最低频率，仅在启动后的首次恢复、官方长连接发生过中断或当前仍离线时合成漏掉的 terminal callback；长连接持续健康时不会周期性重读全部 CHAT。Node 重启后恢复持久订阅、pending、claim 与 nudge 状态；注册和注销会直接在同一条账号级长连接上更新 topic，watcher 生命周期带 generation 围栏，旧代注销不会关闭新 owner 的订阅。协调会话只处理 Result/本地交付物元数据和有界摘要，不抓取完整会话网页；实际业务网页仍由对应 Cloud CHAT 读取和操作。
 
-`codex_cloud_collaboration` 的卡住恢复由调度 AI 决策：默认 heartbeat 15 分钟、stall 60 分钟，并要求至少两次无进展检查才标记疑似卡住。调度先执行 `status.poll`；若 Provider 已完成则走结果恢复，若仍在运行则 `chat.continue` 发送固定“请继续”，在观察到新进展前不重复发送。后续观察到新 cursor 会清零 `continueAttempts` 并恢复正常调度；继续后仍无进展、Provider 失败/取消或状态不确定时，返回 `chat_recovery_decision`/`controller_decision`，允许主控决定人工接手或换代，但服务不会自动创建替代 CHAT。回调、状态检查、继续或 Cloud CHAT 本身遇到的问题/疑问，应先读取并以 file revision CAS 调用 `working_context markdown.append`，追加到 `docs/progress/04-open-issues.md`；若读取返回 `NOT_FOUND`，先调用 `plan.init` 且设置 `initializeMarkdown=true` 初始化 Markdown 工作区。禁止记录凭据、原始 Provider payload、完整聊天记录或长日志。
+`codex_cloud_collaboration` 的卡住恢复由调度 AI 决策：默认 heartbeat 30 分钟、stall 60 分钟，并要求至少两次无进展检查才标记疑似卡住。每个自检回合只读取一次持久状态、执行至多一个有界动作，随后立即空闲；`tick` 在无动作时返回 `idle=true + nextCheckAt`，过早调用 `status.poll` 只返回 `not_due + nextPollAt`，不会调用 Node 或 Provider；只有状态到期且必要时才真正执行 `status.poll`；若 Provider 已完成则走结果恢复，若仍在运行则 `chat.continue` 发送固定“请继续”，在观察到新进展前不重复发送。后续观察到新 cursor 会清零 `continueAttempts` 并恢复正常调度；继续后仍无进展、Provider 失败/取消或状态不确定时，返回 `chat_recovery_decision`/`controller_decision`，允许主控决定人工接手或换代，但服务不会自动创建替代 CHAT。回调、状态检查、继续或 Cloud CHAT 本身遇到的问题/疑问，应先读取并以 file revision CAS 调用 `working_context markdown.append`，追加到 `docs/progress/04-open-issues.md`；若读取返回 `NOT_FOUND`，先调用 `plan.init` 且设置 `initializeMarkdown=true` 初始化 Markdown 工作区。禁止记录凭据、原始 Provider payload、完整聊天记录或长日志。
 
 ### `session.send`
 
@@ -180,7 +181,7 @@ Cloud 的 `conversation.turn.complete` 会先写入 Node data-dir 下的 `agent/
 
 `session.send` 可以覆盖同一项目内的 `workingDirectory`、model、reasoning effort、personality、serviceTier 与 reasoning summary；跨项目目录被拒绝。
 
-对于普通 ChatGPT 会话，续聊使用 `providerId=codex + backend=chatgpt_cloud + session.send`；也可用 `appType=chatgpt` 选择相同后端。用户已给出准确 conversation ID 且目标只是继续时，不需要先读取完整历史；`session.send` 会在 Node 内部解析 parent/model/thinking，只把小型启动结果返回调用方。若确实需要观察新内容，保存 `session.get` 的 `nextCursor`，后续作为 `pageCursor` 只读取增量消息。
+对于普通 ChatGPT 会话，续聊使用 `providerId=codex + backend=chatgpt_cloud + session.send`；也可用 `appType=chatgpt` 选择相同后端。用户已给出准确 conversation ID 且目标只是继续时，不需要先读取完整历史；`session.send` 会在 Node 内部解析 parent/model/thinking，只把小型启动结果返回调用方。需要跨进程恢复的 quick send 应传稳定 `idempotencyKey`：Node 将它和 conversation ID 派生为固定 Provider message ID，重试先按该 ID 对账，传输结果不确定时也不会另建一轮；同 key 改变正文会明确冲突。若确实需要观察新内容，保存 `session.get` 的 `nextCursor`，后续作为 `pageCursor` 只读取增量消息。
 
 ### `session.steer`
 

@@ -377,6 +377,16 @@ func TestChatGPTCloudCreateBodiesCarryThinkingEffort(t *testing.T) {
 	}
 }
 
+func TestChatGPTCloudFollowUpAcceptsStableRequestMessageID(t *testing.T) {
+	body := chatgptFollowUpBodyWithThinking("conversation-1", "assistant-1", "continue", "gpt-test", "max")
+	if err := chatgptCloudSetRequestMessageID(body, "11111111-2222-5333-8444-555555555555"); err != nil {
+		t.Fatal(err)
+	}
+	if got := chatgptCloudRequestMessageID(body); got != "11111111-2222-5333-8444-555555555555" {
+		t.Fatalf("request message id=%q", got)
+	}
+}
+
 func TestChatGPTCloudSendInheritsInitialModelAndThinking(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/backend-api/conversation/cloud-follow-up" {

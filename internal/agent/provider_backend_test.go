@@ -33,7 +33,7 @@ func TestStaticProviderRegistry(t *testing.T) {
 		t.Fatalf("Claude Code discovery omits implemented session.delete: %v", claude.SupportedActions)
 	}
 	codex, _ := registry.get("codex")
-	for _, action := range []string{"session.callback.register", "session.callback.unregister", "session.callback.list", "session.callback.claim", "session.callback.ack"} {
+	for _, action := range []string{"session.callback.register", "session.callback.arm", "session.callback.unregister", "session.callback.list", "session.callback.claim", "session.callback.ack"} {
 		if !stringInSet(action, codex.SupportedActions...) {
 			t.Fatalf("Codex discovery omits implemented %s: %v", action, codex.SupportedActions)
 		}

@@ -534,7 +534,7 @@ func capabilityCallTimeout(capability, action string) time.Duration {
 		// ChatGPT Cloud owns a bounded 120s SSE stream after sentinel/prepare.
 		// Keep those setup phases inside a separate, still-bounded operation budget.
 		return 150 * time.Second
-	case "agent.control/session.send", "agent.control/session.callback.register", "agent.control/session.callback.unregister", "agent.control/session.fork", "agent.control/session.compact", "agent.control/session.rollback", "agent.control/session.goal.set", "agent.control/session.goal.clear", "agent.control/session.settings.update", "agent.control/session.review", "agent.control/session.unarchive", "agent.control/session.delete":
+	case "agent.control/session.send", "agent.control/session.callback.register", "agent.control/session.callback.arm", "agent.control/session.callback.unregister", "agent.control/session.fork", "agent.control/session.compact", "agent.control/session.rollback", "agent.control/session.goal.set", "agent.control/session.goal.clear", "agent.control/session.settings.update", "agent.control/session.review", "agent.control/session.unarchive", "agent.control/session.delete":
 		return 2 * time.Minute
 	case "agent.control/session.watch", "agent.control/session.cancel", "agent.control/session.steer", "agent.control/session.respond":
 		return 30 * time.Second
@@ -572,7 +572,7 @@ func capabilityCallDeadlines(now time.Time, parent context.Context, capability, 
 
 func shouldAuditCapability(capability, action string) bool {
 	switch capability + "/" + action {
-	case "file.write/edit", "file.write/create", "file.write/replace", "file.write/editMany", "shell.exec/run", "job.control/cancel", "git.repository/add", "git.repository/commit", "git.repository/fetch", "git.repository/pull", "git.repository/push", "git.repository/createWorktree", "git.repository/deleteWorktree", "build.exec/run", "working.context/set", "working.context/clear", "working.context/plan.init", "working.context/plan.sync", "working.context/task.update", "working.context/markdown.append", "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/batch", "browser.automation/screenshot", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/window", "agent.control/session.create", "agent.control/session.send", "agent.control/session.steer", "agent.control/session.respond", "agent.control/session.callback.register", "agent.control/session.callback.unregister", "agent.control/session.callback.claim", "agent.control/session.callback.ack", "agent.control/session.cancel", "agent.control/session.rename", "agent.control/session.archive", "agent.control/session.unarchive", "agent.control/session.delete", "agent.control/session.fork", "agent.control/session.compact", "agent.control/session.rollback", "agent.control/session.goal.set", "agent.control/session.goal.clear", "agent.control/session.settings.update", "agent.control/session.review":
+	case "file.write/edit", "file.write/create", "file.write/replace", "file.write/editMany", "shell.exec/run", "job.control/cancel", "git.repository/add", "git.repository/commit", "git.repository/fetch", "git.repository/pull", "git.repository/push", "git.repository/createWorktree", "git.repository/deleteWorktree", "build.exec/run", "working.context/set", "working.context/clear", "working.context/plan.init", "working.context/plan.sync", "working.context/task.update", "working.context/markdown.append", "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/batch", "browser.automation/screenshot", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/window", "agent.control/session.create", "agent.control/session.send", "agent.control/session.steer", "agent.control/session.respond", "agent.control/session.callback.register", "agent.control/session.callback.arm", "agent.control/session.callback.unregister", "agent.control/session.callback.claim", "agent.control/session.callback.ack", "agent.control/session.cancel", "agent.control/session.rename", "agent.control/session.archive", "agent.control/session.unarchive", "agent.control/session.delete", "agent.control/session.fork", "agent.control/session.compact", "agent.control/session.rollback", "agent.control/session.goal.set", "agent.control/session.goal.clear", "agent.control/session.settings.update", "agent.control/session.review":
 		return true
 	default:
 		return false
@@ -759,7 +759,7 @@ func ErrorStatus(err error) int {
 			return 504
 		case "PERMISSION_DENIED":
 			return 403
-		case "NOT_FOUND":
+		case "NOT_FOUND", "COLLABORATION_NOT_FOUND", "TASK_NOT_FOUND":
 			return 404
 		case "INVALID_REQUEST":
 			return 400

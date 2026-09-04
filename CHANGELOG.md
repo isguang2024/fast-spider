@@ -3,6 +3,19 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.54 - 2026-09-04
+
+- Share one account-level ChatGPT Celsius WebSocket across managed CHATs, use
+  realtime completion as the primary path, and synchronize CHAT subscriptions
+  on that same live socket. Local callback delivery is event/deadline driven
+  instead of a fixed queue scan; Provider recovery runs on the 30-minute fallback
+  only after startup, a realtime connection gap, or while disconnected. Early
+  status polls are served from persisted state with the next due time and no
+  Node/provider call.
+- Make reused CHAT dispatch restart-safe with a stable provider message ID:
+  retries reconcile or resume the same turn before arming the callback, and
+  status recovery cannot mistake the previous completed turn for the new task.
+
 ## 0.4.53 - 2026-09-04
 
 - Make Cloud CHAT assistance optional and session-ID driven: reuse only an exact

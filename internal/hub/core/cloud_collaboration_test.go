@@ -183,6 +183,10 @@ func TestCodexCloudCollaborationRequiresLocalCodexAndUsesDeliverableCallback(t *
 	if err != nil || numberField(created, "revision") != 1 {
 		t.Fatalf("create=%#v err=%v", created, err)
 	}
+	limits, _ := created["limits"].(map[string]any)
+	if numberField(limits, "heartbeatMinutes") != 30 {
+		t.Fatalf("default heartbeat=%#v want 30 minutes", limits["heartbeatMinutes"])
+	}
 	initialCallCount := len(node.snapshotCalls())
 	for _, call := range node.snapshotCalls() {
 		if call.Action == "session.get" && call.Params["metadataOnly"] != true {
@@ -257,7 +261,7 @@ func TestCodexCloudCollaborationRequiresLocalCodexAndUsesDeliverableCallback(t *
 		t.Fatalf("dispatch lost concurrent goal: %#v", dispatched)
 	}
 	dispatchedChats, _ := dispatched["chats"].([]cloudCollaborationChat)
-	if len(dispatchedChats) != 1 || !dispatchedChats[0].CallbackRegistered {
+	if len(dispatchedChats) != 1 || !dispatchedChats[0].CallbackRegistered || !dispatchedChats[0].CallbackArmed {
 		t.Fatalf("dispatch did not persist callback registration: %#v", dispatched)
 	}
 	rec, state, err := service.loadCloudCollaboration(context.Background(), ownerID, collaborationID)
@@ -350,11 +354,21 @@ func TestCodexCloudCollaborationPollRecoversMissedCallbackAndCloses(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	watchCalls := countCloudCollaborationCalls(node.snapshotCalls(), "session.watch")
+	limited, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "status.poll", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(dispatched, "revision"), TaskID: "task-recovery"})
+	if err != nil || limited["polled"] != false || limited["pollReason"] != "not_due" || numberField(limited, "retryAfterSeconds") < 1 || countCloudCollaborationCalls(node.snapshotCalls(), "session.watch") != watchCalls {
+		t.Fatalf("early status poll was not rate limited: result=%#v err=%v calls=%#v", limited, err, node.snapshotCalls())
+	}
+	tick, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "tick", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher"})
+	if err != nil || tick["idle"] != true || tick["nextCheckAt"] == nil || len(mapActionTypes(tick["actions"])) != 0 {
+		t.Fatalf("idle tick=%#v err=%v", tick, err)
+	}
 	rec, state, err := service.loadCloudCollaboration(context.Background(), ownerID, collaborationID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	state.Chats[0].CallbackRegistered = false
+	state.Chats[0].LastObservedAt = service.now().UTC().Add(-31 * time.Minute).Format(time.RFC3339)
 	missed, err := service.saveCloudCollaboration(context.Background(), ownerID, rec, state)
 	if err != nil {
 		t.Fatal(err)
@@ -364,7 +378,7 @@ func TestCodexCloudCollaborationPollRecoversMissedCallbackAndCloses(t *testing.T
 		"events": []any{map[string]any{"sequence": int64(7), "type": "conversation.turn.complete", "eventKey": "provider_evt_recovery", "sessionId": "cloud-chat-1"}},
 	})
 	recovered, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{Action: "status.poll", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(missed, "revision"), TaskID: "task-recovery"})
-	if err != nil || recovered["status"] != "active" {
+	if err != nil || recovered["status"] != "active" || recovered["polled"] != true || recovered["nextPollAt"] == nil {
 		t.Fatalf("recovered=%#v err=%v dispatched=%#v", recovered, err, dispatched)
 	}
 	tasks, _ := recovered["tasks"].([]cloudCollaborationTask)
@@ -418,6 +432,7 @@ func TestCodexCloudCollaborationPollRecoversCompletedDeliverableWithoutRealtimeE
 	}
 	state.Chats[0].CallbackRegistered = false
 	state.Chats[0].StalledNotified = true
+	state.Chats[0].LastObservedAt = service.now().UTC().Add(-31 * time.Minute).Format(time.RFC3339)
 	state.Chats[0].LastProgressAt = service.now().UTC().Add(-16 * time.Minute).Format(time.RFC3339)
 	saved, err := service.saveCloudCollaboration(context.Background(), ownerID, rec, state)
 	if err != nil {
@@ -547,6 +562,7 @@ func TestCodexCloudCollaborationReusesOnlyExplicitChatAndReleasesIt(t *testing.T
 	}
 	node.setResponse("session.get", map[string]any{"session": map[string]any{
 		"sessionId": "shared-cloud-chat", "providerId": "codex", "backend": "chatgpt_cloud", "visibility": "visible", "externalIdType": "chatgpt_conversation", "status": "completed", "createdBy": "another-codex-session",
+		"currentNode": "assistant-old", "messages": []map[string]any{{"id": "assistant-old", "role": "assistant", "text": "previous task"}},
 	}})
 	node.setResponse("session.callback.list", map[string]any{"callbacks": []any{}})
 	dispatched, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
@@ -560,13 +576,19 @@ func TestCodexCloudCollaborationReusesOnlyExplicitChatAndReleasesIt(t *testing.T
 	}
 	tasks := dispatched["tasks"].([]cloudCollaborationTask)
 	chats := dispatched["chats"].([]cloudCollaborationChat)
-	if len(tasks) != 1 || tasks[0].TargetSessionID != "shared-cloud-chat" || tasks[0].SessionMode != "reuse" || tasks[0].DeliveryStatus != "delivered" || len(chats) != 1 || !chats[0].Reused || !chats[0].CallbackRegistered {
+	if len(tasks) != 1 || tasks[0].TargetSessionID != "shared-cloud-chat" || tasks[0].SessionMode != "reuse" || tasks[0].DeliveryStatus != "delivered" || len(chats) != 1 || !chats[0].Reused || !chats[0].CallbackRegistered || !chats[0].CallbackArmed {
 		t.Fatalf("reused state tasks=%#v chats=%#v", tasks, chats)
 	}
-	registerIndex, sendIndex := -1, -1
+	registerIndex, sendIndex, armIndex := -1, -1, -1
 	for i, call := range node.snapshotCalls() {
 		if call.Action == "session.callback.register" {
 			registerIndex = i
+			if call.Params["callbackBaselineIdentity"] != "assistant-old" || call.Params["callbackArmRequired"] != true {
+				t.Fatalf("reuse callback baseline params=%#v", call.Params)
+			}
+		}
+		if call.Action == "session.callback.arm" {
+			armIndex = i
 		}
 		if call.Action == "session.send" {
 			sendIndex = i
@@ -575,8 +597,8 @@ func TestCodexCloudCollaborationReusesOnlyExplicitChatAndReleasesIt(t *testing.T
 			}
 		}
 	}
-	if registerIndex < 0 || sendIndex < 0 || registerIndex > sendIndex {
-		t.Fatalf("callback ownership was not reserved before send: %#v", node.snapshotCalls())
+	if registerIndex < 0 || sendIndex < 0 || armIndex < 0 || registerIndex > sendIndex || sendIndex > armIndex {
+		t.Fatalf("callback route was not registered before send and armed after it: %#v", node.snapshotCalls())
 	}
 
 	rotated, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
@@ -648,6 +670,123 @@ func TestValidateReusableCloudCollaborationSession(t *testing.T) {
 				t.Fatalf("invalid reusable session accepted: %#v", session)
 			}
 		})
+	}
+}
+
+func TestCodexCloudCollaborationRejectsOrphanCallbackRoute(t *testing.T) {
+	service, ownerID, machineID, node := newCloudCollaborationTestService(t)
+	created, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "create", MachineID: machineID, IdempotencyKey: "codex-collab-orphan-route-001", ControllerSessionID: "codex-controller", DispatcherSessionID: "codex-dispatcher",
+		Title: "Orphan route", Goal: "Reject orphan callback ownership", DoneWhen: "Dispatch fails explicitly", WorkingDirectory: t.TempDir(), AllowedActions: []string{"chat.send", "file.read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collaborationID := created["collaborationId"].(string)
+	leased, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "lease.acquire", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(created, "revision"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	added, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "task.add", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(leased, "revision"),
+		TaskID: "task-orphan", Title: "Reuse selected CHAT", Prompt: "Complete the task.", AccessMode: "read_only", TargetSessionID: "orphan-cloud-chat", AllowedActions: []string{"chat.send", "file.read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.setResponse("session.get", map[string]any{"session": map[string]any{
+		"sessionId": "orphan-cloud-chat", "providerId": "codex", "backend": "chatgpt_cloud", "visibility": "visible", "externalIdType": "chatgpt_conversation", "status": "completed",
+		"currentNode": "assistant-old", "messages": []map[string]any{{"id": "assistant-old", "role": "assistant"}},
+	}})
+	node.setResponse("session.callback.list", map[string]any{"callbacks": []any{map[string]any{
+		"missionId": "missing-collaboration", "taskId": "old-task", "targetSessionId": "old-dispatcher", "generation": int64(1), "pendingCount": int64(0),
+	}}})
+	_, err = service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "task.dispatch", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(added, "revision"), TaskID: "task-orphan",
+	})
+	var capabilityErr *CapabilityCallError
+	if !errors.As(err, &capabilityErr) || capabilityErr.Code != "ORPHAN_CALLBACK_ROUTE" || capabilityErr.Retryable {
+		t.Fatalf("orphan callback error=%v", err)
+	}
+	if countCloudCollaborationCalls(node.snapshotCalls(), "session.callback.register") != 0 || countCloudCollaborationCalls(node.snapshotCalls(), "session.send") != 0 {
+		t.Fatalf("orphan callback route reached task delivery: %#v", node.snapshotCalls())
+	}
+}
+
+func TestCodexCloudCollaborationResumesPersistedReuseDelivery(t *testing.T) {
+	service, ownerID, machineID, node := newCloudCollaborationTestService(t)
+	created, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "create", MachineID: machineID, IdempotencyKey: "codex-collab-reuse-resume-001", ControllerSessionID: "codex-controller", DispatcherSessionID: "codex-dispatcher",
+		Title: "Resume reuse", Goal: "Resume an interrupted reused CHAT dispatch", DoneWhen: "The original task is delivered once", WorkingDirectory: t.TempDir(), AllowedActions: []string{"chat.send", "file.read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collaborationID := created["collaborationId"].(string)
+	leased, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "lease.acquire", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(created, "revision"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "task.add", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(leased, "revision"),
+		TaskID: "task-resume", Title: "Resume", Prompt: "Complete the persisted task.", AccessMode: "read_only", TargetSessionID: "reused-chat-resume", AllowedActions: []string{"chat.send", "file.read"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, state, err := service.loadCloudCollaboration(context.Background(), ownerID, collaborationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := &state.Tasks[0]
+	task.Status = "active"
+	task.ChatSessionID = "reused-chat-resume"
+	task.SessionMode = "reuse"
+	task.DeliveryStatus = "delivering"
+	state.Chats = append(state.Chats, cloudCollaborationChat{
+		SessionID: "reused-chat-resume", TaskID: task.ID, Generation: task.Generation, Status: "active", AccessMode: task.AccessMode,
+		AllowedActions: task.AllowedActions, CallbackRegistered: true, CallbackBaselineIdentity: "assistant-before-send", Reused: true,
+		LastObservedAt: time.Now().UTC().Format(time.RFC3339), LastProgressAt: time.Now().UTC().Format(time.RFC3339),
+	})
+	interrupted, err := service.saveCloudCollaboration(context.Background(), ownerID, rec, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	poll, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "status.poll", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(interrupted, "revision"), TaskID: task.ID,
+	})
+	if err != nil || poll["polled"] != false || poll["deliveryInDoubt"] != true || poll["recoveryAction"] != "dispatch_task" {
+		t.Fatalf("interrupted delivery poll=%#v err=%v", poll, err)
+	}
+	if countCloudCollaborationCalls(node.snapshotCalls(), "session.watch") != 0 || countCloudCollaborationCalls(node.snapshotCalls(), "session.result") != 0 {
+		t.Fatalf("interrupted delivery polled the old CHAT turn: %#v", node.snapshotCalls())
+	}
+	resumed, err := service.CloudCollaboration(context.Background(), ownerID, CloudCollaborationRequest{
+		Action: "task.dispatch", CollaborationID: collaborationID, ActorSessionID: "codex-dispatcher", ActorRole: "dispatcher", ExpectedRevision: numberField(interrupted, "revision"), TaskID: task.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := resumed["tasks"].([]cloudCollaborationTask)
+	chats := resumed["chats"].([]cloudCollaborationChat)
+	if tasks[0].DeliveryStatus != "delivered" || !chats[0].CallbackRegistered || !chats[0].CallbackArmed {
+		t.Fatalf("resumed state tasks=%#v chats=%#v", tasks, chats)
+	}
+	var sendCall protocolv1.CapabilityRequest
+	for _, call := range node.snapshotCalls() {
+		if call.Action == "session.send" {
+			sendCall = call
+		}
+	}
+	if sendCall.Action == "" || sendCall.Params["idempotencyKey"] != task.IdempotencyKey || sendCall.Params["mode"] != "quick_chat" {
+		t.Fatalf("resumed send=%#v", sendCall)
+	}
+	if actions := strings.Join(mapActionTypes(resumed["nextActions"]), ","); strings.Contains(actions, "dispatch_task") {
+		t.Fatalf("completed delivery still requested recovery: %s", actions)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -754,6 +755,67 @@ func TestChatGPTCloudSessionSendInheritsInitialSelection(t *testing.T) {
 	}
 }
 
+func TestChatGPTCloudSessionSendIdempotencyReconcilesAnUncertainRetry(t *testing.T) {
+	const sessionID = "cloud-idempotent-send"
+	const idempotencyKey = "cloud-send-idempotency-001"
+	requestMessageID := chatgptCloudSendRequestMessageID(sessionID, idempotencyKey)
+	var accepted atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/conversation/"+sessionID {
+			http.NotFound(w, r)
+			return
+		}
+		mapping := map[string]any{
+			"assistant-1": map[string]any{"id": "assistant-1", "parent": nil, "message": map[string]any{
+				"id": "assistant-1", "author": map[string]any{"role": "assistant"}, "metadata": map[string]any{"model_slug": "gpt-5-6-thinking", "thinking_effort": "max"},
+			}},
+		}
+		currentNode := "assistant-1"
+		if accepted.Load() {
+			mapping[requestMessageID] = map[string]any{"id": requestMessageID, "parent": "assistant-1", "message": map[string]any{
+				"id": requestMessageID, "author": map[string]any{"role": "user"}, "content": map[string]any{"parts": []string{"continue idempotently"}},
+			}}
+			currentNode = requestMessageID
+		}
+		writeChatGPTCloudTestJSON(t, w, map[string]any{"conversation_id": sessionID, "current_node": currentNode, "mapping": mapping})
+	}))
+	defer server.Close()
+
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	manager.chatgptCloud.baseURL = server.URL
+	manager.chatgptCloud.http = server.Client()
+	manager.chatgptCloud.tokenSource = func(context.Context) (string, error) { return "token", nil }
+	sends := 0
+	manager.chatgptCloud.sendOverride = func(context.Context, string, string, string, string, string) (chatgptCloudTurnResult, error) {
+		sends++
+		accepted.Store(true)
+		return chatgptCloudTurnResult{ConversationID: sessionID}, context.DeadlineExceeded
+	}
+	params := map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "mode": "quick_chat", "sessionId": sessionID,
+		"prompt": "continue idempotently", "idempotencyKey": idempotencyKey,
+	}
+	first, err := manager.Control(context.Background(), "session.send", params)
+	if err != nil || first["idempotencyProtected"] != true || first["idempotencyStatus"] != "replayed" {
+		t.Fatalf("uncertain send reconciliation=%#v err=%v", first, err)
+	}
+	second, err := manager.Control(context.Background(), "session.send", params)
+	if err != nil || second["idempotencyStatus"] != "replayed" || sends != 1 {
+		t.Fatalf("send replay=%#v sends=%d err=%v", second, sends, err)
+	}
+	changed := cloneAgentMap(params)
+	changed["prompt"] = "different content"
+	if _, err := manager.Control(context.Background(), "session.send", changed); err == nil || !strings.Contains(err.Error(), "different session.send content") {
+		t.Fatalf("changed idempotent send error=%v", err)
+	}
+	complete := cloneAgentMap(params)
+	complete["mode"] = "complete"
+	if _, err := manager.Control(context.Background(), "session.send", complete); err == nil || !strings.Contains(err.Error(), "requires mode=quick_chat") {
+		t.Fatalf("complete idempotent send error=%v", err)
+	}
+}
+
 func TestChatGPTCloudSessionCreateRejectsUnknownThinking(t *testing.T) {
 	manager := New(t.TempDir(), nil)
 	defer manager.Close(context.Background())
@@ -763,6 +825,93 @@ func TestChatGPTCloudSessionCreateRejectsUnknownThinking(t *testing.T) {
 	})
 	if err == nil || err.Error() != "backend=chatgpt_cloud thinking must be standard, extended, min, max, ultra, xhigh, or zero" {
 		t.Fatalf("invalid thinking error=%v", err)
+	}
+}
+
+func TestChatGPTCloudSessionWatchValidatesProviderOnlyOnce(t *testing.T) {
+	var reads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/backend-api/conversation/cloud-watch-once":
+			reads.Add(1)
+			writeChatGPTCloudTestJSON(t, w, map[string]any{
+				"conversation_id": "cloud-watch-once", "async_status": "running", "mapping": map[string]any{},
+			})
+		case "/backend-api/celsius/ws/user":
+			http.NotFound(w, req)
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer server.Close()
+
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	manager.chatgptCloud.baseURL, manager.chatgptCloud.http = server.URL, server.Client()
+	manager.chatgptCloud.realtime.baseURL, manager.chatgptCloud.realtime.http = server.URL, server.Client()
+	manager.chatgptCloud.tokenSource = func(context.Context) (string, error) { return "token", nil }
+	manager.chatgptCloud.realtime.tokenSource = manager.chatgptCloud.tokenSource
+	for i := 0; i < 2; i++ {
+		if _, err := manager.Control(context.Background(), "session.watch", map[string]any{
+			"providerId": "codex", "backend": sessionBackendChatGPTCloud, "sessionId": "cloud-watch-once",
+		}); err != nil {
+			t.Fatalf("watch %d: %v", i+1, err)
+		}
+	}
+	if reads.Load() != 1 {
+		t.Fatalf("provider conversation reads=%d want 1", reads.Load())
+	}
+}
+
+func TestChatGPTCloudReadInvalidationFencesStaleInflightCache(t *testing.T) {
+	var reads atomic.Int32
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path != "/backend-api/conversation/cloud-cache-fence" {
+			http.NotFound(w, req)
+			return
+		}
+		call := reads.Add(1)
+		status := "completed"
+		if call == 1 {
+			close(firstStarted)
+			<-releaseFirst
+			status = "running"
+		}
+		writeChatGPTCloudTestJSON(t, w, map[string]any{
+			"conversation_id": "cloud-cache-fence", "async_status": status, "mapping": map[string]any{},
+		})
+	}))
+	defer server.Close()
+
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	manager.chatgptCloud.baseURL, manager.chatgptCloud.http = server.URL, server.Client()
+	manager.chatgptCloud.tokenSource = func(context.Context) (string, error) { return "token", nil }
+	type readOutcome struct {
+		detail map[string]any
+		err    error
+	}
+	firstDone := make(chan readOutcome, 1)
+	go func() {
+		detail, err := manager.readChatGPTCloud(context.Background(), "cloud-cache-fence", chatgptCloudReadCacheTTL)
+		firstDone <- readOutcome{detail: detail, err: err}
+	}()
+	<-firstStarted
+	manager.invalidateChatGPTCloudRead("cloud-cache-fence")
+	fresh, freshErr := manager.readChatGPTCloud(context.Background(), "cloud-cache-fence", chatgptCloudReadCacheTTL)
+	close(releaseFirst)
+	stale := <-firstDone
+	if freshErr != nil || chatgptCloudConversationStatus(fresh) != "completed" {
+		t.Fatalf("fresh read status=%q err=%v", chatgptCloudConversationStatus(fresh), freshErr)
+	}
+	if stale.err != nil || chatgptCloudConversationStatus(stale.detail) != "running" {
+		t.Fatalf("stale in-flight read status=%q err=%v", chatgptCloudConversationStatus(stale.detail), stale.err)
+	}
+	cached, err := manager.readChatGPTCloud(context.Background(), "cloud-cache-fence", chatgptCloudReadCacheTTL)
+	if err != nil || chatgptCloudConversationStatus(cached) != "completed" || reads.Load() != 2 {
+		t.Fatalf("cached read status=%q reads=%d err=%v", chatgptCloudConversationStatus(cached), reads.Load(), err)
 	}
 }
 

@@ -2,11 +2,14 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/isguang2024/fast-spider/internal/hub/core"
 )
 
 func TestValidateCloudCompletionToolInputReturnsRequestErrors(t *testing.T) {
@@ -32,6 +35,17 @@ func TestValidateCloudCompletionToolInputReturnsRequestErrors(t *testing.T) {
 	} {
 		if err := validateCloudCompletionToolInput(input); err != nil {
 			t.Fatalf("valid input=%#v error=%v", input, err)
+		}
+	}
+}
+
+func TestAIControlRejectsPublicCallbackRouteCreation(t *testing.T) {
+	executor := newToolExecutor(nil)
+	for _, action := range []string{"session.callback.register", "session.callback.arm"} {
+		_, err := executor.Execute(context.Background(), "owner", "ai_control", aiControlInput{Action: action})
+		var capabilityErr *core.CapabilityCallError
+		if !errors.As(err, &capabilityErr) || capabilityErr.Code != "CALLBACK_ROUTE_MANAGED_ONLY" {
+			t.Fatalf("action=%s error=%v", action, err)
 		}
 	}
 }

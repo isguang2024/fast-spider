@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	sessionCallbackStoreSchemaVersion = 1
+	sessionCallbackStoreSchemaVersion = 2
 	maxSessionCallbacks               = 64
 	maxRecentCallbackEventKeys        = 256
 	maxSessionCallbackClaimBatch      = 64
@@ -43,6 +43,9 @@ type sessionCallbackRegistration struct {
 	TaskID                string    `json:"taskId"`
 	Generation            int64     `json:"generation"`
 	DeliverablePath       string    `json:"deliverablePath,omitempty"`
+	BaselineIdentity      string    `json:"baselineIdentity,omitempty"`
+	Armed                 bool      `json:"armed"`
+	ArmedAt               time.Time `json:"armedAt,omitempty"`
 	LastEventSequence     int64     `json:"lastEventSequence,omitempty"`
 	LastEventKey          string    `json:"lastEventKey,omitempty"`
 	RecentEventKeys       []string  `json:"recentEventKeys,omitempty"`
@@ -141,10 +144,20 @@ func (s *sessionCallbackStore) load() error {
 		return err
 	}
 	var index sessionCallbackIndex
-	if err := json.Unmarshal(raw, &index); err != nil || index.SchemaVersion != sessionCallbackStoreSchemaVersion || len(index.Registrations) > maxSessionCallbacks || len(index.Pending) > maxSessionCallbacks {
+	if err := json.Unmarshal(raw, &index); err != nil || (index.SchemaVersion != 1 && index.SchemaVersion != sessionCallbackStoreSchemaVersion) || len(index.Registrations) > maxSessionCallbacks || len(index.Pending) > maxSessionCallbacks {
 		return fmt.Errorf("invalid session callback index")
 	}
 	for _, registration := range index.Registrations {
+		// Schema 1 registrations predate the explicit register/arm handshake and
+		// were live immediately after registration. Preserve that behavior while
+		// new schema-2 records can remain durably unarmed across a restart.
+		if index.SchemaVersion == 1 {
+			registration.Armed = true
+			registration.ArmedAt = registration.UpdatedAt
+			if registration.ArmedAt.IsZero() {
+				registration.ArmedAt = registration.RegisteredAt
+			}
+		}
 		if err := validateSessionCallbackRegistration(registration); err != nil {
 			return fmt.Errorf("invalid session callback index: %w", err)
 		}
@@ -208,6 +221,15 @@ func validateSessionCallbackRegistration(registration sessionCallbackRegistratio
 		if !filepath.IsAbs(registration.DeliverablePath) || len(registration.DeliverablePath) > 4096 || strings.ContainsAny(registration.DeliverablePath, "\x00\r\n") {
 			return fmt.Errorf("deliverable path must be an absolute local path")
 		}
+	}
+	if err := validateCallbackIdentity(registration.BaselineIdentity, "baseline identity"); err != nil {
+		return err
+	}
+	if registration.Armed && registration.ArmedAt.IsZero() {
+		return fmt.Errorf("armed callback registration requires armed timestamp")
+	}
+	if !registration.Armed && !registration.ArmedAt.IsZero() {
+		return fmt.Errorf("unarmed callback registration cannot have armed timestamp")
 	}
 	if registration.LastEventSequence < 0 {
 		return fmt.Errorf("last event sequence cannot be negative")
@@ -328,6 +350,16 @@ func validateCallbackEventKey(key string) error {
 	return nil
 }
 
+func validateCallbackIdentity(value, label string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > 256 || strings.ContainsAny(value, "\x00\r\n") {
+		return fmt.Errorf("invalid callback %s", label)
+	}
+	return nil
+}
+
 func isPersistentCallbackEventKey(key string) bool {
 	return strings.HasPrefix(key, "provider_evt_") || strings.HasPrefix(key, "completion_")
 }
@@ -365,8 +397,14 @@ func (s *sessionCallbackStore) register(request sessionCallbackRegistration) (se
 	request.TargetSessionID = strings.TrimSpace(request.TargetSessionID)
 	request.MissionID = strings.TrimSpace(request.MissionID)
 	request.TaskID = strings.TrimSpace(request.TaskID)
+	request.BaselineIdentity = strings.TrimSpace(request.BaselineIdentity)
 	request.RegisteredAt = now
 	request.UpdatedAt = now
+	if request.Armed {
+		request.ArmedAt = now
+	} else {
+		request.ArmedAt = time.Time{}
+	}
 	if err := validateSessionCallbackRegistration(request); err != nil {
 		return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
 	}
@@ -384,6 +422,26 @@ func (s *sessionCallbackStore) register(request sessionCallbackRegistration) (se
 			return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "CALLBACK_GENERATION_STALE", message: "callback generation is older than the registered owner"}
 		}
 		if request.Generation == current.Generation {
+			if request.BaselineIdentity != "" && request.BaselineIdentity != current.BaselineIdentity {
+				return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "CALLBACK_BASELINE_CONFLICT", message: "callback baseline does not match the registered task attempt"}
+			}
+			// Compatibility for an older Hub talking to a newer Node: legacy
+			// registration requests are immediately armed. A current Hub sets the
+			// explicit arm-required flag and uses session.callback.arm instead.
+			if request.Armed && !current.Armed {
+				previous := current
+				current.Armed = true
+				current.ArmedAt = now
+				current.UpdatedAt = now
+				s.registrations[request.SourceSessionID] = current
+				if committed, err := s.saveLocked(); err != nil {
+					if !committed {
+						s.registrations[request.SourceSessionID] = previous
+					}
+					return sessionCallbackRegistration{}, false, err
+				}
+				return current, false, nil
+			}
 			return current, true, nil
 		}
 		request.RegisteredAt = current.RegisteredAt
@@ -408,6 +466,49 @@ func (s *sessionCallbackStore) register(request sessionCallbackRegistration) (se
 		return sessionCallbackRegistration{}, false, err
 	}
 	return request, false, nil
+}
+
+func (s *sessionCallbackStore) arm(sourceSessionID string, generation int64, expectedOwner sessionCallbackRegistration) (sessionCallbackRegistration, bool, error) {
+	sourceSessionID = strings.TrimSpace(sourceSessionID)
+	if err := validateCallbackOpaqueID(sourceSessionID, "source session ID", 256); err != nil {
+		return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
+	}
+	if generation <= 0 {
+		return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "INVALID_REQUEST", message: "callbackGeneration must be positive"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return sessionCallbackRegistration{}, false, callbackStoreUnavailableError()
+	}
+	current, exists := s.registrations[sourceSessionID]
+	if !exists {
+		return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "CALLBACK_ROUTE_NOT_FOUND", message: "callback route is not registered"}
+	}
+	if current.Generation != generation {
+		return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "CALLBACK_GENERATION_STALE", message: "callback generation does not match the registered owner"}
+	}
+	if strings.TrimSpace(expectedOwner.TargetSessionID) != "" && current.TargetSessionID != strings.TrimSpace(expectedOwner.TargetSessionID) ||
+		strings.TrimSpace(expectedOwner.MissionID) != "" && current.MissionID != strings.TrimSpace(expectedOwner.MissionID) ||
+		strings.TrimSpace(expectedOwner.TaskID) != "" && current.TaskID != strings.TrimSpace(expectedOwner.TaskID) {
+		return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "CALLBACK_OWNER_CONFLICT", message: "callback owner does not match the arm request"}
+	}
+	if current.Armed {
+		return current, true, nil
+	}
+	previous := current
+	now := time.Now().UTC()
+	current.Armed = true
+	current.ArmedAt = now
+	current.UpdatedAt = now
+	s.registrations[sourceSessionID] = current
+	if committed, err := s.saveLocked(); err != nil {
+		if !committed {
+			s.registrations[sourceSessionID] = previous
+		}
+		return sessionCallbackRegistration{}, false, err
+	}
+	return current, false, nil
 }
 
 func callbackDeliverablePathEqual(left, right string) bool {
@@ -476,6 +577,9 @@ func (s *sessionCallbackStore) enqueue(event chatgptCloudEvent) (bool, error) {
 	}
 	registration, exists := s.registrations[event.ConversationID]
 	if !exists {
+		return false, nil
+	}
+	if !registration.Armed {
 		return false, nil
 	}
 	if event.DeliverablePath != "" && registration.DeliverablePath != event.DeliverablePath {
@@ -897,13 +1001,13 @@ func (s *sessionCallbackStore) releaseExpiredClaims(now time.Time) (int, error) 
 	return released, nil
 }
 
-func (s *sessionCallbackStore) nudgeDue(targetSessionID string, now time.Time, interval time.Duration) (bool, error) {
+func (s *sessionCallbackStore) nudgeSchedule(targetSessionID string, now time.Time, interval time.Duration) (bool, time.Time, error) {
 	targetSessionID = strings.TrimSpace(targetSessionID)
 	now = now.UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.loadErr != nil {
-		return false, callbackStoreUnavailableError()
+		return false, time.Time{}, callbackStoreUnavailableError()
 	}
 	var latest time.Time
 	found := false
@@ -917,12 +1021,16 @@ func (s *sessionCallbackStore) nudgeDue(targetSessionID string, now time.Time, i
 		}
 	}
 	if !found {
-		return false, nil
+		return false, time.Time{}, nil
 	}
 	if interval <= 0 {
 		interval = sessionCallbackNudgeInterval
 	}
-	return latest.IsZero() || now.Sub(latest) >= interval, nil
+	if latest.IsZero() {
+		return true, now, nil
+	}
+	next := latest.UTC().Add(interval)
+	return !now.Before(next), next, nil
 }
 
 func (s *sessionCallbackStore) recordNudge(targetSessionID, envelopeID string, now time.Time) error {

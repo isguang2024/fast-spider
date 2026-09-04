@@ -61,11 +61,14 @@ func (s *Service) CloudCompletion(ctx context.Context, ownerID string, req Cloud
 func (s *Service) notifyCloudCompletion(ctx context.Context, ownerID string, req CloudCompletionRequest) (map[string]any, error) {
 	rec, state, err := s.loadCloudCollaboration(ctx, ownerID, strings.TrimSpace(req.CollaborationID))
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, &CapabilityCallError{Code: "COLLABORATION_NOT_FOUND", Message: "the completion callback collaboration does not exist; do not retry this route indefinitely", Retryable: false, Details: map[string]any{"collaborationId": strings.TrimSpace(req.CollaborationID)}}
+		}
 		return nil, err
 	}
 	idx := taskIndex(state, strings.TrimSpace(req.TaskID))
 	if idx < 0 {
-		return nil, store.ErrNotFound
+		return nil, &CapabilityCallError{Code: "TASK_NOT_FOUND", Message: "the completion callback task does not exist in the collaboration; inspect the callback route before retrying", Retryable: false, Details: map[string]any{"collaborationId": rec.CollaborationID, "taskId": strings.TrimSpace(req.TaskID)}}
 	}
 	task := state.Tasks[idx]
 	if task.ChatSessionID == "" || task.Generation < 1 {

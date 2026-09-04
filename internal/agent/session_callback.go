@@ -18,12 +18,13 @@ import (
 )
 
 const (
-	// The callback event itself is realtime. The local queue check only needs
-	// to retry a nudge or release a lease; it must not turn into a busy poller.
+	// The callback event itself is realtime. This interval is used only after an
+	// actual local delivery/persistence error; normal queue work is event/deadline
+	// driven and does not scan on a fixed cadence.
 	sessionCallbackDeliveryRetryInterval = 30 * time.Second
 	// Provider status reads are a recovery path for a missed callback, not the
 	// normal completion channel. Keep them deliberately infrequent.
-	sessionCallbackRecoveryInterval = 10 * time.Minute
+	sessionCallbackRecoveryInterval = 30 * time.Minute
 	sessionCallbackNudgeAfter       = 5 * time.Minute
 	sessionCallbackNudgeInterval    = 10 * time.Minute
 )
@@ -38,14 +39,22 @@ type sessionCallbackDispatcher struct {
 	// Cloud CHAT. It is intentionally separate from ensure so tests and callers
 	// can keep callback subscription recovery free of provider polling.
 	recoverStatus func(context.Context, string, int64) error
+	recoveryState func() (connected bool, disconnectEpoch uint64)
 
-	notify    chan struct{}
-	rootCtx   context.Context
-	cancel    context.CancelFunc
-	startOnce sync.Once
-	closeOnce sync.Once
-	wg        sync.WaitGroup
-	interval  time.Duration
+	notify                      chan struct{}
+	rootCtx                     context.Context
+	cancel                      context.CancelFunc
+	startOnce                   sync.Once
+	closeOnce                   sync.Once
+	wg                          sync.WaitGroup
+	taskMu                      sync.Mutex
+	closing                     bool
+	retryInterval               time.Duration
+	recoveryMu                  sync.Mutex
+	recoveryInitialized         bool
+	lastRealtimeDisconnectEpoch uint64
+	recoveryRequests            uint64
+	recoveredRequests           uint64
 }
 
 func newSessionCallbackDispatcher(
@@ -61,7 +70,7 @@ func newSessionCallbackDispatcher(
 	rootCtx, cancel := context.WithCancel(context.Background())
 	return &sessionCallbackDispatcher{
 		store: store, logger: logger, active: active, send: send, ensure: ensure,
-		notify: make(chan struct{}, 1), rootCtx: rootCtx, cancel: cancel, interval: sessionCallbackDeliveryRetryInterval,
+		notify: make(chan struct{}, 1), rootCtx: rootCtx, cancel: cancel, retryInterval: sessionCallbackDeliveryRetryInterval,
 	}
 }
 
@@ -90,7 +99,12 @@ func (d *sessionCallbackDispatcher) close(ctx context.Context) error {
 	if d == nil {
 		return nil
 	}
-	d.closeOnce.Do(d.cancel)
+	d.closeOnce.Do(func() {
+		d.taskMu.Lock()
+		d.closing = true
+		d.cancel()
+		d.taskMu.Unlock()
+	})
 	done := make(chan struct{})
 	go func() {
 		d.wg.Wait()
@@ -104,24 +118,66 @@ func (d *sessionCallbackDispatcher) close(ctx context.Context) error {
 	}
 }
 
+func (d *sessionCallbackDispatcher) startBackground(fn func(context.Context)) bool {
+	if d == nil || fn == nil {
+		return false
+	}
+	d.taskMu.Lock()
+	if d.closing {
+		d.taskMu.Unlock()
+		return false
+	}
+	d.wg.Add(1)
+	d.taskMu.Unlock()
+	go func() {
+		defer d.wg.Done()
+		fn(d.rootCtx)
+	}()
+	return true
+}
+
 func (d *sessionCallbackDispatcher) runDelivery() {
 	defer d.wg.Done()
-	deliveryInterval := d.interval
-	if deliveryInterval <= 0 {
-		deliveryInterval = sessionCallbackDeliveryRetryInterval
+	var timer *time.Timer
+	var timerC <-chan time.Time
+	setTimer := func(next time.Time) {
+		if timer != nil {
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		}
+		if next.IsZero() {
+			timerC = nil
+			return
+		}
+		delay := time.Until(next)
+		if delay < time.Millisecond {
+			delay = time.Millisecond
+		}
+		if timer == nil {
+			timer = time.NewTimer(delay)
+		} else {
+			timer.Reset(delay)
+		}
+		timerC = timer.C
 	}
-	deliveryTicker := time.NewTicker(deliveryInterval)
-	defer deliveryTicker.Stop()
-	d.dispatchOnce()
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
+	setTimer(d.dispatchOnce())
 	for {
 		select {
 		case <-d.rootCtx.Done():
 			return
 		case <-d.notify:
-			d.dispatchOnce()
-		case <-deliveryTicker.C:
-			d.dispatchOnce()
+		case <-timerC:
 		}
+		setTimer(d.dispatchOnce())
 	}
 }
 
@@ -129,7 +185,7 @@ func (d *sessionCallbackDispatcher) runRecovery() {
 	defer d.wg.Done()
 	recoveryTicker := time.NewTicker(sessionCallbackRecoveryInterval)
 	defer recoveryTicker.Stop()
-	d.reconcileSubscriptions()
+	d.reconcileSubscriptionsWithRecovery(false)
 	for {
 		select {
 		case <-d.rootCtx.Done():
@@ -142,15 +198,54 @@ func (d *sessionCallbackDispatcher) runRecovery() {
 }
 
 func (d *sessionCallbackDispatcher) reconcileSubscriptions() {
-	if d == nil || d.store == nil || (d.ensure == nil && d.recoverStatus == nil) {
+	readProvider := true
+	connected := false
+	disconnectEpoch := uint64(0)
+	d.recoveryMu.Lock()
+	requestedRecovery := d.recoveryRequests
+	recoveredRequests := d.recoveredRequests
+	recoveryInitialized := d.recoveryInitialized
+	lastDisconnectEpoch := d.lastRealtimeDisconnectEpoch
+	d.recoveryMu.Unlock()
+	if d.recoveryState != nil {
+		connected, disconnectEpoch = d.recoveryState()
+		readProvider = !recoveryInitialized || requestedRecovery != recoveredRequests || !connected || disconnectEpoch != lastDisconnectEpoch
+	}
+	recovered := d.reconcileSubscriptionsWithRecovery(readProvider)
+	if d.recoveryState != nil && readProvider && recovered {
+		d.recoveryMu.Lock()
+		d.recoveryInitialized = true
+		d.lastRealtimeDisconnectEpoch = disconnectEpoch
+		if requestedRecovery > d.recoveredRequests {
+			d.recoveredRequests = requestedRecovery
+		}
+		d.recoveryMu.Unlock()
+	}
+}
+
+func (d *sessionCallbackDispatcher) requestProviderRecovery() {
+	if d == nil {
 		return
+	}
+	d.recoveryMu.Lock()
+	d.recoveryRequests++
+	d.recoveryMu.Unlock()
+}
+
+func (d *sessionCallbackDispatcher) reconcileSubscriptionsWithRecovery(readProvider bool) bool {
+	if d == nil || d.store == nil || (d.ensure == nil && d.recoverStatus == nil) {
+		return false
 	}
 	registrations, _, err := d.store.registrationsSnapshot("", "")
 	if err != nil {
 		d.logger.Warn("load session callbacks for realtime recovery", "error", err)
-		return
+		return false
 	}
+	recovered := true
 	for _, registration := range registrations {
+		if !registration.Armed {
+			continue
+		}
 		if d.ensure != nil {
 			ctx, cancel := context.WithTimeout(d.rootCtx, 10*time.Second)
 			_, ensureErr := d.store.withCurrentRegistration(registration.SourceSessionID, registration.Generation, func() error {
@@ -161,30 +256,50 @@ func (d *sessionCallbackDispatcher) reconcileSubscriptions() {
 				d.logger.Warn("restore ChatGPT Cloud callback subscription", "sourceSessionId", registration.SourceSessionID, "error", ensureErr)
 			}
 		}
-		if d.recoverStatus != nil {
+		if readProvider && d.recoverStatus != nil {
 			statusCtx, statusCancel := context.WithTimeout(d.rootCtx, 20*time.Second)
 			statusErr := d.recoverStatus(statusCtx, registration.SourceSessionID, registration.Generation)
 			statusCancel()
 			if statusErr != nil && !errors.Is(statusErr, context.Canceled) {
+				recovered = false
 				d.logger.Warn("recover missed ChatGPT Cloud callback", "sourceSessionId", registration.SourceSessionID, "error", statusErr)
+			} else if statusErr != nil {
+				recovered = false
 			}
 		}
 	}
+	return !readProvider || recovered
 }
 
-func (d *sessionCallbackDispatcher) dispatchOnce() {
+func (d *sessionCallbackDispatcher) dispatchOnce() time.Time {
 	if d == nil || d.store == nil || d.send == nil {
-		return
+		return time.Time{}
 	}
 	now := time.Now().UTC()
+	nextWake := time.Time{}
+	schedule := func(candidate time.Time) {
+		if candidate.IsZero() {
+			return
+		}
+		if nextWake.IsZero() || candidate.Before(nextWake) {
+			nextWake = candidate
+		}
+	}
+	retryAt := func() time.Time {
+		interval := d.retryInterval
+		if interval <= 0 {
+			interval = sessionCallbackDeliveryRetryInterval
+		}
+		return time.Now().UTC().Add(interval)
+	}
 	if _, err := d.store.releaseExpiredClaims(now); err != nil {
 		d.logger.Warn("release expired session callback claims", "error", err)
-		return
+		return retryAt()
 	}
 	grouped, err := d.store.pendingByTarget()
 	if err != nil {
 		d.logger.Warn("load pending session callbacks", "error", err)
-		return
+		return retryAt()
 	}
 	targets := make([]string, 0, len(grouped))
 	for target := range grouped {
@@ -193,28 +308,40 @@ func (d *sessionCallbackDispatcher) dispatchOnce() {
 	sort.Strings(targets)
 	for _, target := range targets {
 		events := grouped[target]
-		if len(events) == 0 || (d.active != nil && d.active(target)) {
+		if len(events) == 0 {
 			continue
 		}
 		claimable := make([]sessionCallbackEvent, 0, len(events))
 		oldest := time.Time{}
 		for _, event := range events {
-			if event.ClaimID == "" || !callbackClaimActive(event, now) {
-				claimable = append(claimable, event)
+			if callbackClaimActive(event, now) {
+				schedule(event.ClaimedAt.UTC().Add(sessionCallbackClaimLease))
+				continue
 			}
+			claimable = append(claimable, event)
 			if oldest.IsZero() || event.OccurredAt.Before(oldest) {
 				oldest = event.OccurredAt
 			}
 		}
-		if len(claimable) == 0 || oldest.IsZero() || now.Sub(oldest) < sessionCallbackNudgeAfter {
+		if len(claimable) == 0 || oldest.IsZero() {
 			continue
 		}
-		due, err := d.store.nudgeDue(target, now, sessionCallbackNudgeInterval)
+		firstNudgeAt := oldest.UTC().Add(sessionCallbackNudgeAfter)
+		if now.Before(firstNudgeAt) {
+			schedule(firstNudgeAt)
+			continue
+		}
+		if d.active != nil && d.active(target) {
+			continue
+		}
+		due, nextNudgeAt, err := d.store.nudgeSchedule(target, now, sessionCallbackNudgeInterval)
 		if err != nil {
 			d.logger.Warn("check session callback nudge", "targetSessionId", target, "error", err)
+			schedule(retryAt())
 			continue
 		}
 		if !due {
+			schedule(nextNudgeAt)
 			continue
 		}
 		envelopeID := sessionCallbackEnvelopeID(target, claimable)
@@ -229,12 +356,18 @@ func (d *sessionCallbackDispatcher) dispatchOnce() {
 			if !errors.Is(sendErr, context.Canceled) {
 				d.logger.Warn("deliver session callback nudge", "targetSessionId", target, "envelopeId", envelopeID, "error", sendErr)
 			}
+			schedule(retryAt())
 			continue
 		}
-		if err := d.store.recordNudge(target, envelopeID, now); err != nil {
+		sentAt := time.Now().UTC()
+		if err := d.store.recordNudge(target, envelopeID, sentAt); err != nil {
 			d.logger.Warn("record session callback nudge", "targetSessionId", target, "envelopeId", envelopeID, "error", err)
+			schedule(retryAt())
+			continue
 		}
+		schedule(sentAt.Add(sessionCallbackNudgeInterval))
 	}
+	return nextWake
 }
 
 func buildSessionCallbackEnvelope(envelopeID string, events []sessionCallbackEvent) string {
@@ -300,6 +433,26 @@ func (m *AgentManager) handleChatGPTCloudCallbackEvent(event chatgptCloudEvent) 
 	if m == nil || m.callbackStore == nil || event.Type != "conversation.turn.complete" {
 		return
 	}
+	registration, current, err := m.callbackStore.registrationFor(event.ConversationID)
+	if err != nil {
+		m.logger.Warn("load ChatGPT Cloud callback route", "sourceSessionId", event.ConversationID, "error", err)
+		return
+	}
+	if !current || !registration.Armed {
+		return
+	}
+	m.invalidateChatGPTCloudRead(event.ConversationID)
+	// New conversations have no pre-existing terminal turn and can use the
+	// provider event directly. Reused conversations carry a baseline: confirm
+	// the current assistant identity before accepting a websocket replay.
+	if registration.BaselineIdentity != "" {
+		if m.callbackDispatcher != nil {
+			m.callbackDispatcher.startBackground(func(backgroundCtx context.Context) {
+				m.confirmChatGPTCloudCallbackEvent(backgroundCtx, event.ConversationID, registration.Generation)
+			})
+		}
+		return
+	}
 	queued, err := m.callbackStore.enqueue(event)
 	if err != nil {
 		m.logger.Warn("persist ChatGPT Cloud callback event", "sourceSessionId", event.ConversationID, "eventSequence", event.Sequence, "error", err)
@@ -307,6 +460,38 @@ func (m *AgentManager) handleChatGPTCloudCallbackEvent(event chatgptCloudEvent) 
 	}
 	if queued && m.callbackDispatcher != nil {
 		m.callbackDispatcher.signal()
+	}
+}
+
+func (m *AgentManager) confirmChatGPTCloudCallbackEvent(parent context.Context, sourceSessionID string, generation int64) {
+	for attempt, delay := range []time.Duration{0, 250 * time.Millisecond, time.Second, 3 * time.Second} {
+		if attempt > 0 {
+			timer := time.NewTimer(delay)
+			select {
+			case <-parent.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
+		ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+		settled, err := m.recoverCompletedCloudCallbackState(ctx, sourceSessionID, generation, true)
+		cancel()
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				m.logger.Warn("confirm ChatGPT Cloud callback event", "sourceSessionId", sourceSessionID, "error", err)
+			}
+			if m.callbackDispatcher != nil {
+				m.callbackDispatcher.requestProviderRecovery()
+			}
+			return
+		}
+		if settled {
+			return
+		}
+	}
+	if m.callbackDispatcher != nil {
+		m.callbackDispatcher.requestProviderRecovery()
 	}
 }
 
@@ -331,7 +516,7 @@ func (m *AgentManager) completeCloudCallbackResult(event chatgptCloudEvent) chat
 	}
 	callbackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	detail, err := m.chatgptCloud.Read(callbackCtx, event.ConversationID)
+	detail, err := m.readChatGPTCloud(callbackCtx, event.ConversationID, chatgptCloudReadCacheTTL)
 	if err != nil {
 		event.ResultStatus = "failed"
 		return event
@@ -438,12 +623,14 @@ func (m *AgentManager) sessionCallbackRegister(ctx context.Context, input agentC
 		return nil, &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
 	}
 	registration, replayed, err := m.callbackStore.register(sessionCallbackRegistration{
-		SourceSessionID: sourceSessionID,
-		TargetSessionID: targetSessionID,
-		MissionID:       input.CallbackMissionID,
-		TaskID:          input.CallbackTaskID,
-		Generation:      input.CallbackGeneration,
-		DeliverablePath: strings.TrimSpace(input.CallbackDeliverablePath),
+		SourceSessionID:  sourceSessionID,
+		TargetSessionID:  targetSessionID,
+		MissionID:        input.CallbackMissionID,
+		TaskID:           input.CallbackTaskID,
+		Generation:       input.CallbackGeneration,
+		DeliverablePath:  strings.TrimSpace(input.CallbackDeliverablePath),
+		BaselineIdentity: strings.TrimSpace(input.CallbackBaselineIdentity),
+		Armed:            !input.CallbackArmRequired,
 	})
 	if err != nil {
 		return nil, err
@@ -452,66 +639,84 @@ func (m *AgentManager) sessionCallbackRegister(ctx context.Context, input agentC
 	// reads, target Codex RPCs, and realtime subscription are recovery work and
 	// must not delay task.dispatch or make a persisted route look rejected.
 	_ = ctx
-	go m.ensureCloudCallbackSubscription(sourceSessionID, registration.Generation)
-	go m.reconcileCompletedCloudCallback(sourceSessionID, registration.Generation)
+	watcherState := "unarmed"
+	if registration.Armed {
+		watcherState = "pending"
+		m.callbackDispatcher.startBackground(func(backgroundCtx context.Context) {
+			m.initializeCloudCallbackSubscription(backgroundCtx, sourceSessionID, registration.Generation)
+		})
+	}
 	m.callbackDispatcher.signal()
 	return map[string]any{
 		"callback":                          callbackRegistrationMap(registration, 0),
 		"replayed":                          replayed,
 		"deliveryPolicy":                    "queued-batch-claim",
+		"localQueueWakePolicy":              "event-driven-deadline",
 		"recoveryPolicy":                    "node-fallback-status-poll-and-nudge",
-		"watcherState":                      "pending",
+		"fallbackStatusPollPolicy":          "startup-or-realtime-gap",
+		"watcherState":                      watcherState,
+		"armRequired":                       !registration.Armed,
 		"fallbackStatusPollIntervalSeconds": int64(sessionCallbackRecoveryInterval / time.Second),
 		"fallbackNudgeAfterSeconds":         int64(sessionCallbackNudgeAfter / time.Second),
 		"fallbackNudgeIntervalSeconds":      int64(sessionCallbackNudgeInterval / time.Second),
 	}, nil
 }
 
-func (m *AgentManager) ensureCloudCallbackSubscription(sourceSessionID string, generation int64) {
+func (m *AgentManager) sessionCallbackArm(ctx context.Context, input agentControlParams) (map[string]any, error) {
+	if m.callbackStore == nil || m.callbackDispatcher == nil {
+		return nil, callbackStoreUnavailableError()
+	}
+	sourceSessionID := strings.TrimSpace(input.SessionID)
+	registration, replayed, err := m.callbackStore.arm(sourceSessionID, input.CallbackGeneration, sessionCallbackRegistration{
+		TargetSessionID: input.CallbackTargetSessionID,
+		MissionID:       input.CallbackMissionID,
+		TaskID:          input.CallbackTaskID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	_ = ctx
+	m.callbackDispatcher.startBackground(func(backgroundCtx context.Context) {
+		m.initializeCloudCallbackSubscription(backgroundCtx, sourceSessionID, registration.Generation)
+	})
+	m.callbackDispatcher.signal()
+	return map[string]any{
+		"callback":     callbackRegistrationMap(registration, 0),
+		"replayed":     replayed,
+		"watcherState": "pending",
+		"armed":        true,
+	}, nil
+}
+
+func (m *AgentManager) initializeCloudCallbackSubscription(parent context.Context, sourceSessionID string, generation int64) {
 	if m == nil || m.callbackStore == nil || m.chatgptCloud == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	_, err := m.callbackStore.withCurrentRegistration(sourceSessionID, generation, func() error {
 		return m.chatgptCloud.EnsureCallbackRealtimeForGeneration(ctx, sourceSessionID, generation)
 	})
+	cancel()
 	if err != nil && !errors.Is(err, context.Canceled) {
 		m.logger.Warn("establish ChatGPT Cloud callback subscription", "sourceSessionId", sourceSessionID, "error", err)
-	}
-}
-
-func (m *AgentManager) reconcileCompletedCloudCallback(sourceSessionID string, generation int64) {
-	if m == nil || m.callbackStore == nil || m.chatgptCloud == nil {
+		if m.callbackDispatcher != nil {
+			m.callbackDispatcher.requestProviderRecovery()
+		}
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	for attempt := 0; attempt < 16; attempt++ {
-		registration, current, storeErr := m.callbackStore.registrationFor(sourceSessionID)
-		if storeErr != nil || !current || registration.Generation != generation {
-			return
-		}
-		detail, err := m.chatgptCloud.Read(ctx, sourceSessionID)
-		if err == nil && chatgptCloudConversationStatus(detail) == "completed" {
-			sum := sha256.Sum256([]byte(sourceSessionID + "\x00register-reconcile\x00" + fmt.Sprintf("%d", generation)))
-			m.handleChatGPTCloudCallbackEvent(chatgptCloudEvent{
-				Sequence:       m.callbackStore.maxEventSequence() + 1,
-				EventKey:       "provider_evt_reconcile_" + hex.EncodeToString(sum[:])[:40],
-				Type:           "conversation.turn.complete",
-				ConversationID: sourceSessionID,
-				EventType:      "conversation-turn-complete",
-				Timestamp:      time.Now().UTC(),
-			})
-			return
-		}
-		if err != nil && !errors.Is(err, context.Canceled) && attempt == 15 {
-			m.logger.Warn("reconcile completed ChatGPT Cloud callback after registration", "sourceSessionId", sourceSessionID, "error", err)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(500 * time.Millisecond):
+	// Give the official shared websocket a brief chance to finish subscribing,
+	// then perform exactly one catch-up read. This closes the registration race
+	// without the previous 500ms provider polling loop.
+	readyCtx, readyCancel := context.WithTimeout(parent, 250*time.Millisecond)
+	_ = m.chatgptCloud.WaitCallbackRealtime(readyCtx)
+	readyCancel()
+	statusCtx, statusCancel := context.WithTimeout(parent, 20*time.Second)
+	currentErr := m.recoverCompletedCloudCallback(statusCtx, sourceSessionID, generation)
+	statusCancel()
+	if currentErr != nil && !errors.Is(currentErr, context.Canceled) {
+		m.logger.Warn("reconcile completed ChatGPT Cloud callback after registration", "sourceSessionId", sourceSessionID, "error", currentErr)
+		if m.callbackDispatcher != nil {
+			m.callbackDispatcher.requestProviderRecovery()
 		}
 	}
 }
@@ -521,39 +726,52 @@ func (m *AgentManager) reconcileCompletedCloudCallback(sourceSessionID string, g
 // status read only synthesizes a terminal event when a registered Cloud CHAT
 // is already completed and the realtime event was missed.
 func (m *AgentManager) recoverCompletedCloudCallback(ctx context.Context, sourceSessionID string, generation int64) error {
+	_, err := m.recoverCompletedCloudCallbackState(ctx, sourceSessionID, generation, false)
+	return err
+}
+
+func (m *AgentManager) recoverCompletedCloudCallbackState(ctx context.Context, sourceSessionID string, generation int64, terminalSignal bool) (bool, error) {
 	if m == nil || m.callbackStore == nil || m.chatgptCloud == nil {
-		return nil
+		return true, nil
 	}
 	registration, current, err := m.callbackStore.registrationFor(sourceSessionID)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if !current || registration.Generation != generation {
-		return nil
+	if !current || registration.Generation != generation || !registration.Armed {
+		return true, nil
 	}
-	detail, err := m.chatgptCloud.Read(ctx, sourceSessionID)
+	detail, err := m.readChatGPTCloud(ctx, sourceSessionID, 0)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if chatgptCloudConversationStatus(detail) != "completed" {
-		return nil
+	status := chatgptCloudConversationStatus(detail)
+	if status != "completed" && !(terminalSignal && status == "unknown") {
+		return false, nil
+	}
+	latest, current, err := m.callbackStore.registrationFor(sourceSessionID)
+	if err != nil {
+		return false, err
+	}
+	if !current || latest.Generation != generation || !latest.Armed {
+		return true, nil
 	}
 	now := time.Now().UTC()
-	assistantID := chatgptCloudLastAssistantID(detail)
-	currentNode := chatgptCloudCurrentNodeID(detail)
-	identity := firstNonEmptyString(assistantID, currentNode, fmt.Sprint(detail["updateTime"]))
-	eventKey := ""
-	if identity != "" {
-		sum := sha256.Sum256([]byte(sourceSessionID + "\x00" + fmt.Sprintf("%d", generation) + "\x00" + identity))
-		eventKey = "provider_evt_fallback_" + hex.EncodeToString(sum[:])[:40]
-	} else {
-		eventKey = chatgptRealtimeEventKeyAt(sourceSessionID, "conversation-turn-complete", map[string]any{"conversation_id": sourceSessionID}, now)
+	identity := chatgptCloudCompletionIdentity(detail)
+	if identity == "" {
+		return false, nil
 	}
+	if latest.BaselineIdentity != "" && identity == latest.BaselineIdentity {
+		return true, nil
+	}
+	eventKey := ""
+	sum := sha256.Sum256([]byte(sourceSessionID + "\x00" + fmt.Sprintf("%d", generation) + "\x00" + identity))
+	eventKey = "provider_evt_fallback_" + hex.EncodeToString(sum[:])[:40]
 	sequence := registration.LastEventSequence + 1
 	if next := m.callbackStore.maxEventSequence() + 1; next > sequence {
 		sequence = next
 	}
-	m.handleChatGPTCloudCallbackEvent(chatgptCloudEvent{
+	queued, err := m.callbackStore.enqueue(chatgptCloudEvent{
 		Sequence:       sequence,
 		EventKey:       eventKey,
 		Type:           "conversation.turn.complete",
@@ -561,7 +779,25 @@ func (m *AgentManager) recoverCompletedCloudCallback(ctx context.Context, source
 		EventType:      "conversation-turn-complete",
 		Timestamp:      now,
 	})
-	return nil
+	if err != nil {
+		return false, err
+	}
+	if queued && m.callbackDispatcher != nil {
+		m.callbackDispatcher.signal()
+	}
+	return true, nil
+}
+
+func chatgptCloudCompletionIdentity(detail map[string]any) string {
+	identity := firstNonEmptyString(chatgptCloudLastAssistantID(detail), chatgptCloudCurrentNodeID(detail))
+	if identity == "" && detail["updateTime"] != nil {
+		identity = fmt.Sprint(detail["updateTime"])
+	}
+	identity = strings.TrimSpace(identity)
+	if len(identity) > 256 {
+		identity = identity[:256]
+	}
+	return identity
 }
 
 func (m *AgentManager) sessionCallbackUnregister(input agentControlParams) (map[string]any, error) {
@@ -579,6 +815,9 @@ func (m *AgentManager) sessionCallbackUnregister(input agentControlParams) (map[
 	}
 	if removed {
 		m.chatgptCloud.ReleaseCallbackRealtimeForGeneration(sourceSessionID, input.CallbackGeneration)
+		if m.callbackDispatcher != nil {
+			m.callbackDispatcher.signal()
+		}
 	}
 	return map[string]any{"sourceSessionId": sourceSessionID, "unregistered": removed}, nil
 }
@@ -613,7 +852,9 @@ func (m *AgentManager) sessionCallbackList(input agentControlParams) (map[string
 		"maxClaimBatch":                     maxSessionCallbackClaimBatch,
 		"claimLeaseSeconds":                 int64(sessionCallbackClaimLease / time.Second),
 		"deliveryPolicy":                    "queued-batch-claim",
+		"localQueueWakePolicy":              "event-driven-deadline",
 		"recoveryPolicy":                    "node-fallback-status-poll-and-nudge",
+		"fallbackStatusPollPolicy":          "startup-or-realtime-gap",
 		"fallbackStatusPollIntervalSeconds": int64(sessionCallbackRecoveryInterval / time.Second),
 		"fallbackNudgeAfterSeconds":         int64(sessionCallbackNudgeAfter / time.Second),
 		"fallbackNudgeIntervalSeconds":      int64(sessionCallbackNudgeInterval / time.Second),
@@ -632,6 +873,9 @@ func (m *AgentManager) sessionCallbackClaim(input agentControlParams) (map[strin
 	claimID, events, err := m.callbackStore.claim(targetSessionID, input.CallbackClaimID, input.CallbackClaimLimit, now)
 	if err != nil {
 		return nil, err
+	}
+	if m.callbackDispatcher != nil {
+		m.callbackDispatcher.signal()
 	}
 	claimed := make([]map[string]any, 0, len(events))
 	for _, event := range events {
@@ -658,6 +902,9 @@ func (m *AgentManager) sessionCallbackAck(input agentControlParams) (map[string]
 	acked, err := m.callbackStore.acknowledgeClaim(targetSessionID, input.CallbackClaimID, time.Now().UTC())
 	if err != nil {
 		return nil, err
+	}
+	if m.callbackDispatcher != nil {
+		m.callbackDispatcher.signal()
 	}
 	return map[string]any{
 		"callbackTargetSessionId": targetSessionID,
@@ -754,8 +1001,16 @@ func callbackRegistrationMap(registration sessionCallbackRegistration, pendingCo
 		"generation":        registration.Generation,
 		"lastEventSequence": registration.LastEventSequence,
 		"pendingCount":      pendingCount,
+		"armed":             registration.Armed,
+		"baselineSet":       registration.BaselineIdentity != "",
 		"registeredAt":      registration.RegisteredAt.UTC().Format(time.RFC3339Nano),
 		"updatedAt":         registration.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if !registration.ArmedAt.IsZero() {
+		out["armedAt"] = registration.ArmedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if registration.BaselineIdentity != "" {
+		out["baselineIdentity"] = registration.BaselineIdentity
 	}
 	if registration.DeliverablePath != "" {
 		out["deliverablePath"] = registration.DeliverablePath

@@ -22,6 +22,7 @@ func testCallbackRegistration(source, target, task string, generation int64) ses
 		MissionID:       "mission-1",
 		TaskID:          task,
 		Generation:      generation,
+		Armed:           true,
 	}
 }
 
@@ -253,6 +254,37 @@ func TestSessionCallbackStorePersistsCanonicalCompletionIdentityAcrossRestart(t 
 	}
 }
 
+func TestSessionCallbackStorePersistsUnarmedBaselineAndArmAcrossRestart(t *testing.T) {
+	dataDir := t.TempDir()
+	store := newSessionCallbackStore(dataDir)
+	registration := testCallbackRegistration("source-arm", "target-arm", "task-arm", 4)
+	registration.Armed = false
+	registration.BaselineIdentity = "assistant-before-send"
+	registered, replayed, err := store.register(registration)
+	if err != nil || replayed || registered.Armed || registered.BaselineIdentity != "assistant-before-send" {
+		t.Fatalf("registered=%#v replayed=%v err=%v", registered, replayed, err)
+	}
+
+	reloaded := newSessionCallbackStore(dataDir)
+	current, ok, err := reloaded.registrationFor("source-arm")
+	if err != nil || !ok || current.Armed || current.BaselineIdentity != "assistant-before-send" {
+		t.Fatalf("unarmed registration after restart=%#v ok=%v err=%v", current, ok, err)
+	}
+	if queued, err := reloaded.enqueue(testCallbackEvent("source-arm", 1)); err != nil || queued {
+		t.Fatalf("unarmed callback accepted an event: queued=%v err=%v", queued, err)
+	}
+	armed, replayed, err := reloaded.arm("source-arm", 4, testCallbackRegistration("source-arm", "target-arm", "task-arm", 4))
+	if err != nil || replayed || !armed.Armed || armed.ArmedAt.IsZero() {
+		t.Fatalf("armed=%#v replayed=%v err=%v", armed, replayed, err)
+	}
+
+	restarted := newSessionCallbackStore(dataDir)
+	current, ok, err = restarted.registrationFor("source-arm")
+	if err != nil || !ok || !current.Armed || current.ArmedAt.IsZero() || current.BaselineIdentity != "assistant-before-send" {
+		t.Fatalf("armed registration after restart=%#v ok=%v err=%v", current, ok, err)
+	}
+}
+
 func TestSessionCallbackRecoveryRestoresGenerationAndUnregisterReleasesWatcher(t *testing.T) {
 	dataDir := t.TempDir()
 	seed := newSessionCallbackStore(dataDir)
@@ -352,6 +384,81 @@ func TestSessionCallbackManagerObserverInboxDispatchesAfterCoordinatorIdle(t *te
 	grouped, err = manager.callbackStore.pendingByTarget()
 	if err != nil || len(grouped) != 0 {
 		t.Fatalf("durable queue not acknowledged: pending=%#v err=%v", grouped, err)
+	}
+}
+
+func TestSessionCallbackDispatcherWakesAtPendingDeadline(t *testing.T) {
+	store := newSessionCallbackStore(t.TempDir())
+	if _, _, err := store.register(testCallbackRegistration("source-deadline", "target-deadline", "task-deadline", 1)); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := store.enqueue(testCallbackEvent("source-deadline", 1)); err != nil || !queued {
+		t.Fatalf("enqueue queued=%v err=%v", queued, err)
+	}
+	store.mu.Lock()
+	pending := store.pending["source-deadline"]
+	pending.OccurredAt = time.Now().UTC().Add(-sessionCallbackNudgeAfter + 150*time.Millisecond)
+	store.pending["source-deadline"] = pending
+	store.mu.Unlock()
+
+	sent := make(chan time.Time, 1)
+	dispatcher := newSessionCallbackDispatcher(store, nil, func(string) bool { return false }, func(context.Context, string, string) error {
+		sent <- time.Now()
+		return nil
+	}, nil)
+	dispatcher.start()
+	defer dispatcher.close(context.Background())
+
+	select {
+	case <-sent:
+		t.Fatal("deadline-driven nudge was sent before its five-minute age threshold")
+	case <-time.After(50 * time.Millisecond):
+	}
+	select {
+	case <-sent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("deadline-driven callback nudge was not sent")
+	}
+}
+
+func TestSessionCallbackProviderRecoveryOnlyReadsAfterStartupOrRealtimeGap(t *testing.T) {
+	store := newSessionCallbackStore(t.TempDir())
+	if _, _, err := store.register(testCallbackRegistration("source-recovery", "target-recovery", "task-recovery", 1)); err != nil {
+		t.Fatal(err)
+	}
+	connected := true
+	disconnectEpoch := uint64(0)
+	recoveries := 0
+	dispatcher := newSessionCallbackDispatcher(store, nil, nil, nil, nil)
+	defer dispatcher.cancel()
+	dispatcher.recoveryState = func() (bool, uint64) { return connected, disconnectEpoch }
+	dispatcher.recoverStatus = func(context.Context, string, int64) error {
+		recoveries++
+		return nil
+	}
+
+	dispatcher.reconcileSubscriptions()
+	dispatcher.reconcileSubscriptions()
+	if recoveries != 1 {
+		t.Fatalf("stable healthy realtime caused %d provider recovery reads, want 1 startup read", recoveries)
+	}
+	dispatcher.requestProviderRecovery()
+	dispatcher.reconcileSubscriptions()
+	dispatcher.reconcileSubscriptions()
+	if recoveries != 2 {
+		t.Fatalf("explicit recovery request reads=%d want 2", recoveries)
+	}
+	disconnectEpoch++
+	dispatcher.reconcileSubscriptions()
+	dispatcher.reconcileSubscriptions()
+	if recoveries != 3 {
+		t.Fatalf("realtime gap recovery reads=%d want 3", recoveries)
+	}
+	connected = false
+	dispatcher.reconcileSubscriptions()
+	dispatcher.reconcileSubscriptions()
+	if recoveries != 5 {
+		t.Fatalf("disconnected realtime recovery reads=%d want 5", recoveries)
 	}
 }
 
@@ -700,6 +807,61 @@ func TestSessionCallbackRecoveryCannotCreateWatcherAfterUnregister(t *testing.T)
 	}
 }
 
+func TestSessionCallbackStartupRestoresSubscriptionsWithoutProviderReads(t *testing.T) {
+	store := newSessionCallbackStore(t.TempDir())
+	for generation, source := range []string{"source-startup-a", "source-startup-b"} {
+		if _, _, err := store.register(testCallbackRegistration(source, "target-startup", fmt.Sprintf("task-%d", generation+1), int64(generation+1))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ensureCalls := 0
+	recoveryReads := 0
+	dispatcher := newSessionCallbackDispatcher(store, nil, nil, nil, func(context.Context, string, int64) error {
+		ensureCalls++
+		return nil
+	})
+	dispatcher.recoverStatus = func(context.Context, string, int64) error {
+		recoveryReads++
+		return nil
+	}
+
+	dispatcher.reconcileSubscriptionsWithRecovery(false)
+	if ensureCalls != 2 || recoveryReads != 0 {
+		t.Fatalf("startup ensure=%d providerReads=%d", ensureCalls, recoveryReads)
+	}
+	dispatcher.reconcileSubscriptionsWithRecovery(true)
+	if ensureCalls != 4 || recoveryReads != 2 {
+		t.Fatalf("scheduled recovery ensure=%d providerReads=%d", ensureCalls, recoveryReads)
+	}
+}
+
+func TestSessionCallbackBackgroundStopsWithDispatcher(t *testing.T) {
+	dispatcher := newSessionCallbackDispatcher(newSessionCallbackStore(t.TempDir()), nil, nil, nil, nil)
+	started := make(chan struct{})
+	stopped := make(chan struct{})
+	if !dispatcher.startBackground(func(ctx context.Context) {
+		close(started)
+		<-ctx.Done()
+		close(stopped)
+	}) {
+		t.Fatal("background task was not started")
+	}
+	<-started
+	closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := dispatcher.close(closeCtx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-stopped:
+	default:
+		t.Fatal("dispatcher close did not cancel background task")
+	}
+	if dispatcher.startBackground(func(context.Context) {}) {
+		t.Fatal("dispatcher started a background task after close")
+	}
+}
+
 func TestSessionCallbackRegisterEnsureCannotCreateWatcherAfterUnregister(t *testing.T) {
 	store := newSessionCallbackStore(t.TempDir())
 	if _, _, err := store.register(testCallbackRegistration("source-register-race", "target-1", "task-1", 1)); err != nil {
@@ -798,15 +960,24 @@ func TestSessionCallbackActionsRegisterListAndUnregister(t *testing.T) {
 		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
 		"sessionId": "source-cloud", "callbackTargetSessionId": "coordinator-local",
 		"callbackMissionId": "mission-1", "callbackTaskId": "task-1", "callbackGeneration": 1,
+		"callbackBaselineIdentity": "assistant-old", "callbackArmRequired": true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if registered["deliveryPolicy"] != "queued-batch-claim" || registered["recoveryPolicy"] != "node-fallback-status-poll-and-nudge" {
+	if registered["deliveryPolicy"] != "queued-batch-claim" || registered["recoveryPolicy"] != "node-fallback-status-poll-and-nudge" || registered["watcherState"] != "unarmed" || registered["armRequired"] != true {
 		t.Fatalf("register=%#v", registered)
 	}
-	if manager.callbackDispatcher.interval != 30*time.Second || registered["fallbackStatusPollIntervalSeconds"] != int64(600) || registered["fallbackNudgeAfterSeconds"] != int64(300) || registered["fallbackNudgeIntervalSeconds"] != int64(600) {
-		t.Fatalf("callback fallback intervals dispatcher=%s register=%#v", manager.callbackDispatcher.interval, registered)
+	if manager.callbackDispatcher.retryInterval != 30*time.Second || registered["localQueueWakePolicy"] != "event-driven-deadline" || registered["fallbackStatusPollPolicy"] != "startup-or-realtime-gap" || registered["fallbackStatusPollIntervalSeconds"] != int64(1800) || registered["fallbackNudgeAfterSeconds"] != int64(300) || registered["fallbackNudgeIntervalSeconds"] != int64(600) {
+		t.Fatalf("callback fallback policy retry=%s register=%#v", manager.callbackDispatcher.retryInterval, registered)
+	}
+	armed, err := manager.Control(context.Background(), "session.callback.arm", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
+		"sessionId": "source-cloud", "callbackTargetSessionId": "coordinator-local",
+		"callbackMissionId": "mission-1", "callbackTaskId": "task-1", "callbackGeneration": 1,
+	})
+	if err != nil || armed["armed"] != true || armed["watcherState"] != "pending" {
+		t.Fatalf("arm=%#v err=%v", armed, err)
 	}
 	listed, err := manager.Control(context.Background(), "session.callback.list", map[string]any{
 		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "sessionId": "source-cloud",
@@ -815,13 +986,13 @@ func TestSessionCallbackActionsRegisterListAndUnregister(t *testing.T) {
 		t.Fatal(err)
 	}
 	callbacks, _ := listed["callbacks"].([]map[string]any)
-	if len(callbacks) != 1 || callbacks[0]["targetSessionId"] != "coordinator-local" || callbacks[0]["generation"] != int64(1) {
+	if len(callbacks) != 1 || callbacks[0]["targetSessionId"] != "coordinator-local" || callbacks[0]["generation"] != int64(1) || callbacks[0]["armed"] != true || callbacks[0]["baselineSet"] != true || callbacks[0]["baselineIdentity"] != "assistant-old" {
 		t.Fatalf("callbacks=%#v", callbacks)
 	}
 	if listed["deliveryPolicy"] != "queued-batch-claim" || listed["recoveryPolicy"] != "node-fallback-status-poll-and-nudge" || !strings.Contains(listed["queueText"].(string), "FAST_SPIDER_SESSION_CALLBACK_QUEUE_V1") {
 		t.Fatalf("queue listing=%#v", listed)
 	}
-	if listed["fallbackStatusPollIntervalSeconds"] != int64(600) || listed["fallbackNudgeAfterSeconds"] != int64(300) || listed["fallbackNudgeIntervalSeconds"] != int64(600) {
+	if listed["localQueueWakePolicy"] != "event-driven-deadline" || listed["fallbackStatusPollPolicy"] != "startup-or-realtime-gap" || listed["fallbackStatusPollIntervalSeconds"] != int64(1800) || listed["fallbackNudgeAfterSeconds"] != int64(300) || listed["fallbackNudgeIntervalSeconds"] != int64(600) {
 		t.Fatalf("queue fallback intervals=%#v", listed)
 	}
 	unregistered, err := manager.Control(context.Background(), "session.callback.unregister", map[string]any{
@@ -837,12 +1008,13 @@ func TestSessionCallbackRegisterReconcilesAlreadyCompletedCloudTurn(t *testing.T
 	var reads int
 	var readsMu sync.Mutex
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/conversation/source-completed" {
+			http.NotFound(w, r)
+			return
+		}
 		readsMu.Lock()
 		reads++
-		status := "running"
-		if reads >= 3 {
-			status = "completed"
-		}
+		status := "completed"
 		readsMu.Unlock()
 		writeChatGPTCloudTestJSON(t, w, map[string]any{
 			"conversation_id": "source-completed", "async_status": status, "current_node": "assistant-1",
@@ -876,11 +1048,100 @@ func TestSessionCallbackRegisterReconcilesAlreadyCompletedCloudTurn(t *testing.T
 			t.Fatal(err)
 		}
 		if len(pending) == 1 && strings.HasPrefix(pending[0].EventKey, "completion_") && pending[0].ResultStatus == "" {
+			readsMu.Lock()
+			gotReads := reads
+			readsMu.Unlock()
+			if gotReads != 1 {
+				t.Fatalf("registration catch-up reads=%d want 1", gotReads)
+			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("completed turn was not reconciled after callback registration")
+}
+
+func TestSessionCallbackArmIgnoresReuseBaselineThenAcceptsNewCompletion(t *testing.T) {
+	var mu sync.Mutex
+	assistantID := "assistant-old"
+	reads := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/conversation/source-reused" {
+			http.NotFound(w, r)
+			return
+		}
+		mu.Lock()
+		current := assistantID
+		reads++
+		mu.Unlock()
+		writeChatGPTCloudTestJSON(t, w, map[string]any{
+			"conversation_id": "source-reused", "async_status": "completed", "current_node": current,
+			"mapping": map[string]any{current: map[string]any{"message": map[string]any{"id": current, "author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"result"}}}}},
+		})
+	}))
+	defer server.Close()
+
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	if err := manager.chatgptCloud.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.chatgptCloud = NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token", nil })
+	manager.chatgptCloud.baseURL, manager.chatgptCloud.http = server.URL, server.Client()
+	manager.chatgptCloud.realtime.baseURL, manager.chatgptCloud.realtime.http = server.URL, server.Client()
+	manager.chatgptCloud.SetRealtimeObserver(manager.handleChatGPTCloudCallbackEvent, manager.callbackStore.maxEventSequence())
+	manager.callbackDispatcher.ensure = manager.chatgptCloud.EnsureCallbackRealtimeForGeneration
+	manager.callbackDispatcher.recoveryState = manager.chatgptCloud.CallbackRealtimeRecoveryState
+	manager.codex.requestOverride = func(_ context.Context, _ string, _ map[string]any) (map[string]any, error) {
+		return map[string]any{"thread": map[string]any{"id": "coordinator-local", "cwd": t.TempDir()}}, nil
+	}
+
+	if _, err := manager.Control(context.Background(), "session.callback.register", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "sessionId": "source-reused",
+		"callbackTargetSessionId": "coordinator-local", "callbackMissionId": "mission-1", "callbackTaskId": "task-1", "callbackGeneration": 1,
+		"callbackBaselineIdentity": "assistant-old", "callbackArmRequired": true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Control(context.Background(), "session.callback.arm", map[string]any{
+		"providerId": "codex", "backend": sessionBackendChatGPTCloud, "sessionId": "source-reused",
+		"callbackTargetSessionId": "coordinator-local", "callbackMissionId": "mission-1", "callbackTaskId": "task-1", "callbackGeneration": 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		gotReads := reads
+		mu.Unlock()
+		if gotReads > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if pending, err := manager.callbackStore.pendingSnapshot("source-reused", "coordinator-local"); err != nil || len(pending) != 0 {
+		t.Fatalf("baseline completion was queued: pending=%#v err=%v", pending, err)
+	}
+
+	mu.Lock()
+	assistantID = "assistant-new"
+	mu.Unlock()
+	manager.handleChatGPTCloudCallbackEvent(testCallbackEvent("source-reused", 8))
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		pending, err := manager.callbackStore.pendingSnapshot("source-reused", "coordinator-local")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pending) == 1 {
+			if pending[0].Generation != 1 || !strings.HasPrefix(pending[0].EventKey, "completion_") {
+				t.Fatalf("new completion event=%#v", pending[0])
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("new completion was not queued after callback arm")
 }
 
 func TestSessionCallbackFallbackStatusReadSynthesizesMissedCompletion(t *testing.T) {

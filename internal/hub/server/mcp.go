@@ -374,7 +374,7 @@ type aiControlInput struct {
 	TurnID                  string              `json:"turnId,omitempty" jsonschema:"active turn ID for cancel and required expected active turn ID for session.steer"`
 	AsyncTaskID             string              `json:"asyncTaskId,omitempty" jsonschema:"ChatGPT cloud active task ID for session.steer"`
 	RequestID               string              `json:"requestId,omitempty" jsonschema:"pending Codex server request ID required for session.respond"`
-	IdempotencyKey          string              `json:"idempotencyKey,omitempty" jsonschema:"12-128 character session.create/delete key"`
+	IdempotencyKey          string              `json:"idempotencyKey,omitempty" jsonschema:"12-128 char create/delete/quick-send key"`
 	Visibility              string              `json:"visibility,omitempty" jsonschema:"session.create: visible or internal; default visible"`
 	Backend                 string              `json:"backend,omitempty" jsonschema:"session.create backend: codex_local, claude_local, or chatgpt_cloud"`
 	VisibilityTarget        string              `json:"visibilityTarget,omitempty" jsonschema:"session.create target: codex_local, claude_local, chatgpt_cloud, or none"`
@@ -659,13 +659,13 @@ func (s *Server) newMCPHandler() http.Handler {
 
 const mcpServerInstructions = `FastSpider_FS is a development control plane. With @FastSpider_FS, try a read-only tool before judging availability.
 
-Tools may be lazy. If absent, use api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Never load all 22 schemas or request login before a real connection check.
+Tools may be lazy. If absent, use api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), machine_list. Never load all 22 schemas or request login before checking.
 
 Map: capability_list,machine_list,machine_get; audit_log,operation_log; code_search,file_read,file_edit; shell_run,build_control,job_watch,job_cancel; git_control; browser_control,screenshot_take; ai_control; codex_cloud_collaboration,codex_cloud_completion; working_context; thinking_team; artifact_get. Load one view=capability or view=tool|workflow|error guide. Local Codex may report desktopBridge, nativeConversationStreaming=unsupported, and Desktop owner/control bridge.
 
-AI rules: Cloud CHAT is optional assistance; use the current Codex or CHAT directly when sufficient. For an exact Codex or ChatGPT sessionId, use that ID regardless of creator; local Codex may use metadataOnly=true, then session.send when idle. A busy target is never silently replaced. Without an ID, create a clean session for unrelated work and never list, search, or guess an old one; use session.list only when history discovery is requested. backend=chatgpt_cloud is an ordinary visible ChatGPT CHAT. In collaboration, targetSessionId reuses only that CHAT; omission creates a new quick_chat and the binding is a task lease. CHAT can continue a known Codex ID through ai_control session.get then session.send. CHAT writes its result before codex_cloud_completion notify; the dispatcher claims up to 64 durable notices, verifies, and acknowledges them. Node callback delivery is fallback only; stalled recovery sends “请继续” after status check.
+AI: Cloud CHAT is optional assistance. Use an exact Codex or ChatGPT sessionId regardless of creator; local Codex uses metadataOnly=true and sends only when idle. Never replace a busy target. Without an ID, create a clean session for unrelated work; never list, search, or guess an old one. session.list is request-only. backend=chatgpt_cloud is a visible ChatGPT CHAT. targetSessionId reuses it; omission creates a new quick_chat. CHAT may continue a known Codex ID via session.get/send. CHAT writes its result then calls codex_cloud_completion notify; the dispatcher claims up to 64 durable notices, verifies, and acks. Callback routes are collaboration-managed: reused CHATs save the old completion baseline unarmed, send, then arm. Do not call session.callback.register/arm directly. Node callback delivery is event/deadline driven fallback; 30-minute fallbacks run only without a healthy shared realtime connection. A scheduler turn performs one bounded action then idles; early status.poll returns not_due. Stall recovery sends “请继续”.
 
-Operational rules: unknown machineId -> machine_list. Every shell/build jobId reaches terminal through job_watch. File edits use read/SHA/preview/CAS; close each browser session. On Windows shell_run names powershell.exe or cmd.exe in argv (for example tzutil /g), not a separate PowerShell tool.`
+Ops: unknown machineId -> machine_list. Finish jobId via job_watch. File edits use read/SHA/preview/CAS; close browsers. Windows shell_run uses powershell.exe or cmd.exe argv, e.g. tzutil /g, not a separate PowerShell tool.`
 
 func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 	server := mcp.NewServer(

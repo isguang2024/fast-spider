@@ -2,9 +2,16 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 func TestChatgptHandleWSFrames(t *testing.T) {
@@ -109,6 +116,95 @@ func TestChatgptCloudRealtimeSubscriptionsAreBoundedAndCloseable(t *testing.T) {
 	r.mu.Unlock()
 	if !closed || deferred != 0 {
 		t.Fatalf("realtime close state closed=%v watching=%d", closed, deferred)
+	}
+}
+
+func TestChatgptCloudRealtimeSharesOneAccountConnection(t *testing.T) {
+	var connections atomic.Int32
+	commands := make(chan string, 16)
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch req.URL.Path {
+		case "/backend-api/celsius/ws/user":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"websocket_url": "ws" + strings.TrimPrefix(server.URL, "http") + "/ws",
+			})
+		case "/ws":
+			conn, err := websocket.Accept(w, req, &websocket.AcceptOptions{OriginPatterns: []string{"chatgpt.com"}})
+			if err != nil {
+				t.Errorf("accept realtime websocket: %v", err)
+				return
+			}
+			connections.Add(1)
+			defer conn.Close(websocket.StatusNormalClosure, "test complete")
+			for {
+				_, data, err := conn.Read(req.Context())
+				if err != nil {
+					return
+				}
+				var frames []map[string]any
+				if err := json.Unmarshal(data, &frames); err != nil {
+					continue
+				}
+				for _, frame := range frames {
+					command, _ := frame["command"].(map[string]any)
+					kind, _ := command["type"].(string)
+					topic, _ := command["topic_id"].(string)
+					if kind == "" || topic == "" {
+						continue
+					}
+					select {
+					case commands <- kind + ":" + topic:
+					default:
+					}
+				}
+			}
+		default:
+			http.NotFound(w, req)
+		}
+	}))
+	defer server.Close()
+
+	realtime := newChatGPTCloudRealtime(nil, server.URL, server.Client(), func(context.Context) (string, error) {
+		return "token", nil
+	})
+	defer realtime.Close(context.Background())
+	if err := realtime.ensurePersistentWatching(context.Background(), "conversation-a"); err != nil {
+		t.Fatal(err)
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := realtime.waitUntilConnected(waitCtx); err != nil {
+		t.Fatal(err)
+	}
+	if err := realtime.ensurePersistentWatching(context.Background(), "conversation-b"); err != nil {
+		t.Fatal(err)
+	}
+	waitCommand := func(want string) {
+		t.Helper()
+		deadline := time.After(2 * time.Second)
+		for {
+			select {
+			case got := <-commands:
+				if got == want {
+					return
+				}
+			case <-deadline:
+				t.Fatalf("did not receive websocket command %q", want)
+			}
+		}
+	}
+	waitCommand("subscribe:conversation-conversation-b")
+	realtime.releasePersistentWatching("conversation-b")
+	waitCommand("unsubscribe:conversation-conversation-b")
+
+	realtime.mu.Lock()
+	watching := len(realtime.watching)
+	connected := realtime.connected
+	realtime.mu.Unlock()
+	if connections.Load() != 1 || watching != 1 || !connected {
+		t.Fatalf("connections=%d watching=%d connected=%v", connections.Load(), watching, connected)
 	}
 }
 

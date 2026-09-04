@@ -64,7 +64,7 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		assertMCPGuideSize(t, guide, 12<<10)
 		if name == "ai_control" {
 			guideText := strings.Join(append(append(append(guide.WhenToUse, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
-			for _, needle := range []string{"session.create", "providerId=codex", "backend=chatgpt_cloud", "mode=quick_chat", "CHAT", "externalIdType=chatgpt_conversation", "completionPending=true", "pluginName", "UNSUPPORTED_SESSION_PLUGIN_BINDING", "resultMode=manifest", "session.callback.claim", "about every 30 seconds", "about every 10 minutes", "metadataOnly=true", "exact Codex or ChatGPT sessionId", "optional", "do not call session.list", "AGENT_SESSION_BUSY", "plan.init", "initializeMarkdown=true", "docs/progress/04-open-issues.md"} {
+			for _, needle := range []string{"session.create", "providerId=codex", "backend=chatgpt_cloud", "mode=quick_chat", "CHAT", "externalIdType=chatgpt_conversation", "completionPending=true", "pluginName", "UNSUPPORTED_SESSION_PLUGIN_BINDING", "resultMode=manifest", "session.callback.claim", "event", "exact deadlines", "30-minute minimum", "healthy shared socket", "metadataOnly=true", "exact Codex or ChatGPT sessionId", "optional", "do not call session.list", "AGENT_SESSION_BUSY", "plan.init", "initializeMarkdown=true", "docs/progress/04-open-issues.md"} {
 				if !strings.Contains(guideText, needle) {
 					t.Fatalf("ai_control guide missing %q: %+v", needle, guide)
 				}
@@ -75,7 +75,7 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		}
 		if name == "codex_cloud_collaboration" {
 			guideText := strings.Join(append(append(append([]string{guide.Summary}, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
-			for _, needle := range []string{"targetSessionId", "original creator", "mode=quick_chat", "never call session.list", "per-task lease", "actorSessionId=$self", "codex_cloud_completion", "notify", "Node session.callback", "status.poll", "chat.continue", "controller decision", "released", "plan.init", "initializeMarkdown=true", "docs/progress/04-open-issues.md"} {
+			for _, needle := range []string{"targetSessionId", "original creator", "mode=quick_chat", "never call session.list", "per-task lease", "actorSessionId=$self", "codex_cloud_completion", "notify", "Node session.callback", "30-minute", "one bounded action", "not_due", "nextPollAt", "status.poll", "chat.continue", "controller decision", "released", "plan.init", "initializeMarkdown=true", "docs/progress/04-open-issues.md"} {
 				if !strings.Contains(guideText, needle) {
 					t.Fatalf("codex_cloud_collaboration guide missing %q: %+v", needle, guide)
 				}
@@ -249,7 +249,7 @@ func TestMCPServerInstructionsStayBoundedAndCoverCapabilityMap(t *testing.T) {
 		"shell_run", "build_control", "job_watch", "job_cancel", "git_control", "browser_control", "screenshot_take",
 		"ai_control", "codex_cloud_collaboration", "codex_cloud_completion", "working_context", "thinking_team", "artifact_get", "session.list", "view=tool|workflow|error", "view=capability",
 		`query="fsprobe"`, "Never load all 22 schemas", "powershell.exe", "tzutil /g", "not a separate PowerShell tool", "backend=chatgpt_cloud", "ChatGPT CHAT",
-		"desktopBridge", "nativeConversationStreaming=unsupported", "Desktop owner/control bridge", "Cloud CHAT is optional assistance", "exact Codex or ChatGPT sessionId", "metadataOnly=true", "never list, search, or guess an old one", "targetSessionId", "omission creates a new quick_chat", "claims up to 64", "Node callback delivery",
+		"desktopBridge", "nativeConversationStreaming=unsupported", "Desktop owner/control bridge", "Cloud CHAT is optional assistance", "exact Codex or ChatGPT sessionId", "metadataOnly=true", "never list, search, or guess an old one", "targetSessionId", "omission creates a new quick_chat", "claims up to 64", "Node callback delivery", "event/deadline driven", "30-minute fallbacks", "healthy shared realtime connection", "one bounded action", "not_due",
 	} {
 		if !strings.Contains(mcpServerInstructions, needle) {
 			t.Fatalf("instructions missing %q", needle)

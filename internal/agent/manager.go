@@ -18,71 +18,73 @@ import (
 )
 
 type agentControlParams struct {
-	ProviderID              string              `json:"providerId,omitempty"`
-	AppType                 string              `json:"appType,omitempty"`
-	SessionID               string              `json:"sessionId,omitempty"`
-	TurnID                  string              `json:"turnId,omitempty"`
-	AsyncTaskID             string              `json:"asyncTaskId,omitempty"`
-	RequestID               string              `json:"requestId,omitempty"`
-	IdempotencyKey          string              `json:"idempotencyKey,omitempty"`
-	Visibility              string              `json:"visibility,omitempty"`
-	Backend                 string              `json:"backend,omitempty"`
-	VisibilityTarget        string              `json:"visibilityTarget,omitempty"`
-	Ephemeral               *bool               `json:"ephemeral,omitempty"`
-	Mode                    string              `json:"mode,omitempty"`
-	MetadataOnly            bool                `json:"metadataOnly,omitempty"`
-	Prompt                  string              `json:"prompt,omitempty"`
-	WorkingDirectory        string              `json:"workingDirectory,omitempty"`
-	Model                   string              `json:"model,omitempty"`
-	Thinking                string              `json:"thinking,omitempty"`
-	Cursor                  int64               `json:"cursor,omitempty"`
-	WaitSeconds             int64               `json:"waitSeconds,omitempty"`
-	Limit                   int                 `json:"limit,omitempty"`
-	Name                    string              `json:"name,omitempty"`
-	ForceReload             bool                `json:"forceReload,omitempty"`
-	MarketplaceKinds        []string            `json:"marketplaceKinds,omitempty"`
-	PluginName              string              `json:"pluginName,omitempty"`
-	MarketplacePath         string              `json:"marketplacePath,omitempty"`
-	RemoteMarketplaceName   string              `json:"remoteMarketplaceName,omitempty"`
-	RemotePluginID          string              `json:"remotePluginId,omitempty"`
-	SkillName               string              `json:"skillName,omitempty"`
-	NumTurns                int                 `json:"numTurns,omitempty"`
-	Objective               string              `json:"objective,omitempty"`
-	GoalStatus              string              `json:"goalStatus,omitempty"`
-	TokenBudget             int64               `json:"tokenBudget,omitempty"`
-	Skills                  []agentSkillInput   `json:"skills,omitempty"`
-	Images                  []string            `json:"images,omitempty"`
-	LocalImages             []string            `json:"localImages,omitempty"`
-	Mentions                []agentMentionInput `json:"mentions,omitempty"`
-	ImageDetail             string              `json:"imageDetail,omitempty"`
-	OutputSchema            map[string]any      `json:"outputSchema,omitempty"`
-	Decision                string              `json:"decision,omitempty"`
-	Answers                 map[string][]string `json:"answers,omitempty"`
-	ResponseContent         map[string]any      `json:"responseContent,omitempty"`
-	ResultMode              string              `json:"resultMode,omitempty"`
-	ResultID                string              `json:"resultId,omitempty"`
-	PageCursor              string              `json:"pageCursor,omitempty"`
-	MCPDetail               string              `json:"mcpDetail,omitempty"`
-	Effort                  string              `json:"effort,omitempty"`
-	Permissions             string              `json:"permissions,omitempty"`
-	Personality             string              `json:"personality,omitempty"`
-	ServiceTier             string              `json:"serviceTier,omitempty"`
-	Summary                 string              `json:"summary,omitempty"`
-	ReviewType              string              `json:"reviewType,omitempty"`
-	ReviewDelivery          string              `json:"reviewDelivery,omitempty"`
-	ReviewBranch            string              `json:"reviewBranch,omitempty"`
-	ReviewSHA               string              `json:"reviewSha,omitempty"`
-	ReviewTitle             string              `json:"reviewTitle,omitempty"`
-	ReviewInstructions      string              `json:"reviewInstructions,omitempty"`
-	CallbackTargetSessionID string              `json:"callbackTargetSessionId,omitempty"`
-	CallbackMissionID       string              `json:"callbackMissionId,omitempty"`
-	CallbackTaskID          string              `json:"callbackTaskId,omitempty"`
-	CallbackGeneration      int64               `json:"callbackGeneration,omitempty"`
-	CallbackDeliverablePath string              `json:"callbackDeliverablePath,omitempty"`
-	CallbackClaimID         string              `json:"callbackClaimId,omitempty"`
-	CallbackClaimLimit      int                 `json:"callbackClaimLimit,omitempty"`
-	modelProvided           bool
-	thinkingProvided        bool
+	ProviderID               string              `json:"providerId,omitempty"`
+	AppType                  string              `json:"appType,omitempty"`
+	SessionID                string              `json:"sessionId,omitempty"`
+	TurnID                   string              `json:"turnId,omitempty"`
+	AsyncTaskID              string              `json:"asyncTaskId,omitempty"`
+	RequestID                string              `json:"requestId,omitempty"`
+	IdempotencyKey           string              `json:"idempotencyKey,omitempty"`
+	Visibility               string              `json:"visibility,omitempty"`
+	Backend                  string              `json:"backend,omitempty"`
+	VisibilityTarget         string              `json:"visibilityTarget,omitempty"`
+	Ephemeral                *bool               `json:"ephemeral,omitempty"`
+	Mode                     string              `json:"mode,omitempty"`
+	MetadataOnly             bool                `json:"metadataOnly,omitempty"`
+	Prompt                   string              `json:"prompt,omitempty"`
+	WorkingDirectory         string              `json:"workingDirectory,omitempty"`
+	Model                    string              `json:"model,omitempty"`
+	Thinking                 string              `json:"thinking,omitempty"`
+	Cursor                   int64               `json:"cursor,omitempty"`
+	WaitSeconds              int64               `json:"waitSeconds,omitempty"`
+	Limit                    int                 `json:"limit,omitempty"`
+	Name                     string              `json:"name,omitempty"`
+	ForceReload              bool                `json:"forceReload,omitempty"`
+	MarketplaceKinds         []string            `json:"marketplaceKinds,omitempty"`
+	PluginName               string              `json:"pluginName,omitempty"`
+	MarketplacePath          string              `json:"marketplacePath,omitempty"`
+	RemoteMarketplaceName    string              `json:"remoteMarketplaceName,omitempty"`
+	RemotePluginID           string              `json:"remotePluginId,omitempty"`
+	SkillName                string              `json:"skillName,omitempty"`
+	NumTurns                 int                 `json:"numTurns,omitempty"`
+	Objective                string              `json:"objective,omitempty"`
+	GoalStatus               string              `json:"goalStatus,omitempty"`
+	TokenBudget              int64               `json:"tokenBudget,omitempty"`
+	Skills                   []agentSkillInput   `json:"skills,omitempty"`
+	Images                   []string            `json:"images,omitempty"`
+	LocalImages              []string            `json:"localImages,omitempty"`
+	Mentions                 []agentMentionInput `json:"mentions,omitempty"`
+	ImageDetail              string              `json:"imageDetail,omitempty"`
+	OutputSchema             map[string]any      `json:"outputSchema,omitempty"`
+	Decision                 string              `json:"decision,omitempty"`
+	Answers                  map[string][]string `json:"answers,omitempty"`
+	ResponseContent          map[string]any      `json:"responseContent,omitempty"`
+	ResultMode               string              `json:"resultMode,omitempty"`
+	ResultID                 string              `json:"resultId,omitempty"`
+	PageCursor               string              `json:"pageCursor,omitempty"`
+	MCPDetail                string              `json:"mcpDetail,omitempty"`
+	Effort                   string              `json:"effort,omitempty"`
+	Permissions              string              `json:"permissions,omitempty"`
+	Personality              string              `json:"personality,omitempty"`
+	ServiceTier              string              `json:"serviceTier,omitempty"`
+	Summary                  string              `json:"summary,omitempty"`
+	ReviewType               string              `json:"reviewType,omitempty"`
+	ReviewDelivery           string              `json:"reviewDelivery,omitempty"`
+	ReviewBranch             string              `json:"reviewBranch,omitempty"`
+	ReviewSHA                string              `json:"reviewSha,omitempty"`
+	ReviewTitle              string              `json:"reviewTitle,omitempty"`
+	ReviewInstructions       string              `json:"reviewInstructions,omitempty"`
+	CallbackTargetSessionID  string              `json:"callbackTargetSessionId,omitempty"`
+	CallbackMissionID        string              `json:"callbackMissionId,omitempty"`
+	CallbackTaskID           string              `json:"callbackTaskId,omitempty"`
+	CallbackGeneration       int64               `json:"callbackGeneration,omitempty"`
+	CallbackDeliverablePath  string              `json:"callbackDeliverablePath,omitempty"`
+	CallbackBaselineIdentity string              `json:"callbackBaselineIdentity,omitempty"`
+	CallbackArmRequired      bool                `json:"callbackArmRequired,omitempty"`
+	CallbackClaimID          string              `json:"callbackClaimId,omitempty"`
+	CallbackClaimLimit       int                 `json:"callbackClaimLimit,omitempty"`
+	modelProvided            bool
+	thinkingProvided         bool
 }
 
 type agentSkillInput struct {
@@ -115,6 +117,10 @@ type AgentManager struct {
 	chatgptDefaults   chatGPTCloudCreateDefaults
 	readinessMu       sync.Mutex
 	readinessCache    map[string]providerReadinessCacheEntry
+	chatgptReadMu     sync.Mutex
+	chatgptReadCache  map[string]chatGPTCloudReadCacheEntry
+	chatgptReadActive map[string]*chatGPTCloudReadCall
+	chatgptReadEpoch  map[string]uint64
 }
 
 // SetCloudResultPublisher connects the Cloud callback path to the Node's
@@ -150,18 +156,21 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 	chatgptAuth.SetManagedAppServerOnly()
 	chatgptAuth.SetCodexDesktopBridgeEnabled(false)
 	manager := &AgentManager{
-		codex:           NewCodexAdapter(logger),
-		chatgptAuth:     chatgptAuth,
-		claude:          NewClaudeCodeAdapter(dataDir, ccswitch, logger),
-		ccswitch:        ccswitch,
-		logger:          logger,
-		dataDir:         dataDir,
-		codexStatePath:  defaultCodexDesktopStatePath(),
-		registry:        staticProviderRegistry(),
-		createStore:     newSessionCreateStore(dataDir),
-		visibilityStore: newSessionVisibilityStore(dataDir),
-		callbackStore:   callbackStore,
-		chatgptDefaults: chatGPTCloudCreateDefaults{ConfigurationMode: "auto", Mode: "complete"},
+		codex:             NewCodexAdapter(logger),
+		chatgptAuth:       chatgptAuth,
+		claude:            NewClaudeCodeAdapter(dataDir, ccswitch, logger),
+		ccswitch:          ccswitch,
+		logger:            logger,
+		dataDir:           dataDir,
+		codexStatePath:    defaultCodexDesktopStatePath(),
+		registry:          staticProviderRegistry(),
+		createStore:       newSessionCreateStore(dataDir),
+		visibilityStore:   newSessionVisibilityStore(dataDir),
+		callbackStore:     callbackStore,
+		chatgptDefaults:   chatGPTCloudCreateDefaults{ConfigurationMode: "auto", Mode: "complete"},
+		chatgptReadCache:  map[string]chatGPTCloudReadCacheEntry{},
+		chatgptReadActive: map[string]*chatGPTCloudReadCall{},
+		chatgptReadEpoch:  map[string]uint64{},
 	}
 	manager.chatgptCloud = NewChatGPTCloudAdapter(logger, func(ctx context.Context) (string, error) {
 		return manager.chatgptAuth.AuthToken(ctx)
@@ -181,6 +190,7 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 		},
 	)
 	manager.callbackDispatcher.recoverStatus = manager.recoverCompletedCloudCallback
+	manager.callbackDispatcher.recoveryState = manager.chatgptCloud.CallbackRealtimeRecoveryState
 	manager.callbackDispatcher.start()
 	return manager
 }

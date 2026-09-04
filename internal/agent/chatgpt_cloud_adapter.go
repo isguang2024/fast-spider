@@ -66,6 +66,7 @@ type chatgptCloudTurnResult struct {
 	AsyncStatus    any
 	Model          string
 	Thinking       string
+	Replayed       bool
 }
 
 type chatgptCloudMessage struct {
@@ -114,6 +115,24 @@ func (a *ChatGPTCloudAdapter) EnsureCallbackRealtimeForGeneration(ctx context.Co
 		return fmt.Errorf("chatgpt_cloud realtime is unavailable")
 	}
 	return a.realtime.ensurePersistentWatchingForGeneration(ctx, conversationID, generation)
+}
+
+func (a *ChatGPTCloudAdapter) WaitCallbackRealtime(ctx context.Context) error {
+	if a == nil || a.realtime == nil {
+		return fmt.Errorf("chatgpt_cloud realtime is unavailable")
+	}
+	return a.realtime.waitUntilConnected(ctx)
+}
+
+func (a *ChatGPTCloudAdapter) IsWatchingRealtime(conversationID string) bool {
+	return a != nil && a.realtime != nil && a.realtime.isWatching(conversationID)
+}
+
+func (a *ChatGPTCloudAdapter) CallbackRealtimeRecoveryState() (bool, uint64) {
+	if a == nil || a.realtime == nil {
+		return false, 0
+	}
+	return a.realtime.recoveryState()
 }
 
 func (a *ChatGPTCloudAdapter) ReleaseCallbackRealtime(conversationID string) {
@@ -224,8 +243,16 @@ func (a *ChatGPTCloudAdapter) token(ctx context.Context) (string, error) {
 }
 
 func chatgptUserMessage(text string) map[string]any {
+	return chatgptUserMessageWithID(text, "")
+}
+
+func chatgptUserMessageWithID(text, messageID string) map[string]any {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		messageID = chatgptCloudUUID()
+	}
 	return map[string]any{
-		"id":          chatgptCloudUUID(),
+		"id":          messageID,
 		"author":      map[string]any{"role": "user"},
 		"create_time": float64(time.Now().UnixMilli()) / 1000,
 		"content":     map[string]any{"content_type": "text", "parts": []string{text}},
@@ -250,6 +277,19 @@ func chatgptCloudRequestMessageID(body map[string]any) string {
 	}
 	message, _ := messages[0].(map[string]any)
 	return strings.TrimSpace(mapString(message, "id"))
+}
+
+func chatgptCloudSetRequestMessageID(body map[string]any, requestMessageID string) error {
+	messages, _ := body["messages"].([]any)
+	if len(messages) != 1 {
+		return fmt.Errorf("could not construct idempotent ChatGPT follow-up")
+	}
+	message, _ := messages[0].(map[string]any)
+	if message == nil {
+		return fmt.Errorf("could not construct idempotent ChatGPT follow-up")
+	}
+	message["id"] = requestMessageID
+	return nil
 }
 
 // chatgptQuickChatBody mirrors the Codex Quick chat composer: it does not use
@@ -697,6 +737,79 @@ func (a *ChatGPTCloudAdapter) SendQuickWithThinking(ctx context.Context, convers
 	return result, err
 }
 
+// SendQuickIdempotentWithThinking appends a follow-up using a caller-stable
+// provider message ID. A retry first reconciles that exact ID in the selected
+// conversation and therefore does not create a second turn after a process or
+// transport interruption.
+func (a *ChatGPTCloudAdapter) SendQuickIdempotentWithThinking(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking, requestMessageID string) (chatgptCloudTurnResult, error) {
+	conversationID = strings.TrimSpace(conversationID)
+	prompt = strings.TrimSpace(prompt)
+	requestMessageID = strings.TrimSpace(requestMessageID)
+	if conversationID == "" {
+		return chatgptCloudTurnResult{}, fmt.Errorf("conversationId is required")
+	}
+	if prompt == "" {
+		return chatgptCloudTurnResult{}, fmt.Errorf("message text is required")
+	}
+	if requestMessageID == "" || len(requestMessageID) > 128 || strings.ContainsAny(requestMessageID, "\x00\r\n\t ") {
+		return chatgptCloudTurnResult{}, fmt.Errorf("request message id is required and must be at most 128 non-whitespace characters")
+	}
+	detail, err := a.Read(ctx, conversationID)
+	if err != nil {
+		return chatgptCloudTurnResult{}, fmt.Errorf("resolve idempotent follow-up state: %w", err)
+	}
+	if existingText, found := chatgptCloudMessageTextByID(detail, requestMessageID); found {
+		if existingText != prompt {
+			return chatgptCloudTurnResult{}, fmt.Errorf("idempotencyKey was reused with different session.send content")
+		}
+		inheritedModel, inheritedThinking := chatgptCloudInitialSelection(detail)
+		return chatgptCloudTurnResult{ConversationID: conversationID, Model: firstNonEmptyString(strings.TrimSpace(model), inheritedModel), Thinking: firstNonEmptyString(strings.TrimSpace(thinking), inheritedThinking), Replayed: true}, nil
+	}
+	if parentMessageID == "" {
+		parentMessageID = chatgptCloudLastAssistantID(detail)
+		if parentMessageID == "" {
+			parentMessageID = chatgptCloudLastMessageID(detail)
+		}
+	}
+	if parentMessageID == "" {
+		return chatgptCloudTurnResult{}, fmt.Errorf("could not resolve a parent message for the conversation")
+	}
+	inheritedModel, inheritedThinking := chatgptCloudInitialSelection(detail)
+	if strings.TrimSpace(model) == "" {
+		model = inheritedModel
+	}
+	if strings.TrimSpace(thinking) == "" {
+		thinking = inheritedThinking
+	}
+	body := chatgptFollowUpBodyWithThinking(conversationID, parentMessageID, prompt, model, thinking)
+	if err := chatgptCloudSetRequestMessageID(body, requestMessageID); err != nil {
+		return chatgptCloudTurnResult{}, err
+	}
+	var result chatgptCloudTurnResult
+	if a.sendOverride != nil {
+		result, err = a.sendOverride(ctx, conversationID, parentMessageID, prompt, model, thinking)
+	} else {
+		result, err = a.createQuickBody(ctx, body)
+	}
+	if err != nil {
+		reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), chatgptReconcileReadTimeout)
+		reconciled, reconcileErr := a.Read(reconcileCtx, conversationID)
+		cancel()
+		if reconcileErr == nil {
+			if existingText, found := chatgptCloudMessageTextByID(reconciled, requestMessageID); found && existingText == prompt {
+				err = nil
+				result.Replayed = true
+			}
+		}
+	}
+	if result.ConversationID == "" {
+		result.ConversationID = conversationID
+	}
+	result.Model = strings.TrimSpace(model)
+	result.Thinking = strings.TrimSpace(thinking)
+	return result, err
+}
+
 func (a *ChatGPTCloudAdapter) followUpBody(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking string) (map[string]any, string, string, string, error) {
 	if conversationID == "" {
 		return nil, "", "", "", fmt.Errorf("conversationId is required")
@@ -1044,6 +1157,31 @@ func chatgptCloudContainsMessageID(value map[string]any, requestMessageID string
 		}
 	}
 	return false
+}
+
+func chatgptCloudMessageTextByID(value map[string]any, requestMessageID string) (string, bool) {
+	mapping, _ := value["mapping"].(map[string]any)
+	for nodeID, raw := range mapping {
+		node, _ := raw.(map[string]any)
+		message, _ := node["message"].(map[string]any)
+		if nodeID != requestMessageID && mapString(node, "id") != requestMessageID && mapString(message, "id") != requestMessageID {
+			continue
+		}
+		content, _ := message["content"].(map[string]any)
+		var builder strings.Builder
+		switch parts := content["parts"].(type) {
+		case []string:
+			builder.WriteString(strings.Join(parts, ""))
+		case []any:
+			for _, part := range parts {
+				if text, ok := part.(string); ok {
+					builder.WriteString(text)
+				}
+			}
+		}
+		return strings.TrimSpace(builder.String()), true
+	}
+	return "", false
 }
 
 // Rename sets a conversation title.
