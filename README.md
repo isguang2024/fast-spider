@@ -354,9 +354,9 @@ Run the release gate:
 bash scripts/release-gate.sh
 ```
 
-Run the extended release gate for release-critical changes. It keeps the common
-checks single-pass and runs only the real runtime E2E groups affected by the
-worktree/index or commits ahead of upstream:
+For release-critical changes, run the extended gate instead of the core gate.
+It keeps the common checks single-pass and runs only the real runtime E2E groups
+affected by the worktree/index or commits ahead of upstream:
 
 ```bash
 bash scripts/release-gate.sh --full

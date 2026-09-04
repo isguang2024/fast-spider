@@ -52,22 +52,19 @@ MCP 调用诊断门禁必须通过真实 SDK 请求确认 initialize、tools/lis
 
 ## Release Gate
 
-`bash scripts/release-gate.sh --full` 继续作为发布前硬门槛，但不再重复
-`go test ./...` 已覆盖的历史版本专项。它覆盖：
+`bash scripts/release-gate.sh --full` 作为发布前门槛，并按当前 diff 选择
+需要的检查。它覆盖：
 
 - git whitespace / worktree + index secret scan
-- synthetic scanner redaction self-test / full object database history scan（full）
-- module checksum / tidy
-- static analysis
-- `go test ./...`
-- Windows amd64 / Linux amd64 构建
-- backup/restore E2E
-- Local Bridge E2E
-- 发布 HEAD 历史秘密扫描（full）
+- Go 文件变化时的 formatting / module tidy / static analysis / `go test ./...`
+- `go.mod` / `go.sum` 变化时的 module checksum verification
+- 影响 Hub restore 或 Local Bridge 时的对应 E2E
 - 按当前 diff 自动选择的 real WSL / Browser / CC Switch / Claude Code E2E
 - 影响 Provider/Local Bridge 时的 multi-provider discovery E2E
 - 影响 Codex 链路时的 real Local Bridge → Codex product E2E
 
+正式 artifact 只在 release build 阶段构建一次；Git history 与 public export
+hygiene 使用 `scripts/public-release-check.sh` / `scripts/public-export.sh` 独立检查。
 如需人工执行所有真实 runtime E2E，设置 `FAST_SPIDER_GATE_ALL_E2E=1`。
 
 测试中不得重新引入旧目录对象或目录白名单来让旧断言通过。

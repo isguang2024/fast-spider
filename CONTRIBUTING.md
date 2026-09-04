@@ -29,7 +29,8 @@ bash scripts/public-release-check.sh
 bash scripts/release-gate.sh
 ```
 
-For release-critical changes, run the diff-aware extended gate:
+For release-critical changes, run the diff-aware extended gate instead of the
+core gate:
 
 ```bash
 bash scripts/release-gate.sh --full

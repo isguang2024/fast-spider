@@ -61,16 +61,17 @@ Run:
 
 ```bash
 bash scripts/public-release-check.sh
-bash scripts/release-gate.sh
+bash scripts/release-gate.sh --full
 bash scripts/public-export.sh \
   --output /absolute/path/fast-spider-public \
   --require-license
 ```
 
-For release-critical changes, also run the diff-aware extended gate:
+For a source-only update that does not need real-runtime qualification, replace
+the extended gate above with the core gate:
 
 ```bash
-bash scripts/release-gate.sh --full
+bash scripts/release-gate.sh
 ```
 
 The exported repository should have exactly one root commit named `Initial public source snapshot`.

@@ -15,9 +15,10 @@ semantic versioning for public releases.
 - Reuse the same app-server for ChatGPT Cloud authentication and local Codex
   lifecycle calls, while retaining Codex Desktop state only as read-only project
   list metadata.
-- Make the extended release gate diff-aware: common tests and builds run once,
-  while real WSL, Browser, CC Switch, Claude, and Codex E2E groups run only when
-  their owning paths changed; `FAST_SPIDER_GATE_ALL_E2E=1` still forces all.
+- Make the release gate diff-aware: Go checks run only for Go changes; Hub,
+  Local Bridge, WSL, Browser, CC Switch, Claude, and Codex E2E groups run only
+  for their owning paths. Artifact builds stay in the release build stage, and
+  the core gate is no longer repeated before `--full`.
 - Keep `session.send` and callback delivery on metadata-only `thread/read` before
   `thread/resume`, so an old task with a very large turn history cannot serialize
   the shared app-server and block unrelated local Codex requests.
