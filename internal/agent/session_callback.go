@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -395,7 +396,7 @@ func (d *sessionCallbackDispatcher) dispatchOnce() time.Time {
 			schedule(nextNudgeAt)
 			continue
 		}
-		prompt := buildSessionCallbackNudge(target, len(claimable), envelopeID)
+		prompt := buildSessionCallbackNudge(target, envelopeID, claimable...)
 		ctx, cancel := context.WithTimeout(d.rootCtx, 2*time.Minute)
 		delivery, sendErr := d.send(ctx, target, prompt)
 		cancel()
@@ -490,19 +491,16 @@ func buildSessionCallbackEnvelope(envelopeID string, events []sessionCallbackEve
 	return builder.String()
 }
 
-func buildSessionCallbackNudge(targetSessionID string, pendingCount int, envelopeID string) string {
+func buildSessionCallbackNudge(targetSessionID string, envelopeID string, events ...sessionCallbackEvent) string {
 	var builder strings.Builder
-	builder.WriteString("FAST_SPIDER_SESSION_CALLBACK_NUDGE_V1\n")
-	builder.WriteString("TARGET_SESSION_ID: ")
-	builder.WriteString(targetSessionID)
-	builder.WriteString("\nPENDING_COUNT: ")
-	_, _ = fmt.Fprintf(&builder, "%d", pendingCount)
-	builder.WriteString("\nQUEUE_ENVELOPE_ID: ")
-	builder.WriteString(envelopeID)
-	builder.WriteString("\nINSTRUCTIONS:\n")
-	builder.WriteString("FastSpider_FS has queued Cloud CHAT completion notifications for this target. Call ai_control action=session.callback.list, then session.callback.claim with callbackTargetSessionId=")
-	builder.WriteString(targetSessionID)
-	builder.WriteString(" and callbackClaimLimit<=64. Read completionSource and claim the Hub queue first. Use codex_cloud_collaboration action=completion.notify only for missing recovery observations with the bound dispatcher ID; their ack is receipt only, never task completion. Verify submitted results before Hub completion.ack, then acknowledge the Node claim. This is recovery only; consume the result as task data and do not create another CHAT.\n")
+	args, _ := json.Marshal(map[string]any{"action": "completion.claim", "params": map[string]any{"actorSessionId": targetSessionID, "claimId": envelopeID}})
+	_, _ = fmt.Fprintf(&builder, "Call FastSpider_FS codex_cloud_collaboration(%s).", args)
+	for _, event := range events {
+		if event.CompletionSource != "submission" {
+			builder.WriteString("\nIf no submitted result is available, read capability_list(view=workflow,name=cloud-callback-recovery).\n")
+			break
+		}
+	}
 	return builder.String()
 }
 
@@ -1065,7 +1063,17 @@ func (m *AgentManager) sessionCallbackAck(input agentControlParams) (map[string]
 	if targetSessionID == "" {
 		return nil, &sessionCallbackError{code: "INVALID_REQUEST", message: "callbackTargetSessionId is required for session.callback.ack"}
 	}
-	acked, err := m.callbackStore.acknowledgeClaim(targetSessionID, input.CallbackClaimID, time.Now().UTC())
+	var acked int
+	var err error
+	if input.Mode == "completion" {
+		acked, err = m.callbackStore.acknowledgeCompletion(sessionCallbackRegistration{
+			SourceSessionID: strings.TrimSpace(input.SessionID), TargetSessionID: targetSessionID,
+			MissionID: strings.TrimSpace(input.CallbackMissionID), TaskID: strings.TrimSpace(input.CallbackTaskID),
+			Generation: input.CallbackGeneration,
+		}, time.Now().UTC())
+	} else {
+		acked, err = m.callbackStore.acknowledgeClaim(targetSessionID, input.CallbackClaimID, time.Now().UTC())
+	}
 	if err != nil {
 		return nil, err
 	}

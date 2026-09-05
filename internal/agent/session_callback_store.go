@@ -1078,6 +1078,52 @@ func (s *sessionCallbackStore) claim(targetSessionID, requestedClaimID string, l
 	return claimID, available, nil
 }
 
+// acknowledgeCompletion is called by Hub after accepting a formal result. It
+// clears only the bound generation, regardless of a previous Node claim lease.
+func (s *sessionCallbackStore) acknowledgeCompletion(expected sessionCallbackRegistration, now time.Time) (int, error) {
+	if expected.SourceSessionID == "" || expected.TargetSessionID == "" || expected.MissionID == "" || expected.TaskID == "" || expected.Generation < 1 {
+		return 0, &sessionCallbackError{code: "INVALID_REQUEST", message: "completion acknowledgement requires source, target, mission, task and generation"}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return 0, callbackStoreUnavailableError()
+	}
+	registration, exists := s.registrations[expected.SourceSessionID]
+	if !exists || registration.Generation > expected.Generation {
+		return 0, nil
+	}
+	if registration.TargetSessionID != expected.TargetSessionID || registration.MissionID != expected.MissionID || registration.TaskID != expected.TaskID || registration.Generation != expected.Generation {
+		return 0, &sessionCallbackError{code: "CALLBACK_OWNER_CONFLICT", message: "completion acknowledgement does not match the registered task"}
+	}
+	event, pending := s.pending[expected.SourceSessionID]
+	formalKey := "submitted_" + strings.TrimPrefix(sessionCallbackCompletionEventKey(registration), "completion_")
+	if !pending && registration.LastDeliveredEnvelope == formalKey {
+		return 0, nil
+	}
+	previous := registration
+	registration.RecentEventKeys = append(append([]string(nil), registration.RecentEventKeys...), formalKey)
+	if len(registration.RecentEventKeys) > maxRecentCallbackEventKeys {
+		registration.RecentEventKeys = registration.RecentEventKeys[len(registration.RecentEventKeys)-maxRecentCallbackEventKeys:]
+	}
+	registration.LastDeliveredEnvelope, registration.LastDeliveredAt, registration.UpdatedAt = formalKey, now.UTC(), now.UTC()
+	s.registrations[expected.SourceSessionID] = registration
+	delete(s.pending, expected.SourceSessionID)
+	if committed, err := s.saveLocked(); err != nil {
+		if !committed {
+			s.registrations[expected.SourceSessionID] = previous
+			if pending {
+				s.pending[expected.SourceSessionID] = event
+			}
+		}
+		return 0, err
+	}
+	if pending {
+		return 1, nil
+	}
+	return 0, nil
+}
+
 func (s *sessionCallbackStore) acknowledgeClaim(targetSessionID, claimID string, now time.Time) (int, error) {
 	targetSessionID = strings.TrimSpace(targetSessionID)
 	claimID = strings.TrimSpace(claimID)

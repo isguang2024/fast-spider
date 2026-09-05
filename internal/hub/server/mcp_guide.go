@@ -211,7 +211,7 @@ var mcpToolGuides = map[string]mcpToolGuideEntry{
 		BoundedExamples: []map[string]any{{"machineId": "<machine-id>", "action": "session.list", "workingDirectory": "<absolute-project>"}, {"machineId": "<machine-id>", "action": "provider.readiness", "providerId": "codex", "backend": "chatgpt_cloud", "mode": "safe"}},
 	},
 	"codex_cloud_collaboration": {
-		Description: "Send one task to a visible ChatGPT Cloud CHAT and return its durable callback to one local Codex session. Controller/coordinator topology stays outside Fast Spider.",
+		Description: "Dispatch one Cloud CHAT task. On callback, completion.claim returns text or a local file path plus the exact acknowledge call; completion.ack also clears the Node notification.",
 		WhenToUse:   []string{"A local Codex session wants one Cloud CHAT to do work and report back later", "Reuse one exact visible CHAT", "Create one clean visible CHAT for a new task"}, RequiredInputs: []string{"dispatch: machineId, callbackSessionId, workingDirectory, prompt and idempotencyKey", "optional targetSessionId to reuse one exact CHAT", "optional read_only accessMode; otherwise the task may edit and test inside workingDirectory", "callbackType=local_file for a local report; task_result_submit finishes the assigned task"},
 		SafeSequence: []string{
 			"Call action=dispatch once; Fast Spider validates the callback session, creates or reuses exactly one CHAT, registers its callback and sends the prompt",
@@ -219,10 +219,14 @@ var mcpToolGuides = map[string]mcpToolGuideEntry{
 			"For a long report use callbackType=local_file; deliverablePath must be inside writeScope, or omit it for an assigned local path. Read-only tasks may write only their assigned result path",
 			"After dispatch returns callerShouldYield=true and nextAction=end_turn, end the current turn without polling",
 			"The CHAT uses task_result_submit before its final reply; Hub verifies the assigned file or accepts short text, persists the result, and Node wakes the bound Codex session when idle",
+			"On callback, use completion.claim with actorSessionId; read text or deliverablePath, then call the returned acknowledge object. FS handles file metadata and Node acknowledgement",
 			"Provider realtime, startup reconciliation and timed status reads are recovery only; they are not the normal completion channel",
 			"The callback always returns to callbackSessionId, regardless of whether the caller calls that session a controller, coordinator or single AI",
 		}, Returns: []string{"one asynchronous dispatch receipt", "collaborationId and taskId", "durable callback to callbackSessionId"}, RecommendedNext: []string{"end the current turn after dispatch"}, CommonErrors: []string{"RUNTIME_UNAVAILABLE", "INVALID_REQUEST", "CONFLICT", "AGENT_SESSION_BUSY", "CALLBACK_BASELINE_UNAVAILABLE"},
-		BoundedExamples: []map[string]any{{"action": "dispatch", "params": map[string]any{"machineId": "<machine-id>", "callbackSessionId": "<local-codex-session>", "workingDirectory": "<absolute-project>", "prompt": "Implement and test the requested change.", "idempotencyKey": "cloud-task-unique-001"}}},
+		BoundedExamples: []map[string]any{
+			{"action": "dispatch", "params": map[string]any{"machineId": "<machine-id>", "callbackSessionId": "<local-codex-session>", "workingDirectory": "<absolute-project>", "prompt": "Implement and test the requested change.", "idempotencyKey": "cloud-task-unique-001"}},
+			{"action": "completion.claim", "params": map[string]any{"actorSessionId": "<local-codex-session>", "claimId": "<callback-envelope-id>"}},
+		},
 	},
 	"task_result_submit": {
 		Description:     "Submit the result of an already assigned Cloud CHAT task and notify its preassigned Codex session when idle. For local_file tasks, verify the assigned Node-local file without uploading its body. Cannot create tasks, change paths or choose notification targets.",
@@ -395,24 +399,26 @@ func codexCloudCollaborationGuide() (string, []string, []string, []string) {
 		"callbackType=local_file for long reports; optional deliverablePath inside writeScope, or omit for an assigned local path",
 	}
 	safeSequence := []string{
-		"First decide whether the current Codex can complete the task directly; use this collaboration only when CHAT assistance is useful or explicitly requested",
-		"Call dispatch once; Fast Spider performs readiness checks, creates its internal callback state, sends the task and arms the route",
-		"If targetSessionId is omitted, dispatch creates one backend=chatgpt_cloud visible quick_chat; it never scans or guesses old CHATs",
-		"Dispatch uses Node model/thinking defaults; it does not accept per-task model/thinking overrides",
-		"After callerShouldYield=true and nextAction=end_turn, return a short receipt and end the turn without polling",
-		"The CHAT submits taskRef, status and optional short text through task_result_submit; local_file tasks first write the assigned Node-local resultPath using file_edit, then submit without the body",
-		"Legacy completion.notify with actorSessionId=$self submits a result; dispatcher replay records recoveryOnly observations whose acknowledgement cannot finalize the task",
-		"Claim Hub results first after a Node nudge; completionSource distinguishes submission from recovery, and missing provenance means legacy unknown",
-		"Acknowledging a result retains the CHAT for reuse. The controller AI decides whether it is no longer needed and explicitly calls close to archive owned CHATs; reused CHATs are released, not archived",
-		"TASK_RESULT_CONFLICT preserves inconsistent formal results; reconcile only proven legacy recovery records, never blindly overwrite a final submission",
-		"Hub persists the completion, actively pushes it into the Node callback queue, and Node wakes callbackSessionId immediately when idle or after its active turn finishes",
-		"Provider realtime, startup reconciliation and timed status reads are recovery only for missed delivery; a future-created CHAT or task is not guaranteed to be covered by an external timer, so polling never replaces the active Hub-to-Node callback",
-		"Queues, leases, acknowledgement and archive/release remain internal details",
+		"Call dispatch once with the task in prompt; FS adds the submit instructions. Node model/thinking defaults are inherited",
+		"After callerShouldYield=true and nextAction=end_turn, end the turn and wait for the callback",
+		"CHAT writes its result, then calls task_result_submit with the assigned taskRef; local_file submissions omit the body",
+		"On callback, call completion.claim with actorSessionId and the supplied claimId. Read text or the deliverablePath file, then call codex_cloud_collaboration with the returned acknowledge object",
+		"completion.ack verifies file metadata internally and clears the matching Node callback. Normal delivery needs no session.callback.list/claim/ack, history lookup, or manual hashes",
+		"Report the task result briefly; keep CHAT for reuse. recoveryOnly observations cannot finish a task; use workflow=cloud-callback-recovery only when needed",
 	}
 	return summary, whenToUse, requiredInputs, safeSequence
 }
 
 var mcpWorkflowGuides = map[string]mcpWorkflowGuideEntry{
+	"cloud-callback-recovery": {
+		Summary: "Recover a provider observation only when the normal completion.claim path has no submitted result.",
+		SafeSequence: []string{
+			"Call ai_control session.callback.claim once for the exact callbackTargetSessionId (limit <=64); retain the returned Node claim ID",
+			"For completionSource=submission, claim the Hub again; never replay it as recovery. For missing recovery observations only, completion.notify uses the bound actorSessionId, collaborationId=missionId, taskId, sourceSessionId, callbackType, outcome and text for text results",
+			"Hub recoveryOnly=true is receipt only, not task completion or failure. A later formal submission remains authoritative; never overwrite TASK_RESULT_CONFLICT",
+			"Read any Hub results and call their returned acknowledge, then acknowledge the Node claim using session.callback.ack with the exact callbackTargetSessionId and callbackClaimId. If it was already cleared, confirm that exact queue has no pending item",
+		},
+	},
 	"connection-check":          {Summary: "Verify real MCP and Machine connectivity without making changes, including ChatGPT per-conversation connector recovery.", SafeSequence: []string{"If ChatGPT does not expose the FastSpider_FS namespace, use filtered connector discovery for the lightweight machine tools first (api_tool.list_resources(paths=[\"FastSpider_FS\"], query=\"fsprobe\") when available)", "Never materialize the full tool schema just to test connectivity; load later tools only for the current action", "Do not ask for login/reauthorization solely because one conversation lost its namespace", "capability_list(view=overview)", "machine_list", "machine_get only when details are needed"}, Returns: []string{"Lightweight recovered connection tools, Hub guide/catalog and current Machine availability"}, RecommendedNext: []string{"Load only the specific tool required by the next action"}, CommonErrors: []string{"MACHINE_OFFLINE"}},
 	"cloud-chat-callback":       {Summary: "Dispatch one task to one visible Cloud CHAT and return its durable callback to one local Codex session.", RequiredInputs: []string{"machineId", "callbackSessionId", "absolute workingDirectory", "prompt", "stable idempotencyKey", "optional exact targetSessionId"}, SafeSequence: []string{"Call codex_cloud_collaboration action=dispatch once", "Let Fast Spider create or reuse exactly one CHAT and register the callback route", "End the current turn when callerShouldYield=true; do not poll", "CHAT completion.notify is persisted by Hub and actively pushed through Node to callbackSessionId", "Provider realtime and timed status checks are fallback recovery only", "On callback, continue the local task and update working_context only when a compact project note is useful"}, Returns: []string{"asynchronous dispatch receipt", "durable active callback to callbackSessionId", "restart-safe internal recovery"}, RecommendedNext: []string{"end the current turn after dispatch"}, CommonErrors: []string{"RUNTIME_UNAVAILABLE", "AGENT_SESSION_BUSY", "CONFLICT", "CALLBACK_BASELINE_UNAVAILABLE", "CALLBACK_DELIVERY_PENDING"}},
 	"file-edit":                 {Summary: "Locate, preview, CAS-write and verify a file change.", RequiredInputs: []string{"machineId", "absolute project/file path"}, SafeSequence: []string{"code_search", "file_read", "capture fileSha256", "file_edit preview", "file_edit(expectedFileSha256)", "file_read verification"}, Returns: []string{"Verified file change with before/after SHA"}, RecommendedNext: []string{"git-change when the project is versioned"}, CommonErrors: []string{"CONFLICT", "ABSOLUTE_PATH_REQUIRED"}},

@@ -46,6 +46,9 @@
 - 文件修改遵循 `code_search` → `file_read` 取得 SHA → `file_edit(preview)` → CAS 写入 → `file_read` 验证；调用方不得把回滚临时副本留在项目树。
 - Git 写入和网络操作必须有当前任务授权；不得用 `reset`、`checkout`、`clean` 或无恢复方案的 `stash` 清理测试残留。
 - AI Session 的归档、删除和历史保留使用 `ai_control` 的会话契约；不得把原生 Codex/Claude 历史当作临时文件删除。
+- Cloud CHAT 任务只在 `dispatch.prompt` 写目标，FS 自动附带 `task_result_submit` 和绑定回调的 `taskRef`，调用方不重复粘贴协议。
+- 正常回调直接调用通知给出的 `completion.claim`：文本读取 `text`，文件读取 `deliverablePath`；随后原样调用返回的 `acknowledge`。FS 内部核验文件元数据并确认对应 Node 通知，无需另查队列、历史会话或手工拼接哈希。
+- `recoveryOnly=true` 只代表恢复观察，不是任务结果；缺少正式提交时才读取 `capability_list(view=workflow,name=cloud-callback-recovery)`。对用户简短汇报业务结果，不展开队列 ID 和内部协议。
 
 ## 5. 结束条件
 

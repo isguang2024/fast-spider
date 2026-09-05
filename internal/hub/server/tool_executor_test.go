@@ -48,11 +48,11 @@ func TestValidateCloudCompletionToolInputReturnsRequestErrors(t *testing.T) {
 
 func TestAIControlRejectsPublicCallbackRouteAndDeliveryMutation(t *testing.T) {
 	executor := newToolExecutor(nil)
-	for _, action := range []string{"session.callback.register", "session.callback.arm", "session.callback.enqueue"} {
-		_, err := executor.Execute(context.Background(), "owner", "ai_control", aiControlInput{Action: action})
+	for _, input := range []aiControlInput{{Action: "session.callback.register"}, {Action: "session.callback.arm"}, {Action: "session.callback.enqueue"}, {Action: "session.callback.ack", Mode: "completion"}} {
+		_, err := executor.Execute(context.Background(), "owner", "ai_control", input)
 		var capabilityErr *core.CapabilityCallError
 		if !errors.As(err, &capabilityErr) || capabilityErr.Code != "CALLBACK_ROUTE_MANAGED_ONLY" {
-			t.Fatalf("action=%s error=%v", action, err)
+			t.Fatalf("input=%+v error=%v", input, err)
 		}
 	}
 }

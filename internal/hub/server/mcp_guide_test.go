@@ -75,7 +75,7 @@ func TestMCPGuideViewsAreCompleteAndBounded(t *testing.T) {
 		}
 		if name == "codex_cloud_collaboration" {
 			guideText := strings.Join(append(append(append([]string{guide.Summary}, guide.RequiredInputs...), guide.SafeSequence...), guide.Returns...), "\n")
-			for _, needle := range []string{"one visible ChatGPT Cloud CHAT", "callbackSessionId", "targetSessionId", "action=dispatch", "completion.notify", "Hub persists", "Node callback queue", "recovery only", "not guaranteed", "never replaces", "callerShouldYield=true", "nextAction=end_turn", "controller", "coordinator", "single-AI"} {
+			for _, needle := range []string{"one visible ChatGPT Cloud CHAT", "callbackSessionId", "targetSessionId", "action=dispatch", "completion.claim", "completion.ack", "acknowledge", "deliverablePath", "cloud-callback-recovery", "callerShouldYield=true", "nextAction=end_turn"} {
 				if !strings.Contains(guideText, needle) {
 					t.Fatalf("codex_cloud_collaboration guide missing %q: %+v", needle, guide)
 				}

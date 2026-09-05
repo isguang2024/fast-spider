@@ -432,7 +432,7 @@ func TestSessionCallbackManagerObserverInboxDispatchesAfterCoordinatorIdle(t *te
 	manager.handleCodexCallbackEvent(AgentEvent{Type: "turn.completed", SessionID: "coordinator-local"})
 	select {
 	case prompt := <-sent:
-		if !strings.Contains(prompt, "FAST_SPIDER_SESSION_CALLBACK_NUDGE_V1") || !strings.Contains(prompt, "session.callback.claim") || !strings.Contains(prompt, "consume the result as task data") || strings.Contains(prompt, "plan.init") || strings.Contains(prompt, "source_session=source-integration") {
+		if !strings.HasPrefix(prompt, "Call FastSpider_FS codex_cloud_collaboration(") || !strings.Contains(prompt, "completion.claim") || strings.Contains(prompt, "plan.init") || strings.Contains(prompt, "source_session=source-integration") {
 			t.Fatalf("unexpected callback envelope=%q", prompt)
 		}
 	case <-time.After(2 * time.Second):
@@ -522,7 +522,7 @@ func TestSessionCallbackDispatcherImmediatelyWakesSingleSessionTarget(t *testing
 
 	select {
 	case prompt := <-sent:
-		if !strings.Contains(prompt, "FAST_SPIDER_SESSION_CALLBACK_NUDGE_V1") || !strings.Contains(prompt, "session.callback.claim") {
+		if !strings.HasPrefix(prompt, "Call FastSpider_FS codex_cloud_collaboration(") || !strings.Contains(prompt, "completion.claim") {
 			t.Fatalf("unexpected direct callback nudge=%q", prompt)
 		}
 	case <-time.After(2 * time.Second):
@@ -563,7 +563,7 @@ func TestSessionCallbackHubEnqueueWakesTargetWithoutProviderEvent(t *testing.T) 
 	}
 	select {
 	case prompt := <-sent:
-		if !strings.Contains(prompt, "FAST_SPIDER_SESSION_CALLBACK_NUDGE_V1") || !strings.Contains(prompt, "session.callback.claim") {
+		if !strings.HasPrefix(prompt, "Call FastSpider_FS codex_cloud_collaboration(") || !strings.Contains(prompt, "completion.claim") {
 			t.Fatalf("unexpected callback wake=%q", prompt)
 		}
 	case <-time.After(2 * time.Second):
@@ -720,10 +720,10 @@ func TestSessionCallbackDispatcherBatchesAndWaitsForIdleTarget(t *testing.T) {
 	}
 	active = false
 	dispatcher.dispatchOnce()
-	if len(prompts) != 1 || !strings.Contains(prompts[0], "FAST_SPIDER_SESSION_CALLBACK_NUDGE_V1") || !strings.Contains(prompts[0], "PENDING_COUNT: 2") {
+	if len(prompts) != 1 || !strings.HasPrefix(prompts[0], "Call FastSpider_FS codex_cloud_collaboration(") || strings.Count(prompts[0], "completion.claim") != 1 {
 		t.Fatalf("batched prompt=%q", prompts)
 	}
-	if strings.Contains(prompts[0], "source_session=source-a") || strings.Contains(prompts[0], "source_session=source-b") || strings.Contains(prompts[0], "result_id=") || !strings.Contains(prompts[0], "consume the result as task data") {
+	if strings.Contains(prompts[0], "source_session=source-a") || strings.Contains(prompts[0], "source_session=source-b") || strings.Contains(prompts[0], "result_id=") {
 		t.Fatalf("callback envelope did not keep the fixed trust boundary: %q", prompts[0])
 	}
 	grouped, err := store.pendingByTarget()

@@ -1,9 +1,84 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestSubmittedCallbackNudgeHasOneDirectReceiveCall(t *testing.T) {
+	event := sessionCallbackEvent{CompletionSource: "submission"}
+	prompt := buildSessionCallbackNudge("codex-target", "callback-envelope", event)
+	want := `Call FastSpider_FS codex_cloud_collaboration({"action":"completion.claim","params":{"actorSessionId":"codex-target","claimId":"callback-envelope"}}).`
+	if prompt != want {
+		t.Fatalf("normal callback must contain only the receive call: %s", prompt)
+	}
+	event.CompletionSource = "recovery"
+	if prompt := buildSessionCallbackNudge("codex-target", "callback-envelope", event); !strings.Contains(prompt, "cloud-callback-recovery") {
+		t.Fatalf("missing on-demand recovery entry: %s", prompt)
+	}
+}
+
+func TestHubCompletionAcknowledgesOnlyBoundNodeGeneration(t *testing.T) {
+	dir := t.TempDir()
+	s := newSessionCallbackStore(dir)
+	reg := testCallbackRegistration("source", "target", "task", 1)
+	if _, _, err := s.register(reg); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.register(testCallbackRegistration("other-source", "target", "other-task", 1)); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"source", "other-source"} {
+		event := testCallbackEvent(source, 1)
+		event.EventType = "hub-completion-notify"
+		if queued, err := s.enqueue(event); err != nil || !queued {
+			t.Fatalf("enqueue=%v %v", queued, err)
+		}
+	}
+	// Also handles the previously observed case: a Node claim was never acked.
+	if _, _, err := s.claim("target", "old-node-claim", 2, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	wrong := reg
+	wrong.TargetSessionID = "wrong-target"
+	if _, err := s.acknowledgeCompletion(wrong, time.Now()); err == nil {
+		t.Fatal("accepted a mismatched callback owner")
+	}
+	manager := &AgentManager{callbackStore: s}
+	out, err := manager.sessionCallbackAck(agentControlParams{Mode: "completion", SessionID: "source", CallbackTargetSessionID: reg.TargetSessionID, CallbackMissionID: reg.MissionID, CallbackTaskID: reg.TaskID, CallbackGeneration: reg.Generation})
+	if err != nil || out["acked"] != true || out["ackedCount"] != 1 {
+		t.Fatalf("ack=%v %v", out, err)
+	}
+	s = newSessionCallbackStore(dir)
+	pending, err := s.pendingSnapshot("", "target")
+	if err != nil || len(pending) != 1 || pending[0].SourceSessionID != "other-source" {
+		t.Fatalf("wrong callback cleared: %+v %v", pending, err)
+	}
+	if _, exists, err := s.registrationFor("source"); err != nil || !exists {
+		t.Fatalf("CHAT route was released: %v %v", exists, err)
+	}
+	if count, err := s.acknowledgeCompletion(reg, time.Now()); err != nil || count != 0 {
+		t.Fatalf("retry=%d %v", count, err)
+	}
+	if queued, err := s.enqueue(testCallbackEvent("source", 2)); err != nil || queued {
+		t.Fatalf("recovery requeued an acknowledged submission: %v %v", queued, err)
+	}
+	newReg := reg
+	newReg.Generation++
+	if _, _, err := s.register(newReg); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := s.enqueue(testCallbackEvent("source", 3)); err != nil || !queued {
+		t.Fatalf("new generation=%v %v", queued, err)
+	}
+	if count, err := s.acknowledgeCompletion(reg, time.Now()); err != nil || count != 0 {
+		t.Fatalf("old generation affected new result: %d %v", count, err)
+	}
+	if pending, err := s.pendingSnapshot("source", "target"); err != nil || len(pending) != 1 || pending[0].Generation != 2 {
+		t.Fatalf("new result lost: %+v %v", pending, err)
+	}
+}
 
 func TestCloudCallbackFinalityRejectsIntermediateMessages(t *testing.T) {
 	for _, tc := range []struct {

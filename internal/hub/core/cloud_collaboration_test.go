@@ -59,6 +59,8 @@ func (n *cloudCollaborationTestNode) respond(req protocolv1.CapabilityRequest) m
 		return map[string]any{"registered": true}
 	case "session.callback.enqueue":
 		return map[string]any{"queued": true, "replayed": false}
+	case "session.callback.ack":
+		return map[string]any{"acked": true, "ackedCount": 1}
 	case "session.watch":
 		return map[string]any{"nextCursor": int64(1)}
 	case "session.archive":
@@ -278,7 +280,7 @@ func TestCodexCloudCollaborationRequiresLocalCodexAndUsesDeliverableCallback(t *
 			t.Fatalf("collaboration callback was not configured for active wake: %#v", call.Params)
 		}
 	}
-	if !strings.Contains(createPrompt, "FAST_SPIDER_CLOUD_TASK_V1") || !strings.Contains(createPrompt, output) || !strings.Contains(createPrompt, "task_result_submit") || !strings.Contains(createPrompt, "taskRef=") || strings.Contains(createPrompt, "action=event.ingest") || strings.Contains(createPrompt, "plan.init") || strings.Contains(createPrompt, "markdown.append") {
+	if !strings.Contains(createPrompt, "FAST_SPIDER_CLOUD_TASK_V1") || !strings.Contains(createPrompt, output) || !strings.Contains(createPrompt, "task_result_submit") || !strings.Contains(createPrompt, `"taskRef":`) || strings.Contains(createPrompt, "action=event.ingest") || strings.Contains(createPrompt, "plan.init") || strings.Contains(createPrompt, "markdown.append") {
 		t.Fatalf("prompt=%q", createPrompt)
 	}
 	if countCloudCollaborationCalls(node.snapshotCalls(), "session.list") != 0 {

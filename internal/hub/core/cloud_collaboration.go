@@ -2316,14 +2316,21 @@ func (s *Service) cloudCollaborationClose(ctx context.Context, ownerID string, r
 }
 
 func cloudCollaborationBootstrap(collaborationID, machineID string, state cloudCollaborationState, task cloudCollaborationTask) string {
-	deliverable := "Submit the final status without a text field."
+	submit := map[string]any{"taskRef": cloudTaskResultReference(collaborationID, task), "status": "completed"}
+	deliverable := ""
 	switch task.CallbackType {
 	case protocolv1.CloudCallbackTypeLocalFile:
-		deliverable = fmt.Sprintf("Write the full report or summary as UTF-8 to this assigned file on the local Node machine: %s\nUse FastSpider_FS file_edit with the machine_id above. Finish all writes before submitting the result. This exact output file is writable even for a read-only task; other write permissions remain limited to write_scope. Omit text when submitting: FS verifies the local file and returns its path and checksum, without uploading its body. Keep the file for the recipient.", cloudCollaborationTaskResultPath(task))
+		deliverable = fmt.Sprintf("Write UTF-8 with FastSpider_FS file_edit to %s (writable even in read_only); submit without the file body.\n", cloudCollaborationTaskResultPath(task))
 	case protocolv1.CloudCallbackTypeText:
-		deliverable = fmt.Sprintf("Submit the concise result in text (at most %d Unicode characters and %d UTF-8 bytes).", protocolv1.CloudCallbackTextMaxRunes, protocolv1.CloudCallbackTextMaxBytes)
+		submit["text"] = "RESULT (max 2000 characters)"
+		deliverable = "Replace the text placeholder with your result.\n"
 	}
-	return fmt.Sprintf("FAST_SPIDER_CLOUD_TASK_V1\nmachine_id=%s\nworking_directory=%s\nwrite_scope=%s\ntask_ref=%s\nresult_type=%s\n\nComplete the assigned task using FastSpider_FS tools as needed. Stay inside the working directory and write scope. Do not create additional AI sessions.\n\nTASK:\n%s\n\nRESULT:\n%s\n\nBefore your final reply, call FastSpider_FS task_result_submit with taskRef=%q, status=completed|blocked|failed, and text only for a text result. Submitting durably records the result and notifies the preassigned Codex session, starting its next turn when idle. The destination cannot be changed. Retry identical arguments only for uncertain transport or CALLBACK_DELIVERY_PENDING. If submission is refused, report the refusal; do not claim success.", machineID, state.WorkingDirectory, task.WriteScope, cloudTaskResultReference(collaborationID, task), task.CallbackType, task.Prompt, deliverable, cloudTaskResultReference(collaborationID, task))
+	args, _ := json.Marshal(submit)
+	scope := fmt.Sprintf("machine_id=%s\nworking_directory=%s\naccess_mode=%s", machineID, state.WorkingDirectory, task.AccessMode)
+	if task.WriteScope != "" {
+		scope += "\nwrite_scope=" + task.WriteScope
+	}
+	return fmt.Sprintf("FAST_SPIDER_CLOUD_TASK_V1\n%s\n\n%s\nStay within this scope.\n%sBefore replying, call FastSpider_FS task_result_submit(%s). If blocked or failed, use that status; report any submission error.", task.Prompt, scope, deliverable, args)
 }
 
 func (s *Service) ensureCodexCloudCollaborationReady(ctx context.Context, ownerID, machineID string) error {

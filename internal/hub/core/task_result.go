@@ -47,9 +47,7 @@ func (s *Service) SubmitTaskResult(ctx context.Context, ownerID, taskRef, status
 		return nil, err
 	}
 	return map[string]any{
-		"taskRef": taskRef, "status": status, "accepted": true, "replayed": result["replayed"],
-		"result": result["notification"], "notificationAccepted": result["activeCallbackAccepted"],
-		"notificationPolicy": "notify-preassigned-codex-session-when-idle",
-		"localFile":          result["localFile"],
+		"status": status, "accepted": true, "replayed": result["replayed"],
+		"notificationAccepted": result["activeCallbackAccepted"], "localFile": result["localFile"],
 	}, nil
 }

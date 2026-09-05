@@ -244,6 +244,135 @@ func TestCloudCompletionFailedTextWithoutBodyHasNoSyntheticDigest(t *testing.T) 
 	}
 }
 
+func completionAckFromResult(t *testing.T, result map[string]any) CloudCompletionRequest {
+	t.Helper()
+	call, ok := result["acknowledge"].(map[string]any)
+	if !ok || call["action"] != "completion.ack" {
+		t.Fatalf("missing executable acknowledgement: %v", result)
+	}
+	raw, err := json.Marshal(call["params"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request CloudCompletionRequest
+	if err := json.Unmarshal(raw, &request); err != nil {
+		t.Fatal(err)
+	}
+	request.Action = "ack"
+	return request
+}
+
+func TestCloudCompletionCompactCallbackHandlesTextFileAndRecovery(t *testing.T) {
+	for _, kind := range []string{"text", "local_file", "status", "recovery"} {
+		t.Run(kind, func(t *testing.T) {
+			s, owner, machine, node := newCloudCollaborationTestService(t)
+			ctx := context.Background()
+			callbackType := kind
+			if kind == "recovery" {
+				callbackType = "text"
+			}
+			r, err := s.CloudCollaboration(ctx, owner, CloudCollaborationRequest{Action: "dispatch", MachineID: machine, CallbackSessionID: "codex-target", WorkingDirectory: t.TempDir(), Prompt: "Return the result", IdempotencyKey: "compact-callback-" + kind, CallbackType: callbackType})
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := ""
+			if callbackType == "text" {
+				text = "123"
+			}
+			digest := "sha256:" + strings.Repeat("a", 64)
+			node.setResponse("read", map[string]any{"size": int64(123), "fileSha256": digest})
+			if kind == "recovery" {
+				_, err = s.CloudCompletion(ctx, owner, CloudCompletionRequest{Action: "notify", CollaborationID: r["collaborationId"].(string), TaskID: "task", ActorSessionID: "codex-target", SourceSessionID: r["chatSessionId"].(string), Outcome: "completed", CallbackType: "text", Text: text})
+			} else {
+				_, err = s.SubmitTaskResult(ctx, owner, r["taskRef"].(string), "completed", text)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := s.CloudCompletion(ctx, owner, CloudCompletionRequest{Action: "claim", ActorSessionID: "codex-target", ClaimID: "stable-envelope"})
+			if err != nil || result["claimedCount"] != 1 {
+				t.Fatalf("claim=%v %v", result, err)
+			}
+			item := result["claimed"].([]map[string]any)[0]
+			if item["recoveryOnly"] != (kind == "recovery") || result["queueText"] != nil {
+				t.Fatalf("incorrect/duplicate result: %v", result)
+			}
+			if callbackType == "text" && item["text"] != "123" {
+				t.Fatalf("text=%v", item)
+			}
+			if kind == "local_file" && (item["deliverablePath"] != r["resultPath"] || item["machineId"] != machine || item["text"] != nil) {
+				t.Fatalf("file reference=%v", item)
+			}
+			ack := completionAckFromResult(t, result)
+			if len(ack.Acknowledgements) != 1 || ack.Acknowledgements[0].ResultSHA256 != "" {
+				t.Fatalf("manual metadata required: %+v", ack)
+			}
+			if out, err := s.CloudCompletion(ctx, owner, ack); err != nil || out["acked"] != true {
+				t.Fatalf("ack=%v %v", out, err)
+			}
+			if out, err := s.CloudCompletion(ctx, owner, ack); err != nil || out["replayed"] != true {
+				t.Fatalf("retry=%v %v", out, err)
+			}
+			_, state, err := s.loadCloudCollaboration(ctx, owner, r["collaborationId"].(string))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if kind == "recovery" {
+				if state.Tasks[0].Status == "done" || countCloudCollaborationCalls(node.snapshotCalls(), "session.callback.ack") != 0 {
+					t.Fatal("recovery receipt finalized a task or its Node submission")
+				}
+				return
+			}
+			if state.Tasks[0].Status != "done" || !state.Chats[0].CallbackRegistered {
+				t.Fatalf("task/CHAT state=%+v", state)
+			}
+			for _, call := range node.snapshotCalls() {
+				if call.Action == "session.callback.ack" && (call.Params["mode"] != "completion" || call.Params["sessionId"] != r["chatSessionId"] || call.Params["callbackMissionId"] != r["collaborationId"] || call.Params["callbackTargetSessionId"] != "codex-target") {
+					t.Fatalf("wrong Node acknowledgement: %v", call)
+				}
+				if call.Capability == "file.read" && call.Params["statOnly"] != true {
+					t.Fatalf("file body uploaded: %v", call)
+				}
+			}
+			if countCloudCollaborationCalls(node.snapshotCalls(), "session.callback.ack") != 1 {
+				t.Fatalf("Node acknowledgement was missing or repeated: %v", node.snapshotCalls())
+			}
+			if kind == "local_file" && state.Tasks[0].ResultSHA256 != digest {
+				t.Fatalf("file was not verified: %+v", state.Tasks[0])
+			}
+		})
+	}
+}
+
+func TestCloudCompletionAckKeepsHubClaimUntilNodeConfirms(t *testing.T) {
+	s, owner, machine, node := newCloudCollaborationTestService(t)
+	ctx := context.Background()
+	r, err := s.CloudCollaboration(ctx, owner, CloudCollaborationRequest{Action: "dispatch", MachineID: machine, CallbackSessionID: "codex-target", WorkingDirectory: t.TempDir(), Prompt: "Return 123", IdempotencyKey: "compact-callback-retry"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SubmitTaskResult(ctx, owner, r["taskRef"].(string), "completed", "123"); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.CloudCompletion(ctx, owner, CloudCompletionRequest{Action: "claim", ActorSessionID: "codex-target", ClaimID: "stable-envelope"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack := completionAckFromResult(t, result)
+	node.setResponse("session.callback.ack", map[string]any{"acked": false})
+	if _, err := s.CloudCompletion(ctx, owner, ack); err == nil {
+		t.Fatal("reported success without Node acknowledgement")
+	}
+	claimed, done, err := s.store.GetCloudCompletionClaim(ctx, owner, "codex-target", ack.ClaimID, s.now().UTC(), cloudCompletionClaimLease)
+	if err != nil || done || len(claimed) != 1 {
+		t.Fatalf("lost retryable Hub claim: %+v %v %v", claimed, done, err)
+	}
+	node.setResponse("session.callback.ack", map[string]any{"acked": true})
+	if out, err := s.CloudCompletion(ctx, owner, ack); err != nil || out["acked"] != true {
+		t.Fatalf("retry=%v %v", out, err)
+	}
+}
+
 func TestCloudCollaborationBootstrapDefinesLocalFileCallbackSlot(t *testing.T) {
 	resultPath := filepath.Join(t.TempDir(), ".fast-spider-result-test.md")
 	prompt := cloudCollaborationBootstrap("collab-test", "machine-test", cloudCollaborationState{
@@ -251,10 +380,16 @@ func TestCloudCollaborationBootstrapDefinesLocalFileCallbackSlot(t *testing.T) {
 	}, cloudCollaborationTask{
 		ID: "task-file", Generation: 1, CallbackType: protocolv1.CloudCallbackTypeLocalFile, ResultPath: resultPath, AccessMode: "read_only",
 	})
-	for _, needle := range []string{"FAST_SPIDER_CLOUD_TASK_V1", resultPath, "file_edit", "task_result_submit", "writable even for a read-only task", "other write permissions remain limited to write_scope", "without uploading"} {
+	for _, needle := range []string{"FAST_SPIDER_CLOUD_TASK_V1", resultPath, "file_edit", "FastSpider_FS task_result_submit", "writable even in read_only", "without the file body"} {
 		if !strings.Contains(prompt, needle) {
 			t.Fatalf("bootstrap missing %q: %s", needle, prompt)
 		}
+	}
+	if strings.Count(prompt, "task_") != 2 || len(prompt) > 900 {
+		t.Fatalf("bootstrap duplicates its callback reference or is too long (%d bytes): %s", len(prompt), prompt)
+	}
+	if strings.Contains(prompt, "write_scope=") || strings.Contains(prompt, "placeholder") {
+		t.Fatalf("bootstrap contains empty scope or inapplicable text instructions: %s", prompt)
 	}
 }
 

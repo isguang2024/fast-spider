@@ -195,7 +195,7 @@ type resultWriteInput struct {
 
 type cloudCollaborationInput struct {
 	Action string         `json:"action" jsonschema:"dispatch, completion.notify, completion.claim, or completion.ack"`
-	Params map[string]any `json:"params,omitempty" jsonschema:"action-specific parameters; use the codex_cloud_collaboration guide for the compact contract"`
+	Params map[string]any `json:"params,omitempty" jsonschema:"dispatch: machineId, callbackSessionId, workingDirectory, prompt, idempotencyKey; completion.claim: actorSessionId and optional claimId; completion.ack: use the acknowledge object returned by claim"`
 }
 
 type taskResultSubmitInput struct {

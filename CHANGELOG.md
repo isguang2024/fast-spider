@@ -3,6 +3,13 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.65 - 2026-09-05
+
+- Make Cloud CHAT completion delivery use the assigned task result submission,
+  bounded claim/acknowledge flow and explicit recovery-only handling.
+- Tighten local callback finality, retry scheduling and result metadata
+  verification while keeping callback guidance compact and protocol-bound.
+
 ## 0.4.64 - 2026-09-05
 
 - Add durable callback finality, retry and recovery handling for local Codex
