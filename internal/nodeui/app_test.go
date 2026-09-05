@@ -279,7 +279,7 @@ func TestLocalUIConnectRejectsWhenCLIInstanceOwnsRuntime(t *testing.T) {
 	}
 }
 
-func TestLocalUIConnectDoesNotPersistReusableConnectionToken(t *testing.T) {
+func TestLocalUIConnectAndSwitchAccountPreserveRegistrationOnFailure(t *testing.T) {
 	ctx := context.Background()
 	hubData := t.TempDir()
 	st, err := store.Open(ctx, filepath.Join(hubData, "hub.db"))
@@ -338,6 +338,72 @@ func TestLocalUIConnectDoesNotPersistReusableConnectionToken(t *testing.T) {
 	}
 	if strings.Contains(string(configRaw), connectionToken.Token) || strings.Contains(string(stateRaw), connectionToken.Token) || strings.Contains(string(configRaw), "ctk_") || strings.Contains(string(stateRaw), "ctk_") {
 		t.Fatal("connection token was persisted in Node config/state")
+	}
+
+	connectAgain := func(token string, switching bool) *httptest.ResponseRecorder {
+		t.Helper()
+		body, err := json.Marshal(connectRequest{HubURL: hub.URL, Token: token, MachineName: "Switched Node", SwitchAccount: switching})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/connect", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Fast-Spider-UI-Token", app.uiToken)
+		response := httptest.NewRecorder()
+		app.handler().ServeHTTP(response, req)
+		return response
+	}
+	if response := connectAgain(connectionToken.Token, false); response.Code != http.StatusBadRequest {
+		t.Fatalf("ordinary connect replaced an active registration: %d", response.Code)
+	}
+	if response := connectAgain("ctk_invalid", true); response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid switch token accepted: %d", response.Code)
+	}
+	stateAfterFailure, err := os.ReadFile(filepath.Join(nodeData, "state.json"))
+	if err != nil || !bytes.Equal(stateAfterFailure, stateRaw) {
+		t.Fatalf("failed switch changed registration: %v", err)
+	}
+	configAfterFailure, err := os.ReadFile(filepath.Join(nodeData, "config.json"))
+	if err != nil || !bytes.Equal(configAfterFailure, configRaw) || app.config.MachineName != "UI Node" {
+		t.Fatalf("failed switch changed configuration: %v", err)
+	}
+	if response := connectAgain(connectionToken.Token, true); response.Code != http.StatusOK {
+		t.Fatalf("same-account re-registration failed: %d %s", response.Code, response.Body.String())
+	}
+	otherAccount, err := service.CreateUser(ctx, account.OwnerID, "other-owner", "Other Owner", "correct horse battery staple", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherToken, err := service.CreateConnectionToken(ctx, otherAccount.OwnerID, "Other account", time.Hour, "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response := connectAgain(otherToken.Token, true); response.Code != http.StatusOK {
+		t.Fatalf("switch to another account failed: %d %s", response.Code, response.Body.String())
+	}
+	switched, err := node.LoadState(filepath.Join(nodeData, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	machines, err := service.ListMachines(ctx, otherAccount.OwnerID)
+	if err != nil || len(machines) != 1 || machines[0].MachineID != switched.MachineID {
+		t.Fatalf("switch did not select the target owner's device: %+v %v", machines, err)
+	}
+	if err := service.RevokeMachine(ctx, otherAccount.OwnerID, switched.MachineID, "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	if response := connectAgain(otherToken.Token, true); response.Code != http.StatusOK {
+		t.Fatalf("re-register after revoked credentials failed: %d %s", response.Code, response.Body.String())
+	}
+	repaired, err := node.LoadState(filepath.Join(nodeData, "state.json"))
+	if err != nil || repaired.MachineID == switched.MachineID {
+		t.Fatalf("revoked identity was reused: %+v %v", repaired, err)
+	}
+	for _, name := range []string{"config.json", "state.json"} {
+		raw, err := os.ReadFile(filepath.Join(nodeData, name))
+		if err != nil || bytes.Contains(raw, []byte("ctk_")) {
+			t.Fatalf("switch persisted a connection token in %s: %v", name, err)
+		}
 	}
 }
 

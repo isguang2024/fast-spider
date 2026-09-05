@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -30,6 +33,32 @@ func (m *AgentManager) providers(ctx context.Context) map[string]any {
 		discovery.route = m.ccswitch.InspectApp
 	}
 	result := discoverProviders(ctx, m.registry, discovery)
+	for _, raw := range result["providers"].([]any) {
+		provider := raw.(map[string]any)
+		if provider["providerId"] != "codex" {
+			continue
+		}
+		m.codex.mu.Lock()
+		path := m.codex.executable
+		m.codex.mu.Unlock()
+		source := "unavailable"
+		if path != "" {
+			source = "cli"
+			if strings.TrimSpace(os.Getenv("FAST_SPIDER_CODEX_EXECUTABLE")) != "" {
+				source = "configured"
+			} else if base := os.Getenv("LOCALAPPDATA"); filepath.IsAbs(base) {
+				root := filepath.Join(base, "OpenAI", "Codex", "bin") + string(filepath.Separator)
+				if strings.HasPrefix(strings.ToLower(filepath.Clean(path)), strings.ToLower(root)) {
+					source = "desktop_bundled"
+				}
+			}
+		}
+		provider["runtimeSource"] = source
+		provider["configurationSource"] = "user_codex"
+		if strings.TrimSpace(os.Getenv("CODEX_HOME")) != "" {
+			provider["configurationSource"] = "codex_home"
+		}
+	}
 	return result
 }
 

@@ -3,6 +3,12 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.66 - 2026-09-05
+
+- Add account switching and reconnect entry points for Node users.
+- Discover the ChatGPT desktop bundled Codex runtime and user-level Codex CLI automatically.
+- Reuse `CODEX_HOME` login configuration and improve ChatGPT model-directory error diagnostics.
+
 ## 0.4.65 - 2026-09-05
 
 - Make Cloud CHAT completion delivery use the assigned task result submission,

@@ -18,6 +18,16 @@ const deviceProbeTimeout = 10 * time.Second
 // successful registration stores only the device identity needed for later
 // signed WSS connections.
 func (c *Client) Connect(ctx context.Context, hubURL, token, displayName string) (State, error) {
+	return c.connect(ctx, hubURL, token, displayName, false)
+}
+
+// SwitchAccount explicitly replaces the local registration using the supplied
+// owner's connection token. A rejected registration leaves the old state intact.
+func (c *Client) SwitchAccount(ctx context.Context, hubURL, token, displayName string) (State, error) {
+	return c.connect(ctx, hubURL, token, displayName, true)
+}
+
+func (c *Client) connect(ctx context.Context, hubURL, token, displayName string, switchAccount bool) (State, error) {
 	normalized, err := c.normalizeHubURL(hubURL)
 	if err != nil {
 		return State{}, err
@@ -31,7 +41,7 @@ func (c *Client) Connect(ctx context.Context, hubURL, token, displayName string)
 		return State{}, errors.New("display name is required")
 	}
 
-	if state, stateErr := c.State(); stateErr == nil && state.MachineID != "" && state.HubURL == normalized {
+	if state, stateErr := c.State(); !switchAccount && stateErr == nil && state.MachineID != "" && state.HubURL == normalized {
 		probeCtx, probeCancel := context.WithTimeout(ctx, deviceProbeTimeout)
 		_, probeErr := c.issueDeviceToken(probeCtx, state)
 		probeCancel()

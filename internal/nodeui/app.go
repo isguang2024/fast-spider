@@ -90,9 +90,10 @@ type statusResponse struct {
 }
 
 type connectRequest struct {
-	HubURL      string `json:"hubUrl"`
-	Token       string `json:"token"`
-	MachineName string `json:"machineName"`
+	HubURL        string `json:"hubUrl"`
+	Token         string `json:"token"`
+	MachineName   string `json:"machineName"`
+	SwitchAccount bool   `json:"switchAccount"`
 }
 
 type configRequest struct {
@@ -404,7 +405,11 @@ func (a *App) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	if _, err := client.Connect(ctx, req.HubURL, req.Token, req.MachineName); err != nil {
+	connect := client.Connect
+	if req.SwitchAccount {
+		connect = client.SwitchAccount
+	}
+	if _, err := connect(ctx, req.HubURL, req.Token, req.MachineName); err != nil {
 		writeAPIError(w, http.StatusBadRequest, err)
 		return
 	}

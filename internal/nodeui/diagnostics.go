@@ -44,16 +44,18 @@ type diagnosticHubView struct {
 }
 
 type diagnosticAgentRuntimeView struct {
-	Runtime        string `json:"runtime"`
-	Available      bool   `json:"available"`
-	Version        string `json:"version,omitempty"`
-	AuthConfigured *bool  `json:"authConfigured,omitempty"`
-	Route          string `json:"route,omitempty"`
-	ErrorClass     string `json:"errorClass,omitempty"`
-	ErrorMessage   string `json:"errorMessage,omitempty"`
-	ReadyForCreate *bool  `json:"readyForSessionCreate,omitempty"`
-	ReadinessCode  string `json:"readinessReasonCode,omitempty"`
-	ReadinessMs    int64  `json:"readinessMs,omitempty"`
+	Runtime             string `json:"runtime"`
+	RuntimeSource       string `json:"runtimeSource,omitempty"`
+	ConfigurationSource string `json:"configurationSource,omitempty"`
+	Available           bool   `json:"available"`
+	Version             string `json:"version,omitempty"`
+	AuthConfigured      *bool  `json:"authConfigured,omitempty"`
+	Route               string `json:"route,omitempty"`
+	ErrorClass          string `json:"errorClass,omitempty"`
+	ErrorMessage        string `json:"errorMessage,omitempty"`
+	ReadyForCreate      *bool  `json:"readyForSessionCreate,omitempty"`
+	ReadinessCode       string `json:"readinessReasonCode,omitempty"`
+	ReadinessMs         int64  `json:"readinessMs,omitempty"`
 }
 
 type diagnosticAgentView struct {
@@ -256,6 +258,8 @@ func diagnosticRouteSummary(routes map[string]map[string]any) string {
 func diagnosticProviderRuntime(provider, route map[string]any, includeAuth bool) diagnosticAgentRuntimeView {
 	available, _ := provider["available"].(bool)
 	view := diagnosticAgentRuntimeView{Available: available, Runtime: "unavailable", Version: publicAIText(provider["version"], 128)}
+	view.RuntimeSource = publicEnum(publicAIText(provider["runtimeSource"], 64), "cli", "desktop_bundled", "configured", "unavailable")
+	view.ConfigurationSource = publicEnum(publicAIText(provider["configurationSource"], 64), "user_codex", "codex_home")
 	if available {
 		view.Runtime = "available"
 	}

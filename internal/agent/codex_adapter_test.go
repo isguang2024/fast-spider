@@ -92,6 +92,79 @@ func TestCodexExecutableCandidatesIgnoreMissingOrRelativeLocalAppData(t *testing
 	}
 }
 
+func TestCodexNpmRuntimeWithoutPathAndShellEscaping(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows npm runtime")
+	}
+	base := filepath.Join(t.TempDir(), "npm & tools")
+	t.Setenv("FAST_SPIDER_CODEX_EXECUTABLE", "")
+	t.Setenv("LOCALAPPDATA", "")
+	t.Setenv("APPDATA", base)
+	t.Setenv("PATH", "")
+	shim := filepath.Join(base, "npm", "codex.cmd")
+	entry := filepath.Join(base, "npm", "node_modules", "@openai", "codex", "bin", "codex.js")
+	nodePath := filepath.Join(base, "npm", "node.exe")
+	for _, path := range []string{shim, entry, nodePath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if paths := codexExecutableCandidates(); !reflect.DeepEqual(paths, []string{shim}) {
+		t.Fatalf("npm discovery without PATH: %v", paths)
+	}
+	for _, ext := range []string{".cmd", ".ps1", ""} {
+		cmd, err := codexCommand(context.Background(), filepath.Join(filepath.Dir(shim), "codex"+ext), "app-server", "--stdio")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cmd.Path != nodePath || !reflect.DeepEqual(cmd.Args, []string{nodePath, entry, "app-server", "--stdio"}) {
+			t.Fatalf("npm command did not preserve argv: %v", cmd.Args)
+		}
+	}
+	if _, err := codexCommand(context.Background(), filepath.Join(base, "missing", "codex.cmd"), "--version"); err == nil {
+		t.Fatal("missing npm entry point accepted")
+	}
+}
+
+func TestCodexInstalledRuntimesReadOnlyE2E(t *testing.T) {
+	if os.Getenv("FAST_SPIDER_CODEX_RUNTIME_E2E") != "1" {
+		t.Skip("opt-in installed-runtime startup check")
+	}
+	paths := codexExecutableCandidates()
+	seen := map[string]bool{}
+	for _, path := range paths {
+		kind := "desktop"
+		if strings.HasSuffix(strings.ToLower(path), ".cmd") {
+			kind = "npm-cli"
+		}
+		if seen[kind] {
+			continue
+		}
+		seen[kind] = true
+		t.Run(kind, func(t *testing.T) {
+			t.Setenv("FAST_SPIDER_CODEX_EXECUTABLE", path)
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			adapter := NewCodexAdapter(nil)
+			defer adapter.Close(context.Background())
+			version, err := adapter.Availability(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := adapter.request(ctx, "getAuthStatus", map[string]any{"includeToken": false, "refreshToken": false}); err != nil {
+				t.Fatalf("read-only auth RPC failed: %v", err)
+			}
+			t.Logf("%s: %s, app-server initialized and auth status RPC completed", kind, version)
+		})
+	}
+	if !seen["desktop"] || !seen["npm-cli"] {
+		t.Fatal("this check requires both desktop and npm CLI installations")
+	}
+}
+
 func TestCodexAppServerCommandAlwaysUsesStdio(t *testing.T) {
 	if got := codexAppServerCommandArgs(); !reflect.DeepEqual(got, []string{"app-server", "--stdio"}) {
 		t.Fatalf("app-server args=%#v", got)

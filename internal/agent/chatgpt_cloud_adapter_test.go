@@ -493,6 +493,50 @@ func TestChatGPTCloudModelsReturnsCreationModesAndModelPresets(t *testing.T) {
 	}
 }
 
+func TestChatGPTCloudModelsPreservesSafeFailureStages(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		authErr    error
+		requestErr error
+		status     int
+		body       string
+		code       string
+	}{
+		{name: "login", authErr: errCodexChatGPTNotAuthenticated, code: "CHATGPT_CLOUD_NOT_AUTHENTICATED"},
+		{name: "auth-rpc", authErr: errors.New("private-auth-payload"), code: "CHATGPT_CLOUD_AUTH_RPC_FAILED"},
+		{name: "network", requestErr: errors.New("private-network-address"), code: "CHATGPT_CLOUD_NETWORK_FAILED"},
+		{name: "timeout", requestErr: context.DeadlineExceeded, code: "CHATGPT_CLOUD_NETWORK_TIMEOUT"},
+		{name: "401", status: 401, code: "CHATGPT_CLOUD_MODELS_UNAUTHORIZED"},
+		{name: "403", status: 403, code: "CHATGPT_CLOUD_MODELS_FORBIDDEN"},
+		{name: "429", status: 429, code: "CHATGPT_CLOUD_MODELS_RATE_LIMITED"},
+		{name: "503", status: 503, code: "CHATGPT_CLOUD_MODELS_HTTP_ERROR"},
+		{name: "invalid-json", status: 200, body: "private-response-body", code: "CHATGPT_CLOUD_MODELS_INVALID_RESPONSE"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "private-token", tc.authErr })
+			defer a.Close(context.Background())
+			a.http = &http.Client{Transport: chatgptRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if _, ok := req.Context().Deadline(); !ok {
+					t.Error("catalog request has no deadline")
+				}
+				if tc.requestErr != nil {
+					return nil, tc.requestErr
+				}
+				return &http.Response{StatusCode: tc.status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(tc.body)), Request: req}, nil
+			})}
+			_, err := a.Models(context.Background())
+			var public interface{ CapabilityError() (string, string, bool) }
+			if !errors.As(err, &public) {
+				t.Fatalf("unclassified catalog error: %v", err)
+			}
+			code, message, _ := public.CapabilityError()
+			if code != tc.code || strings.Contains(message, "private-") {
+				t.Fatalf("unsafe or wrong catalog error: %s %s", code, message)
+			}
+		})
+	}
+}
+
 func TestChatGPTCloudAdapterSteerPostsToSteerTurn(t *testing.T) {
 	var steerBody map[string]any
 	var prepareBody map[string]any

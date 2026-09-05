@@ -38,19 +38,19 @@ const localUIHTML = `<!doctype html>
       <main class="content">
         <section id="tab-connect" class="section active">
 	          <div id="registration-panel" class="panel">
-            <h2>首次连接</h2>
-            <p class="copy">只需要登记一次。填写后台生成的连接密钥和客户端名称，成功后这台电脑会自动使用自己的设备密钥连接，后续启动不再要求输入连接密钥。</p>
+            <h2 id="registration-title">首次连接</h2>
+            <p id="registration-copy" class="copy">只需要登记一次。填写后台生成的连接密钥和客户端名称，成功后这台电脑会自动使用自己的设备密钥连接，后续启动不再要求输入连接密钥。</p>
             <form id="connect-form">
               <div class="grid">
                 <label class="field full"><span>连接密钥</span><div class="secret-row"><input id="connect-token" type="password" maxlength="256" autocomplete="off" placeholder="ctk_..." required><button id="toggle-token" class="secondary" type="button">显示</button></div></label>
                 <label class="field full"><span>客户端名称</span><input id="connect-name" maxlength="128" required></label>
               </div>
               <details class="advanced" open><summary>Hub 连接设置</summary><label class="field full" style="margin-top:10px"><span>Hub 地址</span><input id="connect-hub" type="url" maxlength="2048" placeholder="https://your-hub.example/fast-spider" required><small class="hint">填写你自己部署的 Fast Spider Hub HTTPS 地址；连接成功后保存在本机。</small></label></details>
-              <div class="actions"><button class="primary" type="submit">连接这台电脑</button></div>
+              <div class="actions"><button id="connect-submit" class="primary" type="submit">连接这台电脑</button><button id="cancel-switch-account" class="secondary" type="button" hidden>取消</button></div>
             </form>
           </div>
           <div id="registered-panel" class="panel" hidden>
-            <h2>这台电脑已连接</h2>
+            <h2 id="registered-title">这台电脑已登记</h2>
             <p class="copy">设备已经完成登记。以后打开 Fast Spider 会自动连接 Hub，不需要再次输入连接密钥。</p>
             <div class="facts">
               <div class="fact"><span>客户端名称</span><strong id="machine-name">—</strong></div>
@@ -60,6 +60,7 @@ const localUIHTML = `<!doctype html>
               <div class="fact"><span>托盘状态</span><strong id="tray-state">读取中…</strong></div>
             </div>
             <p class="hint" style="margin-top:12px">客户端名称可在“本地配置”中修改；管理员备注只在 Web 后台维护，两者互不覆盖。</p>
+            <div class="actions"><button id="switch-account" class="secondary" type="button">切换账号 / 重新连接</button></div>
           </div>
         </section>
 
@@ -223,7 +224,8 @@ const localUIHTML = `<!doctype html>
 (() => {
   const token = document.querySelector('meta[name="ui-token"]').content;
   const $ = (id) => document.getElementById(id);
-  let current = null;
+	  let current = null;
+	  let switchingAccount = false;
   let busy = false;
   let configDirty = false;
   let workingDirty = false;
@@ -265,8 +267,14 @@ const localUIHTML = `<!doctype html>
     const dot = $('status-dot');
     dot.className = 'dot ' + (status.runtimeStatus === 'online' ? 'ok' : status.runtimeStatus === 'error' ? 'bad' : 'warn');
     $('status-text').textContent = runtimeLabel(status.runtimeStatus);
-    $('registration-panel').hidden = !!status.registered;
-    $('registered-panel').hidden = !status.registered;
+    $('registration-panel').hidden = !!status.registered && !switchingAccount;
+    $('registered-panel').hidden = !status.registered || switchingAccount;
+    $('registered-title').textContent = status.runtimeStatus === 'online' ? '这台电脑已连接' : '这台电脑已登记 · ' + runtimeLabel(status.runtimeStatus);
+    $('registration-title').textContent = switchingAccount ? '切换账号 / 重新连接' : '首次连接';
+    $('registration-copy').textContent = switchingAccount ? '在目标账号的 Web 后台生成连接令牌，填写到下方。也可使用当前账号的令牌重新登记，恢复失效的连接。提交成功后会断开原连接；令牌验证失败时保留原登记。' : '只需要登记一次。填写后台生成的连接密钥和客户端名称，成功后这台电脑会自动使用自己的设备密钥连接，后续启动不再要求输入连接密钥。';
+    $('connect-submit').textContent = switchingAccount ? '确认切换并连接' : '连接这台电脑';
+    $('cancel-switch-account').hidden = !switchingAccount;
+    $('switch-account').disabled = !status.runtimeOwned;
     $('machine-name').textContent = (status.config && status.config.machineName) || '—';
     $('machine-hub').textContent = status.hubUrl || '—';
     $('tray-state').textContent = status.traySupported ? (status.trayActive ? '已驻留 · 右键可退出' : '未启动') : '当前系统不支持';
@@ -447,6 +455,8 @@ const localUIHTML = `<!doctype html>
 	}
 	function diagnosticRuntimeRows(runtime, includeAuth) {
 	  runtime=runtime || {}; const rows=[['Runtime',runtime.runtime || 'unknown'],['Version',runtime.version || '—'],['Route',runtime.route || 'unknown']];
+	  if(runtime.runtimeSource) rows.push(['自动发现',({cli:'独立 Codex CLI',desktop_bundled:'客户端内置 Codex',configured:'指定的 Codex',unavailable:'未找到'})[runtime.runtimeSource] || '未知']);
+	  if(runtime.configurationSource) rows.push(['登录与配置来源',runtime.configurationSource === 'codex_home' ? '用户指定的 CODEX_HOME（由 Codex 读取）' : '当前用户的 .codex（由 Codex 读取）']);
 	  if(runtime.readyForSessionCreate !== undefined) rows.push(['可创建新会话',boolText(runtime.readyForSessionCreate)],['Readiness',String(runtime.readinessReasonCode || 'unknown')+' · '+String(runtime.readinessMs || 0)+'ms']);
 	  if(includeAuth) rows.push(['Auth configured',boolText(runtime.authConfigured)]);
 	  rows.push(['错误',runtime.errorClass ? runtime.errorClass+' · '+(runtime.errorMessage || '') : '无公开错误']); return rows;
@@ -547,11 +557,26 @@ const localUIHTML = `<!doctype html>
   });
 
   $('connect-form').addEventListener('submit', async event => {
-    event.preventDefault(); if (busy) return; busy = true; const submit = event.currentTarget.querySelector('button[type="submit"]'); submit.disabled = true; message('正在登记并连接这台设备…');
+    event.preventDefault(); if (busy) return;
+    if (switchingAccount && !window.confirm('确认使用此令牌切换或重新登记？成功后将断开原连接，正在通过原连接执行的任务可能被中断。')) return;
+    busy = true; const submit = event.currentTarget.querySelector('button[type="submit"]'); submit.disabled = true; $('cancel-switch-account').disabled = true; message('正在登记并连接这台设备…');
     try {
-      const data = await api('/api/connect',{method:'POST',body:JSON.stringify({hubUrl:$('connect-hub').value,token:$('connect-token').value,machineName:$('connect-name').value})});
-      $('connect-token').value=''; renderStatus(data); message('设备已登记。以后启动会自动连接，不再需要输入连接密钥。');
-    } catch (e) { message(e.message,true); } finally { busy=false; submit.disabled=false; }
+      const data = await api('/api/connect',{method:'POST',body:JSON.stringify({hubUrl:$('connect-hub').value,token:$('connect-token').value,machineName:$('connect-name').value,switchAccount:switchingAccount})});
+      switchingAccount=false; $('connect-token').value=''; $('connect-token').type='password'; $('toggle-token').textContent='显示'; renderStatus(data); message('设备已登记，正在连接 Hub。请以顶部连接状态为准。');
+    } catch (e) { message(e.message,true); } finally { busy=false; submit.disabled=false; $('cancel-switch-account').disabled=false; }
+  });
+
+  $('switch-account').addEventListener('click', () => {
+    if (busy || !current) return;
+    switchingAccount=true;
+    $('connect-hub').value=current.hubUrl || current.config.hubUrl || '';
+    $('connect-name').value=current.config.machineName || '';
+    $('connect-token').value=''; $('connect-token').type='password'; $('toggle-token').textContent='显示';
+    renderStatus(current); message(''); $('connect-token').focus();
+  });
+  $('cancel-switch-account').addEventListener('click', () => {
+    if (busy) return;
+    switchingAccount=false; $('connect-token').value=''; $('connect-token').type='password'; $('toggle-token').textContent='显示'; renderStatus(current); message('');
   });
 
   $('config-form').addEventListener('input', () => { configDirty = true; });

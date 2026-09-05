@@ -164,7 +164,12 @@ func (a *CodexAdapter) Availability(ctx context.Context) (string, error) {
 	}
 	for _, path := range codexExecutableCandidates() {
 		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-		output, err := exec.CommandContext(probeCtx, path, "--version").Output()
+		cmd, err := codexCommand(probeCtx, path, "--version")
+		if err != nil {
+			cancel()
+			continue
+		}
+		output, err := cmd.Output()
 		cancel()
 		if err != nil || strings.TrimSpace(string(output)) == "" {
 			continue
@@ -235,7 +240,41 @@ func codexExecutableCandidates() []string {
 	if path, err := exec.LookPath("codex"); err == nil {
 		add(path)
 	}
+	if runtime.GOOS == "windows" {
+		// npm's per-user installation need not be on the desktop app's PATH.
+		if roaming := strings.TrimSpace(os.Getenv("APPDATA")); filepath.IsAbs(roaming) {
+			path := filepath.Join(roaming, "npm", "codex.cmd")
+			if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+				add(path)
+			}
+		}
+	}
 	return paths
+}
+
+// Launch the official npm entry point through Node.js on Windows. Go cannot
+// execute npm's cmd/PowerShell shims as native executables; using the entry point
+// also preserves npm's platform-package resolution without invoking a shell.
+func codexCommand(ctx context.Context, path string, args ...string) (*exec.Cmd, error) {
+	if runtime.GOOS == "windows" {
+		ext := strings.ToLower(filepath.Ext(path))
+		if ext == ".cmd" || ext == ".ps1" || ext == "" {
+			entry := filepath.Join(filepath.Dir(path), "node_modules", "@openai", "codex", "bin", "codex.js")
+			if info, err := os.Stat(entry); err != nil || !info.Mode().IsRegular() {
+				return nil, fmt.Errorf("Codex npm entry point is unavailable")
+			}
+			nodePath := filepath.Join(filepath.Dir(path), "node.exe")
+			if info, err := os.Stat(nodePath); err != nil || !info.Mode().IsRegular() {
+				var err error
+				nodePath, err = exec.LookPath("node")
+				if err != nil {
+					return nil, fmt.Errorf("Node.js is required for the npm Codex CLI")
+				}
+			}
+			return exec.CommandContext(ctx, nodePath, append([]string{entry}, args...)...), nil
+		}
+	}
+	return exec.CommandContext(ctx, path, args...), nil
 }
 
 func codexAppServerEnvironment(base []string) []string {
@@ -326,7 +365,11 @@ func (a *CodexAdapter) ensureStarted(ctx context.Context) error {
 	if path == "" {
 		return fmt.Errorf("%w: compatible Codex executable was not resolved", node.ErrAgentProviderUnavailable)
 	}
-	cmd := exec.Command(path, codexAppServerCommandArgs()...)
+	// The adapter owns the server lifetime, independently of a single RPC context.
+	cmd, err := codexCommand(context.Background(), path, codexAppServerCommandArgs()...)
+	if err != nil {
+		return err
+	}
 	if home, homeErr := os.UserHomeDir(); homeErr == nil && home != "" {
 		cmd.Dir = home
 	}
@@ -403,11 +446,11 @@ func (a *CodexAdapter) AuthToken(ctx context.Context) (string, error) {
 
 func (a *CodexAdapter) Close(ctx context.Context) error {
 	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
 	a.mu.Lock()
 	a.closed = true
 	cmd := a.cmd
 	a.mu.Unlock()
-	a.lifecycleMu.Unlock()
 	if cmd == nil {
 		return nil
 	}

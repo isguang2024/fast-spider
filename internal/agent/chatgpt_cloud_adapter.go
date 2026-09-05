@@ -923,9 +923,11 @@ func (a *ChatGPTCloudAdapter) Read(ctx context.Context, conversationID string) (
 // model selection surface for chatgpt_cloud conversations, distinct from the
 // Codex/work app-server model list.
 func (a *ChatGPTCloudAdapter) Models(ctx context.Context) (map[string]any, error) {
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
 	token, err := a.token(ctx)
 	if err != nil {
-		return nil, err
+		return nil, &chatGPTCatalogError{code: classifyChatGPTCloudAuthError(err)}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, a.baseURL+"/backend-api/models", nil)
 	if err != nil {
@@ -934,11 +936,16 @@ func (a *ChatGPTCloudAdapter) Models(ctx context.Context) (map[string]any, error
 	chatgptApplyCloudHeaders(req, token)
 	resp, err := a.http.Do(req)
 	if err != nil {
-		return nil, err
+		code := "CHATGPT_CLOUD_NETWORK_FAILED"
+		var networkErr net.Error
+		if errors.As(err, &networkErr) && networkErr.Timeout() {
+			code = "CHATGPT_CLOUD_NETWORK_TIMEOUT"
+		}
+		return nil, &chatGPTCatalogError{code: code}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("list chat models returned %s", resp.Status)
+		return nil, &chatGPTCatalogError{code: "CHATGPT_CLOUD_MODELS_HTTP_ERROR", status: resp.StatusCode}
 	}
 	var out struct {
 		Title            string           `json:"title"`
@@ -948,7 +955,7 @@ func (a *ChatGPTCloudAdapter) Models(ctx context.Context) (map[string]any, error
 		Versions         []map[string]any `json:"versions"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, err
+		return nil, &chatGPTCatalogError{code: "CHATGPT_CLOUD_MODELS_INVALID_RESPONSE"}
 	}
 	models := make([]map[string]any, 0, len(out.Models))
 	seenModels := make(map[string]struct{}, len(out.Models))
@@ -983,6 +990,34 @@ func (a *ChatGPTCloudAdapter) Models(ctx context.Context) (map[string]any, error
 		"thinkingOptions": chatGPTThinkingOptions(presets),
 		"modelPresets":    presets,
 	}, nil
+}
+
+// Keep provider bodies, credentials, URLs and raw transport errors out of UI
+// and capability responses while preserving the failed stage and HTTP status.
+type chatGPTCatalogError struct {
+	code   string
+	status int
+}
+
+func (e *chatGPTCatalogError) Error() string {
+	if e.status != 0 {
+		return fmt.Sprintf("ChatGPT model catalog request returned HTTP %d", e.status)
+	}
+	return e.code
+}
+
+func (e *chatGPTCatalogError) CapabilityError() (string, string, bool) {
+	code := e.code
+	switch e.status {
+	case http.StatusUnauthorized:
+		code = "CHATGPT_CLOUD_MODELS_UNAUTHORIZED"
+	case http.StatusForbidden:
+		code = "CHATGPT_CLOUD_MODELS_FORBIDDEN"
+	case http.StatusTooManyRequests:
+		code = "CHATGPT_CLOUD_MODELS_RATE_LIMITED"
+	}
+	retryable := e.status == http.StatusTooManyRequests || e.status >= 500 || code == "CHATGPT_CLOUD_NETWORK_TIMEOUT" || code == "CHATGPT_CLOUD_NETWORK_FAILED" || code == "CHATGPT_CLOUD_AUTH_RPC_TIMEOUT"
+	return code, e.Error(), retryable
 }
 
 func chatgptCloudModelDisplayTitle(slug, providerTitle string) string {
