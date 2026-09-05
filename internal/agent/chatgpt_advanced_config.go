@@ -185,6 +185,7 @@ func filterChatGPTAdvancedModels(models []ChatGPTAdvancedModel, options []ChatGP
 	filtered := make([]ChatGPTAdvancedModel, len(models))
 	for index, model := range models {
 		filtered[index] = model
+		filtered[index].Title = chatgptCloudModelDisplayTitle(model.ID, model.Title)
 		filtered[index].Thinking = make([]string, 0, len(model.Thinking))
 		for _, thinking := range model.Thinking {
 			if _, ok := available[thinking]; ok {

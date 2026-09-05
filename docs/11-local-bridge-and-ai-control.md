@@ -174,7 +174,7 @@ Cloud 只有一个创建入口 `session.create`，用 `mode=quick_chat|complete`
 
 公开调用统一使用 `codex_cloud_collaboration action=dispatch`：传入 `machineId`、现有本地 Codex 的 `callbackSessionId`、绝对 `workingDirectory`、任务 `prompt` 和稳定 `idempotencyKey`。可选 `targetSessionId` 只续发指定可见 CHAT；省略时创建一个可见 `quick_chat`。Hub 派生的内部发送键绑定 collaboration、task 和 generation；明确的 `session.send` 拒绝会撤销本次 callback route 并返回错误，不会伪装为 `active`，只有连接丢失或 deadline 等无法判断 Turn 是否启动的结果才进入 `deliveryInDoubt`。Fast Spider 不区分“单主控”“主控加协调者”或“单 AI”模式，三者都只是把任务发给 CHAT，再把结果回调给 `callbackSessionId`。
 
-CHAT 完成前通过同一个 `codex_cloud_collaboration action=completion.notify` 回传结果。默认短文本最多 2000 个 Unicode 字符和 8192 个 UTF-8 字节；文件型结果只写入 Hub 预登记的 Node 本地 callback slot；状态型不带正文。正常路径为 `completion.notify → Hub 持久化 → Node 主动唤醒 callbackSessionId → Codex claim/ack`。Provider realtime、启动补漏和低频状态读取只是兜底；未来新建的 CHAT/任务不保证被外部定时查询覆盖，因此 FS 主动回调不能省略。dispatch 返回 `callerShouldYield=true` 和 `nextAction=end_turn` 后，调用方结束当前 Turn 等待回调，不用轮询模拟协作。
+CHAT 完成前使用 `task_result_submit(taskRef,status,text?)` 提交结果。默认短文本最多 2000 个 Unicode 字符和 8192 个 UTF-8 字节；长任务在 dispatch 时选择 `callbackType=local_file`，CHAT 先将完整结果写入分配的 Node 本地 `resultPath`，再省略正文提交状态。FS 校验文件元数据和 SHA-256，Hub 不接收文件正文，Codex 按本地路径读取。正常路径为 `task_result_submit → Hub 持久化 → Node 主动唤醒 callbackSessionId → Codex claim/ack`。旧 `completion.notify` 保留兼容。Provider realtime、启动补漏和低频状态读取只是兜底。dispatch 返回 `callerShouldYield=true` 和 `nextAction=end_turn` 后结束当前 Turn 等待回调，不用轮询模拟协作。
 
 目标、进度、阻塞和下一步属于 AI 的上下文管理。确需跨会话复用时，用 `working_context get/set` 维护一段简短文本；简单任务不必建立资料室。不得写入凭据、原始 Provider payload、完整聊天记录、源码全文或长日志。
 

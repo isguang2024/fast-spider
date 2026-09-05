@@ -186,6 +186,25 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		if tool.Name == "shell_run" {
 			shellToolDescription = tool.Description
 		}
+		if tool.Name == "task_result_submit" {
+			if tool.Annotations == nil || tool.Annotations.ReadOnlyHint || tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint || !tool.Annotations.IdempotentHint || tool.Annotations.OpenWorldHint == nil || *tool.Annotations.OpenWorldHint {
+				t.Fatalf("task result annotations=%+v", tool.Annotations)
+			}
+			schema, err := json.Marshal(tool.InputSchema)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range []string{"taskRef", "status", "text"} {
+				if !bytes.Contains(schema, []byte(`"`+field+`"`)) {
+					t.Fatalf("missing %s: %s", field, schema)
+				}
+			}
+			for _, field := range []string{"machineId", "path", "callbackSessionId", "prompt", "actorSessionId"} {
+				if bytes.Contains(schema, []byte(`"`+field+`"`)) {
+					t.Fatalf("result submission widened authority: %s", schema)
+				}
+			}
+		}
 	}
 	t.Logf("MCP tool catalog bytes=%d connection=%d largest=%s/%d", toolCatalogBytes, connectionToolBytes, largestToolName, largestToolBytes)
 	if toolCatalogBytes > 50<<10 {
@@ -198,7 +217,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 		t.Fatalf("MCP tool %s grew beyond 8 KiB individual budget: %d", largestToolName, largestToolBytes)
 	}
 	sort.Strings(names)
-	want := []string{"ai_control", "artifact_get", "audit_log", "browser_control", "build_control", "capability_list", "code_search", "codex_cloud_collaboration", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "operation_log", "result_get", "screenshot_take", "shell_run", "thinking_team", "working_context"}
+	want := []string{"ai_control", "artifact_get", "audit_log", "browser_control", "build_control", "capability_list", "code_search", "codex_cloud_collaboration", "file_edit", "file_read", "git_control", "job_cancel", "job_watch", "machine_get", "machine_list", "operation_log", "result_get", "screenshot_take", "shell_run", "task_result_submit", "thinking_team", "working_context"}
 	if stringJSON(names) != stringJSON(want) {
 		t.Fatalf("tools=%v want=%v", names, want)
 	}
@@ -268,7 +287,7 @@ func TestMachineBoundaryEndToEnd(t *testing.T) {
 	if err := json.Unmarshal(defaultGuideRaw, &defaultGuidePayload); err != nil {
 		t.Fatal(err)
 	}
-	if defaultGuide.IsError || !strings.Contains(string(defaultGuideRaw), `"capabilities"`) || !strings.Contains(string(defaultGuideRaw), `"view":"overview"`) || len(defaultGuidePayload.Guide.ToolSummaries) != 21 || len(defaultGuidePayload.CapabilitySummaries) == 0 {
+	if defaultGuide.IsError || !strings.Contains(string(defaultGuideRaw), `"capabilities"`) || !strings.Contains(string(defaultGuideRaw), `"view":"overview"`) || len(defaultGuidePayload.Guide.ToolSummaries) != 22 || len(defaultGuidePayload.CapabilitySummaries) == 0 {
 		t.Fatalf("default capability_list=%s", defaultGuideRaw)
 	}
 	if len(defaultGuide.Content) != 0 {

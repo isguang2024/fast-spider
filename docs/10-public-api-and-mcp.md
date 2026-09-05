@@ -2,7 +2,7 @@
 
 ## 公网 MCP
 
-Fast Spider MCP 通过 `/mcp` 提供 Streamable HTTP，使用标准 OAuth Authorization Code + PKCE。当前固定 21 个工具：
+Fast Spider MCP 通过 `/mcp` 提供 Streamable HTTP，使用标准 OAuth Authorization Code + PKCE。当前固定 22 个工具：
 
 ```text
 machine_list
@@ -23,6 +23,7 @@ screenshot_take
 thinking_team
 ai_control
 codex_cloud_collaboration
+task_result_submit
 artifact_get
 result_get
 working_context
@@ -37,8 +38,10 @@ Current 不提供目录列表工具；`audit_log` 只读查询 Hub 本地 `audit
 | 直接操作本地文件、命令、Git、浏览器 | 对应的 `file_*` / `shell_run` / `git_control` / `browser_control` | 在当前会话内完成 |
 | 直接查看、创建或续发 AI 会话，并由当前调用方交互式读取 | `ai_control` | 只有明确需要同步观察时才使用 `session.get/watch/result` |
 | 创建或续发 Cloud CHAT，结果稍后回到 Codex | `codex_cloud_collaboration action=dispatch` | 提供 `callbackSessionId`；FS 创建或复用一个 CHAT、发送任务并登记回调，成功后立即结束本轮 |
-| CHAT 通知完成 | `codex_cloud_collaboration action=completion.notify` | Hub 先持久化，再主动推入 Node 队列；Node 在目标空闲时立即唤醒 `callbackSessionId`，忙时等当前 Turn 结束后重试 |
+| CHAT 提交结果 | `task_result_submit` | 传入任务给出的 `taskRef`、`status` 和可选短文本；文件任务先写本机文件，FS 校验后持久化通知，并唤醒已绑定的 Codex 会话 |
 | 展示或临时分享已有文件 | `artifact_get` | 只有明确需要展示或临时 URL 时才上传，不作为协作回调通道 |
+
+无需用户说出工具名：查文件或跑测试直接使用对应工具；“让云端做，完成后回来”使用 dispatch；“完整报告放在电脑上”选择 local_file。小任务默认当前会话直接完成。模型默认沿用 Node 配置；需要自主选择时，先用相应 backend 的 `models.list` 查实际模型和支持档位，再在支持 `model/thinking` 的 `ai_control session.create/send` 中传入。当前 dispatch 不接受这两个覆盖参数；不要为选择模型绕过回调链路，也不修改全局默认。
 
 `thinking_team` 不需要 `machineId`，只返回 9 个部门、17 个角色、角色指令、协作流程和“普通文本项目上下文”建议；`providerInvocation=false`，不会创建本机 AI Session。
 
@@ -52,6 +55,8 @@ Codex 保留 Provider/Model、Skills/Hooks/Permission Profiles/Plugins/MCP disco
 
 Hub 的 MCP `initialize` 会返回不超过 2 KiB 的常驻能力地图，并把 Server Title 固定为 `FastSpider_FS`。能力地图只说明十类能力、第一步和固定安全链路，不复制完整 Schema、参数示例或错误表。当 ChatGPT 已选择该 App 或用户显式 `@FastSpider_FS` 时，调用侧应先尝试工具而不是仅依据界面文本判断“插件未加载”：连接测试使用只读 `capability_list(view=overview)` + `machine_list`；需要本机操作但尚无 `machineId` 时先调用 `machine_list`。
 
+新工具缺失时，先定向发现该名称，并对照 `capability_list(view=tool,name=task_result_submit)`。若 Hub 已提供而 CHAT 无法发现，在 ChatGPT 设置的 FS 插件详情中刷新操作目录，再于后续 turn 验证；设置页列出不代表运行中的 CHAT 已加载。Codex MCP 登录与 ChatGPT 插件目录分别管理。文件写入成功、结果提交成功、恢复唤醒和接收方验收是不同证据，不能互相替代。
+
 所有 machine-bound MCP 工具支持可选 `diagnostics`。省略或传 `false` 时使用稳定的紧凑结果：`structuredContent` 不重复携带 transport `requestId/traceId/callRequestId/callTraceId`、通用 `timing`、搜索 elapsed 和 readiness 检查时间；这些诊断事实移到结果 `_meta.fastSpider/diagnostics`，不会进入模型对话正文。传 `diagnostics=true` 才把同一批字段同时保留在结构化结果中，供单次排障。`machineId/providerId/sessionId/jobId/turnId`、cursor、hash、state/error/exitCode、URL/expiry 等业务续作与校验事实始终保留；原生 Artifact 内容不受影响。Hub-local 工具也只返回一次 `structuredContent`，不再把同一 JSON 自动复制到文本 `content`。
 
 公网 MCP 的 `machine_list` 使用稳定的管理备注/显示名/ID 顺序分页，默认 `limit=20`、最大 50；`hasMore=true` 时把返回的 `nextCursor` 原样传给下一页。它默认省略每台机器重复的完整 capability descriptors，只返回发现和选机需要的 machine/online/runtime/version 等事实；确需在同一响应展开时传 `includeCapabilities=true`，否则使用 `machine_get` 或 `capability_list` 读取详细能力。底层只查询当前页，默认页也不读取数据库 capability 列表。
@@ -63,7 +68,7 @@ Hub 的 MCP `initialize` 会返回不超过 2 KiB 的常驻能力地图，并把
 - 省略 `machineId` 和 `view`：兼容返回 Hub Capability Catalog，并附带精简 overview。
 - 提供 `machineId`、省略 `view`：保持旧行为，只返回该 Machine 的能力目录。
 - `view=catalog`：显式返回 Hub 或指定 Machine 的能力目录。
-- `view=overview`：返回能力分类、21 个 MCP 工具的一句话 `toolSummaries`、底层 `capabilitySummaries`、黄金规则和推荐下一步；摘要足够选择入口，不复制完整 capability actions 或 Schema。
+- `view=overview`：返回能力分类、22 个 MCP 工具的一句话 `toolSummaries`、底层 `capabilitySummaries`、黄金规则和推荐下一步；摘要足够选择入口，不复制完整 capability actions 或 Schema。
 - `view=catalog` 或省略 view 的兼容入口保留原始 `capabilities` 完整 actions；`view=overview` 的 `capabilities` 为空数组，以避免把同一目录重复塞进上下文。
 - `view=capability`：必须提供底层 `capabilityId`（例如 `shell.exec`），返回该 capability 的 actions、语义和对应 MCP 工具。
 - `view=tool|workflow|error`：必须提供 `name`，一次只返回一个工具、流程或真实稳定错误码的有界指南；未知 view/name 明确拒绝。
@@ -76,7 +81,9 @@ Codex/Claude Code 的会话能力不是独立顶层工具；统一位于 `ai_con
 
 需要稍后回调的任务统一使用 `codex_cloud_collaboration action=dispatch`。公开调用只需给出 `machineId`、现有本地 Codex 的 `callbackSessionId`、`workingDirectory`、任务 `prompt` 和稳定 `idempotencyKey`；可选 `targetSessionId` 表示只续发那个可见 CHAT，省略则新建一个可见 `quick_chat`。内部 `session.send` 幂等键同时绑定 collaboration、task 和 generation，跨批次复用同一 CHAT 不会撞用旧任务的 message ID；Node 明确拒绝的发送会原样返回错误并释放本次 callback route，只有断线或超时等无法确认副作用结果时才保留 `deliveryInDoubt`。FS 不再要求调用方先创建 controller/dispatcher、抢 lease、增加 goal/task 再 dispatch；一个主控、主控加协调者或单 AI 都使用同一条协议，角色关系留在调用方上下文里。
 
-CHAT 收到的是一份直接任务说明，可按范围使用 Fast Spider 的文件、Shell、Git、浏览器和测试能力。完成前使用同一个 `codex_cloud_collaboration` 的 `completion.notify` 回传短文本、固定本地文件槽或纯状态。Hub 先把完成通知写入持久队列，再调用 Node 的内部 callback 入队动作；Node 本地落盘后，目标 Codex 空闲就立即收到唤醒，目标正忙则保留到当前 Turn 结束后再投递。dispatch 返回 `callerShouldYield=true` 与 `nextAction=end_turn` 后，调用方结束当前 Turn 等待回调，不用 `session.get/watch/result` 轮询。
+CHAT 收到直接任务说明和 `taskRef`，可按范围使用 Fast Spider 的文件、Shell、Git、浏览器和测试能力。完成前调用 `task_result_submit(taskRef,status,text?)`，其中 `status` 为 `completed|blocked|failed`。短文本沿用 2000 字符/8192 字节上限。长报告在 dispatch 时选择 `callbackType=local_file`，可由调用方指定工作范围内的绝对 `deliverablePath`；未指定时 FS 分配固定本机文件，回执返回 `resultPath`。CHAT 使用 `file_edit` 完成 UTF-8 文件写入后再提交，省略 `text`。FS 仅向 Node 请求 `file_read(statOnly=true)`，检查普通文件、大小上限 256 MiB 和 SHA-256；正文不上传 Hub，文件留给本机 Codex 读取。提交者不能改变文件路径或通知目标；任务引用绑定 owner 校验下的既有 task 和 generation，本身不是凭据。
+
+Hub 将结果通知写入持久队列，再交给 Node；目标 Codex 空闲时收到唤醒，忙时等待。提交成功表示结果已接收和通知已接受，不代表接收方已完成处理。重复提交相同结果幂等；传输不确定或 `CALLBACK_DELIVERY_PENDING` 时重试同一请求。旧 `completion.notify/claim/ack` 为已有任务和恢复保留。dispatch 返回 `callerShouldYield=true` 与 `nextAction=end_turn` 后结束当前 Turn，不轮询。文件输出与结果提交分别接受平台审批；提交被拒绝时如实报告，不用文件写入绕过拒绝。
 
 正常链路是 `CHAT completion.notify → Hub 持久化 → Node 主动唤醒 Codex → Codex claim/ack`。Provider realtime、启动时对账、低频状态读取和外部定时查询只在通知缺失或链路中断时补漏，不能当作正常完成通道；尤其不能假设以后新建的 CHAT/任务一定已经被某个定时器纳入查询。Hub/Node 内部的 callback 注册、generation、CAS、幂等、claim/ack、重启恢复和归档/释放只是同一 dispatch 链路的可靠性实现，不是第二套面向 AI 的协作流程。问题、目标和进度若需要跨 AI 复用，只在 `working_context` 中维护一段简短文本；简单任务无需建立资料室。
 
@@ -93,7 +100,10 @@ ChatGPT 对已发布 MCP App 的工具/输入定义可能使用经批准的快�
 - ai_control session.create: `providerId + workingDirectory`; 可选 `visibility=visible|internal`、`backend=codex_local|claude_local|chatgpt_cloud`、`visibilityTarget=codex_local|claude_local|chatgpt_cloud|none`、`ephemeral`，以及 ChatGPT Cloud 的 `mode=complete|quick_chat`、`model`、`thinking`; `session.result` 另支持 `resultMode=manifest|result-id`; 高级配置不会新增第三种 mode
 - ai_control session.get: 已知本地 Codex ID 可传 `metadataOnly=true` 只验证元数据；CHAT 给定 Codex ID 时先 get，空闲后用同一 ID `session.send`
 - codex_cloud_collaboration dispatch: `machineId + callbackSessionId + workingDirectory + prompt + idempotencyKey`；可选 `targetSessionId` 只复用该 CHAT，省略则新建一个可见 `quick_chat`；默认 `accessMode=write`、`writeScope=workingDirectory`、`callbackType=text`
-- codex_cloud_collaboration completion.notify: `collaborationId + taskId + actorSessionId=$self + outcome + callbackType`；仅 `text` 可带 `text`，最多 2000 字符/8192 字节；`local_file` 路径由 Hub 从任务派生，不接收上传内容或调用方路径
+- task_result_submit: `taskRef + status=completed|blocked|failed`；text 任务可带 `text`，最多 2000 字符且不超过 8192 UTF-8 字节；local_file 先用 file_edit 写固定本机路径，再省略 text 提交，FS 验证文件大小与 SHA-256 后通知绑定 Codex
+- codex_cloud_collaboration completion.notify（旧任务与恢复）: `collaborationId + taskId + actorSessionId + outcome + callbackType`；CHAT actor 使用 `$self` 提交正式结果，接收方恢复使用自己的真实 ID，保存为独立 `recoveryOnly` 观察；其 ack 只确认收讫，不完成/阻塞任务或归档 CHAT。local_file 路径由 Hub 从任务派生，不接收上传内容或调用方路径。
+- Node 回调的 `completionSource` 区分 `submission/recovery`（缺失为历史未知）；先领取 Hub，只有缺失的恢复观察才 replay。恢复观察通知成功后不反复 nudge，正式结果使用独立去重键，可替代待处理恢复观察。正式提交不同结果仍返回 `TASK_RESULT_CONFLICT`；历史未知来源不自动覆盖，需备份并精确核实后清理错误回执及同 ID 确认事件。
+- `completion.ack` 只收讫本次结果，默认保留 CHAT 和协作，不自动归档。AI 判断后续不需复用时，由 controller 显式调用 `codex_cloud_collaboration close`（带当前 revision）；它归档 FS 创建的 CHAT、释放复用 CHAT。继续原 CHAT 时用 `dispatch targetSessionId` 绑定新任务回调。
 - ai_control session.callback.register/arm/enqueue: 仅供 Hub 的 `codex_cloud_collaboration` 内部登记、激活和主动投递；公网 AI 直接调用会返回 `CALLBACK_ROUTE_MANAGED_ONLY`
 - ai_control session.callback.claim/ack: `callbackTargetSessionId`; claim 可选 `callbackClaimLimit<=64` 或原 `callbackClaimId` 幂等续领，ack 使用返回的 `callbackClaimId`
 - ai_control routing.status: 可选 `appType=claude|codex|claude-desktop`，只读 CC Switch 路由事实

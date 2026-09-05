@@ -59,9 +59,14 @@ type sessionCallbackRegistration struct {
 	LastDeliveredEnvelope  string    `json:"lastDeliveredEnvelope,omitempty"`
 	LastNudgeAt            time.Time `json:"lastNudgeAt,omitempty"`
 	LastNudgeEnvelope      string    `json:"lastNudgeEnvelope,omitempty"`
+	LastNudgeEventKey      string    `json:"lastNudgeEventKey,omitempty"`
 	LastNudgeExecutionMode string    `json:"lastNudgeExecutionMode,omitempty"`
 	LastNudgeOwner         string    `json:"lastNudgeOwner,omitempty"`
 	LastNudgeTurnID        string    `json:"lastNudgeTurnId,omitempty"`
+	NudgeFailureEnvelope   string    `json:"nudgeFailureEnvelope,omitempty"`
+	NudgeFailureCount      int       `json:"nudgeFailureCount,omitempty"`
+	NudgeRetryAt           time.Time `json:"nudgeRetryAt,omitempty"`
+	NudgeErrorClass        string    `json:"nudgeErrorClass,omitempty"`
 	LastResultID           string    `json:"lastResultId,omitempty"`
 	LastResultStatus       string    `json:"lastResultStatus,omitempty"`
 	LastResultBytes        int64     `json:"lastResultBytes,omitempty"`
@@ -80,6 +85,7 @@ type sessionCallbackEvent struct {
 	EventSequence     int64     `json:"eventSequence"`
 	EventKey          string    `json:"eventKey"`
 	EventType         string    `json:"eventType"`
+	CompletionSource  string    `json:"completionSource,omitempty"`
 	OccurredAt        time.Time `json:"occurredAt"`
 	CallbackType      string    `json:"callbackType"`
 	ResultText        string    `json:"resultText,omitempty"`
@@ -308,6 +314,18 @@ func validateSessionCallbackRegistration(registration sessionCallbackRegistratio
 	if err := validateCallbackSafeToken(registration.LastNudgeTurnID, "callback nudge turn ID"); err != nil {
 		return err
 	}
+	if registration.NudgeFailureCount < 0 || registration.NudgeFailureCount > 32 {
+		return fmt.Errorf("invalid callback retry count")
+	}
+	if err := validateCallbackSafeToken(registration.NudgeFailureEnvelope, "callback failure envelope"); err != nil {
+		return err
+	}
+	if registration.NudgeFailureCount > 0 && (registration.NudgeFailureEnvelope == "" || registration.NudgeRetryAt.IsZero()) {
+		return fmt.Errorf("callback failure requires an envelope and retry deadline")
+	}
+	if registration.NudgeErrorClass != "" && !validErrorClass(ErrorClass(registration.NudgeErrorClass)) {
+		return fmt.Errorf("invalid callback error class")
+	}
 	if err := validateCallbackResultMetadata(callbackResultMetadata{registration.LastResultID, registration.LastResultStatus, registration.LastResultBytes, registration.LastResultSHA256, registration.LastResultPageCount}); err != nil {
 		return err
 	}
@@ -434,7 +452,7 @@ func validateCallbackSafeToken(value, label string) error {
 }
 
 func isPersistentCallbackEventKey(key string) bool {
-	return strings.HasPrefix(key, "provider_evt_") || strings.HasPrefix(key, "completion_")
+	return strings.HasPrefix(key, "provider_evt_") || strings.HasPrefix(key, "completion_") || strings.HasPrefix(key, "submitted_") || strings.HasPrefix(key, "recovery_")
 }
 
 func validateCallbackOpaqueID(value, label string, limit int) error {
@@ -690,6 +708,31 @@ func (s *sessionCallbackStore) enqueue(event chatgptCloudEvent) (bool, error) {
 	previousRegistration := registration
 	previousPending, hadPending := s.pending[event.ConversationID]
 	eventKey := sessionCallbackCompletionEventKey(registration)
+	source := "recovery"
+	if event.EventType == "hub-completion-notify" {
+		source = "submission"
+		eventKey = "submitted_" + strings.TrimPrefix(eventKey, "completion_")
+	} else {
+		eventKey = "recovery_" + strings.TrimPrefix(eventKey, "completion_")
+	}
+	// A formal result supersedes an observation, including a claimed legacy
+	// observation. The old claim must not acknowledge the replacement.
+	if hadPending && previousPending.CompletionSource == "submission" {
+		if source == "recovery" {
+			return false, nil
+		}
+		if previousPending.CallbackOutcome != event.CallbackOutcome || previousPending.ResultText != event.ResultText {
+			return false, &sessionCallbackError{code: "TASK_RESULT_CONFLICT", message: "a different submitted callback already exists"}
+		}
+	}
+	if source == "recovery" {
+		formalKey := "submitted_" + strings.TrimPrefix(sessionCallbackCompletionEventKey(registration), "completion_")
+		for _, key := range registration.RecentEventKeys {
+			if key == formalKey {
+				return false, nil
+			}
+		}
+	}
 	now := time.Now().UTC()
 	if isPersistentCallbackEventKey(eventKey) {
 		for _, recentKey := range registration.RecentEventKeys {
@@ -724,6 +767,7 @@ func (s *sessionCallbackStore) enqueue(event chatgptCloudEvent) (bool, error) {
 		EventSequence:     event.Sequence,
 		EventKey:          eventKey,
 		EventType:         event.Type,
+		CompletionSource:  source,
 		OccurredAt:        event.Timestamp.UTC(),
 		CallbackType:      event.CallbackType,
 		ResultText:        event.ResultText,
@@ -822,6 +866,14 @@ func (s *sessionCallbackStore) registrationsSnapshot(sourceSessionID, targetSess
 }
 
 func (s *sessionCallbackStore) pendingByTarget() (map[string][]sessionCallbackEvent, error) {
+	return s.pendingByTargetMode(false)
+}
+
+func (s *sessionCallbackStore) pendingForNudge() (map[string][]sessionCallbackEvent, error) {
+	return s.pendingByTargetMode(true)
+}
+
+func (s *sessionCallbackStore) pendingByTargetMode(forNudge bool) (map[string][]sessionCallbackEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.loadErr != nil {
@@ -829,6 +881,9 @@ func (s *sessionCallbackStore) pendingByTarget() (map[string][]sessionCallbackEv
 	}
 	grouped := map[string][]sessionCallbackEvent{}
 	for _, event := range s.pending {
+		if forNudge && event.CompletionSource == "recovery" && s.registrations[event.SourceSessionID].LastNudgeEventKey == event.EventKey {
+			continue
+		}
 		grouped[event.TargetSessionID] = append(grouped[event.TargetSessionID], event)
 	}
 	for target := range grouped {
@@ -1124,6 +1179,9 @@ func (s *sessionCallbackStore) nudgeSchedule(targetSessionID string, now time.Ti
 		if registration.TargetSessionID != targetSessionID {
 			continue
 		}
+		if event, ok := s.pending[registration.SourceSessionID]; ok && event.EventKey != registration.LastNudgeEventKey {
+			return true, now, nil
+		}
 		found = true
 		if registration.LastNudgeAt.After(latest) {
 			latest = registration.LastNudgeAt
@@ -1142,7 +1200,78 @@ func (s *sessionCallbackStore) nudgeSchedule(targetSessionID string, now time.Ti
 	return !now.Before(next), next, nil
 }
 
-func (s *sessionCallbackStore) recordNudge(targetSessionID, envelopeID string, delivery sessionCallbackDeliveryResult, now time.Time) error {
+func (s *sessionCallbackStore) nudgeRetryDeadline(targetSessionID, envelopeID string) (time.Time, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return time.Time{}, callbackStoreUnavailableError()
+	}
+	var next time.Time
+	for _, registration := range s.registrations {
+		if registration.TargetSessionID == targetSessionID && registration.NudgeFailureEnvelope == envelopeID && registration.NudgeRetryAt.After(next) {
+			next = registration.NudgeRetryAt
+		}
+	}
+	return next, nil
+}
+
+func (s *sessionCallbackStore) recordNudgeFailure(targetSessionID, envelopeID string, class ErrorClass, now time.Time, interval time.Duration) (time.Time, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return time.Time{}, callbackStoreUnavailableError()
+	}
+	// A callback may be acknowledged, replaced or claimed while delivery is in
+	// flight. Never attach its failure to a different queue generation.
+	var events []sessionCallbackEvent
+	for _, event := range s.pending {
+		if event.TargetSessionID == targetSessionID && !callbackClaimActive(event, now) {
+			events = append(events, event)
+		}
+	}
+	sortSessionCallbackEvents(events)
+	if len(events) == 0 || sessionCallbackEnvelopeID(targetSessionID, events) != envelopeID {
+		return time.Time{}, nil
+	}
+	failures := 0
+	for _, registration := range s.registrations {
+		if registration.TargetSessionID == targetSessionID && registration.NudgeFailureEnvelope == envelopeID && registration.NudgeFailureCount > failures {
+			failures = registration.NudgeFailureCount
+		}
+	}
+	if failures < 32 {
+		failures++
+	}
+	if interval <= 0 {
+		interval = sessionCallbackDeliveryRetryInterval
+	}
+	for attempt := 1; attempt < failures && interval < sessionCallbackNudgeInterval; attempt++ {
+		interval *= 2
+	}
+	if interval > sessionCallbackNudgeInterval {
+		interval = sessionCallbackNudgeInterval
+	}
+	next := now.UTC().Add(interval)
+	previous := cloneSessionCallbackRegistrations(s.registrations)
+	for _, event := range events {
+		registration := s.registrations[event.SourceSessionID]
+		registration.NudgeFailureEnvelope = envelopeID
+		registration.NudgeFailureCount = failures
+		registration.NudgeRetryAt = next
+		registration.NudgeErrorClass = string(class)
+		registration.UpdatedAt = now.UTC()
+		s.registrations[event.SourceSessionID] = registration
+	}
+	if committed, err := s.saveLocked(); err != nil {
+		if !committed {
+			s.registrations = previous
+		}
+		return time.Time{}, err
+	}
+	return next, nil
+}
+
+func (s *sessionCallbackStore) recordNudge(targetSessionID, envelopeID string, delivery sessionCallbackDeliveryResult, now time.Time, sent ...sessionCallbackEvent) error {
 	targetSessionID = strings.TrimSpace(targetSessionID)
 	if err := validateSessionCallbackClaimID(envelopeID); err != nil {
 		return &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
@@ -1163,6 +1292,26 @@ func (s *sessionCallbackStore) recordNudge(targetSessionID, envelopeID string, d
 		return callbackStoreUnavailableError()
 	}
 	previous := cloneSessionCallbackRegistrations(s.registrations)
+	var delivered []sessionCallbackEvent
+	for _, event := range s.pending {
+		if event.TargetSessionID == targetSessionID && !callbackClaimActive(event, now) &&
+			!(event.CompletionSource == "recovery" && s.registrations[event.SourceSessionID].LastNudgeEventKey == event.EventKey) {
+			delivered = append(delivered, event)
+		}
+	}
+	if len(sent) > 0 {
+		delivered = append([]sessionCallbackEvent(nil), sent...)
+	}
+	sortSessionCallbackEvents(delivered)
+	if len(delivered) == 0 || sessionCallbackEnvelopeID(targetSessionID, delivered) != envelopeID {
+		return nil
+	}
+	deliveredKeys := map[string]string{}
+	for _, event := range delivered {
+		if current, ok := s.pending[event.SourceSessionID]; ok && current.EventKey == event.EventKey && current.Generation == event.Generation && current.EventSequence == event.EventSequence {
+			deliveredKeys[event.SourceSessionID] = event.EventKey
+		}
+	}
 	updated := 0
 	for source, registration := range s.registrations {
 		if registration.TargetSessionID != targetSessionID {
@@ -1170,9 +1319,16 @@ func (s *sessionCallbackStore) recordNudge(targetSessionID, envelopeID string, d
 		}
 		registration.LastNudgeAt = now
 		registration.LastNudgeEnvelope = envelopeID
+		if key := deliveredKeys[source]; key != "" {
+			registration.LastNudgeEventKey = key
+		}
 		registration.LastNudgeExecutionMode = delivery.ExecutionMode
 		registration.LastNudgeOwner = delivery.Owner
 		registration.LastNudgeTurnID = delivery.TurnID
+		registration.NudgeFailureEnvelope = ""
+		registration.NudgeFailureCount = 0
+		registration.NudgeRetryAt = time.Time{}
+		registration.NudgeErrorClass = ""
 		registration.UpdatedAt = now
 		s.registrations[source] = registration
 		updated++

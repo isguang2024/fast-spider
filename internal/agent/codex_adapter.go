@@ -1481,6 +1481,10 @@ func isCodexThreadArchived(err error) bool {
 	return strings.Contains(message, "is archived") && strings.Contains(message, "unarchive")
 }
 
+func isCodexThreadWriterConflict(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(executionDebugText(err)), "already has an active writer")
+}
+
 func (a *CodexAdapter) StartThread(ctx context.Context, workingDirectory, projectDirectory, model, thinking string) (map[string]any, error) {
 	return a.StartThreadWithOptions(ctx, workingDirectory, projectDirectory, model, thinking, false)
 }

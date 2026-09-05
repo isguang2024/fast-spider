@@ -309,7 +309,7 @@ func TestSessionCallbackStorePersistsCanonicalCompletionIdentityAcrossRestart(t 
 	}
 	reloaded := newSessionCallbackStore(dataDir)
 	items, _, err := reloaded.registrationsSnapshot("source-1", "")
-	if err != nil || len(items) != 1 || len(items[0].RecentEventKeys) != 1 || !strings.HasPrefix(items[0].RecentEventKeys[0], "completion_") {
+	if err != nil || len(items) != 1 || len(items[0].RecentEventKeys) != 1 || !strings.HasPrefix(items[0].RecentEventKeys[0], "recovery_") {
 		t.Fatalf("canonical completion identity was not retained: items=%#v err=%v", items, err)
 	}
 	duplicate := testCallbackEvent("source-1", 2)
@@ -378,8 +378,14 @@ func TestSessionCallbackRecoveryRestoresGenerationAndUnregisterReleasesWatcher(t
 }
 
 func TestSessionCallbackManagerObserverInboxDispatchesAfterCoordinatorIdle(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeChatGPTCloudTestJSON(t, w, map[string]any{"current_node": "final", "mapping": map[string]any{"final": map[string]any{"message": map[string]any{"id": "final", "author": map[string]any{"role": "assistant"}, "status": "finished_successfully", "end_turn": true, "channel": "final"}}}})
+	}))
+	defer server.Close()
 	manager := New(t.TempDir(), nil)
 	defer manager.Close(context.Background())
+	manager.chatgptCloud.baseURL, manager.chatgptCloud.http = server.URL, server.Client()
+	manager.chatgptCloud.tokenSource = func(context.Context) (string, error) { return "token", nil }
 	if _, _, err := manager.callbackStore.register(testCallbackRegistration("source-integration", "coordinator-local", "task-1", 1)); err != nil {
 		t.Fatal(err)
 	}
@@ -399,6 +405,13 @@ func TestSessionCallbackManagerObserverInboxDispatchesAfterCoordinatorIdle(t *te
 		return testAppServerCallbackDelivery(), nil
 	}
 	manager.chatgptCloud.realtime.emit("source-integration", "conversation-turn-complete", "provider_evt_integration")
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); {
+		items, _ := manager.callbackStore.pendingSnapshot("source-integration", "")
+		if len(items) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	grouped, err := manager.callbackStore.pendingByTarget()
 	if err != nil || len(grouped["coordinator-local"]) != 1 {
 		t.Fatalf("observer did not create durable inbox entry: pending=%#v err=%v", grouped, err)
@@ -630,8 +643,10 @@ func TestSessionCallbackCompletionQueuesNotificationWithoutReadingOrPublishingRe
 	if _, _, err := manager.callbackStore.register(testCallbackRegistration("source-publish", "target", "task", 2)); err != nil {
 		t.Fatal(err)
 	}
-	event := testCallbackEvent("source-publish", 1)
-	manager.handleChatGPTCloudCallbackEvent(event)
+	_, err := manager.sessionCallbackEnqueue(agentControlParams{SessionID: "source-publish", CallbackTargetSessionID: "target", CallbackMissionID: "mission-1", CallbackTaskID: "task", CallbackGeneration: 2, CallbackOutcome: "completed"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if publisher.called || publisher.text != "" {
 		t.Fatalf("publisher called=%v text=%q", publisher.called, publisher.text)
 	}
@@ -640,7 +655,7 @@ func TestSessionCallbackCompletionQueuesNotificationWithoutReadingOrPublishingRe
 		t.Fatalf("pending=%#v err=%v", grouped, err)
 	}
 	pending := grouped["target"][0]
-	if pending.ResultID != "" || pending.ResultStatus != "" || pending.ResultPageCount != 0 || !strings.HasPrefix(pending.EventKey, "completion_") {
+	if pending.ResultID != "" || pending.ResultStatus != "" || pending.ResultPageCount != 0 || !strings.HasPrefix(pending.EventKey, "submitted_") {
 		t.Fatalf("pending result metadata=%#v", pending)
 	}
 	envelope := buildSessionCallbackEnvelope(sessionCallbackEnvelopeID("target", grouped["target"]), grouped["target"])
@@ -890,7 +905,7 @@ func TestSessionCallbackStoreCoalescesProviderEventsToCanonicalCompletion(t *tes
 		t.Fatalf("old provider replay queued=%v err=%v", queued, err)
 	}
 	grouped, err := store.pendingByTarget()
-	if err != nil || len(grouped["target-1"]) != 1 || grouped["target-1"][0].EventSequence != 1 || !strings.HasPrefix(grouped["target-1"][0].EventKey, "completion_") {
+	if err != nil || len(grouped["target-1"]) != 1 || grouped["target-1"][0].EventSequence != 1 || !strings.HasPrefix(grouped["target-1"][0].EventKey, "recovery_") {
 		t.Fatalf("old replay replaced newer pending=%#v err=%v", grouped, err)
 	}
 }
@@ -1237,7 +1252,7 @@ func TestSessionCallbackRegisterReconcilesAlreadyCompletedCloudTurn(t *testing.T
 		readsMu.Unlock()
 		writeChatGPTCloudTestJSON(t, w, map[string]any{
 			"conversation_id": "source-completed", "async_status": status, "current_node": "assistant-1",
-			"mapping": map[string]any{"assistant-1": map[string]any{"message": map[string]any{"author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"CLOUD_COLLAB_OK"}}}}},
+			"mapping": map[string]any{"assistant-1": map[string]any{"message": map[string]any{"status": "finished_successfully", "end_turn": true, "author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"CLOUD_COLLAB_OK"}}}}},
 		})
 	}))
 	defer server.Close()
@@ -1266,7 +1281,7 @@ func TestSessionCallbackRegisterReconcilesAlreadyCompletedCloudTurn(t *testing.T
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(pending) == 1 && strings.HasPrefix(pending[0].EventKey, "completion_") && pending[0].ResultStatus == "" {
+		if len(pending) == 1 && strings.HasPrefix(pending[0].EventKey, "recovery_") && pending[0].ResultStatus == "" {
 			readsMu.Lock()
 			gotReads := reads
 			readsMu.Unlock()
@@ -1295,7 +1310,7 @@ func TestSessionCallbackArmIgnoresReuseBaselineThenAcceptsNewCompletion(t *testi
 		mu.Unlock()
 		writeChatGPTCloudTestJSON(t, w, map[string]any{
 			"conversation_id": "source-reused", "async_status": "completed", "current_node": current,
-			"mapping": map[string]any{current: map[string]any{"message": map[string]any{"id": current, "author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"result"}}}}},
+			"mapping": map[string]any{current: map[string]any{"message": map[string]any{"status": "finished_successfully", "end_turn": true, "id": current, "author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"result"}}}}},
 		})
 	}))
 	defer server.Close()
@@ -1353,7 +1368,7 @@ func TestSessionCallbackArmIgnoresReuseBaselineThenAcceptsNewCompletion(t *testi
 			t.Fatal(err)
 		}
 		if len(pending) == 1 {
-			if pending[0].Generation != 1 || !strings.HasPrefix(pending[0].EventKey, "completion_") {
+			if pending[0].Generation != 1 || !strings.HasPrefix(pending[0].EventKey, "recovery_") {
 				t.Fatalf("new completion event=%#v", pending[0])
 			}
 			return
@@ -1371,7 +1386,7 @@ func TestSessionCallbackFallbackStatusReadSynthesizesMissedCompletion(t *testing
 		}
 		writeChatGPTCloudTestJSON(t, w, map[string]any{
 			"conversation_id": "source-fallback", "async_status": "completed", "current_node": "assistant-final",
-			"mapping": map[string]any{"assistant-final": map[string]any{"message": map[string]any{"id": "assistant-final", "author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"fallback result"}}}}},
+			"mapping": map[string]any{"assistant-final": map[string]any{"message": map[string]any{"status": "finished_successfully", "end_turn": true, "id": "assistant-final", "author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"fallback result"}}}}},
 		})
 	}))
 	defer server.Close()
@@ -1394,7 +1409,7 @@ func TestSessionCallbackFallbackStatusReadSynthesizesMissedCompletion(t *testing
 		t.Fatalf("fallback pending=%#v err=%v", grouped, err)
 	}
 	event := grouped["target-fallback"][0]
-	if !strings.HasPrefix(event.EventKey, "completion_") || event.EventSequence != 1 || event.ResultStatus != "" {
+	if !strings.HasPrefix(event.EventKey, "recovery_") || event.EventSequence != 1 || event.ResultStatus != "" {
 		t.Fatalf("fallback event=%#v", event)
 	}
 }

@@ -1356,10 +1356,14 @@ func chatgptNormalizeDetail(detail map[string]any) map[string]any {
 // intentionally unknown; an existing assistant message alone is not proof
 // that the latest turn completed.
 func chatgptCloudConversationStatus(detail map[string]any) string {
+	terminal := ""
 	for _, key := range []string{"async_status", "asyncStatus", "conversation_async_status", "conversationAsyncStatus", "status"} {
 		if value, ok := detail[key]; ok {
 			if status := chatgptCloudStatusValue(value); status != "" {
-				return status
+				if status == "running" {
+					return status
+				}
+				terminal = status
 			}
 		}
 	}
@@ -1370,13 +1374,37 @@ func chatgptCloudConversationStatus(detail map[string]any) string {
 			seen[current] = true
 			node, _ := mapping[current].(map[string]any)
 			message, _ := node["message"].(map[string]any)
-			if status := chatgptCloudStatusValue(mapString(message, "status")); status != "" {
-				return status
+			if message != nil {
+				// Only the current message can end this turn. Walking past a
+				// user/tool/progress message would reuse a previous turn's final.
+				status := chatgptCloudStatusValue(mapString(message, "status"))
+				if status == "running" {
+					return status
+				}
+				if terminal == "failed" || terminal == "canceled" {
+					return terminal
+				}
+				if chatgptCloudFinalAssistantMessage(message) {
+					return "completed"
+				}
+				return "unknown"
 			}
 			current = mapString(node, "parent")
 		}
 	}
+	if terminal == "failed" || terminal == "canceled" {
+		return terminal
+	}
 	return "unknown"
+}
+
+func chatgptCloudFinalAssistantMessage(message map[string]any) bool {
+	end, _ := message["end_turn"].(bool)
+	channel := mapString(message, "channel")
+	recipient := mapString(message, "recipient")
+	return chatgptCloudMessageRole(message) == "assistant" && end &&
+		(channel == "" || channel == "final") && (recipient == "" || recipient == "all") &&
+		chatgptCloudStatusValue(mapString(message, "status")) == "completed"
 }
 
 func chatgptCloudStatusValue(value any) string {

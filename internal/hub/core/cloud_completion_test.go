@@ -41,7 +41,7 @@ func TestCloudCompletionDistinguishesMissingCollaborationAndTask(t *testing.T) {
 }
 
 func TestCloudCompletionSupportsBoundedTextAndStatusCallbacks(t *testing.T) {
-	service, ownerID, machineID, _ := newCloudCollaborationTestService(t)
+	service, ownerID, machineID, node := newCloudCollaborationTestService(t)
 	ctx := context.Background()
 	created, err := service.CloudCollaboration(ctx, ownerID, CloudCollaborationRequest{
 		Action: "create", MachineID: machineID, IdempotencyKey: "completion-typed-callbacks-001",
@@ -132,7 +132,7 @@ func TestCloudCompletionSupportsBoundedTextAndStatusCallbacks(t *testing.T) {
 	if _, err := service.CloudCompletion(ctx, ownerID, CloudCompletionRequest{Action: "ack", ActorSessionID: "codex-dispatcher", ClaimID: "claim-typed-callbacks", Acknowledgements: acks}); err != nil {
 		t.Fatal(err)
 	}
-	_, state, err := service.loadCloudCollaboration(ctx, ownerID, collaborationID)
+	rec, state, err := service.loadCloudCollaboration(ctx, ownerID, collaborationID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,6 +145,31 @@ func TestCloudCompletionSupportsBoundedTextAndStatusCallbacks(t *testing.T) {
 		}
 		if task.CallbackType == protocolv1.CloudCallbackTypeStatus && (task.ResultText != "" || task.ResultSHA256 != "") {
 			t.Fatalf("status task=%+v", task)
+		}
+	}
+	if state.Status != "active" {
+		t.Fatalf("ack closed collaboration: %s", state.Status)
+	}
+	for _, chat := range state.Chats {
+		if chat.Status != "completed" || !chat.CallbackRegistered {
+			t.Fatalf("ack released/archived CHAT: %+v", chat)
+		}
+	}
+	for _, call := range node.snapshotCalls() {
+		if call.Action == "session.archive" || call.Action == "session.callback.unregister" {
+			t.Fatalf("ack changed CHAT lifetime: %+v", call)
+		}
+	}
+	if _, err := service.CloudCollaboration(ctx, ownerID, CloudCollaborationRequest{Action: "close", CollaborationID: collaborationID, ActorSessionID: "codex-controller", ActorRole: "controller", ExpectedRevision: rec.Revision}); err != nil {
+		t.Fatal(err)
+	}
+	_, closed, err := service.loadCloudCollaboration(ctx, ownerID, collaborationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, chat := range closed.Chats {
+		if chat.Status != "archived" || chat.CallbackRegistered {
+			t.Fatalf("explicit close did not archive: %+v", chat)
 		}
 	}
 }
@@ -226,7 +251,7 @@ func TestCloudCollaborationBootstrapDefinesLocalFileCallbackSlot(t *testing.T) {
 	}, cloudCollaborationTask{
 		ID: "task-file", Generation: 1, CallbackType: protocolv1.CloudCallbackTypeLocalFile, ResultPath: resultPath, AccessMode: "read_only",
 	})
-	for _, needle := range []string{"FAST_SPIDER_CLOUD_TASK_V1", resultPath, "callback slot", "writable even for a read-only task", "no permission to write anywhere else", "without uploading"} {
+	for _, needle := range []string{"FAST_SPIDER_CLOUD_TASK_V1", resultPath, "file_edit", "task_result_submit", "writable even for a read-only task", "other write permissions remain limited to write_scope", "without uploading"} {
 		if !strings.Contains(prompt, needle) {
 			t.Fatalf("bootstrap missing %q: %s", needle, prompt)
 		}
@@ -363,7 +388,7 @@ func TestCloudCompletionConcurrentNotifyBatchClaimAndAck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Status != "closing" && state.Status != "completed" {
+	if state.Status != "active" {
 		t.Fatalf("collaboration status=%s", state.Status)
 	}
 	for _, task := range state.Tasks {

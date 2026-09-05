@@ -6,9 +6,21 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 )
+
+func TestAdvancedModelCatalogNormalizesKnownTitleWithoutChangingConfiguration(t *testing.T) {
+	models := []ChatGPTAdvancedModel{
+		{ID: "gpt-5-6-thinking", Title: "GPT-5.6 Sol", Thinking: []string{"auto", "max"}},
+		{ID: "gpt-custom", Title: "My custom model", Thinking: []string{"auto"}},
+	}
+	got := filterChatGPTAdvancedModels(models, []ChatGPTThinkingOption{{ID: "auto"}, {ID: "max"}})
+	if got[0].Title != "GPT-5.6 Thinking" || got[1].Title != models[1].Title || !reflect.DeepEqual(got[0].Thinking, models[0].Thinking) || models[0].Title != "GPT-5.6 Sol" {
+		t.Fatalf("catalog=%#v original=%#v", got, models)
+	}
+}
 
 func TestChatGPTAdvancedConfigRoundTripsPrivately(t *testing.T) {
 	dataDir := t.TempDir()

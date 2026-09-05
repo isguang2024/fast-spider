@@ -198,6 +198,12 @@ type cloudCollaborationInput struct {
 	Params map[string]any `json:"params,omitempty" jsonschema:"action-specific parameters; use the codex_cloud_collaboration guide for the compact contract"`
 }
 
+type taskResultSubmitInput struct {
+	TaskRef string `json:"taskRef" jsonschema:"opaque reference supplied with the assigned Cloud CHAT task; cannot select a new task or destination"`
+	Status  string `json:"status" jsonschema:"result status: completed, blocked, or failed"`
+	Text    string `json:"text,omitempty" jsonschema:"short text result only for a text task, at most 2000 characters and 8192 UTF-8 bytes; omit for local_file or status tasks"`
+}
+
 type cloudCollaborationParams struct {
 	MachineID         string `json:"machineId,omitempty"`
 	CallbackSessionID string `json:"callbackSessionId,omitempty"`
@@ -336,7 +342,7 @@ type aiControlInput struct {
 	ResultID                string              `json:"resultId,omitempty" jsonschema:"Result Pool ID for result-id"`
 	Limit                   int                 `json:"limit,omitempty" jsonschema:"session.list maximum, default 50 and maximum 100"`
 	Name                    string              `json:"name,omitempty" jsonschema:"new session name for session.rename"`
-	ForceReload             bool                `json:"forceReload,omitempty" jsonschema:"skills.list only; bypass the local Codex skill cache"`
+	ForceReload             bool                `json:"forceReload,omitempty" jsonschema:"models.list or skills.list; bypass the local Codex catalog cache"`
 	MarketplaceKinds        []string            `json:"marketplaceKinds,omitempty" jsonschema:"plugins.list marketplace filters"`
 	PluginName              string              `json:"pluginName,omitempty" jsonschema:"plugin name required for plugins.get; unsupported for chatgpt_cloud session.create because Cloud has no per-session plugin binding"`
 	MarketplacePath         string              `json:"marketplacePath,omitempty" jsonschema:"optional absolute local marketplace path for plugins.get"`
@@ -358,7 +364,7 @@ type aiControlInput struct {
 	ResponseContent         map[string]any      `json:"responseContent,omitempty" jsonschema:"session.respond structured content when accepting an MCP elicitation"`
 	PageCursor              string              `json:"pageCursor,omitempty" jsonschema:"session.get delta cursor or list pagination cursor"`
 	MCPDetail               string              `json:"mcpDetail,omitempty" jsonschema:"mcp.status.list detail: full or toolsAndAuthOnly"`
-	Effort                  string              `json:"effort,omitempty" jsonschema:"session.settings.update reasoning effort: low,medium,high,xhigh"`
+	Effort                  string              `json:"effort,omitempty" jsonschema:"session.settings.update reasoning effort; use models.list supportedReasoningEfforts for the selected model"`
 	Permissions             string              `json:"permissions,omitempty" jsonschema:"session.settings.update named Codex permission profile ID"`
 	Personality             string              `json:"personality,omitempty" jsonschema:"session.create/session.send turn override or session.settings.update personality: none,friendly,pragmatic"`
 	ServiceTier             string              `json:"serviceTier,omitempty" jsonschema:"session.create/session.send turn override or session.settings.update service tier"`
@@ -604,11 +610,11 @@ func (s *Server) newMCPHandler() http.Handler {
 
 const mcpServerInstructions = `@FastSpider_FS is a development control plane; try read-only first.
 
-Lazy tools: api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Never load all 21 schemas.
+Lazy tools: api_tool.list_resources(paths=["FastSpider_FS"], query="fsprobe"), then machine_list. Load only the schemas needed for the current task.
 
-Map: capability_list,machine_list,machine_get; audit_log,operation_log; code_search,file_read,file_edit; shell_run,build_control,job_watch,job_cancel; git_control; browser_control,screenshot_take; ai_control; codex_cloud_collaboration; working_context; thinking_team; artifact_get,result_get. Load one view=capability or view=tool|workflow|error. Local Codex uses only the Node-owned codex app-server --stdio path.
+Map: capability_list,machine_list,machine_get; audit_log,operation_log; code_search,file_read,file_edit; shell_run,build_control,job_watch,job_cancel; git_control; browser_control,screenshot_take; ai_control; codex_cloud_collaboration,task_result_submit; working_context; thinking_team; artifact_get,result_get. Load one view=capability or view=tool|workflow|error. Local Codex uses backend=codex_local and only the Node-owned codex app-server --stdio path.
 
-AI: Cloud CHAT is optional assistance. Create a local Codex task remotely with ai_control session.create, providerId=codex, backend=codex_local, absolute workingDirectory and idempotencyKey. Use codex_cloud_collaboration action=dispatch with machineId, callbackSessionId, workingDirectory, prompt and idempotencyKey for a later callback. targetSessionId reuses that exact visible CHAT; omission creates one quick_chat. The default task may edit and test only inside workingDirectory and returns a bounded text callback. After dispatch, end the turn. CHAT completion.notify is persisted by Hub and actively pushed through Node to wake callbackSessionId; Provider realtime and timed status reads are fallback only. Controller/coordinator roles are caller-side organization and are not separate Fast Spider transport modes.
+AI: Cloud CHAT is optional assistance. Use codex_cloud_collaboration action=dispatch with machineId, callbackSessionId, workingDirectory, prompt and idempotencyKey; targetSessionId reuses that exact visible CHAT, omission creates one quick_chat. Use callbackType=local_file for long reports saved on the Node machine; otherwise bounded text is the default. After dispatch, end the turn. CHAT writes first, then calls task_result_submit with its taskRef and status (text only for text tasks). FS verifies local-file metadata without uploading the body, persists the result and notifies the bound Codex session. Legacy completion.notify is for recovery. Omit model/thinking for Node defaults; direct session.create/send overrides require models.list and returned IDs/efforts. Dispatch has no override. If a new tool is absent in CHAT, refresh the FS operation catalog and retry later; do not bypass refusal. Roles remain caller-side.
 
 Ops: unknown machineId -> machine_list; finish jobId with job_watch; edits use read/SHA/preview/CAS; close browsers. Windows shell_run uses powershell.exe or cmd.exe argv, e.g. tzutil /g, not a separate PowerShell tool.`
 
@@ -710,6 +716,10 @@ func (s *Server) mcpServerFor(ownerID string) *mcp.Server {
 
 	mcp.AddTool(server, mcpToolDefinition("codex_cloud_collaboration", toolAnnotations(false, true, false, true)), func(ctx context.Context, _ *mcp.CallToolRequest, input cloudCollaborationInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
 		return executeMCPStructuredTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "codex_cloud_collaboration", input)
+	})
+
+	mcp.AddTool(server, mcpToolDefinition("task_result_submit", toolAnnotations(false, false, true, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input taskResultSubmitInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {
+		return executeMCPStructuredTool[genericCapabilityOutput](s.toolExecutor, ctx, ownerID, "task_result_submit", input)
 	})
 
 	mcp.AddTool(server, mcpToolDefinition("working_context", toolAnnotations(false, false, false, false)), func(ctx context.Context, _ *mcp.CallToolRequest, input workingContextInput) (*mcp.CallToolResult, genericCapabilityOutput, error) {

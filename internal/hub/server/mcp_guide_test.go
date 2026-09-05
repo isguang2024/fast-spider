@@ -12,7 +12,7 @@ import (
 
 func TestMCPGuideCatalogMatchesRegisteredToolsAndDocumentation(t *testing.T) {
 	guideNames := mcpRegisteredGuideNames()
-	if len(guideNames) != 21 {
+	if len(guideNames) != 22 {
 		t.Fatalf("guide tool count=%d names=%v", len(guideNames), guideNames)
 	}
 	var discoveryMarkers []string
@@ -248,8 +248,8 @@ func TestMCPServerInstructionsStayBoundedAndCoverCapabilityMap(t *testing.T) {
 		"@FastSpider_FS", "capability_list", "machine_list", "machine_get", "audit_log", "operation_log", "file_read", "file_edit", "code_search",
 		"shell_run", "build_control", "job_watch", "job_cancel", "git_control", "browser_control", "screenshot_take",
 		"ai_control", "codex_cloud_collaboration", "working_context", "thinking_team", "artifact_get", "view=tool|workflow|error", "view=capability",
-		`query="fsprobe"`, "Never load all 21 schemas", "powershell.exe", "tzutil /g", "not a separate PowerShell tool", "Cloud CHAT",
-		"Node-owned codex app-server --stdio", "backend=codex_local", "Cloud CHAT is optional assistance", "callbackSessionId", "targetSessionId", "omission creates one quick_chat", "bounded text callback", "Controller/coordinator roles", "not separate Fast Spider transport modes",
+		`query="fsprobe"`, "Load only the schemas needed", "powershell.exe", "tzutil /g", "not a separate PowerShell tool", "Cloud CHAT",
+		"Node-owned codex app-server --stdio", "backend=codex_local", "Cloud CHAT is optional assistance", "callbackSessionId", "targetSessionId", "omission creates one quick_chat", "bounded text", "Roles remain caller-side", "task_result_submit", "without uploading the body",
 	} {
 		if !strings.Contains(mcpServerInstructions, needle) {
 			t.Fatalf("instructions missing %q", needle)
@@ -270,7 +270,7 @@ func assertMCPGuideSize(t *testing.T, guide *mcpGuide, limit int) {
 
 func documentedMCPToolNames(t *testing.T, document string) []string {
 	t.Helper()
-	anchor := strings.Index(document, "当前固定 21 个工具")
+	anchor := strings.Index(document, "当前固定 22 个工具")
 	if anchor < 0 {
 		t.Fatal("MCP tool-list anchor missing from documentation")
 	}

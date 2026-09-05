@@ -211,8 +211,8 @@ func TestCodexCloudCollaborationRequiresLocalCodexAndUsesDeliverableCallback(t *
 	}
 	initialCallCount := len(node.snapshotCalls())
 	for _, call := range node.snapshotCalls() {
-		if call.Action == "session.get" && (call.Params["metadataOnly"] != true || call.Params["preferDesktopRegistry"] != true) {
-			t.Fatalf("local Codex validation did not use the bounded desktop registry path: %#v", call.Params)
+		if call.Action == "session.get" && (call.Params["metadataOnly"] != true || call.Params["preferDesktopRegistry"] != nil) {
+			t.Fatalf("local Codex validation must use metadata-only app-server reads without removed registry parameters: %#v", call.Params)
 		}
 	}
 	if repeated, err := service.CloudCollaboration(context.Background(), ownerID, createReq); err != nil || repeated["collaborationId"] != created["collaborationId"] || len(node.snapshotCalls()) != initialCallCount {
@@ -278,7 +278,7 @@ func TestCodexCloudCollaborationRequiresLocalCodexAndUsesDeliverableCallback(t *
 			t.Fatalf("collaboration callback was not configured for active wake: %#v", call.Params)
 		}
 	}
-	if !strings.Contains(createPrompt, "FAST_SPIDER_CLOUD_TASK_V1") || !strings.Contains(createPrompt, output) || !strings.Contains(createPrompt, "codex_cloud_collaboration") || !strings.Contains(createPrompt, "action=completion.notify") || strings.Contains(createPrompt, "action=event.ingest") || strings.Contains(createPrompt, "plan.init") || strings.Contains(createPrompt, "markdown.append") {
+	if !strings.Contains(createPrompt, "FAST_SPIDER_CLOUD_TASK_V1") || !strings.Contains(createPrompt, output) || !strings.Contains(createPrompt, "task_result_submit") || !strings.Contains(createPrompt, "taskRef=") || strings.Contains(createPrompt, "action=event.ingest") || strings.Contains(createPrompt, "plan.init") || strings.Contains(createPrompt, "markdown.append") {
 		t.Fatalf("prompt=%q", createPrompt)
 	}
 	if countCloudCollaborationCalls(node.snapshotCalls(), "session.list") != 0 {
@@ -1075,7 +1075,7 @@ func TestCodexCloudCollaborationSimpleDispatchUsesOneCallbackSession(t *testing.
 			prompt, _ = call.Params["prompt"].(string)
 		}
 	}
-	if !strings.Contains(prompt, "FAST_SPIDER_CLOUD_TASK_V1") || !strings.Contains(prompt, machineID) || !strings.Contains(prompt, "action=completion.notify") || strings.Contains(prompt, "working_context") || strings.Contains(prompt, "actorRole") {
+	if !strings.Contains(prompt, "FAST_SPIDER_CLOUD_TASK_V1") || !strings.Contains(prompt, machineID) || !strings.Contains(prompt, "task_result_submit") || strings.Contains(prompt, "working_context") || strings.Contains(prompt, "actorRole") {
 		t.Fatalf("prompt=%q", prompt)
 	}
 

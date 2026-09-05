@@ -528,6 +528,11 @@ func simpleCloudDispatchReceipt(out map[string]any, callbackSessionID, taskID st
 	if tasks, ok := out["tasks"].([]cloudCollaborationTask); ok {
 		for _, task := range tasks {
 			if task.ID == taskID {
+				receipt["taskRef"] = cloudTaskResultReference(mapString(out, "collaborationId"), task)
+				receipt["resultType"] = task.CallbackType
+				if path := cloudCollaborationTaskResultPath(task); path != "" {
+					receipt["resultPath"] = path
+				}
 				receipt["taskStatus"] = task.Status
 				if task.ChatSessionID != "" {
 					receipt["chatSessionId"] = task.ChatSessionID
@@ -2311,14 +2316,14 @@ func (s *Service) cloudCollaborationClose(ctx context.Context, ownerID string, r
 }
 
 func cloudCollaborationBootstrap(collaborationID, machineID string, state cloudCollaborationState, task cloudCollaborationTask) string {
-	deliverable := "Return only a final status callback without result text."
+	deliverable := "Submit the final status without a text field."
 	switch task.CallbackType {
 	case protocolv1.CloudCallbackTypeLocalFile:
-		deliverable = fmt.Sprintf("Write the final result to the fixed Node-local callback slot %s. That slot is writable even for a read-only task, but grants no permission to write anywhere else. Then notify completion without uploading or copying the file body into the callback.", cloudCollaborationTaskResultPath(task))
+		deliverable = fmt.Sprintf("Write the full report or summary as UTF-8 to this assigned file on the local Node machine: %s\nUse FastSpider_FS file_edit with the machine_id above. Finish all writes before submitting the result. This exact output file is writable even for a read-only task; other write permissions remain limited to write_scope. Omit text when submitting: FS verifies the local file and returns its path and checksum, without uploading its body. Keep the file for the recipient.", cloudCollaborationTaskResultPath(task))
 	case protocolv1.CloudCallbackTypeText:
-		deliverable = fmt.Sprintf("Put the concise final result in the completion callback text field (at most %d Unicode characters and %d UTF-8 bytes).", protocolv1.CloudCallbackTextMaxRunes, protocolv1.CloudCallbackTextMaxBytes)
+		deliverable = fmt.Sprintf("Submit the concise result in text (at most %d Unicode characters and %d UTF-8 bytes).", protocolv1.CloudCallbackTextMaxRunes, protocolv1.CloudCallbackTextMaxBytes)
 	}
-	return fmt.Sprintf("FAST_SPIDER_CLOUD_TASK_V1\nmachine_id=%s\nworking_directory=%s\nwrite_scope=%s\ncollaboration_id=%s\ntask_id=%s\ncallback_type=%s\n\nComplete the task below using FastSpider_FS computer, file, shell, Git and browser tools only as needed. Stay inside the working directory and write scope. Do not create another AI, CHAT, Codex task or child conversation.\n\nTASK:\n%s\n\nRESULT:\n%s\n\nBefore your final reply, call FastSpider_FS codex_cloud_collaboration once with action=completion.notify and params containing collaborationId=%q, taskId=%q, actorSessionId=$self, outcome=completed|blocked|failed, callbackType=%q, plus text only for a text callback. Retry the identical notification only when transport is uncertain; it is idempotent.", machineID, state.WorkingDirectory, task.WriteScope, collaborationID, task.ID, task.CallbackType, task.Prompt, deliverable, collaborationID, task.ID, task.CallbackType)
+	return fmt.Sprintf("FAST_SPIDER_CLOUD_TASK_V1\nmachine_id=%s\nworking_directory=%s\nwrite_scope=%s\ntask_ref=%s\nresult_type=%s\n\nComplete the assigned task using FastSpider_FS tools as needed. Stay inside the working directory and write scope. Do not create additional AI sessions.\n\nTASK:\n%s\n\nRESULT:\n%s\n\nBefore your final reply, call FastSpider_FS task_result_submit with taskRef=%q, status=completed|blocked|failed, and text only for a text result. Submitting durably records the result and notifies the preassigned Codex session, starting its next turn when idle. The destination cannot be changed. Retry identical arguments only for uncertain transport or CALLBACK_DELIVERY_PENDING. If submission is refused, report the refusal; do not claim success.", machineID, state.WorkingDirectory, task.WriteScope, cloudTaskResultReference(collaborationID, task), task.CallbackType, task.Prompt, deliverable, cloudTaskResultReference(collaborationID, task))
 }
 
 func (s *Service) ensureCodexCloudCollaborationReady(ctx context.Context, ownerID, machineID string) error {
@@ -2336,7 +2341,7 @@ func (s *Service) ensureCodexCloudCollaborationReady(ctx context.Context, ownerI
 }
 
 func (s *Service) validateCodexLocalCollaborationSession(ctx context.Context, ownerID, machineID, sessionID string) error {
-	result, err := s.CallCapability(ctx, ownerID, machineID, "agent.control", "session.get", map[string]any{"providerId": "codex", "sessionId": strings.TrimSpace(sessionID), "metadataOnly": true, "preferDesktopRegistry": true})
+	result, err := s.CallCapability(ctx, ownerID, machineID, "agent.control", "session.get", map[string]any{"providerId": "codex", "sessionId": strings.TrimSpace(sessionID), "metadataOnly": true})
 	if err != nil {
 		return err
 	}

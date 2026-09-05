@@ -1,0 +1,16 @@
+[Unit]
+Description=Verified daily Fast Spider Hub backup
+After=fast-spider-hub.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/fast-spider-backup
+StateDirectory=fast-spider-daily-backups
+StateDirectoryMode=0700
+UMask=0077
+TimeoutStartSec=15min
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/fast-spider

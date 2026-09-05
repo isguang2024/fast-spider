@@ -3,6 +3,14 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.64 - 2026-09-05
+
+- Add durable callback finality, retry and recovery handling for local Codex
+  delivery and Cloud completion notifications.
+- Add metadata-only task result submission and local-file callback delivery,
+  with runtime model/thinking compatibility checks and refreshed MCP guidance.
+- Add daily systemd backup service and timer for Hub state.
+
 ## 0.4.61 - 2026-09-05
 
 - Route every local Codex operation through the Node's single long-running

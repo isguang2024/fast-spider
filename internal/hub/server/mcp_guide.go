@@ -197,7 +197,8 @@ var mcpToolGuides = map[string]mcpToolGuideEntry{
 		RequiredInputs: []string{"machineId and action", "workingDirectory for scoped list/create", "an exact sessionId for get/send/watch/result or lifecycle actions"},
 		SafeSequence: []string{
 			"Call machine_list when machineId is unknown",
-			"Use provider.readiness and models.list before creating a Cloud CHAT",
+			"Omit model/thinking to preserve configured defaults; before a direct session.create/send override, use models.list for that backend's actual IDs and supported efforts",
+			"Choose a faster model or lower supported effort for a small task when useful; never change global defaults for one task. Dispatch uses Node defaults and does not accept model/thinking overrides",
 			"Use an exact user-supplied Codex or ChatGPT sessionId regardless of who created it; do not list or guess old sessions unless the user asks",
 			"Direct interactive work uses ai_control session.create/send/get/watch/result",
 			"Asynchronous delegation uses codex_cloud_collaboration action=dispatch and then ends the current turn instead of polling",
@@ -211,16 +212,27 @@ var mcpToolGuides = map[string]mcpToolGuideEntry{
 	},
 	"codex_cloud_collaboration": {
 		Description: "Send one task to a visible ChatGPT Cloud CHAT and return its durable callback to one local Codex session. Controller/coordinator topology stays outside Fast Spider.",
-		WhenToUse:   []string{"A local Codex session wants one Cloud CHAT to do work and report back later", "Reuse one exact visible CHAT", "Create one clean visible CHAT for a new task"}, RequiredInputs: []string{"dispatch: machineId, callbackSessionId, workingDirectory, prompt and idempotencyKey", "optional targetSessionId to reuse one exact CHAT", "optional read_only accessMode; otherwise the task may edit and test inside workingDirectory", "Cloud CHAT completion uses the same tool with action=completion.notify"},
+		WhenToUse:   []string{"A local Codex session wants one Cloud CHAT to do work and report back later", "Reuse one exact visible CHAT", "Create one clean visible CHAT for a new task"}, RequiredInputs: []string{"dispatch: machineId, callbackSessionId, workingDirectory, prompt and idempotencyKey", "optional targetSessionId to reuse one exact CHAT", "optional read_only accessMode; otherwise the task may edit and test inside workingDirectory", "callbackType=local_file for a local report; task_result_submit finishes the assigned task"},
 		SafeSequence: []string{
 			"Call action=dispatch once; Fast Spider validates the callback session, creates or reuses exactly one CHAT, registers its callback and sends the prompt",
 			"The default accessMode is write with writeScope=workingDirectory and callbackType=text; override accessMode=read_only when no edits are needed",
+			"For a long report use callbackType=local_file; deliverablePath must be inside writeScope, or omit it for an assigned local path. Read-only tasks may write only their assigned result path",
 			"After dispatch returns callerShouldYield=true and nextAction=end_turn, end the current turn without polling",
-			"The CHAT calls action=completion.notify before its final reply; Hub persists it, pushes it into the Node callback queue, and Node wakes callbackSessionId as soon as that Codex session is idle",
+			"The CHAT uses task_result_submit before its final reply; Hub verifies the assigned file or accepts short text, persists the result, and Node wakes the bound Codex session when idle",
 			"Provider realtime, startup reconciliation and timed status reads are recovery only; they are not the normal completion channel",
 			"The callback always returns to callbackSessionId, regardless of whether the caller calls that session a controller, coordinator or single AI",
 		}, Returns: []string{"one asynchronous dispatch receipt", "collaborationId and taskId", "durable callback to callbackSessionId"}, RecommendedNext: []string{"end the current turn after dispatch"}, CommonErrors: []string{"RUNTIME_UNAVAILABLE", "INVALID_REQUEST", "CONFLICT", "AGENT_SESSION_BUSY", "CALLBACK_BASELINE_UNAVAILABLE"},
 		BoundedExamples: []map[string]any{{"action": "dispatch", "params": map[string]any{"machineId": "<machine-id>", "callbackSessionId": "<local-codex-session>", "workingDirectory": "<absolute-project>", "prompt": "Implement and test the requested change.", "idempotencyKey": "cloud-task-unique-001"}}},
+	},
+	"task_result_submit": {
+		Description:     "Submit the result of an already assigned Cloud CHAT task and notify its preassigned Codex session when idle. For local_file tasks, verify the assigned Node-local file without uploading its body. Cannot create tasks, change paths or choose notification targets.",
+		WhenToUse:       []string{"Finish the exact task supplied to this CHAT", "Return a short text result, a locally saved report, or a final status"},
+		RequiredInputs:  []string{"taskRef from the assigned task", "status=completed|blocked|failed", "text only for a text task; omit for local_file and status"},
+		SafeSequence:    []string{"For local_file, finish writing the assigned local file through file_edit before submitting; preserve it for the recipient", "Call task_result_submit; FS verifies a completed local file using metadata and SHA-256 only", "FS durably records the result and notifies only the task's already bound Codex session", "If discovery omits this tool but Hub provides this guide, refresh the FS operation catalog in ChatGPT settings and verify in a later turn; do not confuse catalog absence with a safety refusal", "Retry identical arguments only for uncertain transport or CALLBACK_DELIVERY_PENDING; do not treat refusal as success"},
+		Returns:         []string{"accepted status", "fixed result path and checksum for a completed local_file task", "notification acceptance"},
+		RecommendedNext: []string{"finish the CHAT turn; the bound Codex session receives the notification"},
+		CommonErrors:    []string{"INVALID_REQUEST", "TASK_GENERATION_STALE", "TASK_RESULT_FILE_INVALID", "CALLBACK_DELIVERY_PENDING"},
+		BoundedExamples: []map[string]any{{"taskRef": "<assigned-task-reference>", "status": "completed"}},
 	},
 	"working_context": {
 		Description: "Store one revisioned plain-text project context. The AI chooses how to write goals, progress, blockers and next steps.",
@@ -263,6 +275,7 @@ var mcpToolSummaryDefinitions = []mcpToolSummary{
 	{Name: "screenshot_take", Category: "browser", Summary: "Capture one-time desktop, display or window visual evidence.", Guide: "capability_list(view=tool,name=screenshot_take)"},
 	{Name: "ai_control", Category: "ai", Summary: "Direct AI session discovery and lifecycle control; it is not the callback-based Cloud CHAT delegation entry.", Guide: "capability_list(view=tool,name=ai_control)"},
 	{Name: "codex_cloud_collaboration", Category: "codex-cloud-collaboration", Summary: "Dispatch one CHAT task and return its durable callback to one local session.", Guide: "capability_list(view=tool,name=codex_cloud_collaboration)"},
+	{Name: "task_result_submit", Category: "codex-cloud-collaboration", Summary: "Submit an assigned text, local-file or status result and notify its bound Codex session.", Guide: "capability_list(view=tool,name=task_result_submit)"},
 	{Name: "working_context", Category: "context", Summary: "Persist one bounded plain-text project context.", Guide: "capability_list(view=tool,name=working_context)"},
 	{Name: "thinking_team", Category: "guidance", Summary: "Return calling-side role, department and workflow guidance.", Guide: "capability_list(view=tool,name=thinking_team)"},
 	{Name: "artifact_get", Category: "artifacts", Summary: "Upload/retrieve native MCP content or create a 48-hour URL-only temporary attachment.", Guide: "capability_list(view=tool,name=artifact_get)"},
@@ -379,13 +392,19 @@ func codexCloudCollaborationGuide() (string, []string, []string, []string) {
 		"action=dispatch with machineId, callbackSessionId, workingDirectory, prompt and a stable idempotencyKey",
 		"optional targetSessionId to reuse exactly that CHAT",
 		"optional accessMode=read_only; otherwise writeScope defaults to workingDirectory and callbackType defaults to text",
+		"callbackType=local_file for long reports; optional deliverablePath inside writeScope, or omit for an assigned local path",
 	}
 	safeSequence := []string{
 		"First decide whether the current Codex can complete the task directly; use this collaboration only when CHAT assistance is useful or explicitly requested",
 		"Call dispatch once; Fast Spider performs readiness checks, creates its internal callback state, sends the task and arms the route",
 		"If targetSessionId is omitted, dispatch creates one backend=chatgpt_cloud visible quick_chat; it never scans or guesses old CHATs",
+		"Dispatch uses Node model/thinking defaults; it does not accept per-task model/thinking overrides",
 		"After callerShouldYield=true and nextAction=end_turn, return a short receipt and end the turn without polling",
-		"The CHAT calls action=completion.notify with actorSessionId=$self before its final reply",
+		"The CHAT submits taskRef, status and optional short text through task_result_submit; local_file tasks first write the assigned Node-local resultPath using file_edit, then submit without the body",
+		"Legacy completion.notify with actorSessionId=$self submits a result; dispatcher replay records recoveryOnly observations whose acknowledgement cannot finalize the task",
+		"Claim Hub results first after a Node nudge; completionSource distinguishes submission from recovery, and missing provenance means legacy unknown",
+		"Acknowledging a result retains the CHAT for reuse. The controller AI decides whether it is no longer needed and explicitly calls close to archive owned CHATs; reused CHATs are released, not archived",
+		"TASK_RESULT_CONFLICT preserves inconsistent formal results; reconcile only proven legacy recovery records, never blindly overwrite a final submission",
 		"Hub persists the completion, actively pushes it into the Node callback queue, and Node wakes callbackSessionId immediately when idle or after its active turn finishes",
 		"Provider realtime, startup reconciliation and timed status reads are recovery only for missed delivery; a future-created CHAT or task is not guaranteed to be covered by an external timer, so polling never replaces the active Hub-to-Node callback",
 		"Queues, leases, acknowledgement and archive/release remain internal details",
@@ -454,7 +473,7 @@ func newMCPGuide(serverVersion, view, name string) (*mcpGuide, error) {
 	base := &mcpGuide{GuideVersion: mcpGuideVersion, ServerVersion: serverVersion, View: view, Name: name}
 	switch view {
 	case "overview":
-		base.Summary = "FastSpider_FS exposes one stable 21-tool surface: start with real read-only discovery, then load only the detailed guide needed for the current action."
+		base.Summary = "FastSpider_FS exposes one stable 22-tool surface: start with real read-only discovery, then load only the detailed guide needed for the current action."
 		base.ToolSummaries = mcpToolSummaries()
 		base.Categories = []mcpGuideCategory{
 			{Name: "连接与设备", Summary: "Discover Hub/Machine availability.", Tools: []string{"capability_list", "machine_list", "machine_get"}},
@@ -464,7 +483,7 @@ func newMCPGuide(serverVersion, view, name string) (*mcpGuide, error) {
 			{Name: "Git", Summary: "Use allowlisted repository actions.", Tools: []string{"git_control"}},
 			{Name: "浏览器与桌面", Summary: "Automate Chromium or capture one-time visual evidence.", Tools: []string{"browser_control", "screenshot_take"}},
 			{Name: "本机 AI", Summary: "Discover/control Codex and Claude Code.", Tools: []string{"ai_control"}},
-			{Name: "Codex 云端协作", Summary: "Dispatch one CHAT task and return the callback to one local session.", Tools: []string{"codex_cloud_collaboration"}},
+			{Name: "Codex 云端协作", Summary: "Dispatch one CHAT task and return the callback to one local session.", Tools: []string{"codex_cloud_collaboration", "task_result_submit"}},
 			{Name: "项目上下文", Summary: "Maintain one revisioned plain-text project note.", Tools: []string{"working_context"}},
 			{Name: "多视角协作", Summary: "Return calling-side role/workflow guidance only.", Tools: []string{"thinking_team"}},
 			{Name: "文件与日志回显", Summary: "Return bounded native MCP content.", Tools: []string{"artifact_get", "result_get"}},

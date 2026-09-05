@@ -39,7 +39,7 @@ Fast Spider 不捆绑用户的 AI 账号或 Provider：
 
 - Codex Harness 要求本机已有可执行的 Codex CLI/app-server。
 - Windows 上若 Codex Desktop 提供 `%LOCALAPPDATA%/OpenAI/Codex/bin/<runtime>/codex.exe`，Node 优先使用最近更新且可正常执行的 Desktop runtime，以保证它与 Desktop 写入的 `CODEX_HOME` 配置格式一致；否则回退到 `PATH`。可用绝对路径环境变量 `FAST_SPIDER_CODEX_EXECUTABLE` 明确覆盖该选择。
-- Node 始终启动一个长期运行的 `codex app-server --stdio`，并固定加入 `NO_PROXY=127.0.0.1,localhost` 与对应的小写变量。Desktop IPC、外部 app-server socket/proxy、共享/接管模式均不再支持。
+- Node 始终启动一个长期运行的 `codex app-server --stdio`，并固定加入 `NO_PROXY=127.0.0.1,localhost` 与对应的小写变量。回调目标已由 Desktop 持有 writer 时，仅将回调交给该 Desktop owner：确认空闲后发送，取得真实 turn ID 才记录投递；忙时保留队列。普通会话操作仍使用 Node app-server，不接管 Desktop writer，也不使用外部 app-server socket/proxy。
 - 云端创建本地 Codex 任务使用 `ai_control session.create providerId=codex backend=codex_local`，同时提供绝对 `workingDirectory` 和稳定 `idempotencyKey`；Hub 与 Local Bridge 最终进入同一个 Node app-server 生命周期实现。
 - Codex Desktop 状态文件仅作为只读项目列表来源；Node 不写入 Desktop 项目、任务分配或归档状态。任务存在性和可读性以 app-server `thread/read` 为准。
 - Claude Code Harness 要求本机已有 `claude` CLI；Fast Spider 只探测版本/安全的 auth 配置并运行原生 Session。
@@ -83,6 +83,8 @@ go run ./cmd/ripgreppack --rg-exe <prepared rg.exe> --out <release-dir/component
 
 ## 备份
 
+长期部署可安装 `packaging/systemd/fast-spider-backup.sh` 为 `/usr/local/libexec/fast-spider-backup`（0755），并安装同目录的 `fast-spider-backup.service` 与 `.timer` 到 `/etc/systemd/system/`。执行 `systemctl daemon-reload && systemctl enable --now fast-spider-backup.timer`，首次用 `systemctl start fast-spider-backup.service` 验证。每天 UTC 03:30（随机延迟最多 15 分钟）生成并 Verify 备份，离线错过的运行在开机后补做；`/var/lib/fast-spider-daily-backups/day-1.zip` 至 `day-7.zip` 为七个 UTC 星期槽，仅在新备份校验成功后原子替换对应槽，不触碰手动或发布备份。目录权限 0700，归档权限 0600。用 `systemctl list-timers fast-spider-backup.timer` 与 `journalctl -u fast-spider-backup.service` 检查下次执行与失败；这些仍是同机备份，整机损失恢复需要另行保存异机副本。
+
 ```bash
 spiderctl backup --data-dir /var/lib/fast-spider --out ./backups/fast-spider-<timestamp>.zip
 spiderctl backup-verify --file ./backups/fast-spider-<timestamp>.zip
@@ -117,6 +119,10 @@ spiderctl staging-prune --dir /tmp --layout server --through <last-completed-ver
 `local` 只识别直接子级 `release-<semver>` / `release-<semver>-<7..40hex>`；`server` 只识别 `fast-spider-<semver>` / `fast-spider-<semver>-<7..40hex>`。只规划/删除版本不高于 `--through` 的候选；future、未知目录、legacy deploy 名称和普通文件均保留。root 或匹配 candidate 为 symlink/reparse/junction、候选树内出现 reparse/非普通项、扫描超过 256 candidates / 10000 files / 16 GiB / depth 32，或删除前身份/内容变化时均 fail-closed；`--apply` 前会完整扫描并重新核对，默认无 `--apply` 时绝不写磁盘。
 
 ## 周期维护
+
+0.4.62 的 Node 回调投递失败采用持久退避：同一 envelope 从 30 秒倍增至最多 10 分钟，重启和无关事件不会绕过截止时间；新 generation 不继承旧失败，成功投递清除失败状态。`session.callback.list` 返回 `consecutiveDeliveryFailures`、`nextDeliveryAttemptAt` 和安全 `deliveryErrorClass`。忙碌任务继续等待空闲，不累计投递失败。Desktop 持有 writer 时，回调通过该 Desktop owner 的 IPC 取得真实 turn ID；依赖 Desktop 在线并支持 untrusted app input，不抢占忙碌任务。
+
+模型以 `models.list` 的实时目录为准；Codex 可通过 `forceReload=true` 刷新本地目录缓存，create/send/settings 允许传递 max、ultra，具体模型是否支持仍由 app-server 校验。Cloud 的 thinking presets 与 Codex 分别处理，已知模型显示名在返回目录时归一化，不改变允许列表或本机默认模型、思考档位。Windows 长期运行需在本地 Node 配置启用登录自启动，并保持可用的用户桌面会话以接收 Desktop 回调。
 
 缓存、临时目录、Artifact、Agent 索引与开发协作资料室的生命周期边界、自动/手动清理方式和定时执行建议统一见[缓存与生命周期维护](23-cache-and-lifecycle.md)。无人值守任务只应执行无副作用检查或 plan-only 命令；任何 `--apply` / `--yes` 删除都必须先固定保留期、绝对根目录、结果留存和失败告警。
 

@@ -97,7 +97,7 @@ func TestChatGPTCloudLatestAssistantFollowsCurrentNodeAndIsBounded(t *testing.T)
 	if status := chatgptCloudConversationStatus(map[string]any{"mapping": map[string]any{}}); status != "unknown" {
 		t.Fatalf("status without terminal proof=%q", status)
 	}
-	if status := chatgptCloudConversationStatus(map[string]any{"currentNode": "assistant", "mapping": map[string]any{"assistant": map[string]any{"message": map[string]any{"status": "finished_successfully"}}}}); status != "completed" {
+	if status := chatgptCloudConversationStatus(map[string]any{"currentNode": "assistant", "mapping": map[string]any{"assistant": map[string]any{"message": map[string]any{"status": "finished_successfully"}}}}); status != "unknown" {
 		t.Fatalf("finished_successfully status=%q", status)
 	}
 }
@@ -110,7 +110,7 @@ func TestChatGPTCloudResultManifestPublishesCompletedResultForPollingRecovery(t 
 		}
 		writeChatGPTCloudTestJSON(t, w, map[string]any{
 			"conversation_id": "cloud-complete", "async_status": "completed", "current_node": "assistant-1",
-			"mapping": map[string]any{"assistant-1": map[string]any{"message": map[string]any{"author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"CLOUD_COLLAB_OK"}}}}},
+			"mapping": map[string]any{"assistant-1": map[string]any{"message": map[string]any{"status": "finished_successfully", "end_turn": true, "author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"CLOUD_COLLAB_OK"}}}}},
 		})
 	}))
 	defer server.Close()
@@ -141,7 +141,7 @@ func TestChatGPTCloudResultManifestRetriesFailedCallbackPublication(t *testing.T
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeChatGPTCloudTestJSON(t, w, map[string]any{
 			"conversation_id": "cloud-retry", "async_status": "completed", "current_node": "assistant-1",
-			"mapping": map[string]any{"assistant-1": map[string]any{"message": map[string]any{"author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"CLOUD_COLLAB_OK"}}}}},
+			"mapping": map[string]any{"assistant-1": map[string]any{"message": map[string]any{"status": "finished_successfully", "end_turn": true, "author": map[string]any{"role": "assistant"}, "content": map[string]any{"parts": []any{"CLOUD_COLLAB_OK"}}}}},
 		})
 	}))
 	defer server.Close()
@@ -880,7 +880,7 @@ func TestChatGPTCloudReadInvalidationFencesStaleInflightCache(t *testing.T) {
 			status = "running"
 		}
 		writeChatGPTCloudTestJSON(t, w, map[string]any{
-			"conversation_id": "cloud-cache-fence", "async_status": status, "mapping": map[string]any{},
+			"conversation_id": "cloud-cache-fence", "async_status": status, "current_node": "final", "mapping": map[string]any{"final": map[string]any{"message": map[string]any{"author": map[string]any{"role": "assistant"}, "status": "finished_successfully", "end_turn": true}}},
 		})
 	}))
 	defer server.Close()

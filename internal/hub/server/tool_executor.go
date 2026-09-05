@@ -205,6 +205,17 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 		}
 		return capabilityListOutput{Capabilities: outputCapabilities, CapabilitySummaries: mcpCapabilitySummaries(capabilities), Guide: guide}, nil
 
+	case "task_result_submit":
+		input, err := toolInput[taskResultSubmitInput](tool, rawInput)
+		if err != nil {
+			return nil, err
+		}
+		result, err := e.service.SubmitTaskResult(ctx, ownerID, input.TaskRef, input.Status, input.Text)
+		if err != nil {
+			return nil, err
+		}
+		return genericCapabilityOutput{Result: result}, nil
+
 	case "codex_cloud_collaboration":
 		input, err := toolInput[cloudCollaborationInput](tool, rawInput)
 		if err != nil {

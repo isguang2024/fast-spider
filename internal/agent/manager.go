@@ -335,6 +335,9 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 	case "providers.list":
 		return m.providers(ctx), nil
 	case "models.list":
+		if input.ForceReload {
+			m.codex.modelsCache.clear()
+		}
 		return m.models(ctx)
 	case "provider.capabilities":
 		return m.codexCapabilities(ctx)
@@ -1438,6 +1441,11 @@ func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams
 		OutputSchema:     input.OutputSchema,
 	}
 	turnResult, err := m.codex.StartTurnWithOptions(ctx, input.SessionID, turnInputs, turnOptions)
+	executionMode, owner := m.codex.executionMetadata()
+	if err != nil && input.RequireConfirmedTurnID && isCodexThreadWriterConflict(err) {
+		turnResult, err = startDesktopCallbackTurn(ctx, input.SessionID, turnInputs, dialCodexDesktopIPC)
+		executionMode, owner = "codex_desktop_ipc", "codex_desktop"
+	}
 	if err != nil && input.RequireConfirmedTurnID && isCodexThreadArchived(err) {
 		if unarchiveErr := m.codex.UnarchiveThread(ctx, input.SessionID); unarchiveErr != nil {
 			return nil, errors.Join(err, fmt.Errorf("unarchive archived callback target: %w", unarchiveErr))
@@ -1451,7 +1459,6 @@ func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams
 	if turnID == "" {
 		return nil, fmt.Errorf("local Codex app-server delivery did not return a turnId")
 	}
-	executionMode, owner := m.codex.executionMetadata()
 	return map[string]any{
 		"sessionId":     input.SessionID,
 		"turnId":        turnID,
@@ -1466,6 +1473,12 @@ func hasTurnInput(input agentControlParams) bool {
 	return strings.TrimSpace(input.Prompt) != "" || len(input.Skills) > 0 || len(input.Images) > 0 || len(input.LocalImages) > 0 || len(input.Mentions) > 0
 }
 
+// The app-server validates model-specific support. Keep the wire-level effort
+// vocabulary shared by create/send/steer and settings updates.
+func validCodexReasoningEffort(effort string) bool {
+	return stringInSet(effort, "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra")
+}
+
 func validateTurnInputs(input agentControlParams) error {
 	if strings.TrimSpace(input.Prompt) == "" && len(input.Skills) == 0 && len(input.Images) == 0 && len(input.LocalImages) == 0 && len(input.Mentions) == 0 {
 		return fmt.Errorf("at least one turn input is required")
@@ -1473,8 +1486,8 @@ func validateTurnInputs(input agentControlParams) error {
 	if detail := strings.TrimSpace(input.ImageDetail); detail != "" && !stringInSet(detail, "auto", "low", "high", "original") {
 		return fmt.Errorf("imageDetail must be auto, low, high, or original")
 	}
-	if effort := strings.TrimSpace(input.Thinking); effort != "" && !stringInSet(effort, "low", "medium", "high", "xhigh") {
-		return fmt.Errorf("thinking must be low, medium, high, or xhigh")
+	if effort := strings.TrimSpace(input.Thinking); effort != "" && !validCodexReasoningEffort(effort) {
+		return fmt.Errorf("thinking must be a Codex reasoning effort advertised by models.list")
 	}
 	if personality := strings.TrimSpace(input.Personality); personality != "" && !stringInSet(personality, "none", "friendly", "pragmatic") {
 		return fmt.Errorf("personality must be none, friendly, or pragmatic")
@@ -1586,9 +1599,10 @@ func (m *AgentManager) prepareSettingsInput(ctx context.Context, input *agentCon
 		changed = true
 	}
 	if effort := strings.TrimSpace(input.Effort); effort != "" {
-		if !stringInSet(effort, "low", "medium", "high", "xhigh") {
-			return fmt.Errorf("effort must be low, medium, high, or xhigh")
+		if !validCodexReasoningEffort(effort) {
+			return fmt.Errorf("effort must be a Codex reasoning effort advertised by models.list")
 		}
+		input.Effort = effort
 		changed = true
 	}
 	if permissions := strings.TrimSpace(input.Permissions); permissions != "" {
