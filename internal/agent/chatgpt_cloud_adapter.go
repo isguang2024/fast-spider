@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -51,6 +52,9 @@ type ChatGPTCloudAdapter struct {
 	listAuthTimeout    time.Duration
 	listRequestTimeout time.Duration
 
+	readBudgetMu sync.Mutex
+	readBudget   *chatGPTCloudProviderReadBudget
+
 	conduitMu             sync.Mutex
 	conduitByConversation map[string]string
 	createOverride        func(context.Context, string, string) (chatgptCloudTurnResult, error)
@@ -87,6 +91,7 @@ func NewChatGPTCloudAdapter(logger *slog.Logger, tokenSource func(ctx context.Co
 		tokenSource:           tokenSource,
 		listAuthTimeout:       chatgptListAuthTimeout,
 		listRequestTimeout:    chatgptListRequestTimeout,
+		readBudget:            newChatGPTCloudProviderReadBudget(logger),
 		conduitByConversation: map[string]string{},
 	}
 	adapter.realtime = newChatGPTCloudRealtime(logger, adapter.baseURL, adapter.http, tokenSource)
@@ -406,7 +411,7 @@ func (a *ChatGPTCloudAdapter) prepare(ctx context.Context, token string, body ma
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("conversation prepare returned %s", resp.Status)
+		return "", a.providerHTTPError("conversation prepare", resp)
 	}
 	var out struct {
 		Status       string `json:"status"`
@@ -452,12 +457,11 @@ func (a *ChatGPTCloudAdapter) streamPathObserved(ctx context.Context, path, toke
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		label := "conversation stream"
 		if path == chatgptSteerTurnPath {
 			label = "steer turn"
 		}
-		return chatgptCloudTurnResult{}, fmt.Errorf("%s returned %s: %s", label, resp.Status, strings.TrimSpace(string(rawBody)))
+		return chatgptCloudTurnResult{}, a.providerHTTPError(label, resp)
 	}
 	return chatgptParseStreamObserved(resp.Body, 20000, onConversationID)
 }
@@ -509,8 +513,7 @@ func (a *ChatGPTCloudAdapter) streamQuick(ctx context.Context, token string, bod
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		defer cancelStream()
-		rawBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return chatgptCloudTurnResult{}, fmt.Errorf("conversation stream returned %s: %s", resp.Status, strings.TrimSpace(string(rawBody)))
+		return chatgptCloudTurnResult{}, a.providerHTTPError("conversation stream", resp)
 	}
 
 	firstResult := make(chan chatgptCloudTurnOutcome, 1)
@@ -705,6 +708,8 @@ func (a *ChatGPTCloudAdapter) SendWithThinking(ctx context.Context, conversation
 		return chatgptCloudTurnResult{}, err
 	}
 	var result chatgptCloudTurnResult
+	a.InvalidateRead(conversationID)
+	defer a.InvalidateRead(conversationID)
 	if a.sendOverride != nil {
 		result, err = a.sendOverride(ctx, conversationID, parentMessageID, prompt, model, thinking)
 	} else {
@@ -724,6 +729,8 @@ func (a *ChatGPTCloudAdapter) SendQuickWithThinking(ctx context.Context, convers
 		return chatgptCloudTurnResult{}, err
 	}
 	var result chatgptCloudTurnResult
+	a.InvalidateRead(conversationID)
+	defer a.InvalidateRead(conversationID)
 	if a.sendOverride != nil {
 		result, err = a.sendOverride(ctx, conversationID, parentMessageID, prompt, model, thinking)
 	} else {
@@ -754,7 +761,7 @@ func (a *ChatGPTCloudAdapter) SendQuickIdempotentWithThinking(ctx context.Contex
 	if requestMessageID == "" || len(requestMessageID) > 128 || strings.ContainsAny(requestMessageID, "\x00\r\n\t ") {
 		return chatgptCloudTurnResult{}, fmt.Errorf("request message id is required and must be at most 128 non-whitespace characters")
 	}
-	detail, err := a.Read(ctx, conversationID)
+	detail, err := a.ReadCached(withChatGPTCloudReadSource(ctx, "send_idempotency"), conversationID, chatgptCloudProviderReadCacheTTL)
 	if err != nil {
 		return chatgptCloudTurnResult{}, fmt.Errorf("resolve idempotent follow-up state: %w", err)
 	}
@@ -786,6 +793,8 @@ func (a *ChatGPTCloudAdapter) SendQuickIdempotentWithThinking(ctx context.Contex
 		return chatgptCloudTurnResult{}, err
 	}
 	var result chatgptCloudTurnResult
+	a.InvalidateRead(conversationID)
+	defer a.InvalidateRead(conversationID)
 	if a.sendOverride != nil {
 		result, err = a.sendOverride(ctx, conversationID, parentMessageID, prompt, model, thinking)
 	} else {
@@ -793,7 +802,7 @@ func (a *ChatGPTCloudAdapter) SendQuickIdempotentWithThinking(ctx context.Contex
 	}
 	if err != nil {
 		reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), chatgptReconcileReadTimeout)
-		reconciled, reconcileErr := a.Read(reconcileCtx, conversationID)
+		reconciled, reconcileErr := a.ReadFresh(withChatGPTCloudReadSource(reconcileCtx, "send_reconcile"), conversationID)
 		cancel()
 		if reconcileErr == nil {
 			if existingText, found := chatgptCloudMessageTextByID(reconciled, requestMessageID); found && existingText == prompt {
@@ -818,7 +827,7 @@ func (a *ChatGPTCloudAdapter) followUpBody(ctx context.Context, conversationID, 
 		return nil, "", "", "", fmt.Errorf("message text is required")
 	}
 	if parentMessageID == "" || strings.TrimSpace(model) == "" || strings.TrimSpace(thinking) == "" {
-		detail, err := a.Read(ctx, conversationID)
+		detail, err := a.ReadCached(withChatGPTCloudReadSource(ctx, "send_parent"), conversationID, chatgptCloudProviderReadCacheTTL)
 		if err != nil {
 			return nil, "", "", "", fmt.Errorf("resolve follow-up state: %w", err)
 		}
@@ -892,8 +901,56 @@ func (a *ChatGPTCloudAdapter) Steer(ctx context.Context, conversationID, asyncTa
 	return result, nil
 }
 
-// Read fetches the conversation detail and normalizes it into a thread-like map.
+// Read fetches fresh conversation detail through the adapter read budget. It
+// still coalesces concurrent reads for the same conversation and always obeys
+// the adapter-wide pacing and rate-limit cooldown.
 func (a *ChatGPTCloudAdapter) Read(ctx context.Context, conversationID string) (map[string]any, error) {
+	return a.ReadFresh(ctx, conversationID)
+}
+
+// ReadCached returns conversation detail when a successful read newer than
+// maxAge is available. A non-positive maxAge forces a fresh read, while still
+// respecting the shared read budget.
+func (a *ChatGPTCloudAdapter) ReadCached(ctx context.Context, conversationID string, maxAge time.Duration) (map[string]any, error) {
+	return a.readConversation(ctx, conversationID, maxAge)
+}
+
+// ReadFresh obtains one fresh provider read. It cannot bypass pacing or a
+// provider rate-limit cooldown; use InvalidateRead for mutation/event fencing.
+func (a *ChatGPTCloudAdapter) ReadFresh(ctx context.Context, conversationID string) (map[string]any, error) {
+	return a.readConversation(ctx, conversationID, 0)
+}
+
+// InvalidateRead drops the adapter's cached detail for one conversation. It is
+// intended for send/mutation paths and never cancels an in-flight read.
+func (a *ChatGPTCloudAdapter) InvalidateRead(conversationID string) {
+	if a == nil {
+		return
+	}
+	a.ensureReadBudget().invalidate(strings.TrimSpace(conversationID))
+}
+
+func (a *ChatGPTCloudAdapter) ensureReadBudget() *chatGPTCloudProviderReadBudget {
+	a.readBudgetMu.Lock()
+	defer a.readBudgetMu.Unlock()
+	if a.readBudget == nil {
+		a.readBudget = newChatGPTCloudProviderReadBudget(a.logger)
+	}
+	return a.readBudget
+}
+
+func (a *ChatGPTCloudAdapter) readConversation(ctx context.Context, conversationID string, maxAge time.Duration) (map[string]any, error) {
+	conversationID = strings.TrimSpace(conversationID)
+	if conversationID == "" {
+		return nil, fmt.Errorf("conversationId is required")
+	}
+	if a == nil {
+		return nil, fmt.Errorf("chatgpt_cloud adapter is unavailable")
+	}
+	return a.ensureReadBudget().read(ctx, conversationID, maxAge, a.readConversationDirect)
+}
+
+func (a *ChatGPTCloudAdapter) readConversationDirect(ctx context.Context, conversationID string) (map[string]any, error) {
 	token, err := a.token(ctx)
 	if err != nil {
 		return nil, err
@@ -910,7 +967,7 @@ func (a *ChatGPTCloudAdapter) Read(ctx context.Context, conversationID string) (
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("read conversation returned %s", resp.Status)
+		return nil, a.providerHTTPError("read conversation", resp)
 	}
 	var detail map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
@@ -990,6 +1047,55 @@ func (a *ChatGPTCloudAdapter) Models(ctx context.Context) (map[string]any, error
 		"thinkingOptions": chatGPTThinkingOptions(presets),
 		"modelPresets":    presets,
 	}, nil
+}
+
+// Preserve provider HTTP failures through the Node capability boundary. Do not
+// turn throttling into an invalid caller request or expose provider response bodies.
+type chatGPTCloudHTTPError struct {
+	operation  string
+	status     int
+	retryAfter string
+}
+
+func (a *ChatGPTCloudAdapter) providerHTTPError(operation string, resp *http.Response) *chatGPTCloudHTTPError {
+	if resp.StatusCode == http.StatusTooManyRequests {
+		a.ensureReadBudget().noteRateLimit(resp.Header.Get("Retry-After"))
+	}
+	return newChatGPTCloudHTTPError(operation, resp)
+}
+
+func newChatGPTCloudHTTPError(operation string, resp *http.Response) *chatGPTCloudHTTPError {
+	e := &chatGPTCloudHTTPError{operation: operation, status: resp.StatusCode}
+	value := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds >= 0 {
+		e.retryAfter = strconv.FormatInt(seconds, 10) + " seconds"
+	} else if deadline, err := http.ParseTime(value); err == nil {
+		e.retryAfter = deadline.UTC().Format(time.RFC3339)
+	}
+	return e
+}
+
+func (e *chatGPTCloudHTTPError) Error() string {
+	message := fmt.Sprintf("ChatGPT Cloud %s returned HTTP %d", e.operation, e.status)
+	if e.retryAfter != "" {
+		message += "; Retry-After: " + e.retryAfter
+	}
+	return message
+}
+
+func (e *chatGPTCloudHTTPError) CapabilityError() (string, string, bool) {
+	code := "CHATGPT_CLOUD_HTTP_ERROR"
+	switch e.status {
+	case http.StatusTooManyRequests:
+		code = "CHATGPT_CLOUD_RATE_LIMITED"
+	case http.StatusUnauthorized:
+		code = "CHATGPT_CLOUD_UNAUTHORIZED"
+	case http.StatusForbidden:
+		code = "CHATGPT_CLOUD_FORBIDDEN"
+	case http.StatusNotFound:
+		code = "CHATGPT_CLOUD_CONVERSATION_NOT_FOUND"
+	}
+	return code, e.Error(), e.status == http.StatusTooManyRequests || e.status >= 500
 }
 
 // Keep provider bodies, credentials, URLs and raw transport errors out of UI

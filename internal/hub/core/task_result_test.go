@@ -60,7 +60,7 @@ func TestTaskResultSubmitLocalFileStaysOnNode(t *testing.T) {
 	}
 	ref := r["taskRef"].(string)
 	node.mu.Lock()
-	node.errors = map[string]*protocolv1.ProtocolError{"read": {Code: "NOT_FOUND", Message: "missing"}}
+	node.errors = map[string]*protocolv1.ProtocolError{"session.callback.prepare": {Code: "NOT_FOUND", Message: "missing"}}
 	node.mu.Unlock()
 	if _, err := s.SubmitTaskResult(ctx, owner, ref, "completed", ""); err == nil {
 		t.Fatal("missing file reported complete")
@@ -72,7 +72,7 @@ func TestTaskResultSubmitLocalFileStaysOnNode(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("a", 64)
 	node.mu.Lock()
 	node.errors = nil
-	node.responses = map[string]map[string]any{"read": {"size": int64(9000), "fileSha256": digest, "statOnly": true}}
+	node.responses = map[string]map[string]any{"session.callback.prepare": {"size": int64(9000), "fileSha256": digest}}
 	node.mu.Unlock()
 	if _, err := s.SubmitTaskResult(ctx, owner, ref, "completed", "do not upload this body"); err == nil {
 		t.Fatal("file body accepted by result submission")
@@ -86,8 +86,14 @@ func TestTaskResultSubmitLocalFileStaysOnNode(t *testing.T) {
 		t.Fatalf("file=%v", file)
 	}
 	for _, call := range node.snapshotCalls() {
-		if call.Capability == "file.read" && (call.Params["path"] != output || call.Params["statOnly"] != true || len(call.Params) != 2) {
-			t.Fatalf("non-metadata read: %v", call.Params)
+		if call.Action == "session.callback.prepare" && call.Params["mode"] == "result" {
+			generation, _ := numericInt64(call.Params["callbackGeneration"])
+			if call.Params["mode"] != "result" || call.Params["sessionId"] != r["chatSessionId"] || call.Params["callbackTargetSessionId"] != "codex-file-target" || call.Params["callbackMissionId"] != r["collaborationId"] || call.Params["callbackTaskId"] != "task" || generation != 1 {
+				t.Fatalf("result metadata route was not Node-owned: %v", call.Params)
+			}
+			if _, hasPath := call.Params["path"]; hasPath {
+				t.Fatalf("Hub supplied a caller-selected path to result verification: %v", call.Params)
+			}
 		}
 	}
 	claim, err = s.CloudCompletion(ctx, owner, CloudCompletionRequest{Action: "claim", ActorSessionID: "codex-file-target"})
@@ -113,7 +119,7 @@ func TestTaskResultSubmitRejectsInvalidFileMetadata(t *testing.T) {
 	}
 	for _, metadata := range []map[string]any{{}, {"size": int64(256<<20) + 1, "fileSha256": "sha256:" + strings.Repeat("a", 64)}, {"size": int64(10), "fileSha256": "invalid"}} {
 		node.mu.Lock()
-		node.responses = map[string]map[string]any{"read": metadata}
+		node.responses = map[string]map[string]any{"session.callback.prepare": metadata}
 		node.mu.Unlock()
 		_, err := s.SubmitTaskResult(ctx, owner, r["taskRef"].(string), "completed", "")
 		var ce *CapabilityCallError

@@ -72,8 +72,12 @@ type sessionCallbackRegistration struct {
 	LastResultBytes        int64     `json:"lastResultBytes,omitempty"`
 	LastResultSHA256       string    `json:"lastResultSHA256,omitempty"`
 	LastResultPageCount    int       `json:"lastResultPageCount,omitempty"`
-	RegisteredAt           time.Time `json:"registeredAt"`
-	UpdatedAt              time.Time `json:"updatedAt"`
+	// CompletionAckedAt is the durable terminal marker for this callback
+	// generation. The CHAT route remains available for metadata/reuse, while
+	// provider watching and recovery are fenced off for the acknowledged generation.
+	CompletionAckedAt time.Time `json:"completionAckedAt,omitempty"`
+	RegisteredAt      time.Time `json:"registeredAt"`
+	UpdatedAt         time.Time `json:"updatedAt"`
 }
 
 type sessionCallbackEvent struct {
@@ -123,6 +127,7 @@ type sessionCallbackStore struct {
 	registrations            map[string]sessionCallbackRegistration
 	pending                  map[string]sessionCallbackEvent
 	loadErr                  error
+	confirming               map[string]int64
 	beforeCommitSaveOverride func() error
 	syncParentOverride       func(string) error
 }
@@ -137,7 +142,7 @@ func (s *sessionCallbackStore) withCurrentRegistration(sourceSessionID string, g
 		return false, callbackStoreUnavailableError()
 	}
 	registration, exists := s.registrations[sourceSessionID]
-	if !exists || registration.Generation != generation {
+	if !exists || registration.Generation != generation || !callbackRegistrationProviderActive(registration) {
 		return false, nil
 	}
 	return true, ensure()
@@ -148,6 +153,7 @@ func newSessionCallbackStore(dataDir string) *sessionCallbackStore {
 		path:          filepath.Join(dataDir, "agent", "session-callbacks.json"),
 		registrations: map[string]sessionCallbackRegistration{},
 		pending:       map[string]sessionCallbackEvent{},
+		confirming:    map[string]int64{},
 	}
 	store.loadErr = store.load()
 	return store
@@ -185,6 +191,13 @@ func (s *sessionCallbackStore) load() error {
 		}
 		if err := validateSessionCallbackRegistration(registration); err != nil {
 			return fmt.Errorf("invalid session callback index: %w", err)
+		}
+		// Schema-3 records written before CompletionAckedAt used the formal
+		// submitted envelope and delivery timestamp as their durable completion
+		// ACK marker. Restore only that exact evidence; ordinary nudge envelopes
+		// and recovery claims must never finalize a route during load.
+		if registration.CompletionAckedAt.IsZero() && !registration.LastDeliveredAt.IsZero() && registration.LastDeliveredEnvelope == callbackFormalCompletionKey(registration) {
+			registration.CompletionAckedAt = registration.LastDeliveredAt.UTC()
 		}
 		if _, exists := s.registrations[registration.SourceSessionID]; exists {
 			return fmt.Errorf("invalid session callback index: duplicate source session")
@@ -482,6 +495,82 @@ func callbackClaimActive(event sessionCallbackEvent, now time.Time) bool {
 	return event.ClaimID != "" && !event.ClaimedAt.IsZero() && now.Before(event.ClaimedAt.UTC().Add(sessionCallbackClaimLease))
 }
 
+// callbackRegistrationProviderActive is the single route predicate used by
+// watcher creation and provider recovery. A terminal completion ACK keeps the
+// registration readable and reusable as metadata, but it must never revive the
+// acknowledged provider generation.
+func callbackRegistrationProviderActive(registration sessionCallbackRegistration) bool {
+	return registration.Armed && registration.CompletionAckedAt.IsZero()
+}
+
+func callbackFormalCompletionKey(registration sessionCallbackRegistration) string {
+	return "submitted_" + strings.TrimPrefix(sessionCallbackCompletionEventKey(registration), "completion_")
+}
+
+func callbackRegistrationHasProviderObservationLocked(s *sessionCallbackStore, registration sessionCallbackRegistration) bool {
+	if pending, ok := s.pending[registration.SourceSessionID]; ok && pending.Generation == registration.Generation {
+		return true
+	}
+	formalKey := callbackFormalCompletionKey(registration)
+	if registration.LastEventKey == formalKey || registration.LastDeliveredEnvelope == formalKey {
+		return true
+	}
+	for _, key := range registration.RecentEventKeys {
+		if key == formalKey || strings.HasPrefix(key, "recovery_") {
+			return true
+		}
+	}
+	return false
+}
+
+// providerRecoveryAllowed reports whether a status read may be issued for the
+// current generation. A Hub-pushed formal submission is already authoritative;
+// reading the provider after it only adds duplicate traffic and can race the
+// local completion acknowledgement.
+func (s *sessionCallbackStore) providerRecoveryAllowed(sourceSessionID string, generation int64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return false, callbackStoreUnavailableError()
+	}
+	registration, ok := s.registrations[strings.TrimSpace(sourceSessionID)]
+	if !ok || registration.Generation != generation || !callbackRegistrationProviderActive(registration) {
+		return false, nil
+	}
+	return !callbackRegistrationHasProviderObservationLocked(s, registration), nil
+}
+
+// beginProviderConfirmation deduplicates realtime confirmation reads for a
+// route generation while allowing a later realtime event after the prior
+// bounded confirmation has settled.
+func (s *sessionCallbackStore) beginProviderConfirmation(sourceSessionID string, generation int64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return false, callbackStoreUnavailableError()
+	}
+	registration, ok := s.registrations[strings.TrimSpace(sourceSessionID)]
+	if !ok || registration.Generation != generation || !callbackRegistrationProviderActive(registration) || callbackRegistrationHasProviderObservationLocked(s, registration) {
+		return false, nil
+	}
+	if s.confirming == nil {
+		s.confirming = map[string]int64{}
+	}
+	if activeGeneration, exists := s.confirming[registration.SourceSessionID]; exists && activeGeneration == generation {
+		return false, nil
+	}
+	s.confirming[registration.SourceSessionID] = generation
+	return true, nil
+}
+
+func (s *sessionCallbackStore) endProviderConfirmation(sourceSessionID string, generation int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.confirming != nil && s.confirming[strings.TrimSpace(sourceSessionID)] == generation {
+		delete(s.confirming, strings.TrimSpace(sourceSessionID))
+	}
+}
+
 func (s *sessionCallbackStore) register(request sessionCallbackRegistration) (sessionCallbackRegistration, bool, error) {
 	now := time.Now().UTC()
 	request.SourceSessionID = strings.TrimSpace(request.SourceSessionID)
@@ -586,6 +675,9 @@ func (s *sessionCallbackStore) arm(sourceSessionID string, generation int64, exp
 	}
 	if current.Generation != generation {
 		return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "CALLBACK_GENERATION_STALE", message: "callback generation does not match the registered owner"}
+	}
+	if !current.CompletionAckedAt.IsZero() {
+		return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "CALLBACK_ROUTE_FINALIZED", message: "callback route generation was already finalized"}
 	}
 	if strings.TrimSpace(expectedOwner.TargetSessionID) != "" && current.TargetSessionID != strings.TrimSpace(expectedOwner.TargetSessionID) ||
 		strings.TrimSpace(expectedOwner.MissionID) != "" && current.MissionID != strings.TrimSpace(expectedOwner.MissionID) ||
@@ -1097,8 +1189,8 @@ func (s *sessionCallbackStore) acknowledgeCompletion(expected sessionCallbackReg
 		return 0, &sessionCallbackError{code: "CALLBACK_OWNER_CONFLICT", message: "completion acknowledgement does not match the registered task"}
 	}
 	event, pending := s.pending[expected.SourceSessionID]
-	formalKey := "submitted_" + strings.TrimPrefix(sessionCallbackCompletionEventKey(registration), "completion_")
-	if !pending && registration.LastDeliveredEnvelope == formalKey {
+	formalKey := callbackFormalCompletionKey(registration)
+	if !pending && registration.LastDeliveredEnvelope == formalKey && !registration.CompletionAckedAt.IsZero() {
 		return 0, nil
 	}
 	previous := registration
@@ -1107,6 +1199,7 @@ func (s *sessionCallbackStore) acknowledgeCompletion(expected sessionCallbackReg
 		registration.RecentEventKeys = registration.RecentEventKeys[len(registration.RecentEventKeys)-maxRecentCallbackEventKeys:]
 	}
 	registration.LastDeliveredEnvelope, registration.LastDeliveredAt, registration.UpdatedAt = formalKey, now.UTC(), now.UTC()
+	registration.CompletionAckedAt = now.UTC()
 	s.registrations[expected.SourceSessionID] = registration
 	delete(s.pending, expected.SourceSessionID)
 	if committed, err := s.saveLocked(); err != nil {

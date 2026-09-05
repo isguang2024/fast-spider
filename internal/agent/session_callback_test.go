@@ -1220,7 +1220,7 @@ func TestSessionCallbackActionsRegisterListAndUnregister(t *testing.T) {
 		t.Fatal(err)
 	}
 	callbacks, _ := listed["callbacks"].([]map[string]any)
-	if len(callbacks) != 1 || callbacks[0]["targetSessionId"] != "coordinator-local" || callbacks[0]["generation"] != int64(1) || callbacks[0]["armed"] != true || callbacks[0]["baselineSet"] != true || callbacks[0]["baselineIdentity"] != "assistant-old" {
+	if len(callbacks) != 1 || callbacks[0]["targetSessionId"] != "coordinator-local" || callbacks[0]["generation"] != int64(1) || callbacks[0]["armed"] != true || callbacks[0]["providerActive"] != true || callbacks[0]["baselineSet"] != true {
 		t.Fatalf("callbacks=%#v", callbacks)
 	}
 	if listed["deliveryPolicy"] != "queued-batch-claim" || listed["recoveryPolicy"] != "node-fallback-status-poll-and-nudge" || !strings.Contains(listed["queueText"].(string), "FAST_SPIDER_SESSION_CALLBACK_QUEUE_V1") {

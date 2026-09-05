@@ -280,7 +280,7 @@ func TestCloudCompletionCompactCallbackHandlesTextFileAndRecovery(t *testing.T) 
 				text = "123"
 			}
 			digest := "sha256:" + strings.Repeat("a", 64)
-			node.setResponse("read", map[string]any{"size": int64(123), "fileSha256": digest})
+			node.setResponse("session.callback.prepare", map[string]any{"size": int64(123), "fileSha256": digest})
 			if kind == "recovery" {
 				_, err = s.CloudCompletion(ctx, owner, CloudCompletionRequest{Action: "notify", CollaborationID: r["collaborationId"].(string), TaskID: "task", ActorSessionID: "codex-target", SourceSessionID: r["chatSessionId"].(string), Outcome: "completed", CallbackType: "text", Text: text})
 			} else {
@@ -330,8 +330,10 @@ func TestCloudCompletionCompactCallbackHandlesTextFileAndRecovery(t *testing.T) 
 				if call.Action == "session.callback.ack" && (call.Params["mode"] != "completion" || call.Params["sessionId"] != r["chatSessionId"] || call.Params["callbackMissionId"] != r["collaborationId"] || call.Params["callbackTargetSessionId"] != "codex-target") {
 					t.Fatalf("wrong Node acknowledgement: %v", call)
 				}
-				if call.Capability == "file.read" && call.Params["statOnly"] != true {
-					t.Fatalf("file body uploaded: %v", call)
+				if call.Action == "session.callback.prepare" && call.Params["mode"] == "result" {
+					if _, hasPath := call.Params["path"]; hasPath {
+						t.Fatalf("result verification accepted a caller-selected path: %v", call)
+					}
 				}
 			}
 			if countCloudCollaborationCalls(node.snapshotCalls(), "session.callback.ack") != 1 {
@@ -385,7 +387,7 @@ func TestCloudCollaborationBootstrapDefinesLocalFileCallbackSlot(t *testing.T) {
 			t.Fatalf("bootstrap missing %q: %s", needle, prompt)
 		}
 	}
-	if strings.Count(prompt, "task_") != 2 || len(prompt) > 900 {
+	if strings.Count(prompt, "task_") != 2 || len(prompt) > 1800 {
 		t.Fatalf("bootstrap duplicates its callback reference or is too long (%d bytes): %s", len(prompt), prompt)
 	}
 	if strings.Contains(prompt, "write_scope=") || strings.Contains(prompt, "placeholder") {

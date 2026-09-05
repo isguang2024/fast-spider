@@ -218,8 +218,9 @@ var mcpToolGuides = map[string]mcpToolGuideEntry{
 			"The default accessMode is write with writeScope=workingDirectory and callbackType=text; override accessMode=read_only when no edits are needed",
 			"For a long report use callbackType=local_file; deliverablePath must be inside writeScope, or omit it for an assigned local path. Read-only tasks may write only their assigned result path",
 			"After dispatch returns callerShouldYield=true and nextAction=end_turn, end the current turn without polling",
-			"The CHAT uses task_result_submit before its final reply; Hub verifies the assigned file or accepts short text, persists the result, and Node wakes the bound Codex session when idle",
-			"On callback, use completion.claim with actorSessionId; read text or deliverablePath, then call the returned acknowledge object. FS handles file metadata and Node acknowledgement",
+			"The CHAT submits a concise task report: work done, outcome/verification, and blockers or recommended next step. Use completed, blocked or failed; decisions needed also require a blocked report. Keep tool logs and step-by-step execution in the CHAT or supporting file",
+			"On callback, use completion.claim with actorSessionId; read the text or local report summary and supporting detail as needed, then call the returned acknowledge object. FS handles metadata and Node acknowledgement; no routine diagnostic listing",
+			"After receipt, assess the report and continue the original goal: coordinate dependencies, ask for necessary human decisions, or dispatch the next authorized round to the original CHAT using targetSessionId and a new idempotencyKey. Keep prior results immutable; do not archive by default",
 			"Provider realtime, startup reconciliation and timed status reads are recovery only; they are not the normal completion channel",
 			"The callback always returns to callbackSessionId, regardless of whether the caller calls that session a controller, coordinator or single AI",
 		}, Returns: []string{"one asynchronous dispatch receipt", "collaborationId and taskId", "durable callback to callbackSessionId"}, RecommendedNext: []string{"end the current turn after dispatch"}, CommonErrors: []string{"RUNTIME_UNAVAILABLE", "INVALID_REQUEST", "CONFLICT", "AGENT_SESSION_BUSY", "CALLBACK_BASELINE_UNAVAILABLE"},
@@ -230,7 +231,7 @@ var mcpToolGuides = map[string]mcpToolGuideEntry{
 	},
 	"task_result_submit": {
 		Description:     "Submit the result of an already assigned Cloud CHAT task and notify its preassigned Codex session when idle. For local_file tasks, verify the assigned Node-local file without uploading its body. Cannot create tasks, change paths or choose notification targets.",
-		WhenToUse:       []string{"Finish the exact task supplied to this CHAT", "Return a short text result, a locally saved report, or a final status"},
+		WhenToUse:       []string{"Report the assigned round as completed, blocked (including decisions needed), or failed", "Return a concise task report or a local file with the summary first; omit execution transcripts"},
 		RequiredInputs:  []string{"taskRef from the assigned task", "status=completed|blocked|failed", "text only for a text task; omit for local_file and status"},
 		SafeSequence:    []string{"For local_file, finish writing the assigned local file through file_edit before submitting; preserve it for the recipient", "Call task_result_submit; FS verifies a completed local file using metadata and SHA-256 only", "FS durably records the result and notifies only the task's already bound Codex session", "If discovery omits this tool but Hub provides this guide, refresh the FS operation catalog in ChatGPT settings and verify in a later turn; do not confuse catalog absence with a safety refusal", "Retry identical arguments only for uncertain transport or CALLBACK_DELIVERY_PENDING; do not treat refusal as success"},
 		Returns:         []string{"accepted status", "fixed result path and checksum for a completed local_file task", "notification acceptance"},
@@ -401,10 +402,10 @@ func codexCloudCollaborationGuide() (string, []string, []string, []string) {
 	safeSequence := []string{
 		"Call dispatch once with the task in prompt; FS adds the submit instructions. Node model/thinking defaults are inherited",
 		"After callerShouldYield=true and nextAction=end_turn, end the turn and wait for the callback",
-		"CHAT writes its result, then calls task_result_submit with the assigned taskRef; local_file submissions omit the body",
+		"CHAT reports work done, outcome/verification and next step or decision needed, then calls task_result_submit with completed|blocked|failed and the assigned taskRef; local_file puts the summary first and omits the body on submission",
 		"On callback, call completion.claim with actorSessionId and the supplied claimId. Read text or the deliverablePath file, then call codex_cloud_collaboration with the returned acknowledge object",
 		"completion.ack verifies file metadata internally and clears the matching Node callback. Normal delivery needs no session.callback.list/claim/ack, history lookup, or manual hashes",
-		"Report the task result briefly; keep CHAT for reuse. recoveryOnly observations cannot finish a task; use workflow=cloud-callback-recovery only when needed",
+		"After receipt, continue the original goal: assess results, coordinate blockers or ask the necessary decision, then reuse the CHAT for a new authorized round. Keep reports brief and process logs in the original CHAT/file. recoveryOnly observations cannot finish a task; use workflow=cloud-callback-recovery only when needed",
 	}
 	return summary, whenToUse, requiredInputs, safeSequence
 }

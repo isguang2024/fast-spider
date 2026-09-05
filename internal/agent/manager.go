@@ -121,10 +121,6 @@ type AgentManager struct {
 	chatgptDefaults   chatGPTCloudCreateDefaults
 	readinessMu       sync.Mutex
 	readinessCache    map[string]providerReadinessCacheEntry
-	chatgptReadMu     sync.Mutex
-	chatgptReadCache  map[string]chatGPTCloudReadCacheEntry
-	chatgptReadActive map[string]*chatGPTCloudReadCall
-	chatgptReadEpoch  map[string]uint64
 }
 
 // SetCloudResultPublisher connects the Cloud callback path to the Node's
@@ -157,20 +153,17 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 	ccswitch := NewCCSwitchInspector(logger)
 	callbackStore := newSessionCallbackStore(dataDir)
 	manager := &AgentManager{
-		codex:             NewCodexAdapter(logger),
-		claude:            NewClaudeCodeAdapter(dataDir, ccswitch, logger),
-		ccswitch:          ccswitch,
-		logger:            logger,
-		dataDir:           dataDir,
-		codexStatePath:    defaultCodexDesktopStatePath(),
-		registry:          staticProviderRegistry(),
-		createStore:       newSessionCreateStore(dataDir),
-		visibilityStore:   newSessionVisibilityStore(dataDir),
-		callbackStore:     callbackStore,
-		chatgptDefaults:   chatGPTCloudCreateDefaults{ConfigurationMode: "auto", Mode: "complete"},
-		chatgptReadCache:  map[string]chatGPTCloudReadCacheEntry{},
-		chatgptReadActive: map[string]*chatGPTCloudReadCall{},
-		chatgptReadEpoch:  map[string]uint64{},
+		codex:           NewCodexAdapter(logger),
+		claude:          NewClaudeCodeAdapter(dataDir, ccswitch, logger),
+		ccswitch:        ccswitch,
+		logger:          logger,
+		dataDir:         dataDir,
+		codexStatePath:  defaultCodexDesktopStatePath(),
+		registry:        staticProviderRegistry(),
+		createStore:     newSessionCreateStore(dataDir),
+		visibilityStore: newSessionVisibilityStore(dataDir),
+		callbackStore:   callbackStore,
+		chatgptDefaults: chatGPTCloudCreateDefaults{ConfigurationMode: "auto", Mode: "complete"},
 	}
 	manager.chatgptCloud = NewChatGPTCloudAdapter(logger, func(ctx context.Context) (string, error) {
 		return manager.codex.AuthToken(ctx)

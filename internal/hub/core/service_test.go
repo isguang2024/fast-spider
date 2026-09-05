@@ -170,7 +170,7 @@ func TestAgentCapabilityRetryAndAuditPolicy(t *testing.T) {
 			t.Fatalf("%s should be retryable", action)
 		}
 	}
-	for _, action := range []string{"session.send", "session.steer", "session.respond", "session.callback.register", "session.callback.arm", "session.callback.unregister", "session.callback.claim", "session.callback.ack", "session.delete", "session.rollback", "session.settings.update", "session.review"} {
+	for _, action := range []string{"session.send", "session.steer", "session.respond", "session.callback.prepare", "session.callback.recover", "session.callback.continue", "session.callback.register", "session.callback.arm", "session.callback.unregister", "session.callback.claim", "session.callback.ack", "session.delete", "session.rollback", "session.settings.update", "session.review"} {
 		if isRetryableCapability("agent.control", action) {
 			t.Fatalf("%s must not be retryable", action)
 		}

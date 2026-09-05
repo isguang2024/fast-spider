@@ -480,7 +480,7 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 		if input.Action == "session.create" && (len(input.IdempotencyKey) < 12 || len(input.IdempotencyKey) > 128) {
 			return nil, &toolRequestError{message: "idempotencyKey is required for session.create and must be 12 to 128 characters"}
 		}
-		if input.Action == "session.callback.register" || input.Action == "session.callback.arm" || input.Action == "session.callback.enqueue" || input.Action == "session.callback.ack" && input.Mode == "completion" {
+		if input.Action == "session.callback.prepare" || input.Action == "session.callback.recover" || input.Action == "session.callback.continue" || input.Action == "session.callback.register" || input.Action == "session.callback.arm" || input.Action == "session.callback.enqueue" || input.Action == "session.callback.ack" && input.Mode == "completion" {
 			return nil, &core.CapabilityCallError{Code: "CALLBACK_ROUTE_MANAGED_ONLY", Message: "callback routes and active delivery are managed by codex_cloud_collaboration; use session.callback.list/claim/ack only for fallback recovery", Retryable: false}
 		}
 		callbackClaimID := input.CallbackClaimID

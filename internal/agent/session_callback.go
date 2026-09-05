@@ -275,7 +275,7 @@ func (d *sessionCallbackDispatcher) reconcileSubscriptionsWithRecovery(readProvi
 	}
 	recovered := true
 	for _, registration := range registrations {
-		if !registration.Armed {
+		if !callbackRegistrationProviderActive(registration) {
 			continue
 		}
 		if d.ensure != nil {
@@ -286,15 +286,32 @@ func (d *sessionCallbackDispatcher) reconcileSubscriptionsWithRecovery(readProvi
 			cancel()
 			if ensureErr != nil && !errors.Is(ensureErr, context.Canceled) {
 				d.logger.Warn("restore ChatGPT Cloud callback subscription", "sourceSessionId", registration.SourceSessionID, "error", ensureErr)
+				if classifyExecutionError(ensureErr) == ErrorRateLimited {
+					return false
+				}
 			}
 		}
 		if readProvider && d.recoverStatus != nil {
+			allowed, allowedErr := d.store.providerRecoveryAllowed(registration.SourceSessionID, registration.Generation)
+			if allowedErr != nil {
+				recovered = false
+				d.logger.Warn("check ChatGPT Cloud callback recovery route", "sourceSessionId", registration.SourceSessionID, "error", allowedErr)
+				continue
+			}
+			if !allowed {
+				continue
+			}
 			statusCtx, statusCancel := context.WithTimeout(d.rootCtx, 20*time.Second)
 			statusErr := d.recoverStatus(statusCtx, registration.SourceSessionID, registration.Generation)
 			statusCancel()
 			if statusErr != nil && !errors.Is(statusErr, context.Canceled) {
 				recovered = false
 				d.logger.Warn("recover missed ChatGPT Cloud callback", "sourceSessionId", registration.SourceSessionID, "error", statusErr)
+				if classifyExecutionError(statusErr) == ErrorRateLimited {
+					// Do not amplify a provider rate limit across the remaining
+					// registrations in this recovery batch.
+					return false
+				}
 			} else if statusErr != nil {
 				recovered = false
 			}
@@ -513,20 +530,34 @@ func (m *AgentManager) handleChatGPTCloudCallbackEvent(event chatgptCloudEvent) 
 		m.logger.Warn("load ChatGPT Cloud callback route", "sourceSessionId", event.ConversationID, "error", err)
 		return
 	}
-	if !current || !registration.Armed {
+	if !current || !callbackRegistrationProviderActive(registration) {
 		return
 	}
-	m.invalidateChatGPTCloudRead(event.ConversationID)
 	// A websocket event is a hint, including for new and non-text tasks.
 	if m.callbackDispatcher != nil {
-		m.callbackDispatcher.startBackground(func(backgroundCtx context.Context) {
+		started, beginErr := m.callbackStore.beginProviderConfirmation(event.ConversationID, registration.Generation)
+		if beginErr != nil {
+			m.logger.Warn("start ChatGPT Cloud callback confirmation", "sourceSessionId", event.ConversationID, "error", beginErr)
+			return
+		}
+		if !started {
+			return
+		}
+		m.invalidateChatGPTCloudRead(event.ConversationID)
+		if !m.callbackDispatcher.startBackground(func(backgroundCtx context.Context) {
+			defer m.callbackStore.endProviderConfirmation(event.ConversationID, registration.Generation)
 			m.confirmChatGPTCloudCallbackEvent(backgroundCtx, event.ConversationID, registration.Generation)
-		})
+		}) {
+			m.callbackStore.endProviderConfirmation(event.ConversationID, registration.Generation)
+		}
 	}
 }
 
 func (m *AgentManager) confirmChatGPTCloudCallbackEvent(parent context.Context, sourceSessionID string, generation int64) {
-	for attempt, delay := range []time.Duration{0, 250 * time.Millisecond, time.Second, 3 * time.Second} {
+	// Keep confirmation bounded and spread out. The realtime event is only a
+	// hint; one immediate read plus one delayed check covers the provider's
+	// final-message propagation while avoiding a short three-read burst.
+	for attempt, delay := range []time.Duration{0, 3 * time.Second} {
 		if attempt > 0 {
 			timer := time.NewTimer(delay)
 			select {
@@ -537,13 +568,14 @@ func (m *AgentManager) confirmChatGPTCloudCallbackEvent(parent context.Context, 
 			}
 		}
 		ctx, cancel := context.WithTimeout(parent, 15*time.Second)
+		ctx = withChatGPTCloudReadSource(ctx, "realtime_confirm")
 		settled, err := m.recoverCompletedCloudCallbackState(ctx, sourceSessionID, generation, true)
 		cancel()
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
 				m.logger.Warn("confirm ChatGPT Cloud callback event", "sourceSessionId", sourceSessionID, "error", err)
 			}
-			if m.callbackDispatcher != nil {
+			if m.callbackDispatcher != nil && classifyExecutionError(err) != ErrorRateLimited {
 				m.callbackDispatcher.requestProviderRecovery()
 			}
 			return
@@ -684,6 +716,29 @@ func (m *AgentManager) sessionCallbackRegister(ctx context.Context, input agentC
 	if err := validateCallbackOpaqueID(targetSessionID, "callback target session ID", 256); err != nil {
 		return nil, &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
 	}
+	// Reuse baselines are acquired by the owning Node. A replay of the same
+	// registration keeps its local baseline and must not issue another read.
+	if mode := strings.TrimSpace(input.Mode); mode == "reuse" || mode == "reuse_resume" {
+		current, exists, stateErr := m.callbackStore.registrationFor(sourceSessionID)
+		if stateErr != nil {
+			return nil, stateErr
+		}
+		sameOwner := exists && current.TargetSessionID == targetSessionID && current.MissionID == strings.TrimSpace(input.CallbackMissionID) && current.TaskID == strings.TrimSpace(input.CallbackTaskID) && current.Generation == input.CallbackGeneration
+		if sameOwner {
+			input.CallbackBaselineIdentity = current.BaselineIdentity
+			if strings.TrimSpace(input.CallbackBaselineIdentity) == "" {
+				return nil, &sessionCallbackError{code: "CALLBACK_BASELINE_UNAVAILABLE", message: "the existing Cloud CHAT callback route has no local baseline"}
+			}
+		} else if mode == "reuse_resume" {
+			return nil, &sessionCallbackError{code: "CALLBACK_BASELINE_UNAVAILABLE", message: "the resumed Cloud CHAT callback route is not present on this Node"}
+		} else {
+			baseline, prepareErr := m.prepareCloudCallbackBaseline(ctx, sourceSessionID)
+			if prepareErr != nil {
+				return nil, prepareErr
+			}
+			input.CallbackBaselineIdentity = strings.TrimSpace(baseline)
+		}
+	}
 	registration, replayed, err := m.callbackStore.register(sessionCallbackRegistration{
 		SourceSessionID:  sourceSessionID,
 		TargetSessionID:  targetSessionID,
@@ -702,9 +757,8 @@ func (m *AgentManager) sessionCallbackRegister(ctx context.Context, input agentC
 	// Registration durability is the synchronous contract. Provider/source
 	// reads, target Codex RPCs, and realtime subscription are recovery work and
 	// must not delay task.dispatch or make a persisted route look rejected.
-	_ = ctx
 	watcherState := "unarmed"
-	if registration.Armed {
+	if registration.Armed && !replayed && callbackRegistrationProviderActive(registration) {
 		watcherState = "pending"
 		m.callbackDispatcher.startBackground(func(backgroundCtx context.Context) {
 			m.initializeCloudCallbackSubscription(backgroundCtx, sourceSessionID, registration.Generation)
@@ -740,10 +794,11 @@ func (m *AgentManager) sessionCallbackArm(ctx context.Context, input agentContro
 	if err != nil {
 		return nil, err
 	}
-	_ = ctx
-	m.callbackDispatcher.startBackground(func(backgroundCtx context.Context) {
-		m.initializeCloudCallbackSubscription(backgroundCtx, sourceSessionID, registration.Generation)
-	})
+	if !replayed && callbackRegistrationProviderActive(registration) {
+		m.callbackDispatcher.startBackground(func(backgroundCtx context.Context) {
+			m.initializeCloudCallbackSubscription(backgroundCtx, sourceSessionID, registration.Generation)
+		})
+	}
 	m.callbackDispatcher.signal()
 	return map[string]any{
 		"callback":     callbackRegistrationMap(registration, 0),
@@ -860,6 +915,7 @@ func (m *AgentManager) initializeCloudCallbackSubscription(parent context.Contex
 	_ = m.chatgptCloud.WaitCallbackRealtime(readyCtx)
 	readyCancel()
 	statusCtx, statusCancel := context.WithTimeout(parent, 20*time.Second)
+	statusCtx = withChatGPTCloudReadSource(statusCtx, "registration_catchup")
 	currentErr := m.recoverCompletedCloudCallback(statusCtx, sourceSessionID, generation)
 	statusCancel()
 	if currentErr != nil && !errors.Is(currentErr, context.Canceled) {
@@ -875,6 +931,9 @@ func (m *AgentManager) initializeCloudCallbackSubscription(parent context.Contex
 // status read only synthesizes a terminal event when a registered Cloud CHAT
 // is already completed and the realtime event was missed.
 func (m *AgentManager) recoverCompletedCloudCallback(ctx context.Context, sourceSessionID string, generation int64) error {
+	if chatGPTCloudReadSource(ctx) == "conversation_read" {
+		ctx = withChatGPTCloudReadSource(ctx, "scheduled_recovery")
+	}
 	_, err := m.recoverCompletedCloudCallbackState(ctx, sourceSessionID, generation, false)
 	return err
 }
@@ -887,10 +946,30 @@ func (m *AgentManager) recoverCompletedCloudCallbackState(ctx context.Context, s
 	if err != nil {
 		return false, err
 	}
-	if !current || registration.Generation != generation || !registration.Armed {
+	if !current || registration.Generation != generation || !callbackRegistrationProviderActive(registration) {
 		return true, nil
 	}
-	detail, err := m.readChatGPTCloud(ctx, sourceSessionID, 0)
+	allowed, err := m.callbackStore.providerRecoveryAllowed(sourceSessionID, generation)
+	if err != nil {
+		return false, err
+	}
+	if !allowed {
+		// A formal Hub submission or terminal ACK already represents the
+		// authoritative completion. Do not issue a provider read for it.
+		return true, nil
+	}
+	if chatGPTCloudReadSource(ctx) == "conversation_read" {
+		if terminalSignal {
+			ctx = withChatGPTCloudReadSource(ctx, "realtime_confirm")
+		} else {
+			ctx = withChatGPTCloudReadSource(ctx, "node_recovery")
+		}
+	}
+	readMaxAge := chatgptCloudReadCacheTTL
+	if terminalSignal {
+		readMaxAge = 0
+	}
+	detail, err := m.readChatGPTCloud(ctx, sourceSessionID, readMaxAge)
 	if err != nil {
 		return false, err
 	}
@@ -902,7 +981,14 @@ func (m *AgentManager) recoverCompletedCloudCallbackState(ctx context.Context, s
 	if err != nil {
 		return false, err
 	}
-	if !current || latest.Generation != generation || !latest.Armed {
+	if !current || latest.Generation != generation || !callbackRegistrationProviderActive(latest) {
+		return true, nil
+	}
+	allowed, err = m.callbackStore.providerRecoveryAllowed(sourceSessionID, generation)
+	if err != nil {
+		return false, err
+	}
+	if !allowed {
 		return true, nil
 	}
 	now := time.Now().UTC()
@@ -911,7 +997,9 @@ func (m *AgentManager) recoverCompletedCloudCallbackState(ctx context.Context, s
 		return false, nil
 	}
 	if latest.BaselineIdentity != "" && identity == latest.BaselineIdentity {
-		return true, nil
+		// A terminal hint can precede propagation of the new final message. The
+		// old generation baseline is not evidence that this turn has settled.
+		return false, nil
 	}
 	eventKey := ""
 	sum := sha256.Sum256([]byte(sourceSessionID + "\x00" + fmt.Sprintf("%d", generation) + "\x00" + identity))
@@ -1071,6 +1159,18 @@ func (m *AgentManager) sessionCallbackAck(input agentControlParams) (map[string]
 			MissionID: strings.TrimSpace(input.CallbackMissionID), TaskID: strings.TrimSpace(input.CallbackTaskID),
 			Generation: input.CallbackGeneration,
 		}, time.Now().UTC())
+		if err == nil && m.chatgptCloud != nil {
+			finalized := false
+			if registration, current, stateErr := m.callbackStore.registrationFor(strings.TrimSpace(input.SessionID)); stateErr == nil {
+				finalized = current && registration.Generation == input.CallbackGeneration && !registration.CompletionAckedAt.IsZero()
+			}
+			if finalized {
+				// Completion ACK is durable local finality for this generation. Keep
+				// the route/CHAT metadata, but release only the generation-fenced
+				// provider watcher so an old ACK cannot affect a replacement route.
+				m.chatgptCloud.ReleaseCallbackRealtimeForGeneration(strings.TrimSpace(input.SessionID), input.CallbackGeneration)
+			}
+		}
 	} else {
 		acked, err = m.callbackStore.acknowledgeClaim(targetSessionID, input.CallbackClaimID, time.Now().UTC())
 	}
@@ -1196,6 +1296,8 @@ func callbackRegistrationMap(registration sessionCallbackRegistration, pendingCo
 		"lastEventSequence": registration.LastEventSequence,
 		"pendingCount":      pendingCount,
 		"armed":             registration.Armed,
+		"providerActive":    callbackRegistrationProviderActive(registration),
+		"routeState":        callbackRegistrationState(registration),
 		"baselineSet":       registration.BaselineIdentity != "",
 		"immediateWake":     registration.ImmediateWake,
 		"registeredAt":      registration.RegisteredAt.UTC().Format(time.RFC3339Nano),
@@ -1204,15 +1306,15 @@ func callbackRegistrationMap(registration sessionCallbackRegistration, pendingCo
 	if !registration.ArmedAt.IsZero() {
 		out["armedAt"] = registration.ArmedAt.UTC().Format(time.RFC3339Nano)
 	}
-	if registration.BaselineIdentity != "" {
-		out["baselineIdentity"] = registration.BaselineIdentity
-	}
 	if registration.DeliverablePath != "" {
 		out["deliverablePath"] = registration.DeliverablePath
 	}
 	if !registration.LastDeliveredAt.IsZero() {
 		out["lastDeliveredAt"] = registration.LastDeliveredAt.UTC().Format(time.RFC3339Nano)
 		out["lastDeliveredEnvelopeId"] = registration.LastDeliveredEnvelope
+	}
+	if !registration.CompletionAckedAt.IsZero() {
+		out["completionAckedAt"] = registration.CompletionAckedAt.UTC().Format(time.RFC3339Nano)
 	}
 	if !registration.LastNudgeAt.IsZero() {
 		out["lastNudgeAt"] = registration.LastNudgeAt.UTC().Format(time.RFC3339Nano)
@@ -1227,6 +1329,16 @@ func callbackRegistrationMap(registration sessionCallbackRegistration, pendingCo
 		out["deliveryErrorClass"] = registration.NudgeErrorClass
 	}
 	return out
+}
+
+func callbackRegistrationState(registration sessionCallbackRegistration) string {
+	if !registration.CompletionAckedAt.IsZero() {
+		return "completed"
+	}
+	if !registration.Armed {
+		return "registered"
+	}
+	return "armed"
 }
 
 func mapInt64(values map[string]any, key string) int64 {

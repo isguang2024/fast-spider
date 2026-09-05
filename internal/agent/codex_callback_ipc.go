@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -10,6 +11,12 @@ import (
 
 const codexDesktopIPCHostID = "local"
 const codexDesktopIPCFrameLimit = 8 << 20
+
+// Desktop state broadcasts include the conversation history. Long-lived
+// callback targets can exceed the much smaller outbound request limit.
+const codexDesktopIPCReceiveFrameLimit = 64 << 20
+
+var errCodexDesktopIPCProtocol = errors.New("Codex Desktop IPC protocol error")
 
 type codexDesktopIPCMessage struct {
 	Type              string                  `json:"type"`
@@ -39,8 +46,8 @@ func readCodexDesktopIPCFrame(reader io.Reader) (codexDesktopIPCMessage, error) 
 		return codexDesktopIPCMessage{}, err
 	}
 	size := binary.LittleEndian.Uint32(sizeBytes[:])
-	if size == 0 || size > codexDesktopIPCFrameLimit {
-		return codexDesktopIPCMessage{}, fmt.Errorf("invalid Codex Desktop IPC frame size: %d", size)
+	if size == 0 || size > codexDesktopIPCReceiveFrameLimit {
+		return codexDesktopIPCMessage{}, fmt.Errorf("%w: invalid frame size: %d (receive limit %d)", errCodexDesktopIPCProtocol, size, codexDesktopIPCReceiveFrameLimit)
 	}
 	payload := make([]byte, size)
 	if _, err := io.ReadFull(reader, payload); err != nil {
@@ -48,7 +55,7 @@ func readCodexDesktopIPCFrame(reader io.Reader) (codexDesktopIPCMessage, error) 
 	}
 	var message codexDesktopIPCMessage
 	if err := json.Unmarshal(payload, &message); err != nil {
-		return codexDesktopIPCMessage{}, fmt.Errorf("decode Codex Desktop IPC frame: %w", err)
+		return codexDesktopIPCMessage{}, fmt.Errorf("%w: decode frame: %v", errCodexDesktopIPCProtocol, err)
 	}
 	return message, nil
 }

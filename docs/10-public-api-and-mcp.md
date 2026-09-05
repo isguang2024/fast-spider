@@ -38,7 +38,7 @@ Current 不提供目录列表工具；`audit_log` 只读查询 Hub 本地 `audit
 | 直接操作本地文件、命令、Git、浏览器 | 对应的 `file_*` / `shell_run` / `git_control` / `browser_control` | 在当前会话内完成 |
 | 直接查看、创建或续发 AI 会话，并由当前调用方交互式读取 | `ai_control` | 只有明确需要同步观察时才使用 `session.get/watch/result` |
 | 创建或续发 Cloud CHAT，结果稍后回到 Codex | `codex_cloud_collaboration action=dispatch` | 提供 `callbackSessionId`；FS 创建或复用一个 CHAT、发送任务并登记回调，成功后立即结束本轮 |
-| CHAT 提交结果 | `task_result_submit` | 传入任务给出的 `taskRef`、`status` 和可选短文本；文件任务先写本机文件，FS 校验后持久化通知，并唤醒已绑定的 Codex 会话 |
+| CHAT 提交结果 | `task_result_submit` | 汇报本轮做了什么、结果与验证、阻塞或下一步建议，状态为 completed/blocked/failed；需决策也要回报。长报告摘要放在本机文件开头，过程日志不塞进回调；FS 持久化结果后唤醒绑定的 Codex |
 | 展示或临时分享已有文件 | `artifact_get` | 只有明确需要展示或临时 URL 时才上传，不作为协作回调通道 |
 
 无需用户说出工具名：查文件或跑测试直接使用对应工具；“让云端做，完成后回来”使用 dispatch；“完整报告放在电脑上”选择 local_file。小任务默认当前会话直接完成。模型默认沿用 Node 配置；需要自主选择时，先用相应 backend 的 `models.list` 查实际模型和支持档位，再在支持 `model/thinking` 的 `ai_control session.create/send` 中传入。当前 dispatch 不接受这两个覆盖参数；不要为选择模型绕过回调链路，也不修改全局默认。
@@ -81,7 +81,7 @@ Codex/Claude Code 的会话能力不是独立顶层工具；统一位于 `ai_con
 
 需要稍后回调的任务统一使用 `codex_cloud_collaboration action=dispatch`。公开调用只需给出 `machineId`、现有本地 Codex 的 `callbackSessionId`、`workingDirectory`、任务 `prompt` 和稳定 `idempotencyKey`；可选 `targetSessionId` 表示只续发那个可见 CHAT，省略则新建一个可见 `quick_chat`。内部 `session.send` 幂等键同时绑定 collaboration、task 和 generation，跨批次复用同一 CHAT 不会撞用旧任务的 message ID；Node 明确拒绝的发送会原样返回错误并释放本次 callback route，只有断线或超时等无法确认副作用结果时才保留 `deliveryInDoubt`。FS 不再要求调用方先创建 controller/dispatcher、抢 lease、增加 goal/task 再 dispatch；一个主控、主控加协调者或单 AI 都使用同一条协议，角色关系留在调用方上下文里。
 
-CHAT 收到直接任务说明和 `taskRef`，可按范围使用 Fast Spider 的文件、Shell、Git、浏览器和测试能力。完成前调用 `task_result_submit(taskRef,status,text?)`，其中 `status` 为 `completed|blocked|failed`。短文本沿用 2000 字符/8192 字节上限。长报告在 dispatch 时选择 `callbackType=local_file`，可由调用方指定工作范围内的绝对 `deliverablePath`；未指定时 FS 分配固定本机文件，回执返回 `resultPath`。CHAT 使用 `file_edit` 完成 UTF-8 文件写入后再提交，省略 `text`。FS 仅向 Node 请求 `file_read(statOnly=true)`，检查普通文件、大小上限 256 MiB 和 SHA-256；正文不上传 Hub，文件留给本机 Codex 读取。提交者不能改变文件路径或通知目标；任务引用绑定 owner 校验下的既有 task 和 generation，本身不是凭据。
+CHAT 收到直接任务说明和 `taskRef`，可按范围使用 Fast Spider 的文件、Shell、Git、浏览器和测试能力。完成前调用 `task_result_submit(taskRef,status,text?)`，其中 `status` 为 `completed|blocked|failed`。短文本沿用 2000 字符/8192 字节上限。长报告在 dispatch 时选择 `callbackType=local_file`，可由调用方指定工作范围内的绝对 `deliverablePath`；未指定时 FS 分配固定本机文件，回执返回 `resultPath`。CHAT 使用 `file_edit` 完成 UTF-8 文件写入后再提交，省略 `text`。Hub 依据任务归属向所属 Node 发送内部结果校验 CALL；Node 只检查本地 callback route 绑定的文件（普通文件、大小上限 256 MiB 和 SHA-256），仅返回元数据。Hub 不读取文件正文，文件留给本机 Codex 读取。提交者不能改变文件路径或通知目标；任务引用绑定 owner 校验下的既有 task 和 generation，本身不是凭据。
 
 Hub 将结果通知写入持久队列，再交给 Node；目标 Codex 空闲时收到唤醒，忙时等待。提交成功表示结果已接收和通知已接受，不代表接收方已完成处理。重复提交相同结果幂等；传输不确定或 `CALLBACK_DELIVERY_PENDING` 时重试同一请求。旧 `completion.notify/claim/ack` 为已有任务和恢复保留。dispatch 返回 `callerShouldYield=true` 与 `nextAction=end_turn` 后结束当前 Turn，不轮询。文件输出与结果提交分别接受平台审批；提交被拒绝时如实报告，不用文件写入绕过拒绝。
 
@@ -104,7 +104,9 @@ ChatGPT 对已发布 MCP App 的工具/输入定义可能使用经批准的快�
 - codex_cloud_collaboration completion.notify（旧任务与恢复）: `collaborationId + taskId + actorSessionId + outcome + callbackType`；CHAT actor 使用 `$self` 提交正式结果，接收方恢复使用自己的真实 ID，保存为独立 `recoveryOnly` 观察；其 ack 只确认收讫，不完成/阻塞任务或归档 CHAT。local_file 路径由 Hub 从任务派生，不接收上传内容或调用方路径。
 - Node 回调的 `completionSource` 区分 `submission/recovery`（缺失为历史未知）；先领取 Hub，只有缺失的恢复观察才 replay。恢复观察通知成功后不反复 nudge，正式结果使用独立去重键，可替代待处理恢复观察。正式提交不同结果仍返回 `TASK_RESULT_CONFLICT`；历史未知来源不自动覆盖，需备份并精确核实后清理错误回执及同 ID 确认事件。
 - `completion.ack` 只收讫本次结果，默认保留 CHAT 和协作，不自动归档。AI 判断后续不需复用时，由 controller 显式调用 `codex_cloud_collaboration close`（带当前 revision）；它归档 FS 创建的 CHAT、释放复用 CHAT。继续原 CHAT 时用 `dispatch targetSessionId` 绑定新任务回调。
-- ai_control session.callback.register/arm/enqueue: 仅供 Hub 的 `codex_cloud_collaboration` 内部登记、激活和主动投递；公网 AI 直接调用会返回 `CALLBACK_ROUTE_MANAGED_ONLY`
+- Hub 只维护任务、CALL 归属和持久交付状态；按已认证 owner 下的 collaboration.machineId 路由，不接受结果提交者替换 Node。ChatGPT 登录态、完整会话、复用基线、状态确认及继续发送判断留在所属 Node；Hub 不再调用 session.get/result/watch 进行协作编排。新增内部动作不支持的旧 Node 会明确报错，不能回退到 Hub 拉取会话。
+- Node 的会话详情读取共用缓存、并发合并和最小 1 秒间隔；429 按 Retry-After 进入共享冷却（缺失时 30 秒），冷却内不发送新的读取。正式 completion ack 停止当前 generation 的 Provider 监测，但保留 CHAT 和路由；恢复观察的 ack 不能结束业务任务。
+- ai_control session.callback.prepare/recover/continue/register/arm/enqueue: 仅供 Hub 的 `codex_cloud_collaboration` 内部校验、恢复、继续、登记、激活和投递；公网 AI 直接调用会返回 `CALLBACK_ROUTE_MANAGED_ONLY`
 - ai_control session.callback.claim/ack: `callbackTargetSessionId`; claim 可选 `callbackClaimLimit<=64` 或原 `callbackClaimId` 幂等续领，ack 使用返回的 `callbackClaimId`
 - ai_control routing.status: 可选 `appType=claude|codex|claude-desktop`，只读 CC Switch 路由事实
 - working_context: `machineId + action=get|set|clear + projectPath`；`set` 另带普通文本 `text`，可选 `expectedRevision`

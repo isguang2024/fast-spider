@@ -24,18 +24,6 @@ const (
 
 type chatgptCloudSessionPluginBindingError struct{}
 
-type chatGPTCloudReadCacheEntry struct {
-	detail map[string]any
-	readAt time.Time
-}
-
-type chatGPTCloudReadCall struct {
-	done   chan struct{}
-	detail map[string]any
-	err    error
-	epoch  uint64
-}
-
 func (chatgptCloudSessionPluginBindingError) Error() string {
 	return "chatgpt_cloud session.create does not support per-session plugin binding; installed or catalog plugins are not session bindings"
 }
@@ -101,6 +89,12 @@ func (m *AgentManager) controlChatGPTCloud(ctx context.Context, action string, i
 		return m.chatgptCloudWatch(ctx, input)
 	case "session.callback.register":
 		return m.sessionCallbackRegister(ctx, input)
+	case "session.callback.prepare":
+		return m.sessionCallbackPrepare(ctx, input)
+	case "session.callback.recover":
+		return m.sessionCallbackRecover(ctx, input)
+	case "session.callback.continue":
+		return m.sessionCallbackContinue(ctx, input)
 	case "session.callback.arm":
 		return m.sessionCallbackArm(ctx, input)
 	case "session.callback.enqueue":
@@ -836,62 +830,18 @@ func (m *AgentManager) readChatGPTCloud(ctx context.Context, conversationID stri
 	if conversationID == "" {
 		return nil, fmt.Errorf("sessionId is required")
 	}
-	now := time.Now()
-	m.chatgptReadMu.Lock()
-	if m.chatgptReadCache == nil {
-		m.chatgptReadCache = map[string]chatGPTCloudReadCacheEntry{}
-	}
-	if m.chatgptReadActive == nil {
-		m.chatgptReadActive = map[string]*chatGPTCloudReadCall{}
-	}
-	if m.chatgptReadEpoch == nil {
-		m.chatgptReadEpoch = map[string]uint64{}
-	}
-	epoch := m.chatgptReadEpoch[conversationID]
-	if cached, ok := m.chatgptReadCache[conversationID]; ok && maxAge > 0 && now.Sub(cached.readAt) <= maxAge {
-		detail := cached.detail
-		m.chatgptReadMu.Unlock()
-		return detail, nil
-	}
-	if active := m.chatgptReadActive[conversationID]; active != nil && active.epoch == epoch {
-		m.chatgptReadMu.Unlock()
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-active.done:
-			return active.detail, active.err
-		}
-	}
-	call := &chatGPTCloudReadCall{done: make(chan struct{}), epoch: epoch}
-	m.chatgptReadActive[conversationID] = call
-	m.chatgptReadMu.Unlock()
-
-	detail, err := m.chatgptCloud.Read(ctx, conversationID)
-	m.chatgptReadMu.Lock()
-	call.detail, call.err = detail, err
-	if err == nil && m.chatgptReadEpoch[conversationID] == call.epoch {
-		m.chatgptReadCache[conversationID] = chatGPTCloudReadCacheEntry{detail: detail, readAt: time.Now()}
-	}
-	if m.chatgptReadActive[conversationID] == call {
-		delete(m.chatgptReadActive, conversationID)
-	}
-	close(call.done)
-	m.chatgptReadMu.Unlock()
-	return detail, err
+	// One cache/budget owns both manager and adapter-internal reads. Keeping a
+	// second cache here would bypass send invalidation and share mutable maps.
+	return m.chatgptCloud.ReadCached(ctx, conversationID, maxAge)
 }
 
 func (m *AgentManager) invalidateChatGPTCloudRead(conversationID string) {
 	if m == nil {
 		return
 	}
-	m.chatgptReadMu.Lock()
-	conversationID = strings.TrimSpace(conversationID)
-	delete(m.chatgptReadCache, conversationID)
-	if m.chatgptReadEpoch == nil {
-		m.chatgptReadEpoch = map[string]uint64{}
+	if m.chatgptCloud != nil {
+		m.chatgptCloud.InvalidateRead(conversationID)
 	}
-	m.chatgptReadEpoch[conversationID]++
-	m.chatgptReadMu.Unlock()
 }
 
 // chatgptCloudLatestAssistantText extracts the newest assistant message text.

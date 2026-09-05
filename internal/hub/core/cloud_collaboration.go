@@ -150,26 +150,25 @@ type cloudCollaborationTask struct {
 }
 
 type cloudCollaborationChat struct {
-	SessionID                string   `json:"sessionId"`
-	TaskID                   string   `json:"taskId"`
-	ParentSession            string   `json:"parentSessionId,omitempty"`
-	Depth                    int      `json:"depth"`
-	Generation               int64    `json:"generation"`
-	Status                   string   `json:"status"`
-	AccessMode               string   `json:"accessMode"`
-	WriteScope               string   `json:"writeScope,omitempty"`
-	AllowedActions           []string `json:"allowedActions"`
-	CallbackRegistered       bool     `json:"callbackRegistered"`
-	CallbackArmed            bool     `json:"callbackArmed"`
-	CallbackBaselineIdentity string   `json:"callbackBaselineIdentity,omitempty"`
-	WatchCursor              int64    `json:"watchCursor"`
-	LastObservedAt           string   `json:"lastObservedAt"`
-	LastProgressAt           string   `json:"lastProgressAt"`
-	QuietChecks              int      `json:"quietChecks"`
-	StalledNotified          bool     `json:"stalledNotified"`
-	ContinueAttempts         int      `json:"continueAttempts,omitempty"`
-	LastContinueAt           string   `json:"lastContinueAt,omitempty"`
-	Reused                   bool     `json:"reused,omitempty"`
+	SessionID          string   `json:"sessionId"`
+	TaskID             string   `json:"taskId"`
+	ParentSession      string   `json:"parentSessionId,omitempty"`
+	Depth              int      `json:"depth"`
+	Generation         int64    `json:"generation"`
+	Status             string   `json:"status"`
+	AccessMode         string   `json:"accessMode"`
+	WriteScope         string   `json:"writeScope,omitempty"`
+	AllowedActions     []string `json:"allowedActions"`
+	CallbackRegistered bool     `json:"callbackRegistered"`
+	CallbackArmed      bool     `json:"callbackArmed"`
+	WatchCursor        int64    `json:"watchCursor"`
+	LastObservedAt     string   `json:"lastObservedAt"`
+	LastProgressAt     string   `json:"lastProgressAt"`
+	QuietChecks        int      `json:"quietChecks"`
+	StalledNotified    bool     `json:"stalledNotified"`
+	ContinueAttempts   int      `json:"continueAttempts,omitempty"`
+	LastContinueAt     string   `json:"lastContinueAt,omitempty"`
+	Reused             bool     `json:"reused,omitempty"`
 }
 
 type cloudCollaborationEvent struct {
@@ -1231,18 +1230,14 @@ func (s *Service) cloudCollaborationDispatchExistingTask(ctx context.Context, ow
 	if err := s.ensureCodexCloudCollaborationReady(ctx, ownerID, rec.MachineID); err != nil {
 		return nil, err
 	}
-	sessionResult, err := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.get", map[string]any{
-		"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": targetSessionID, "limit": 8,
+	prepared, err := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.callback.prepare", map[string]any{
+		"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": targetSessionID,
 	})
 	if err != nil {
 		return nil, err
 	}
-	if err := validateReusableCloudCollaborationSession(sessionResult, targetSessionID); err != nil {
-		return nil, err
-	}
-	baselineIdentity := cloudCollaborationCallbackBaseline(sessionResult)
-	if baselineIdentity == "" {
-		return nil, &CapabilityCallError{Code: "CALLBACK_BASELINE_UNAVAILABLE", Message: "the selected Cloud CHAT did not expose a stable current message identity; use a new CHAT or retry session.get", Retryable: true}
+	if prepared["prepared"] != true {
+		return nil, &CapabilityCallError{Code: "CALLBACK_BASELINE_UNAVAILABLE", Message: "the owning Node has not prepared the selected Cloud CHAT", Retryable: true}
 	}
 	if err := s.releaseCompletedCloudCallbackForReuse(ctx, ownerID, rec, state, *task, targetSessionID); err != nil {
 		return nil, err
@@ -1258,7 +1253,7 @@ func (s *Service) cloudCollaborationDispatchExistingTask(ctx context.Context, ow
 	state.Chats = append(state.Chats, cloudCollaborationChat{
 		SessionID: targetSessionID, TaskID: task.ID, ParentSession: task.ParentSession, Depth: task.Depth, Generation: task.Generation,
 		Status: "active", AccessMode: task.AccessMode, WriteScope: task.WriteScope, AllowedActions: task.AllowedActions,
-		CallbackBaselineIdentity: baselineIdentity, LastObservedAt: now, LastProgressAt: now, Reused: true,
+		LastObservedAt: now, LastProgressAt: now, Reused: true,
 	})
 	return s.deliverCloudCollaborationExistingTask(ctx, ownerID, rec, state, task.ID)
 }
@@ -1274,27 +1269,8 @@ func (s *Service) deliverCloudCollaborationExistingTask(ctx context.Context, own
 		return nil, store.ErrConflict
 	}
 	chat := &state.Chats[chatIdx]
-	baselineIdentity := strings.TrimSpace(chat.CallbackBaselineIdentity)
-	if baselineIdentity == "" {
-		listed, err := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.callback.list", map[string]any{
-			"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": task.ChatSessionID,
-		})
-		if err != nil {
-			return nil, err
-		}
-		for _, callback := range collaborationMapItems(listed["callbacks"]) {
-			generation, _ := numericInt64(callback["generation"])
-			if mapString(callback, "missionId") == rec.CollaborationID && mapString(callback, "taskId") == task.ID && mapString(callback, "targetSessionId") == state.DispatcherSessionID && generation == task.Generation {
-				baselineIdentity = mapString(callback, "baselineIdentity")
-				break
-			}
-		}
-		if baselineIdentity == "" {
-			return nil, &CapabilityCallError{Code: "CALLBACK_BASELINE_UNAVAILABLE", Message: "the reused Cloud CHAT callback baseline is unavailable; preserve the route and record the issue before manual recovery", Retryable: false}
-		}
-		chat.CallbackBaselineIdentity = baselineIdentity
-	}
-	registeredResult, callbackErr := s.registerCloudCollaborationCallback(ctx, ownerID, rec, state, *task, baselineIdentity)
+	// Baseline identities and conversation content are local Node state.
+	registeredResult, callbackErr := s.registerCloudCollaborationCallback(ctx, ownerID, rec, state, *task, "")
 	if callbackErr != nil {
 		return nil, callbackErr
 	}
@@ -1311,9 +1287,14 @@ func (s *Service) deliverCloudCollaborationExistingTask(ctx context.Context, own
 	result, sendErr := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.send", map[string]any{
 		"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": task.ChatSessionID, "mode": "quick_chat", "prompt": prompt, "idempotencyKey": task.IdempotencyKey,
 	})
-	_, armErr := s.armCloudCollaborationCallback(ctx, ownerID, rec, state, *task)
-	if armErr == nil {
-		chat.CallbackArmed = true
+	var armErr error
+	// An uncertain send still needs recovery, but a definite rejection must not
+	// arm a watcher and produce another provider read inside a rate-limit window.
+	if sendErr == nil || !cloudCollaborationDeliveryWasRejected(sendErr) {
+		_, armErr = s.armCloudCollaborationCallback(ctx, ownerID, rec, state, *task)
+		if armErr == nil {
+			chat.CallbackArmed = true
+		}
 	}
 	if sendErr != nil {
 		if cloudCollaborationDeliveryWasRejected(sendErr) {
@@ -1379,6 +1360,11 @@ func cloudCollaborationDeliveryWasRejected(err error) bool {
 	switch strings.ToUpper(strings.TrimSpace(capabilityErr.Code)) {
 	case "CONNECTION_LOST", "DEADLINE_EXCEEDED":
 		return false
+	case "CHATGPT_CLOUD_HTTP_ERROR":
+		// A provider 5xx after a send does not prove the turn was rejected.
+		// Preserve the original route/key for reconciliation rather than resend
+		// it as a fresh queued task. Explicit 4xx errors remain rejections.
+		return !capabilityErr.Retryable
 	default:
 		return true
 	}
@@ -1426,11 +1412,16 @@ func (s *Service) persistCloudCollaborationCreatedChat(ctx context.Context, owne
 }
 
 func (s *Service) registerCloudCollaborationCallback(ctx context.Context, ownerID string, rec store.CloudCollaborationRecord, state cloudCollaborationState, task cloudCollaborationTask, baselineIdentity string) (map[string]any, error) {
+	mode := task.SessionMode
+	if idx := chatTaskIndex(state, task); mode == "reuse" && idx >= 0 && state.Chats[idx].CallbackRegistered {
+		mode = "reuse_resume"
+	}
 	return s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.callback.register", map[string]any{
 		"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": task.ChatSessionID,
 		"callbackTargetSessionId": state.DispatcherSessionID, "callbackMissionId": rec.CollaborationID,
 		"callbackTaskId": task.ID, "callbackGeneration": task.Generation,
 		"callbackType":             task.CallbackType,
+		"mode":                     mode,
 		"callbackDeliverablePath":  cloudCollaborationTaskResultPath(task),
 		"callbackImmediateWake":    true,
 		"callbackBaselineIdentity": strings.TrimSpace(baselineIdentity), "callbackArmRequired": true,
@@ -1480,51 +1471,6 @@ func (s *Service) unregisterCloudCollaborationTaskCallback(ctx context.Context, 
 	return nil
 }
 
-func validateReusableCloudCollaborationSession(result map[string]any, expectedSessionID string) error {
-	session, _ := result["session"].(map[string]any)
-	if session == nil || mapString(session, "sessionId") != expectedSessionID || mapString(session, "providerId") != "codex" || mapString(session, "backend") != "chatgpt_cloud" {
-		return &CapabilityCallError{Code: "INVALID_REQUEST", Message: "targetSessionId must identify an accessible ChatGPT Cloud CHAT", Retryable: false}
-	}
-	if visibility := mapString(session, "visibility"); visibility != "" && visibility != "visible" {
-		return &CapabilityCallError{Code: "INVALID_REQUEST", Message: "targetSessionId must identify a normal visible ChatGPT Cloud CHAT", Retryable: false}
-	}
-	if externalType := mapString(session, "externalIdType"); externalType != "" && externalType != "chatgpt_conversation" {
-		return &CapabilityCallError{Code: "INVALID_REQUEST", Message: "targetSessionId is not a ChatGPT conversation", Retryable: false}
-	}
-	if cloudCollaborationSessionStatus(result) == "running" {
-		return &CapabilityCallError{Code: "AGENT_SESSION_BUSY", Message: "the explicitly selected Cloud CHAT is already running; wait for it or choose a new session", Retryable: true}
-	}
-	return nil
-}
-
-func cloudCollaborationCallbackBaseline(result map[string]any) string {
-	session, _ := result["session"].(map[string]any)
-	if session == nil {
-		return ""
-	}
-	messages := collaborationMapItems(session["messages"])
-	for i := len(messages) - 1; i >= 0; i-- {
-		if mapString(messages[i], "role") == "assistant" {
-			if id := strings.TrimSpace(mapString(messages[i], "id")); id != "" {
-				return id
-			}
-		}
-	}
-	for _, key := range []string{"currentNode", "current_node"} {
-		if id := strings.TrimSpace(mapString(session, key)); id != "" {
-			return id
-		}
-	}
-	if value := session["updateTime"]; value != nil {
-		identity := strings.TrimSpace(fmt.Sprint(value))
-		if len(identity) > 256 {
-			identity = identity[:256]
-		}
-		return identity
-	}
-	return ""
-}
-
 func (s *Service) releaseCompletedCloudCallbackForReuse(ctx context.Context, ownerID string, rec store.CloudCollaborationRecord, state cloudCollaborationState, task cloudCollaborationTask, sessionID string) error {
 	listed, err := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.callback.list", map[string]any{
 		"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": sessionID,
@@ -1552,7 +1498,19 @@ func (s *Service) releaseCompletedCloudCallbackForReuse(ctx context.Context, own
 			return &CapabilityCallError{Code: "CALLBACK_OWNER_CONFLICT", Message: "the selected Cloud CHAT has a callback owner that cannot be safely released", Retryable: true}
 		}
 		oldTaskIdx := taskIndex(oldState, taskID)
-		if oldTaskIdx < 0 || (oldState.Tasks[oldTaskIdx].Status != "done" && oldState.Tasks[oldTaskIdx].Status != "dropped") {
+		acknowledgedBlock := false
+		if oldTaskIdx >= 0 {
+			oldTask := oldState.Tasks[oldTaskIdx]
+			if oldTask.Status == "blocked" && oldTask.Generation == generation && oldTask.ChatSessionID == sessionID && oldState.DispatcherSessionID == targetID {
+				for _, event := range oldState.Events {
+					if event.ID == cloudCompletionNotificationID(missionID, taskID, generation) && event.Type == "completion.notification" && event.Status == "acked" && event.TaskID == taskID && event.Generation == generation && event.SessionID == sessionID {
+						acknowledgedBlock = true
+						break
+					}
+				}
+			}
+		}
+		if oldTaskIdx < 0 || (oldState.Tasks[oldTaskIdx].Status != "done" && oldState.Tasks[oldTaskIdx].Status != "dropped" && !acknowledgedBlock) {
 			return &CapabilityCallError{Code: "CALLBACK_OWNER_CONFLICT", Message: "the selected Cloud CHAT is still assigned to unfinished work", Retryable: true}
 		}
 		if _, unregisterErr := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.callback.unregister", map[string]any{
@@ -1574,6 +1532,11 @@ func (s *Service) cloudCollaborationPollStatus(ctx context.Context, ownerID stri
 		return nil, store.ErrNotFound
 	}
 	task := &state.Tasks[idx]
+	if task.Status == "done" || task.Status == "blocked" || task.Status == "dropped" {
+		out := cloudCollaborationView(rec, state, "dispatcher")
+		out["polled"], out["pollReason"] = false, "task_settled"
+		return out, nil
+	}
 	chatIdx := chatTaskIndex(state, *task)
 	if chatIdx < 0 {
 		return nil, store.ErrNotFound
@@ -1613,7 +1576,11 @@ func (s *Service) cloudCollaborationPollStatus(ctx context.Context, ownerID stri
 			return nil, err
 		}
 	}
-	result, err := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.watch", map[string]any{"providerId": "codex", "sessionId": chat.SessionID, "cursor": chat.WatchCursor, "waitSeconds": 0})
+	result, err := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.callback.recover", map[string]any{
+		"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": chat.SessionID, "cursor": chat.WatchCursor,
+		"callbackTargetSessionId": state.DispatcherSessionID, "callbackMissionId": rec.CollaborationID,
+		"callbackTaskId": task.ID, "callbackGeneration": task.Generation,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -1634,127 +1601,25 @@ func (s *Service) cloudCollaborationPollStatus(ctx context.Context, ownerID stri
 	if newlyStalled {
 		chat.StalledNotified = true
 	}
-	providerStatus := ""
-	terminalEventID, _ := cloudCollaborationTerminalWatchEvent(result, task.ChatSessionID)
-	recoveryOutcome := ""
-	recoveryText := ""
-	if terminalEventID != "" {
-		if task.CallbackType == protocolv1.CloudCallbackTypeText {
-			textResult, textErr := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.result", map[string]any{
-				"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": chat.SessionID,
-			})
-			if textErr == nil {
-				recoveryOutcome, recoveryText, providerStatus = cloudCollaborationTextResultOutcome(textResult)
-			}
-		} else {
-			recoveryOutcome = "completed"
-		}
-	} else if chat.StalledNotified {
-		switch task.CallbackType {
-		case protocolv1.CloudCallbackTypeLocalFile:
-			manifest, manifestErr := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.result", map[string]any{
-				"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": chat.SessionID, "resultMode": "manifest",
-				"callbackDeliverablePath": cloudCollaborationTaskResultPath(*task), "idempotencyKey": cloudCollaborationResultIdempotencyKey(rec.CollaborationID, *task),
-			})
-			if manifestErr == nil {
-				recoveryOutcome = cloudCollaborationManifestOutcome(manifest)
-				if status, _ := manifest["status"].(string); status != "" {
-					providerStatus = status
-				}
-			}
-		case protocolv1.CloudCallbackTypeText:
-			textResult, textErr := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.result", map[string]any{
-				"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": chat.SessionID,
-			})
-			if textErr == nil {
-				recoveryOutcome, recoveryText, providerStatus = cloudCollaborationTextResultOutcome(textResult)
-			}
-		case protocolv1.CloudCallbackTypeStatus:
-			statusResult, statusErr := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.get", map[string]any{
-				"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": chat.SessionID, "metadataOnly": true,
-			})
-			if statusErr == nil {
-				providerStatus = cloudCollaborationSessionStatus(statusResult)
-				if providerStatus == "completed" {
-					recoveryOutcome = "completed"
-				} else if providerStatus == "failed" || providerStatus == "canceled" {
-					recoveryOutcome = "failed"
-				}
-			}
-		}
-	}
-	recoveryNotify := recoveryOutcome != "" && (task.Status == "active" || task.Status == "result_available" || task.Status == "completion_reported")
-	if recoveryNotify {
-		if providerStatus == "" {
-			providerStatus = recoveryOutcome
-		}
-	}
+	// The owning Node checks status and enqueues any recovery observation. The
+	// Hub records routing/progress metadata, never reads provider results itself.
 	out, saveErr := s.saveCloudCollaboration(ctx, ownerID, rec, state)
 	if saveErr != nil {
 		return nil, saveErr
 	}
 	out["progressed"], out["newlyStalled"] = progressed, newlyStalled
 	out["recordIssuesTo"] = cloudCollaborationIssueTarget
-	if providerStatus != "" {
-		out["providerStatus"] = providerStatus
-	}
+	out["recoveryQueued"] = result["recoveryQueued"]
+	out["recoveryOwner"] = "node"
 	if newlyStalled {
 		out["recoveryAction"] = "continue_chat"
 	} else if chat.StalledNotified && chat.ContinueAttempts > 0 {
 		out["recoveryAction"] = "controller_decision"
 	}
-	if recoveryNotify {
-		notification, notifyErr := s.notifyCloudCompletion(ctx, ownerID, CloudCompletionRequest{
-			Action: "notify", CollaborationID: rec.CollaborationID, TaskID: task.ID,
-			ActorSessionID: state.DispatcherSessionID, SourceSessionID: task.ChatSessionID, Outcome: recoveryOutcome, CallbackType: task.CallbackType, Text: recoveryText,
-		})
-		if notifyErr != nil {
-			out["recoveryPending"] = true
-		} else {
-			out["completionNotification"] = notification["notification"]
-			if latestRec, latestState, loadErr := s.loadCloudCollaboration(ctx, ownerID, rec.CollaborationID); loadErr == nil {
-				latest := cloudCollaborationView(latestRec, latestState, "dispatcher")
-				latest["progressed"], latest["newlyStalled"] = progressed, newlyStalled
-				latest["providerStatus"] = providerStatus
-				latest["completionNotification"] = notification["notification"]
-				latest["recordIssuesTo"] = cloudCollaborationIssueTarget
-				out = latest
-			}
-		}
-	}
 	out["polled"] = true
 	out["polledAt"] = now.Format(time.RFC3339)
 	out["nextPollAt"] = now.Add(cloudCollaborationHeartbeatInterval(state)).Format(time.RFC3339)
 	return out, nil
-}
-
-func cloudCollaborationManifestOutcome(manifest map[string]any) string {
-	resultStatus, _ := manifest["resultStatus"].(string)
-	resultSHA256, _ := manifest["resultSHA256"].(string)
-	deliverableStatus, _ := manifest["deliverableStatus"].(string)
-	if (resultStatus == "ready" || resultStatus == "completed") && validCloudCompletionSHA256(resultSHA256) {
-		return "completed"
-	}
-	providerStatus, _ := manifest["status"].(string)
-	if resultStatus == "failed" || providerStatus == "failed" || providerStatus == "canceled" || providerStatus == "completed" && deliverableStatus != "ready" {
-		return "failed"
-	}
-	return ""
-}
-
-func cloudCollaborationTextResultOutcome(result map[string]any) (outcome, text, providerStatus string) {
-	providerStatus, _ = result["status"].(string)
-	if providerStatus == "failed" || providerStatus == "canceled" {
-		return "failed", "", providerStatus
-	}
-	if providerStatus != "completed" {
-		return "", "", providerStatus
-	}
-	text, _ = result["finalAgentMessage"].(string)
-	if validateCloudCallbackText(text, true) != nil {
-		return "failed", "", providerStatus
-	}
-	return "completed", text, providerStatus
 }
 
 // cloudCollaborationContinueChat performs the conservative recovery action for
@@ -1795,30 +1660,6 @@ func (s *Service) cloudCollaborationContinueChat(ctx context.Context, ownerID st
 		return out, nil
 	}
 
-	statusResult, err := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.get", map[string]any{
-		"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": chat.SessionID,
-	})
-	if err != nil {
-		return nil, err
-	}
-	providerStatus := cloudCollaborationSessionStatus(statusResult)
-	if providerStatus != "running" && providerStatus != "unknown" {
-		out := base()
-		out["providerStatus"] = providerStatus
-		switch providerStatus {
-		case "completed":
-			out["recoveryAction"] = "status_poll"
-		case "failed", "canceled":
-			out["recoveryAction"] = "controller_decision"
-			out["decisionRequired"] = true
-			out["replacementAllowed"] = true
-		default:
-			out["recoveryAction"] = "status_uncertain"
-			out["decisionRequired"] = true
-		}
-		return out, nil
-	}
-
 	prompt := strings.TrimSpace(req.Prompt)
 	if prompt == "" {
 		prompt = "请继续"
@@ -1836,20 +1677,32 @@ func (s *Service) cloudCollaborationContinueChat(ctx context.Context, ownerID st
 		return nil, err
 	}
 	rec.Revision = numberField(reserved, "revision")
-	result, err := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.send", map[string]any{
+	result, err := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.callback.continue", map[string]any{
 		"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": chat.SessionID, "prompt": prompt,
+		"callbackTargetSessionId": state.DispatcherSessionID, "callbackMissionId": rec.CollaborationID,
+		"callbackTaskId": task.ID, "callbackGeneration": task.Generation,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("continue Cloud CHAT: %w", err)
 	}
+	if sent, known := result["continueSent"].(bool); known && !sent {
+		// A confirmed no-send may be retried after the Node state changes. An
+		// uncertain transport outcome keeps the reserved attempt above.
+		chat.ContinueAttempts, chat.LastContinueAt = 0, ""
+		saved, saveErr := s.saveCloudCollaboration(ctx, ownerID, rec, state)
+		if saveErr != nil {
+			return nil, saveErr
+		}
+		rec.Revision = numberField(saved, "revision")
+	}
 	out := cloudCollaborationView(rec, state, "dispatcher")
 	out["taskId"] = task.ID
 	out["chatSessionId"] = chat.SessionID
-	out["providerStatus"] = providerStatus
-	out["continueSent"] = true
+	out["providerStatus"] = result["providerStatus"]
+	out["continueSent"] = result["continueSent"]
 	out["continuePrompt"] = prompt
 	out["continueAttempts"] = chat.ContinueAttempts
-	out["recoveryAction"] = "poll_status"
+	out["recoveryAction"] = result["recoveryAction"]
 	out["automaticReplacement"] = false
 	out["recordIssuesTo"] = cloudCollaborationIssueTarget
 	if result != nil {
@@ -1858,31 +1711,6 @@ func (s *Service) cloudCollaborationContinueChat(ctx context.Context, ownerID st
 		}
 	}
 	return out, nil
-}
-
-func cloudCollaborationSessionStatus(result map[string]any) string {
-	if result == nil {
-		return "unknown"
-	}
-	status := ""
-	if session, ok := result["session"].(map[string]any); ok {
-		status, _ = session["status"].(string)
-	}
-	if status == "" {
-		status, _ = result["status"].(string)
-	}
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "running", "in_progress", "in-progress", "queued", "pending", "processing", "generating", "active", "started":
-		return "running"
-	case "completed", "complete", "success", "succeeded", "done", "finished":
-		return "completed"
-	case "failed", "failure", "error", "errored":
-		return "failed"
-	case "canceled", "cancelled", "stopped", "aborted", "interrupted":
-		return "canceled"
-	default:
-		return "unknown"
-	}
 }
 
 func cloudCollaborationResultIdempotencyKey(collaborationID string, task cloudCollaborationTask) string {
@@ -2320,17 +2148,17 @@ func cloudCollaborationBootstrap(collaborationID, machineID string, state cloudC
 	deliverable := ""
 	switch task.CallbackType {
 	case protocolv1.CloudCallbackTypeLocalFile:
-		deliverable = fmt.Sprintf("Write UTF-8 with FastSpider_FS file_edit to %s (writable even in read_only); submit without the file body.\n", cloudCollaborationTaskResultPath(task))
+		deliverable = fmt.Sprintf("Write UTF-8 with FastSpider_FS file_edit to %s (writable even in read_only). Start with a brief task report; keep supporting detail below it. Submit without the file body.\n", cloudCollaborationTaskResultPath(task))
 	case protocolv1.CloudCallbackTypeText:
 		submit["text"] = "RESULT (max 2000 characters)"
-		deliverable = "Replace the text placeholder with your result.\n"
+		deliverable = "Replace the text placeholder with a brief task report, not a transcript or tool log.\n"
 	}
 	args, _ := json.Marshal(submit)
 	scope := fmt.Sprintf("machine_id=%s\nworking_directory=%s\naccess_mode=%s", machineID, state.WorkingDirectory, task.AccessMode)
 	if task.WriteScope != "" {
 		scope += "\nwrite_scope=" + task.WriteScope
 	}
-	return fmt.Sprintf("FAST_SPIDER_CLOUD_TASK_V1\n%s\n\n%s\nStay within this scope.\n%sBefore replying, call FastSpider_FS task_result_submit(%s). If blocked or failed, use that status; report any submission error.", task.Prompt, scope, deliverable, args)
+	return fmt.Sprintf("FAST_SPIDER_CLOUD_TASK_V1\n%s\n\n%s\nStay within this scope.\n%sReport to the receiving coordinator as to a colleague: what you did, the outcome and verification, and any remaining work or recommended next step. Keep execution steps in the original CHAT or report, not in the callback. If blocked or awaiting a decision, report the specific blocker, who can resolve it, your recommendation and what lets you resume; do not wait silently. Continue independent work within scope before ending the round. Before replying, call FastSpider_FS task_result_submit(%s), using completed only when the assigned work is verified, otherwise blocked or failed as appropriate. Report any submission error; never claim an unsent result was delivered. This ends the assigned round, not the CHAT; wait for the coordinator's next assignment.", task.Prompt, scope, deliverable, args)
 }
 
 func (s *Service) ensureCodexCloudCollaborationReady(ctx context.Context, ownerID, machineID string) error {
@@ -2348,14 +2176,11 @@ func (s *Service) ensureCodexCloudCollaborationReady(ctx context.Context, ownerI
 }
 
 func (s *Service) validateCodexLocalCollaborationSession(ctx context.Context, ownerID, machineID, sessionID string) error {
-	result, err := s.CallCapability(ctx, ownerID, machineID, "agent.control", "session.get", map[string]any{"providerId": "codex", "sessionId": strings.TrimSpace(sessionID), "metadataOnly": true})
+	result, err := s.CallCapability(ctx, ownerID, machineID, "agent.control", "session.callback.prepare", map[string]any{"providerId": "codex", "sessionId": strings.TrimSpace(sessionID), "mode": "target"})
 	if err != nil {
 		return err
 	}
-	session, _ := result["session"].(map[string]any)
-	providerID, _ := session["providerId"].(string)
-	backend, _ := session["backend"].(string)
-	if session == nil || providerID != "codex" || backend != "codex_local" {
+	if result["prepared"] != true {
 		return &CapabilityCallError{Code: "INVALID_REQUEST", Message: "Codex cloud collaboration controller and dispatcher must be existing local Codex sessions", Retryable: false}
 	}
 	return nil

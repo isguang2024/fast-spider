@@ -39,6 +39,12 @@ func classifyExecutionError(err error) ErrorClass {
 	if errors.As(err, &classified) {
 		return classified.Class
 	}
+	if errors.Is(err, errCodexDesktopIPCProtocol) {
+		return ErrorConfigInvalid
+	}
+	if errors.Is(err, errCodexDesktopOwnerUnavailable) {
+		return ErrorRuntimeUnavailable
+	}
 	if errors.Is(err, node.ErrAgentProviderUnavailable) {
 		if classifyExecutionText(err.Error()) == ErrorRuntimeUnavailable {
 			return ErrorRuntimeUnavailable
