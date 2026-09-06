@@ -478,10 +478,14 @@ func (s *Service) dispatchSimpleCloudTask(ctx context.Context, ownerID string, r
 	}
 
 	idx := taskIndex(state, req.TaskID)
+	dispatchReplayed := false
 	if idx >= 0 {
 		status := state.Tasks[idx].Status
 		if status != "queued" && status != "create_in_doubt" {
-			return simpleCloudDispatchReceipt(cloudCollaborationView(rec, state, "dispatcher"), callbackSessionID, req.TaskID, true), nil
+			dispatchReplayed = true
+			if status != "active" || state.Tasks[idx].ChatSessionID == "" {
+				return simpleCloudDispatchReceipt(cloudCollaborationView(rec, state, "dispatcher"), callbackSessionID, req.TaskID, true), nil
+			}
 		}
 	}
 
@@ -510,7 +514,7 @@ func (s *Service) dispatchSimpleCloudTask(ctx context.Context, ownerID string, r
 	if err != nil {
 		return nil, err
 	}
-	return simpleCloudDispatchReceipt(out, callbackSessionID, req.TaskID, false), nil
+	return simpleCloudDispatchReceipt(out, callbackSessionID, req.TaskID, dispatchReplayed), nil
 }
 
 func simpleCloudDispatchReceipt(out map[string]any, callbackSessionID, taskID string, replayed bool) map[string]any {
@@ -1111,9 +1115,6 @@ func (s *Service) cloudCollaborationDispatchTask(ctx context.Context, ownerID st
 		if task.SessionMode == "reuse" && task.DeliveryStatus != "delivered" {
 			return s.deliverCloudCollaborationExistingTask(ctx, ownerID, rec, state, task.ID)
 		}
-		if state.Chats[chatIdx].CallbackRegistered && state.Chats[chatIdx].CallbackArmed {
-			return cloudCollaborationView(rec, state, "dispatcher"), nil
-		}
 		registered, armed, err := s.activateCloudCollaborationCallback(ctx, ownerID, rec, state, *task, "")
 		state.Chats[chatIdx].CallbackRegistered = registered
 		state.Chats[chatIdx].CallbackArmed = armed
@@ -1416,7 +1417,7 @@ func (s *Service) registerCloudCollaborationCallback(ctx context.Context, ownerI
 	if idx := chatTaskIndex(state, task); mode == "reuse" && idx >= 0 && state.Chats[idx].CallbackRegistered {
 		mode = "reuse_resume"
 	}
-	return s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.callback.register", map[string]any{
+	params := map[string]any{
 		"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": task.ChatSessionID,
 		"callbackTargetSessionId": state.DispatcherSessionID, "callbackMissionId": rec.CollaborationID,
 		"callbackTaskId": task.ID, "callbackGeneration": task.Generation,
@@ -1425,7 +1426,16 @@ func (s *Service) registerCloudCollaborationCallback(ctx context.Context, ownerI
 		"callbackDeliverablePath":  cloudCollaborationTaskResultPath(task),
 		"callbackImmediateWake":    true,
 		"callbackBaselineIdentity": strings.TrimSpace(baselineIdentity), "callbackArmRequired": true,
-	})
+	}
+	result, err := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.callback.register", params)
+	if err == nil || mode != "reuse_resume" || !capabilityErrorHasCode(err, "CALLBACK_BASELINE_UNAVAILABLE", "CALLBACK_ROUTE_NOT_FOUND") {
+		return result, err
+	}
+	// The Hub may remember a reused route that the Node retired after its prior
+	// formal ACK or lost during a restart. Reacquire a current local baseline and
+	// register the same owner/generation instead of stranding the active task.
+	params["mode"] = "reuse"
+	return s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.callback.register", params)
 }
 
 func (s *Service) armCloudCollaborationCallback(ctx context.Context, ownerID string, rec store.CloudCollaborationRecord, state cloudCollaborationState, task cloudCollaborationTask) (map[string]any, error) {
@@ -1437,13 +1447,27 @@ func (s *Service) armCloudCollaborationCallback(ctx context.Context, ownerID str
 }
 
 func (s *Service) activateCloudCollaborationCallback(ctx context.Context, ownerID string, rec store.CloudCollaborationRecord, state cloudCollaborationState, task cloudCollaborationTask, baselineIdentity string) (bool, bool, error) {
-	if _, err := s.registerCloudCollaborationCallback(ctx, ownerID, rec, state, task, baselineIdentity); err != nil {
-		return false, false, err
+	registered, armed, err := s.activateCloudCollaborationCallbackRoute(ctx, ownerID, rec, state, task, baselineIdentity)
+	if err != nil {
+		return registered, armed, err
 	}
-	if _, err := s.armCloudCollaborationCallback(ctx, ownerID, rec, state, task); err != nil {
-		return true, false, err
+	if _, err := s.enqueuePendingCloudCompletion(ctx, ownerID, rec, state, task); err != nil {
+		return true, true, err
 	}
 	return true, true, nil
+}
+
+func capabilityErrorHasCode(err error, codes ...string) bool {
+	var capabilityErr *CapabilityCallError
+	if !errors.As(err, &capabilityErr) {
+		return false
+	}
+	for _, code := range codes {
+		if strings.EqualFold(strings.TrimSpace(capabilityErr.Code), code) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) unregisterCloudCollaborationTaskCallback(ctx context.Context, ownerID string, rec store.CloudCollaborationRecord, state *cloudCollaborationState, taskID string) error {

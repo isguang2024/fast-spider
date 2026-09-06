@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
-func TestCompletionAckFinalizesGenerationButRetainsRouteMetadata(t *testing.T) {
-	store := newSessionCallbackStore(t.TempDir())
+func TestCompletionAckRetiresRouteAndPersistsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	store := newSessionCallbackStore(dir)
 	registration := testCallbackRegistration("source-final", "target-final", "task-final", 4)
 	if _, _, err := store.register(registration); err != nil {
 		t.Fatal(err)
@@ -22,12 +24,8 @@ func TestCompletionAckFinalizesGenerationButRetainsRouteMetadata(t *testing.T) {
 	if count, err := store.acknowledgeCompletion(registration, time.Now().UTC()); err != nil || count != 1 {
 		t.Fatalf("completion ack count=%d err=%v", count, err)
 	}
-	current, ok, err := store.registrationFor("source-final")
-	if err != nil || !ok || current.Generation != registration.Generation || current.CompletionAckedAt.IsZero() {
-		t.Fatalf("finalized route=%#v ok=%v err=%v", current, ok, err)
-	}
-	if callbackRegistrationProviderActive(current) {
-		t.Fatal("completion ACK left the provider route active")
+	if _, ok, err := store.registrationFor("source-final"); err != nil || ok {
+		t.Fatalf("completion ACK retained active route ok=%v err=%v", ok, err)
 	}
 	if allowed, err := store.providerRecoveryAllowed("source-final", registration.Generation); err != nil || allowed {
 		t.Fatalf("provider recovery allowed=%v err=%v after completion ACK", allowed, err)
@@ -35,8 +33,12 @@ func TestCompletionAckFinalizesGenerationButRetainsRouteMetadata(t *testing.T) {
 	if queued, err := store.enqueue(testCallbackEvent("source-final", 2)); err != nil || queued {
 		t.Fatalf("post-ACK provider event queued=%v err=%v", queued, err)
 	}
-	if _, _, err := store.arm("source-final", registration.Generation, registration); err == nil || !strings.Contains(err.Error(), "finalized") {
+	if _, _, err := store.arm("source-final", registration.Generation, registration); err == nil || !strings.Contains(err.Error(), "not registered") {
 		t.Fatalf("post-ACK arm err=%v", err)
+	}
+	reloaded := newSessionCallbackStore(dir)
+	if _, ok, err := reloaded.registrationFor("source-final"); err != nil || ok {
+		t.Fatalf("restart revived acknowledged route ok=%v err=%v", ok, err)
 	}
 }
 
@@ -51,13 +53,12 @@ func TestCompletionAckFinalizesExactOwnerWhenNodePendingWasLost(t *testing.T) {
 	if count, err := store.acknowledgeCompletion(registration, time.Now().UTC()); err != nil || count != 0 {
 		t.Fatalf("lost-pending completion ack count=%d err=%v", count, err)
 	}
-	current, ok, err := store.registrationFor(registration.SourceSessionID)
-	if err != nil || !ok || current.CompletionAckedAt.IsZero() || callbackRegistrationProviderActive(current) {
-		t.Fatalf("lost-pending ACK did not finalize exact owner: route=%#v ok=%v err=%v", current, ok, err)
+	if _, ok, err := store.registrationFor(registration.SourceSessionID); err != nil || ok {
+		t.Fatalf("lost-pending ACK retained exact owner: ok=%v err=%v", ok, err)
 	}
 }
 
-func TestLegacyFormalCompletionAckRestoresTerminalPredicateOnReload(t *testing.T) {
+func TestLegacyFormalCompletionAckIsRetiredOnReload(t *testing.T) {
 	dir := t.TempDir()
 	store := newSessionCallbackStore(dir)
 	registration := testCallbackRegistration("source-legacy-final", "target-legacy-final", "task-legacy-final", 6)
@@ -78,9 +79,8 @@ func TestLegacyFormalCompletionAckRestoresTerminalPredicateOnReload(t *testing.T
 	store.mu.Unlock()
 
 	reloaded := newSessionCallbackStore(dir)
-	current, ok, err := reloaded.registrationFor(registration.SourceSessionID)
-	if err != nil || !ok || !current.CompletionAckedAt.Equal(ackedAt) || callbackRegistrationProviderActive(current) {
-		t.Fatalf("legacy formal ACK migration route=%#v ok=%v err=%v", current, ok, err)
+	if _, ok, err := reloaded.registrationFor(registration.SourceSessionID); err != nil || ok {
+		t.Fatalf("legacy formal ACK was revived ok=%v err=%v", ok, err)
 	}
 	called := false
 	active, err := reloaded.withCurrentRegistration(registration.SourceSessionID, registration.Generation, func() error {
@@ -89,6 +89,88 @@ func TestLegacyFormalCompletionAckRestoresTerminalPredicateOnReload(t *testing.T
 	})
 	if err != nil || active || called {
 		t.Fatalf("legacy finalized route allowed watcher ensure active=%v called=%v err=%v", active, called, err)
+	}
+}
+
+func TestCallbackCapacityCountsOnlyActiveAndUnacknowledgedRoutes(t *testing.T) {
+	dir := t.TempDir()
+	store := newSessionCallbackStore(dir)
+	registrations := make([]sessionCallbackRegistration, 0, maxSessionCallbacks)
+	for i := 0; i < maxSessionCallbacks; i++ {
+		registration := testCallbackRegistration(fmt.Sprintf("source-capacity-%02d", i), "target-capacity", fmt.Sprintf("task-%02d", i), 1)
+		if _, _, err := store.register(registration); err != nil {
+			t.Fatal(err)
+		}
+		registrations = append(registrations, registration)
+	}
+	if _, _, err := store.register(testCallbackRegistration("source-overflow", "target-capacity", "task-overflow", 1)); err == nil {
+		t.Fatal("full active registry accepted another route")
+	}
+	for i := 0; i < 8; i++ {
+		if _, err := store.acknowledgeCompletion(registrations[i], time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restarted := newSessionCallbackStore(dir)
+	for i := 0; i < 8; i++ {
+		if _, ok, err := restarted.registrationFor(registrations[i].SourceSessionID); err != nil || ok {
+			t.Fatalf("acknowledged route %d revived ok=%v err=%v", i, ok, err)
+		}
+	}
+	for i := 8; i < maxSessionCallbacks; i++ {
+		if _, ok, err := restarted.registrationFor(registrations[i].SourceSessionID); err != nil || !ok {
+			t.Fatalf("unacknowledged route %d lost ok=%v err=%v", i, ok, err)
+		}
+	}
+	for i := 0; i < 8; i++ {
+		registration := testCallbackRegistration(fmt.Sprintf("source-new-%02d", i), "target-capacity", fmt.Sprintf("task-new-%02d", i), 1)
+		if _, _, err := restarted.register(registration); err != nil {
+			t.Fatalf("new route %d after ACK: %v", i, err)
+		}
+	}
+}
+
+func TestConcurrentCompletionAckAndNewRegistrationKeepsExactOwners(t *testing.T) {
+	store := newSessionCallbackStore(t.TempDir())
+	registrations := make([]sessionCallbackRegistration, 0, maxSessionCallbacks)
+	for i := 0; i < maxSessionCallbacks; i++ {
+		registration := testCallbackRegistration(fmt.Sprintf("source-race-%02d", i), "target-race", fmt.Sprintf("task-race-%02d", i), 1)
+		if _, _, err := store.register(registration); err != nil {
+			t.Fatal(err)
+		}
+		registrations = append(registrations, registration)
+	}
+	newRegistration := testCallbackRegistration("source-race-new", "target-race", "task-race-new", 1)
+	var wg sync.WaitGroup
+	var ackErr, registerErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, ackErr = store.acknowledgeCompletion(registrations[0], time.Now().UTC())
+	}()
+	go func() {
+		defer wg.Done()
+		_, _, registerErr = store.register(newRegistration)
+	}()
+	wg.Wait()
+	if ackErr != nil {
+		t.Fatal(ackErr)
+	}
+	if registerErr != nil {
+		if _, _, err := store.register(newRegistration); err != nil {
+			t.Fatalf("register after concurrent ACK: first=%v retry=%v", registerErr, err)
+		}
+	}
+	if _, ok, err := store.registrationFor(registrations[0].SourceSessionID); err != nil || ok {
+		t.Fatalf("acknowledged owner remained ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := store.registrationFor(newRegistration.SourceSessionID); err != nil || !ok {
+		t.Fatalf("new owner missing ok=%v err=%v", ok, err)
+	}
+	for i := 1; i < len(registrations); i++ {
+		if _, ok, err := store.registrationFor(registrations[i].SourceSessionID); err != nil || !ok {
+			t.Fatalf("unacknowledged owner %d lost ok=%v err=%v", i, ok, err)
+		}
 	}
 }
 

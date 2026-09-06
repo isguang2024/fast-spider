@@ -46,6 +46,66 @@ func TestTaskResultSubmitTextIsOwnerAndGenerationBound(t *testing.T) {
 	}
 }
 
+func TestTaskResultSubmitRepairsMissingRouteBeforeReturning(t *testing.T) {
+	s, owner, machine, node := newCloudCollaborationTestService(t)
+	ctx := context.Background()
+	req := CloudCollaborationRequest{Action: "dispatch", MachineID: machine, CallbackSessionID: "codex-restarted-target", WorkingDirectory: t.TempDir(), Prompt: "Return the result", IdempotencyKey: "task-result-route-repair-001", AccessMode: "read_only"}
+	dispatched, err := s.CloudCollaboration(ctx, owner, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerBefore := countCloudCollaborationCalls(node.snapshotCalls(), "session.callback.register")
+	armBefore := countCloudCollaborationCalls(node.snapshotCalls(), "session.callback.arm")
+	node.setErrorSequence("session.callback.enqueue", &protocolv1.ProtocolError{Code: "CALLBACK_ROUTE_NOT_FOUND", Message: "route lost after restart", Retryable: true}, nil)
+	out, err := s.SubmitTaskResult(ctx, owner, dispatched["taskRef"].(string), "completed", "durable result")
+	if err != nil || out["accepted"] != true || out["notificationAccepted"] != true {
+		t.Fatalf("submit=%#v err=%v", out, err)
+	}
+	calls := node.snapshotCalls()
+	if countCloudCollaborationCalls(calls, "session.callback.enqueue") != 2 || countCloudCollaborationCalls(calls, "session.callback.register") != registerBefore+1 || countCloudCollaborationCalls(calls, "session.callback.arm") != armBefore+1 {
+		t.Fatalf("route was not repaired before deterministic replay: %#v", calls)
+	}
+	claim, err := s.CloudCompletion(ctx, owner, CloudCompletionRequest{Action: "claim", ActorSessionID: "codex-restarted-target"})
+	if err != nil || claim["claimedCount"] != 1 || claim["claimed"].([]map[string]any)[0]["text"] != "durable result" {
+		t.Fatalf("claim=%#v err=%v", claim, err)
+	}
+}
+
+func TestDispatchReplayRestoresRouteAndRequeuesDurableSubmission(t *testing.T) {
+	s, owner, machine, node := newCloudCollaborationTestService(t)
+	ctx := context.Background()
+	req := CloudCollaborationRequest{Action: "dispatch", MachineID: machine, CallbackSessionID: "codex-replay-target", WorkingDirectory: t.TempDir(), Prompt: "Return the result", IdempotencyKey: "task-result-durable-replay-001", AccessMode: "read_only"}
+	dispatched, err := s.CloudCollaboration(ctx, owner, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.setError("session.callback.enqueue", &protocolv1.ProtocolError{Code: "CALLBACK_ROUTE_NOT_FOUND", Message: "route missing", Retryable: true})
+	node.setError("session.callback.register", &protocolv1.ProtocolError{Code: "RESOURCE_LIMIT", Message: "legacy route capacity full"})
+	_, err = s.SubmitTaskResult(ctx, owner, dispatched["taskRef"].(string), "completed", "stored once")
+	var capabilityErr *CapabilityCallError
+	if !errors.As(err, &capabilityErr) || capabilityErr.Code != "CALLBACK_DELIVERY_PENDING" {
+		t.Fatalf("submit err=%v", err)
+	}
+	node.setError("session.callback.enqueue", nil)
+	node.setError("session.callback.register", nil)
+	replayed, err := s.CloudCollaboration(ctx, owner, req)
+	if err != nil || replayed["replayed"] != true {
+		t.Fatalf("dispatch replay=%#v err=%v", replayed, err)
+	}
+	claim, err := s.CloudCompletion(ctx, owner, CloudCompletionRequest{Action: "claim", ActorSessionID: "codex-replay-target"})
+	if err != nil || claim["claimedCount"] != 1 {
+		t.Fatalf("claim=%#v err=%v", claim, err)
+	}
+	item := claim["claimed"].([]map[string]any)[0]
+	if item["text"] != "stored once" || item["recoveryOnly"] != false {
+		t.Fatalf("durable formal result=%#v", item)
+	}
+	second, err := s.SubmitTaskResult(ctx, owner, dispatched["taskRef"].(string), "completed", "stored once")
+	if err != nil || second["replayed"] != true {
+		t.Fatalf("duplicate submit=%#v err=%v", second, err)
+	}
+}
+
 func TestTaskResultSubmitLocalFileStaysOnNode(t *testing.T) {
 	s, owner, machine, node := newCloudCollaborationTestService(t)
 	ctx := context.Background()

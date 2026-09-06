@@ -72,9 +72,8 @@ type sessionCallbackRegistration struct {
 	LastResultBytes        int64     `json:"lastResultBytes,omitempty"`
 	LastResultSHA256       string    `json:"lastResultSHA256,omitempty"`
 	LastResultPageCount    int       `json:"lastResultPageCount,omitempty"`
-	// CompletionAckedAt is the durable terminal marker for this callback
-	// generation. The CHAT route remains available for metadata/reuse, while
-	// provider watching and recovery are fenced off for the acknowledged generation.
+	// CompletionAckedAt is retained only for loading schema-3 files written by
+	// older Nodes. Current formal ACKs retire the active registration entirely.
 	CompletionAckedAt time.Time `json:"completionAckedAt,omitempty"`
 	RegisteredAt      time.Time `json:"registeredAt"`
 	UpdatedAt         time.Time `json:"updatedAt"`
@@ -171,6 +170,10 @@ func (s *sessionCallbackStore) load() error {
 	if err := json.Unmarshal(raw, &index); err != nil || (index.SchemaVersion != 1 && index.SchemaVersion != 2 && index.SchemaVersion != sessionCallbackStoreSchemaVersion) || len(index.Registrations) > maxSessionCallbacks || len(index.Pending) > maxSessionCallbacks {
 		return fmt.Errorf("invalid session callback index")
 	}
+	pendingSources := make(map[string]struct{}, len(index.Pending))
+	for _, event := range index.Pending {
+		pendingSources[event.SourceSessionID] = struct{}{}
+	}
 	for _, registration := range index.Registrations {
 		// Schema 1 registrations predate the explicit register/arm handshake and
 		// were live immediately after registration. Preserve that behavior while
@@ -198,6 +201,15 @@ func (s *sessionCallbackStore) load() error {
 		// and recovery claims must never finalize a route during load.
 		if registration.CompletionAckedAt.IsZero() && !registration.LastDeliveredAt.IsZero() && registration.LastDeliveredEnvelope == callbackFormalCompletionKey(registration) {
 			registration.CompletionAckedAt = registration.LastDeliveredAt.UTC()
+		}
+		// Schema-3 used to retain formally acknowledged generations forever. They
+		// are inactive history owned by the Hub, not active Node routes. Retire them
+		// during load so a restart cannot resurrect them or consume the 64-route
+		// active capacity. A contradictory pending item fails closed below.
+		if !registration.CompletionAckedAt.IsZero() {
+			if _, pending := pendingSources[registration.SourceSessionID]; !pending {
+				continue
+			}
 		}
 		if _, exists := s.registrations[registration.SourceSessionID]; exists {
 			return fmt.Errorf("invalid session callback index: duplicate source session")
@@ -496,9 +508,8 @@ func callbackClaimActive(event sessionCallbackEvent, now time.Time) bool {
 }
 
 // callbackRegistrationProviderActive is the single route predicate used by
-// watcher creation and provider recovery. A terminal completion ACK keeps the
-// registration readable and reusable as metadata, but it must never revive the
-// acknowledged provider generation.
+// watcher creation and provider recovery. CompletionAckedAt can only appear on
+// a legacy record while it is being validated or compacted during load.
 func callbackRegistrationProviderActive(registration sessionCallbackRegistration) bool {
 	return registration.Armed && registration.CompletionAckedAt.IsZero()
 }
@@ -634,8 +645,31 @@ func (s *sessionCallbackStore) register(request sessionCallbackRegistration) (se
 		}
 		request.RegisteredAt = current.RegisteredAt
 	}
+	var reclaimed *sessionCallbackRegistration
 	if !exists && len(s.registrations) >= maxSessionCallbacks {
-		return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "RESOURCE_LIMIT", message: "session callback registry is full"}
+		// Acknowledged generations no longer watch the provider and cannot have a
+		// pending Node event. Reclaim the oldest one only under capacity pressure;
+		// the Hub remains the durable task/result authority and a later CHAT reuse
+		// can register a fresh generation. Active and recovery-only routes are never
+		// displaced by a new mission.
+		var candidate sessionCallbackRegistration
+		for source, registration := range s.registrations {
+			if registration.CompletionAckedAt.IsZero() {
+				continue
+			}
+			if _, pending := s.pending[source]; pending {
+				continue
+			}
+			if candidate.SourceSessionID == "" || registration.CompletionAckedAt.Before(candidate.CompletionAckedAt) ||
+				registration.CompletionAckedAt.Equal(candidate.CompletionAckedAt) && registration.SourceSessionID < candidate.SourceSessionID {
+				candidate = registration
+			}
+		}
+		if candidate.SourceSessionID == "" {
+			return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "RESOURCE_LIMIT", message: "session callback registry is full"}
+		}
+		reclaimed = &candidate
+		delete(s.registrations, candidate.SourceSessionID)
 	}
 	previousPending, hadPending := s.pending[request.SourceSessionID]
 	s.registrations[request.SourceSessionID] = request
@@ -649,6 +683,9 @@ func (s *sessionCallbackStore) register(request sessionCallbackRegistration) (se
 			}
 			if hadPending {
 				s.pending[request.SourceSessionID] = previousPending
+			}
+			if reclaimed != nil {
+				s.registrations[reclaimed.SourceSessionID] = *reclaimed
 			}
 		}
 		return sessionCallbackRegistration{}, false, err
@@ -1171,8 +1208,10 @@ func (s *sessionCallbackStore) claim(targetSessionID, requestedClaimID string, l
 }
 
 // acknowledgeCompletion is called by Hub after accepting a formal result. It
-// clears only the bound generation, regardless of a previous Node claim lease.
-func (s *sessionCallbackStore) acknowledgeCompletion(expected sessionCallbackRegistration, now time.Time) (int, error) {
+// retires only the exact bound generation, regardless of a previous Node claim
+// lease. Hub collaboration events retain the result/audit history; the Node
+// registry contains only active or still-unacknowledged routes.
+func (s *sessionCallbackStore) acknowledgeCompletion(expected sessionCallbackRegistration, _ time.Time) (int, error) {
 	if expected.SourceSessionID == "" || expected.TargetSessionID == "" || expected.MissionID == "" || expected.TaskID == "" || expected.Generation < 1 {
 		return 0, &sessionCallbackError{code: "INVALID_REQUEST", message: "completion acknowledgement requires source, target, mission, task and generation"}
 	}
@@ -1189,22 +1228,11 @@ func (s *sessionCallbackStore) acknowledgeCompletion(expected sessionCallbackReg
 		return 0, &sessionCallbackError{code: "CALLBACK_OWNER_CONFLICT", message: "completion acknowledgement does not match the registered task"}
 	}
 	event, pending := s.pending[expected.SourceSessionID]
-	formalKey := callbackFormalCompletionKey(registration)
-	if !pending && registration.LastDeliveredEnvelope == formalKey && !registration.CompletionAckedAt.IsZero() {
-		return 0, nil
-	}
-	previous := registration
-	registration.RecentEventKeys = append(append([]string(nil), registration.RecentEventKeys...), formalKey)
-	if len(registration.RecentEventKeys) > maxRecentCallbackEventKeys {
-		registration.RecentEventKeys = registration.RecentEventKeys[len(registration.RecentEventKeys)-maxRecentCallbackEventKeys:]
-	}
-	registration.LastDeliveredEnvelope, registration.LastDeliveredAt, registration.UpdatedAt = formalKey, now.UTC(), now.UTC()
-	registration.CompletionAckedAt = now.UTC()
-	s.registrations[expected.SourceSessionID] = registration
+	delete(s.registrations, expected.SourceSessionID)
 	delete(s.pending, expected.SourceSessionID)
 	if committed, err := s.saveLocked(); err != nil {
 		if !committed {
-			s.registrations[expected.SourceSessionID] = previous
+			s.registrations[expected.SourceSessionID] = registration
 			if pending {
 				s.pending[expected.SourceSessionID] = event
 			}

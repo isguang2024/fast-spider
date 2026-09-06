@@ -105,7 +105,7 @@ ChatGPT 对已发布 MCP App 的工具/输入定义可能使用经批准的快�
 - Node 回调的 `completionSource` 区分 `submission/recovery`（缺失为历史未知）；先领取 Hub，只有缺失的恢复观察才 replay。恢复观察通知成功后不反复 nudge，正式结果使用独立去重键，可替代待处理恢复观察。正式提交不同结果仍返回 `TASK_RESULT_CONFLICT`；历史未知来源不自动覆盖，需备份并精确核实后清理错误回执及同 ID 确认事件。
 - `completion.ack` 只收讫本次结果，默认保留 CHAT 和协作，不自动归档。AI 判断后续不需复用时，由 controller 显式调用 `codex_cloud_collaboration close`（带当前 revision）；它归档 FS 创建的 CHAT、释放复用 CHAT。继续原 CHAT 时用 `dispatch targetSessionId` 绑定新任务回调。
 - Hub 只维护任务、CALL 归属和持久交付状态；按已认证 owner 下的 collaboration.machineId 路由，不接受结果提交者替换 Node。ChatGPT 登录态、完整会话、复用基线、状态确认及继续发送判断留在所属 Node；Hub 不再调用 session.get/result/watch 进行协作编排。新增内部动作不支持的旧 Node 会明确报错，不能回退到 Hub 拉取会话。
-- Node 的会话详情读取共用缓存、并发合并和最小 1 秒间隔；429 按 Retry-After 进入共享冷却（缺失时 30 秒），冷却内不发送新的读取。正式 completion ack 停止当前 generation 的 Provider 监测，但保留 CHAT 和路由；恢复观察的 ack 不能结束业务任务。
+- Node 的会话详情读取共用缓存、并发合并和最小 1 秒间隔；429 按 Retry-After 进入共享冷却（缺失时 30 秒），冷却内不发送新的读取。正式 completion ack 在 Node 收讫后退休当前 generation 的活动 route 并停止 Provider 监测，CHAT、collaboration、正式结果和审计历史仍由 Hub 保留；恢复观察的 ack 不能结束业务任务或释放活动 route。Node 的 64 条限制只约束活动/待确认 route，不是 controller session 的终身任务上限。
 - ai_control session.callback.prepare/recover/continue/register/arm/enqueue: 仅供 Hub 的 `codex_cloud_collaboration` 内部校验、恢复、继续、登记、激活和投递；公网 AI 直接调用会返回 `CALLBACK_ROUTE_MANAGED_ONLY`
 - ai_control session.callback.claim/ack: `callbackTargetSessionId`; claim 可选 `callbackClaimLimit<=64` 或原 `callbackClaimId` 幂等续领，ack 使用返回的 `callbackClaimId`
 - ai_control routing.status: 可选 `appType=claude|codex|claude-desktop`，只读 CC Switch 路由事实

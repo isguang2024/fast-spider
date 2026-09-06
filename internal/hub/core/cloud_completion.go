@@ -186,12 +186,17 @@ func (s *Service) notifyCloudCompletion(ctx context.Context, ownerID string, req
 	activeCallbackQueued := false
 	activeCallbackReplayed := false
 	if stored.State == "pending" && !isRecovery {
-		wake, wakeErr := s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.callback.enqueue", map[string]any{
-			"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": sourceSessionID,
-			"callbackTargetSessionId": state.DispatcherSessionID, "callbackMissionId": rec.CollaborationID,
-			"callbackTaskId": task.ID, "callbackGeneration": task.Generation, "callbackType": callbackType,
-			"callbackDeliverablePath": cloudCollaborationTaskResultPath(task), "callbackOutcome": outcome, "callbackText": resultText,
-		})
+		wake, wakeErr := s.enqueueCloudCompletionOnNode(ctx, ownerID, rec, state, task, stored)
+		if wakeErr != nil && capabilityErrorHasCode(wakeErr, "CALLBACK_ROUTE_NOT_FOUND", "CALLBACK_ROUTE_UNARMED") {
+			// The formal notification is already durable. Route creation is owned by
+			// the Hub, so repair the exact task binding and retry the same deterministic
+			// Node event once instead of asking the CHAT to submit another result.
+			if _, _, repairErr := s.activateCloudCollaborationCallbackRoute(ctx, ownerID, rec, state, task, ""); repairErr == nil {
+				wake, wakeErr = s.enqueueCloudCompletionOnNode(ctx, ownerID, rec, state, task, stored)
+			} else {
+				wakeErr = repairErr
+			}
+		}
 		if wakeErr != nil {
 			causeCode := "CALLBACK_ENQUEUE_FAILED"
 			var capabilityErr *CapabilityCallError
@@ -225,6 +230,36 @@ func (s *Service) notifyCloudCompletion(ctx context.Context, ownerID string, req
 		"callbackWakePolicy":     "node-durable-immediate-when-idle",
 		"fallbackPolicy":         "provider-realtime-startup-and-status-recovery",
 	}, nil
+}
+
+func (s *Service) activateCloudCollaborationCallbackRoute(ctx context.Context, ownerID string, rec store.CloudCollaborationRecord, state cloudCollaborationState, task cloudCollaborationTask, baselineIdentity string) (bool, bool, error) {
+	if _, err := s.registerCloudCollaborationCallback(ctx, ownerID, rec, state, task, baselineIdentity); err != nil {
+		return false, false, err
+	}
+	if _, err := s.armCloudCollaborationCallback(ctx, ownerID, rec, state, task); err != nil {
+		return true, false, err
+	}
+	return true, true, nil
+}
+
+func (s *Service) enqueueCloudCompletionOnNode(ctx context.Context, ownerID string, rec store.CloudCollaborationRecord, _ cloudCollaborationState, task cloudCollaborationTask, notification store.CloudCompletionNotificationRecord) (map[string]any, error) {
+	return s.CallCapability(ctx, ownerID, rec.MachineID, "agent.control", "session.callback.enqueue", map[string]any{
+		"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": notification.SourceSessionID,
+		"callbackTargetSessionId": notification.TargetSessionID, "callbackMissionId": rec.CollaborationID,
+		"callbackTaskId": task.ID, "callbackGeneration": task.Generation, "callbackType": notification.CallbackType,
+		"callbackDeliverablePath": notification.DeliverablePath, "callbackOutcome": notification.Outcome, "callbackText": notification.ResultText,
+	})
+}
+
+func (s *Service) enqueuePendingCloudCompletion(ctx context.Context, ownerID string, rec store.CloudCollaborationRecord, state cloudCollaborationState, task cloudCollaborationTask) (map[string]any, error) {
+	notification, err := s.store.GetCloudCompletionNotificationByTask(ctx, ownerID, rec.CollaborationID, task.ID, task.Generation, cloudCompletionNotificationKind)
+	if errors.Is(err, store.ErrNotFound) || err == nil && notification.State != "pending" {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.enqueueCloudCompletionOnNode(ctx, ownerID, rec, state, task, notification)
 }
 
 func (s *Service) claimCloudCompletions(ctx context.Context, ownerID string, req CloudCompletionRequest) (map[string]any, error) {

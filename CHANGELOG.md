@@ -3,6 +3,15 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.67 - 2026-09-06
+
+- Retire acknowledged Cloud callback routes so completed generations do not
+  revive after restart or consume active route capacity.
+- Repair missing callback routes and replay durable completion notifications
+  when a Node restarts or loses its local route.
+- Keep formal result ownership and local-file metadata verification bound to
+  the exact collaboration task generation.
+
 ## 0.4.66 - 2026-09-05
 
 - Add account switching and reconnect entry points for Node users.

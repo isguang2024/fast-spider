@@ -28,6 +28,7 @@ type cloudCollaborationTestNode struct {
 	onCall    func(protocolv1.CapabilityRequest)
 	responses map[string]map[string]any
 	errors    map[string]*protocolv1.ProtocolError
+	errorSeq  map[string][]*protocolv1.ProtocolError
 	creates   int
 }
 
@@ -105,9 +106,23 @@ func (n *cloudCollaborationTestNode) setError(action string, response *protocolv
 	n.errors[action] = response
 }
 
+func (n *cloudCollaborationTestNode) setErrorSequence(action string, responses ...*protocolv1.ProtocolError) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.errorSeq == nil {
+		n.errorSeq = map[string][]*protocolv1.ProtocolError{}
+	}
+	n.errorSeq[action] = append([]*protocolv1.ProtocolError(nil), responses...)
+}
+
 func (n *cloudCollaborationTestNode) responseError(action string) *protocolv1.ProtocolError {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if sequence := n.errorSeq[action]; len(sequence) > 0 {
+		response := sequence[0]
+		n.errorSeq[action] = sequence[1:]
+		return response
+	}
 	return n.errors[action]
 }
 

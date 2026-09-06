@@ -1160,16 +1160,10 @@ func (m *AgentManager) sessionCallbackAck(input agentControlParams) (map[string]
 			Generation: input.CallbackGeneration,
 		}, time.Now().UTC())
 		if err == nil && m.chatgptCloud != nil {
-			finalized := false
-			if registration, current, stateErr := m.callbackStore.registrationFor(strings.TrimSpace(input.SessionID)); stateErr == nil {
-				finalized = current && registration.Generation == input.CallbackGeneration && !registration.CompletionAckedAt.IsZero()
-			}
-			if finalized {
-				// Completion ACK is durable local finality for this generation. Keep
-				// the route/CHAT metadata, but release only the generation-fenced
-				// provider watcher so an old ACK cannot affect a replacement route.
-				m.chatgptCloud.ReleaseCallbackRealtimeForGeneration(strings.TrimSpace(input.SessionID), input.CallbackGeneration)
-			}
+			// The store atomically retires the exact acknowledged generation. Release
+			// only its generation-fenced watcher; repeated ACKs and a newer route for
+			// the same CHAT remain safe.
+			m.chatgptCloud.ReleaseCallbackRealtimeForGeneration(strings.TrimSpace(input.SessionID), input.CallbackGeneration)
 		}
 	} else {
 		acked, err = m.callbackStore.acknowledgeClaim(targetSessionID, input.CallbackClaimID, time.Now().UTC())

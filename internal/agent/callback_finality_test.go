@@ -55,8 +55,8 @@ func TestHubCompletionAcknowledgesOnlyBoundNodeGeneration(t *testing.T) {
 	if err != nil || len(pending) != 1 || pending[0].SourceSessionID != "other-source" {
 		t.Fatalf("wrong callback cleared: %+v %v", pending, err)
 	}
-	if _, exists, err := s.registrationFor("source"); err != nil || !exists {
-		t.Fatalf("CHAT route was released: %v %v", exists, err)
+	if _, exists, err := s.registrationFor("source"); err != nil || exists {
+		t.Fatalf("acknowledged route remained active: %v %v", exists, err)
 	}
 	if count, err := s.acknowledgeCompletion(reg, time.Now()); err != nil || count != 0 {
 		t.Fatalf("retry=%d %v", count, err)

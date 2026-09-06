@@ -98,6 +98,9 @@ type CodexAdapter struct {
 	startGateMu      sync.Mutex
 	startGate        chan struct{}
 	lifecycleMu      sync.Mutex
+	publishMu        sync.Mutex
+	publishing       int
+	publishWait      chan struct{}
 	loadLocksMu      sync.Mutex
 	loadLocks        map[string]*codexSessionLock
 	mu               sync.Mutex
@@ -146,6 +149,7 @@ func NewCodexAdapter(logger *slog.Logger) *CodexAdapter {
 		activeTurns:          make(map[string]string),
 		activeTurnGeneration: make(map[string]uint64),
 		serverRequests:       make(map[string]codexServerRequest),
+		publishWait:          make(chan struct{}),
 	}
 }
 
@@ -446,11 +450,14 @@ func (a *CodexAdapter) AuthToken(ctx context.Context) (string, error) {
 
 func (a *CodexAdapter) Close(ctx context.Context) error {
 	a.lifecycleMu.Lock()
-	defer a.lifecycleMu.Unlock()
 	a.mu.Lock()
 	a.closed = true
 	cmd := a.cmd
 	a.mu.Unlock()
+	a.lifecycleMu.Unlock()
+	if err := a.waitForProcessPublish(ctx); err != nil {
+		return err
+	}
 	if cmd == nil {
 		return nil
 	}
@@ -458,6 +465,8 @@ func (a *CodexAdapter) Close(ctx context.Context) error {
 }
 
 func (a *CodexAdapter) publishStartedProcess(cmd *exec.Cmd, stdin io.WriteCloser, done chan struct{}) (uint64, bool) {
+	finishPublish := a.beginProcessPublish()
+	defer finishPublish()
 	a.lifecycleMu.Lock()
 	defer a.lifecycleMu.Unlock()
 	a.mu.Lock()
@@ -473,6 +482,41 @@ func (a *CodexAdapter) publishStartedProcess(cmd *exec.Cmd, stdin io.WriteCloser
 	a.quarantined = false
 	a.configErr = nil
 	return generation, true
+}
+
+func (a *CodexAdapter) beginProcessPublish() func() {
+	a.publishMu.Lock()
+	a.publishing++
+	a.publishMu.Unlock()
+	return func() {
+		a.publishMu.Lock()
+		a.publishing--
+		if a.publishing == 0 {
+			close(a.publishWait)
+			a.publishWait = make(chan struct{})
+		}
+		a.publishMu.Unlock()
+	}
+}
+
+func (a *CodexAdapter) waitForProcessPublish(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for {
+		a.publishMu.Lock()
+		if a.publishing == 0 {
+			a.publishMu.Unlock()
+			return nil
+		}
+		wait := a.publishWait
+		a.publishMu.Unlock()
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 }
 
 func (a *CodexAdapter) stopProcess(ctx context.Context, cmd *exec.Cmd) error {

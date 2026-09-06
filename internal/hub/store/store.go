@@ -1376,6 +1376,13 @@ func (s *Store) getCloudCompletionNotificationByTask(ctx context.Context, ownerI
 	return rec, err
 }
 
+// GetCloudCompletionNotificationByTask returns the durable notification for an
+// exact task generation. It is used to replay a formal result after the owning
+// Node callback route has been restored.
+func (s *Store) GetCloudCompletionNotificationByTask(ctx context.Context, ownerID, collaborationID, taskID string, generation int64, kind string) (CloudCompletionNotificationRecord, error) {
+	return s.getCloudCompletionNotificationByTask(ctx, ownerID, collaborationID, taskID, generation, kind)
+}
+
 func (s *Store) ClaimCloudCompletionNotifications(ctx context.Context, ownerID, targetSessionID, claimID string, limit, maxTextBytes int, now time.Time, lease time.Duration) ([]CloudCompletionNotificationRecord, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

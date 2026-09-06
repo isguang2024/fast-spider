@@ -170,7 +170,7 @@ Cloud 只有一个创建入口 `session.create`，用 `mode=quick_chat|complete`
 
 ### `session.callback.*`
 
-`session.callback.register/arm/enqueue/unregister/list/claim/ack` 是 `codex_cloud_collaboration` 的内部可靠性协议，不是 AI 需要手工拼装的公开工作流。Hub 用它登记 callback owner、发送前基线和 generation；CHAT 的 `completion.notify` 到达后，Hub 先持久化，再通过 `enqueue` 主动交给 Node。Node 用持久队列处理目标会话忙和重启恢复，重复通知与领取保持幂等，旧 generation 不会覆盖新任务。
+`session.callback.register/arm/enqueue/unregister/list/claim/ack` 是 `codex_cloud_collaboration` 的内部可靠性协议，不是 AI 需要手工拼装的公开工作流。Hub 用它登记 callback owner、发送前基线和 generation；CHAT 的 `completion.notify` 到达后，Hub 先持久化，再通过 `enqueue` 主动交给 Node。Node 用持久队列处理目标会话忙和重启恢复，重复通知与领取保持幂等，旧 generation 不会覆盖新任务。正式 completion ack 成功后，Node 原子退休对应活动 route；Hub 继续保存结果和审计历史。活动 route 达到 64 条时只阻止新的并发登记，已 ACK route 不占容量，重启也不会复活。
 
 公开调用统一使用 `codex_cloud_collaboration action=dispatch`：传入 `machineId`、现有本地 Codex 的 `callbackSessionId`、绝对 `workingDirectory`、任务 `prompt` 和稳定 `idempotencyKey`。可选 `targetSessionId` 只续发指定可见 CHAT；省略时创建一个可见 `quick_chat`。Hub 派生的内部发送键绑定 collaboration、task 和 generation；明确的 `session.send` 拒绝会撤销本次 callback route 并返回错误，不会伪装为 `active`，只有连接丢失或 deadline 等无法判断 Turn 是否启动的结果才进入 `deliveryInDoubt`。Fast Spider 不区分“单主控”“主控加协调者”或“单 AI”模式，三者都只是把任务发给 CHAT，再把结果回调给 `callbackSessionId`。
 
