@@ -26,9 +26,10 @@ type ChatGPTAdvancedConfig struct {
 }
 
 type ChatGPTAdvancedModel struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Thinking []string `json:"thinking"`
+	ID             string   `json:"id"`
+	Title          string   `json:"title"`
+	Thinking       []string `json:"thinking"`
+	CustomThinking []string `json:"customThinking,omitempty"`
 }
 
 type ChatGPTThinkingOption struct {
@@ -136,7 +137,7 @@ func normalizeAndValidateChatGPTAdvancedConfig(cfg *ChatGPTAdvancedConfig) error
 			return fmt.Errorf("duplicate advanced model id %q", model.ID)
 		}
 		seenModels[model.ID] = struct{}{}
-		if len(model.Thinking) > maxChatGPTAdvancedThinking {
+		if len(model.Thinking)+len(model.CustomThinking) > maxChatGPTAdvancedThinking {
 			return fmt.Errorf("advanced model %q has too many thinking options", model.ID)
 		}
 		seenThinking := make(map[string]struct{}, len(model.Thinking))
@@ -151,11 +152,30 @@ func normalizeAndValidateChatGPTAdvancedConfig(cfg *ChatGPTAdvancedConfig) error
 			seenThinking[thinking] = struct{}{}
 			model.Thinking[thinkingIndex] = thinking
 		}
+		for thinkingIndex, thinking := range model.CustomThinking {
+			thinking = strings.ToLower(strings.TrimSpace(thinking))
+			if !IsValidChatGPTThinkingValue(thinking) || thinking == "auto" {
+				return fmt.Errorf("advanced model %q has invalid custom thinking option %q", model.ID, thinking)
+			}
+			if _, exists := seenThinking[thinking]; exists {
+				return fmt.Errorf("advanced model %q repeats thinking option %q", model.ID, thinking)
+			}
+			seenThinking[thinking] = struct{}{}
+			model.CustomThinking[thinkingIndex] = thinking
+		}
 	}
 	if cfg.Models == nil {
 		cfg.Models = []ChatGPTAdvancedModel{}
 	}
 	return nil
+}
+
+// IsValidChatGPTThinkingValue reports whether a thinking value is safe to use
+// as a ChatGPT Cloud effort identifier. The provider still decides whether a
+// custom value is supported by the selected model.
+func IsValidChatGPTThinkingValue(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return chatGPTThinkingIDPattern.MatchString(value)
 }
 
 func chatGPTThinkingOptions(presets []map[string]any) []ChatGPTThinkingOption {
@@ -192,6 +212,7 @@ func filterChatGPTAdvancedModels(models []ChatGPTAdvancedModel, options []ChatGP
 				filtered[index].Thinking = append(filtered[index].Thinking, thinking)
 			}
 		}
+		filtered[index].CustomThinking = append([]string(nil), model.CustomThinking...)
 	}
 	return filtered
 }

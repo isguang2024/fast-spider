@@ -50,7 +50,7 @@ func TestLocalConfigIsPrivateAndRoundTrips(t *testing.T) {
 		ChatGPTDefaultConfigurationMode: "advanced",
 		ChatGPTDefaultCreateMode:        "quick_chat",
 		ChatGPTDefaultModel:             "gpt-5-6-thinking",
-		ChatGPTDefaultThinking:          "max",
+		ChatGPTDefaultThinking:          "model-specific",
 	}
 	if err := saveLocalConfig(dataDir, cfg); err != nil {
 		t.Fatal(err)

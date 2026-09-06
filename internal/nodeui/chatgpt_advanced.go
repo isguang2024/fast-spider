@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"strings"
 
 	"github.com/isguang2024/fast-spider/internal/agent"
 )
@@ -46,11 +47,11 @@ func (a *App) handleChatGPTAdvancedModels(w http.ResponseWriter, r *http.Request
 		}
 		available := make(map[string]struct{}, len(options))
 		for _, option := range options {
-			available[option.ID] = struct{}{}
+			available[strings.ToLower(strings.TrimSpace(option.ID))] = struct{}{}
 		}
 		for _, model := range cfg.Models {
 			for _, thinking := range model.Thinking {
-				if _, ok := available[thinking]; !ok {
+				if _, ok := available[strings.ToLower(strings.TrimSpace(thinking))]; !ok {
 					writeAPIError(w, http.StatusBadRequest, errors.New("高级模型包含 ChatGPT Cloud 当前未提供的思考档位"))
 					return
 				}

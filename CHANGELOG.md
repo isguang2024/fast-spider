@@ -3,6 +3,13 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.68 - 2026-09-06
+
+- Let ChatGPT Cloud Advanced models combine live official thinking presets with
+  model-specific custom effort values.
+- Persist custom thinking values in the local model catalog and expose them in
+  the default model/thinking selector.
+
 ## 0.4.67 - 2026-09-06
 
 - Retire acknowledged Cloud callback routes so completed generations do not

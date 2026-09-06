@@ -54,7 +54,7 @@ func (m *AgentManager) controlChatGPTCloud(ctx context.Context, action string, i
 		thinkingOptions, _ := catalog["thinkingOptions"].([]ChatGPTThinkingOption)
 		catalog["configurationModes"] = []map[string]any{
 			{"id": "preset", "title": "Preset", "modelSource": "modelPresets"},
-			{"id": "advanced", "title": "Advanced", "modelSource": "advancedModels", "thinkingSource": "thinkingOptions", "combinesWithCreationModes": true},
+			{"id": "advanced", "title": "Advanced", "modelSource": "advancedModels", "thinkingSource": "thinkingOptions", "customThinkingSource": "advancedModels.customThinking", "combinesWithCreationModes": true},
 		}
 		catalog["advancedModels"] = filterChatGPTAdvancedModels(cfg.Models, thinkingOptions)
 		catalog["advancedConfigFile"] = ChatGPTAdvancedConfigFileName
@@ -447,8 +447,11 @@ func chatgptCloudSendRequestMessageID(sessionID, idempotencyKey string) string {
 
 func normalizeChatGPTCloudThinking(value string) (string, error) {
 	thinking := strings.ToLower(strings.TrimSpace(value))
-	if thinking != "" && !stringInSet(thinking, "standard", "extended", "min", "max", "ultra", "xhigh", "zero") {
-		return "", fmt.Errorf("backend=chatgpt_cloud thinking must be standard, extended, min, max, ultra, xhigh, or zero")
+	if thinking == "" || thinking == "auto" {
+		return "", nil
+	}
+	if !IsValidChatGPTThinkingValue(thinking) {
+		return "", fmt.Errorf("backend=chatgpt_cloud thinking must be a valid effort identifier or empty for Auto")
 	}
 	return thinking, nil
 }

@@ -14,10 +14,10 @@ import (
 func TestAdvancedModelCatalogNormalizesKnownTitleWithoutChangingConfiguration(t *testing.T) {
 	models := []ChatGPTAdvancedModel{
 		{ID: "gpt-5-6-thinking", Title: "GPT-5.6 Sol", Thinking: []string{"auto", "max"}},
-		{ID: "gpt-custom", Title: "My custom model", Thinking: []string{"auto"}},
+		{ID: "gpt-custom", Title: "My custom model", Thinking: []string{"auto"}, CustomThinking: []string{"model-specific"}},
 	}
 	got := filterChatGPTAdvancedModels(models, []ChatGPTThinkingOption{{ID: "auto"}, {ID: "max"}})
-	if got[0].Title != "GPT-5.6 Thinking" || got[1].Title != models[1].Title || !reflect.DeepEqual(got[0].Thinking, models[0].Thinking) || models[0].Title != "GPT-5.6 Sol" {
+	if got[0].Title != "GPT-5.6 Thinking" || got[1].Title != models[1].Title || !reflect.DeepEqual(got[0].Thinking, models[0].Thinking) || len(got[1].CustomThinking) != 1 || got[1].CustomThinking[0] != "model-specific" || models[0].Title != "GPT-5.6 Sol" {
 		t.Fatalf("catalog=%#v original=%#v", got, models)
 	}
 }
@@ -25,7 +25,7 @@ func TestAdvancedModelCatalogNormalizesKnownTitleWithoutChangingConfiguration(t 
 func TestChatGPTAdvancedConfigRoundTripsPrivately(t *testing.T) {
 	dataDir := t.TempDir()
 	want := ChatGPTAdvancedConfig{Version: 1, Models: []ChatGPTAdvancedModel{{
-		ID: " gpt-5.6-terra-wm ", Title: " GPT-5.6 Terra ", Thinking: []string{"auto", "extended", "max"},
+		ID: " gpt-5.6-terra-wm ", Title: " GPT-5.6 Terra ", Thinking: []string{"auto", "extended", "max"}, CustomThinking: []string{" model-specific "},
 	}}}
 	if err := SaveChatGPTAdvancedConfig(dataDir, want); err != nil {
 		t.Fatal(err)
@@ -34,7 +34,7 @@ func TestChatGPTAdvancedConfigRoundTripsPrivately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Models) != 1 || got.Models[0].ID != "gpt-5.6-terra-wm" || got.Models[0].Title != "GPT-5.6 Terra" || len(got.Models[0].Thinking) != 3 {
+	if len(got.Models) != 1 || got.Models[0].ID != "gpt-5.6-terra-wm" || got.Models[0].Title != "GPT-5.6 Terra" || len(got.Models[0].Thinking) != 3 || len(got.Models[0].CustomThinking) != 1 || got.Models[0].CustomThinking[0] != "model-specific" {
 		t.Fatalf("advanced config=%+v", got)
 	}
 	info, err := os.Stat(filepath.Join(dataDir, ChatGPTAdvancedConfigFileName))
@@ -55,7 +55,7 @@ func TestChatGPTAdvancedConfigRejectsDuplicateModelsAndThinking(t *testing.T) {
 		t.Fatal("duplicate advanced model was accepted")
 	}
 	duplicateThinking := ChatGPTAdvancedConfig{Version: 1, Models: []ChatGPTAdvancedModel{{
-		ID: "model", Title: "Model", Thinking: []string{"extended", "extended"},
+		ID: "model", Title: "Model", Thinking: []string{"extended"}, CustomThinking: []string{"extended"},
 	}}}
 	if err := SaveChatGPTAdvancedConfig(t.TempDir(), duplicateThinking); err == nil {
 		t.Fatal("duplicate thinking option was accepted")
@@ -80,7 +80,7 @@ func TestChatGPTCloudModelsCombinesLiveThinkingWithNodeAdvancedModels(t *testing
 	defer server.Close()
 	dataDir := t.TempDir()
 	if err := SaveChatGPTAdvancedConfig(dataDir, ChatGPTAdvancedConfig{Version: 1, Models: []ChatGPTAdvancedModel{{
-		ID: "gpt-custom", Title: "Custom", Thinking: []string{"auto", "standard", "extended", "max"},
+		ID: "gpt-custom", Title: "Custom", Thinking: []string{"auto", "standard", "extended", "max"}, CustomThinking: []string{"model-specific"},
 	}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestChatGPTCloudModelsCombinesLiveThinkingWithNodeAdvancedModels(t *testing
 		t.Fatal(err)
 	}
 	modes, _ := catalog["configurationModes"].([]map[string]any)
-	if len(modes) != 2 || modes[1]["modelSource"] != "advancedModels" {
+	if len(modes) != 2 || modes[1]["modelSource"] != "advancedModels" || modes[1]["customThinkingSource"] != "advancedModels.customThinking" {
 		t.Fatalf("configurationModes=%#v", modes)
 	}
 	options, _ := catalog["thinkingOptions"].([]ChatGPTThinkingOption)
@@ -103,7 +103,7 @@ func TestChatGPTCloudModelsCombinesLiveThinkingWithNodeAdvancedModels(t *testing
 		t.Fatalf("thinkingOptions=%#v", options)
 	}
 	models, _ := catalog["advancedModels"].([]ChatGPTAdvancedModel)
-	if len(models) != 1 || len(models[0].Thinking) != 3 || models[0].Thinking[0] != "auto" || models[0].Thinking[2] != "max" {
+	if len(models) != 1 || len(models[0].Thinking) != 3 || models[0].Thinking[0] != "auto" || models[0].Thinking[2] != "max" || len(models[0].CustomThinking) != 1 || models[0].CustomThinking[0] != "model-specific" {
 		t.Fatalf("advancedModels=%#v", models)
 	}
 	if _, ok := catalog["models"].([]map[string]any); !ok {

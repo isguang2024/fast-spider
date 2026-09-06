@@ -14,7 +14,7 @@ const localUIHTML = `<!doctype html>
     .layout{display:grid;grid-template-columns:190px minmax(0,1fr);gap:16px}.nav,.panel{background:var(--panel);border:1px solid var(--line);border-radius:16px}.nav{padding:10px;height:max-content;position:sticky;top:18px}.nav button{width:100%;border:0;background:transparent;text-align:left;padding:10px 12px;border-radius:10px;color:var(--muted);margin:2px 0}.nav button.active{background:#171717;color:#fff}.content{min-width:0}.panel{padding:22px;margin-bottom:16px}.panel h2{font-size:18px;margin:0 0 5px}.copy{color:var(--muted);margin:0 0 18px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{display:grid;gap:6px}.field.full{grid-column:1/-1}.field span{font-weight:650}.field input,.field textarea{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:#fff;outline:none}.field textarea{min-height:150px;resize:vertical;line-height:1.55}.field input:focus,.field textarea:focus{border-color:#777}.secret-row{display:grid;grid-template-columns:1fr auto;gap:8px}.secondary,.primary,.danger{border-radius:10px;padding:9px 13px;border:1px solid var(--line);background:#fff}.primary{background:#171717;border-color:#171717;color:#fff}.danger{color:var(--bad)}.actions{display:flex;align-items:center;gap:10px;margin-top:16px;flex-wrap:wrap}.hint{color:var(--muted);font-size:12px}.message{display:none;margin:0 0 16px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--soft)}.message.show{display:block}.message.error{border-color:#f0b7b2;color:var(--bad);background:#fff7f6}
     .facts{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:18px}.fact{border:1px solid var(--line);background:var(--soft);border-radius:12px;padding:12px}.fact span{display:block;color:var(--muted);font-size:12px}.fact strong{display:block;margin-top:3px;word-break:break-word}.section{display:none}.section.active{display:block}.switch{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:var(--soft)}.switch input{width:18px;height:18px}.mono{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}.advanced{margin-top:14px}.advanced summary{cursor:pointer;color:var(--muted)}[hidden]{display:none!important}
 	    .field select{width:100%;border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:#fff}.config-subsection{grid-column:1/-1;border-top:1px solid var(--line);padding-top:16px;margin-top:4px}.config-subsection strong{display:block}.progress-track{height:8px;border-radius:999px;background:#e6e6e0;overflow:hidden;margin-top:9px}.progress-fill{height:100%;background:var(--ok);width:0}.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}.task-list{display:grid;gap:8px}.task-row{border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:var(--soft)}.task-row strong{display:block}.task-row small{color:var(--muted)}.empty{color:var(--muted);padding:8px 0}.workspace{display:grid;grid-template-columns:230px minmax(0,1fr);gap:12px}.file-list{display:grid;gap:6px;align-content:start}.file-list button{text-align:left;min-height:38px;padding:7px 9px}.markdown-view{min-height:250px;max-height:520px;overflow:auto;margin:0;padding:14px;border:1px solid var(--line);border-radius:10px;background:#20201e;color:#f5f5f0;white-space:pre-wrap;word-break:break-word}.subhead{font-size:14px;margin:0 0 10px}
-		.data-list{display:grid;gap:7px;margin-top:12px}.data-row{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding:7px 0}.data-row:last-child{border-bottom:0}.data-row span{color:var(--muted)}.data-row strong{text-align:right;word-break:break-word}.provider-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.provider-grid .panel{margin-bottom:0}.tag-list{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.tag{border:1px solid var(--line);border-radius:999px;background:var(--soft);padding:4px 8px;font-size:12px}.notice{border:1px solid var(--line);border-radius:12px;background:var(--soft);padding:12px 14px;color:var(--muted)}.advanced-model-list{display:grid;gap:12px;margin-top:16px}.advanced-model-row{border:1px solid var(--line);border-radius:12px;background:var(--soft);padding:14px}.advanced-model-fields{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) auto;gap:10px;align-items:end}.thinking-list{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.thinking-list .switch{background:#fff;padding:7px 9px}.thinking-list .switch input{width:16px;height:16px;min-height:0}
+		    .data-list{display:grid;gap:7px;margin-top:12px}.data-row{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;border-bottom:1px solid var(--line);padding:7px 0}.data-row:last-child{border-bottom:0}.data-row span{color:var(--muted)}.data-row strong{text-align:right;word-break:break-word}.provider-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.provider-grid .panel{margin-bottom:0}.tag-list{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.tag{border:1px solid var(--line);border-radius:999px;background:var(--soft);padding:4px 8px;font-size:12px}.notice{border:1px solid var(--line);border-radius:12px;background:var(--soft);padding:12px 14px;color:var(--muted)}.advanced-model-list{display:grid;gap:12px;margin-top:16px}.advanced-model-row{border:1px solid var(--line);border-radius:12px;background:var(--soft);padding:14px}.advanced-model-fields{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) auto;gap:10px;align-items:end}.thinking-editor{display:grid;gap:12px;margin-top:12px}.thinking-group{display:grid;gap:7px}.thinking-title{font-size:13px}.thinking-list{display:flex;gap:8px;flex-wrap:wrap}.thinking-list .switch{background:#fff;padding:7px 9px}.thinking-list .switch input{width:16px;height:16px;min-height:0}.custom-thinking-field{max-width:620px}.custom-thinking-field input{width:100%;border:1px solid var(--line);border-radius:10px;padding:10px 11px;background:#fff;outline:none}.custom-thinking-field input:focus{border-color:#777}
     @media(max-width:760px){body{font-size:16px}.layout{grid-template-columns:1fr}.nav{position:static;display:flex;gap:6px;overflow:auto}.nav button{text-align:center;white-space:nowrap}.grid,.facts,.split,.workspace,.provider-grid{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}.top-actions{width:100%;flex-wrap:wrap}.status{flex:1;justify-content:center}}
   </style>
 </head>
@@ -173,7 +173,7 @@ const localUIHTML = `<!doctype html>
 	          <div class="panel">
 				<h2>ChatGPT Cloud Advanced</h2>
 				<p class="copy">Preset 继续使用 ChatGPT 实时模型预设。这里只维护本机 Advanced 模型列表；Quick chat 与等待首个回答仍可分别搭配 Preset 或 Advanced。</p>
-				<div class="notice">思考档位在每次读取与保存时从 ChatGPT Cloud 实时模型目录确认。Auto 表示不发送 thinking_effort；模型别名最终可能被服务端解析为其他 resolved model。</div>
+				<div class="notice">思考程度可勾选 ChatGPT Cloud 实时预设，也可以填写自定义值；自定义值会按模型原样发送。Auto 表示不发送 thinking_effort；模型别名最终可能被服务端解析为其他 resolved model。</div>
 				<form id="chatgpt-advanced-form">
 				  <div id="chatgpt-advanced-list" class="advanced-model-list"><span class="empty">切换到本页后读取</span></div>
 				  <div class="actions"><button id="chatgpt-advanced-add" class="secondary" type="button">新增模型</button><button class="primary" type="submit">保存 Advanced 列表</button><span id="chatgpt-advanced-file" class="hint mono"></span></div>
@@ -351,17 +351,31 @@ const localUIHTML = `<!doctype html>
 	  if(!Array.isArray(values) || !values.length){const empty=document.createElement('span');empty.className='empty';empty.textContent='暂无';box.appendChild(empty);return;}
 	  values.forEach(value=>{const tag=document.createElement('span');tag.className='tag';tag.textContent=formatter ? formatter(value) : String(value);box.appendChild(tag);});
 	}
-	function advancedModelRow(model) {
-	  const row=document.createElement('div'); row.className='advanced-model-row';
-	  const fields=document.createElement('div'); fields.className='advanced-model-fields';
-	  const idLabel=document.createElement('label'); idLabel.className='field'; idLabel.innerHTML='<span>模型 ID</span><input class="advanced-model-id" maxlength="256" required placeholder="gpt-5.6-terra-wm">'; idLabel.querySelector('input').value=model.id || '';
-	  const titleLabel=document.createElement('label'); titleLabel.className='field'; titleLabel.innerHTML='<span>显示名称</span><input class="advanced-model-title" maxlength="128" required placeholder="GPT-5.6 Terra">'; titleLabel.querySelector('input').value=model.title || '';
-	  const remove=document.createElement('button'); remove.type='button'; remove.className='danger'; remove.textContent='删除'; remove.addEventListener('click',()=>row.remove());
-	  fields.append(idLabel,titleLabel,remove); row.appendChild(fields);
-	  const thinking=document.createElement('div'); thinking.className='thinking-list'; const selected=new Set(model.thinking || []);
-	  chatGPTThinkingOptions.forEach(option=>{const label=document.createElement('label');label.className='switch';const input=document.createElement('input');input.type='checkbox';input.className='advanced-thinking';input.value=option.id;input.checked=selected.has(option.id);const text=document.createElement('span');text.textContent=option.title+(option.source==='chatgpt_cloud'?' · 官方':' · 默认');label.append(input,text);thinking.appendChild(label);});
-	  row.appendChild(thinking); return row;
-	}
+		function splitCustomThinking(value) {
+		  const seen=new Set(); return String(value || '').split(/[,，\n]/).map(item=>item.trim().toLowerCase()).filter(item=>{if(!item || seen.has(item))return false;seen.add(item);return true;});
+		}
+		function advancedCustomThinkingValues(model) {
+		  const presetIDs=new Set(chatGPTThinkingOptions.map(option=>String(option.id || '').trim().toLowerCase())); const values=[];
+		  const add=value=>{value=String(value || '').trim().toLowerCase();if(value && !values.includes(value))values.push(value);};
+		  (Array.isArray(model.customThinking)?model.customThinking:[]).forEach(add);
+		  (Array.isArray(model.thinking)?model.thinking:[]).forEach(value=>{value=String(value || '').trim().toLowerCase();if(value && !presetIDs.has(value))add(value);});
+		  return values;
+		}
+		function advancedModelRow(model) {
+		  const row=document.createElement('div'); row.className='advanced-model-row';
+		  const fields=document.createElement('div'); fields.className='advanced-model-fields';
+		  const idLabel=document.createElement('label'); idLabel.className='field'; idLabel.innerHTML='<span>模型 ID</span><input class="advanced-model-id" maxlength="256" required placeholder="gpt-5.6-terra-wm">'; idLabel.querySelector('input').value=model.id || '';
+		  const titleLabel=document.createElement('label'); titleLabel.className='field'; titleLabel.innerHTML='<span>显示名称</span><input class="advanced-model-title" maxlength="128" required placeholder="GPT-5.6 Terra">'; titleLabel.querySelector('input').value=model.title || '';
+		  const remove=document.createElement('button'); remove.type='button'; remove.className='danger'; remove.textContent='删除'; remove.addEventListener('click',()=>row.remove());
+		  fields.append(idLabel,titleLabel,remove); row.appendChild(fields);
+		  const editor=document.createElement('div'); editor.className='thinking-editor';
+		  const presetGroup=document.createElement('div'); presetGroup.className='thinking-group'; const presetTitle=document.createElement('strong'); presetTitle.className='thinking-title'; presetTitle.textContent='预设值';
+		  const thinking=document.createElement('div'); thinking.className='thinking-list'; const selected=new Set((Array.isArray(model.thinking)?model.thinking:[]).map(value=>String(value || '').trim().toLowerCase()));
+		  chatGPTThinkingOptions.forEach(option=>{const label=document.createElement('label');label.className='switch';const input=document.createElement('input');input.type='checkbox';input.className='advanced-thinking';input.value=option.id;input.checked=selected.has(String(option.id || '').trim().toLowerCase());const text=document.createElement('span');text.textContent=option.title+(option.source==='chatgpt_cloud'?' · 官方':' · 默认');label.append(input,text);thinking.appendChild(label);});
+		  presetGroup.append(presetTitle,thinking);
+		  const custom=document.createElement('label'); custom.className='field custom-thinking-field'; custom.innerHTML='<span>自定义值</span><input class="advanced-custom-thinking" maxlength="1024" placeholder="例如 low,extended-custom"><small class="hint">可填写一个或多个值，多个值用英文逗号分隔。</small>'; custom.querySelector('input').value=advancedCustomThinkingValues(model).join(', ');
+		  editor.append(presetGroup,custom); row.appendChild(editor); return row;
+		}
 		function setSelectValueWithFallback(select,value,label) {
 		  value=value || ''; if(!Array.from(select.options).some(option=>option.value===value)){const option=document.createElement('option');option.value=value;option.textContent=label+' · '+value;select.appendChild(option);} select.value=value;
 		}
@@ -386,17 +400,18 @@ const localUIHTML = `<!doctype html>
 		  const configurationMode=$('config-chatgpt-configuration-mode').value;
 		  const selectedModel=$('config-chatgpt-model').value;
 		  const allOptions=Array.isArray(data.thinkingOptions)?data.thinkingOptions:[];
-		  let options=allOptions;
+		  let options=allOptions.slice();
 		  if(selectedModel && configurationMode==='preset') {
 		    const allowed=new Set((Array.isArray(data.modelPresets)?data.modelPresets:[]).filter(preset=>chatGPTModelID(preset)===selectedModel).map(preset=>String(preset.thinking || '')));
 		    options=allOptions.filter(option=>allowed.has(String(option.value || '')) || (!option.value && allowed.size===0));
 		  } else if(selectedModel && configurationMode==='advanced') {
 		    const model=(Array.isArray(data.models)?data.models:[]).find(item=>chatGPTModelID(item)===selectedModel);
-		    const allowed=new Set((model && Array.isArray(model.thinking)?model.thinking:[]).map(String));
-		    options=allOptions.filter(option=>allowed.has(String(option.id || '')));
+		    const allowed=new Set((model && Array.isArray(model.thinking)?model.thinking:[]).map(value=>String(value).trim().toLowerCase()));
+		    options=allOptions.filter(option=>allowed.has(String(option.id || '').trim().toLowerCase()));
+		    (model && Array.isArray(model.customThinking)?model.customThinking:[]).forEach(value=>{value=String(value || '').trim().toLowerCase();if(value && !options.some(option=>String(option.value || '').trim().toLowerCase()===value))options.push({id:value,title:value,value:value,source:'local_custom'});});
 		  }
 		  const select=$('config-chatgpt-thinking'); select.textContent=''; const seen=new Set();
-		  options.forEach(option=>{const value=String(option.value || '');if(seen.has(value))return;seen.add(value);const item=document.createElement('option');item.value=value;item.textContent=(option.title || option.id || 'Auto')+(option.source==='chatgpt_cloud'?' · 官方':' · Auto');select.appendChild(item);});
+		  options.forEach(option=>{const value=String(option.value || '');if(seen.has(value))return;seen.add(value);const item=document.createElement('option');item.value=value;const suffix=option.source==='chatgpt_cloud'?' · 官方':option.source==='local_custom'?' · 自定义':' · Auto';item.textContent=(option.title || option.id || 'Auto')+suffix;select.appendChild(item);});
 		  if(!seen.has('')){const item=document.createElement('option');item.value='';item.textContent='Auto · 用户或 AI 决定';select.insertBefore(item,select.firstChild);}
 		  setSelectValueWithFallback(select,selectedThinking,'已保存思考程度（当前模型未提供）');
 		}
@@ -596,9 +611,9 @@ const localUIHTML = `<!doctype html>
 					return {machineName:$('config-name').value,browserSidecarDir:$('config-browser').value,localBridgeEnabled:$('config-bridge').checked,autoStartEnabled:$('config-autostart').checked,autoUpdateEnabled:$('config-autoupdate').checked,allowInsecureLocalHub:$('config-insecure').checked,chatgptDefaultConfigurationMode:$('config-chatgpt-configuration-mode').value,chatgptDefaultCreateMode:$('config-chatgpt-mode').value,chatgptDefaultModel:$('config-chatgpt-model').value,chatgptDefaultThinking:$('config-chatgpt-thinking').value};
 			}
 	$('chatgpt-advanced-add').addEventListener('click',()=>{const box=$('chatgpt-advanced-list');const empty=box.querySelector('.empty');if(empty)empty.remove();box.appendChild(advancedModelRow({thinking:chatGPTThinkingOptions.map(option=>option.id)}));});
-	$('chatgpt-advanced-form').addEventListener('submit',async event=>{
-	  event.preventDefault();if(chatGPTAdvancedBusy)return;chatGPTAdvancedBusy=true;const submit=event.currentTarget.querySelector('button[type="submit"]');submit.disabled=true;
-	  try{const models=Array.from(document.querySelectorAll('.advanced-model-row')).map(row=>({id:row.querySelector('.advanced-model-id').value.trim(),title:row.querySelector('.advanced-model-title').value.trim(),thinking:Array.from(row.querySelectorAll('.advanced-thinking:checked')).map(input=>input.value)}));const data=await api('/api/chatgpt-advanced-models',{method:'POST',body:JSON.stringify({version:1,models})});renderChatGPTAdvanced(data);message('ChatGPT Advanced 模型列表已保存到本机 Node。');}catch(e){message(e.message,true);}finally{chatGPTAdvancedBusy=false;submit.disabled=false;}
+		$('chatgpt-advanced-form').addEventListener('submit',async event=>{
+		  event.preventDefault();if(chatGPTAdvancedBusy)return;chatGPTAdvancedBusy=true;const submit=event.currentTarget.querySelector('button[type="submit"]');submit.disabled=true;
+		  try{const models=Array.from(document.querySelectorAll('.advanced-model-row')).map(row=>({id:row.querySelector('.advanced-model-id').value.trim(),title:row.querySelector('.advanced-model-title').value.trim(),thinking:Array.from(row.querySelectorAll('.advanced-thinking:checked')).map(input=>input.value),customThinking:splitCustomThinking(row.querySelector('.advanced-custom-thinking').value)}));const data=await api('/api/chatgpt-advanced-models',{method:'POST',body:JSON.stringify({version:1,models})});renderChatGPTAdvanced(data);message('ChatGPT Advanced 模型列表已保存到本机 Node。');}catch(e){message(e.message,true);}finally{chatGPTAdvancedBusy=false;submit.disabled=false;}
 	});
 
   $('update-check').addEventListener('click', async () => {

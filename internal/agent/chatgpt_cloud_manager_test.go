@@ -821,10 +821,20 @@ func TestChatGPTCloudSessionCreateRejectsUnknownThinking(t *testing.T) {
 	defer manager.Close(context.Background())
 	_, err := manager.Control(context.Background(), "session.create", map[string]any{
 		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
-		"prompt": "think", "thinking": "medium", "idempotencyKey": "cloud-invalid-thinking-01", "workingDirectory": t.TempDir(),
+		"prompt": "think", "thinking": "bad value", "idempotencyKey": "cloud-invalid-thinking-01", "workingDirectory": t.TempDir(),
 	})
-	if err == nil || err.Error() != "backend=chatgpt_cloud thinking must be standard, extended, min, max, ultra, xhigh, or zero" {
+	if err == nil || err.Error() != "backend=chatgpt_cloud thinking must be a valid effort identifier or empty for Auto" {
 		t.Fatalf("invalid thinking error=%v", err)
+	}
+}
+
+func TestChatGPTCloudThinkingAllowsCustomEffort(t *testing.T) {
+	got, err := normalizeChatGPTCloudThinking(" Model-Specific ")
+	if err != nil || got != "model-specific" {
+		t.Fatalf("custom thinking=%q err=%v", got, err)
+	}
+	if got, err := normalizeChatGPTCloudThinking("auto"); err != nil || got != "" {
+		t.Fatalf("auto thinking=%q err=%v", got, err)
 	}
 }
 

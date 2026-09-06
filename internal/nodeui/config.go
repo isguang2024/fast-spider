@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/isguang2024/fast-spider/internal/agent"
 )
 
 const localConfigVersion = 6
@@ -126,8 +128,8 @@ func normalizeChatGPTDefaults(cfg *LocalConfig) error {
 	if cfg.ChatGPTDefaultThinking == "auto" {
 		cfg.ChatGPTDefaultThinking = ""
 	}
-	if cfg.ChatGPTDefaultThinking != "" && !stringInLocalSet(cfg.ChatGPTDefaultThinking, "standard", "extended", "min", "max", "ultra", "xhigh", "zero") {
-		return errors.New("ChatGPT Cloud 默认思考程度不是当前客户端支持的档位")
+	if cfg.ChatGPTDefaultThinking != "" && !agent.IsValidChatGPTThinkingValue(cfg.ChatGPTDefaultThinking) {
+		return errors.New("ChatGPT Cloud 默认思考程度必须是合法的思考档位标识符")
 	}
 	return nil
 }
