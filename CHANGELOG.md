@@ -3,6 +3,15 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.69 - 2026-09-08
+
+- Add a local-only collaboration control bridge that performs deterministic
+  SQLite READY claims, frozen dispatch handoff, receipt binding and recovery
+  inside the existing Fast Spider Node process.
+- Preserve original dispatch identity across uncertain outcomes, support
+  authoritative no-create closure, and prune expired short-lived tokens without
+  contacting the Hub or a Cloud provider.
+
 ## 0.4.68 - 2026-09-06
 
 - Let ChatGPT Cloud Advanced models combine live official thinking presets with

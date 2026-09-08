@@ -40,6 +40,14 @@ var ResultPoolCapability = CapabilityDescriptor{
 	Actions: []string{"create", "attachPage", "commit", "getManifest", "readPage", "lookup", "abort", "fail"},
 }
 
+// CollaborationControlCapability is available only through the current-user
+// Local Bridge. It is intentionally excluded from NodeCapabilities so the Hub
+// cannot route task-local ledger mutations to it.
+var CollaborationControlCapability = CapabilityDescriptor{
+	CapabilityId: "collaboration.control", Version: "1.0",
+	Actions: []string{"claim", "recover", "receipt", "uncertain", "not_created", "verify"},
+}
+
 const (
 	CloudCallbackTypeLocalFile = "local_file"
 	CloudCallbackTypeText      = "text"

@@ -18,6 +18,12 @@ Windows/Linux 当前使用用户 data-dir 下的 AF_UNIX/UDS；Windows 遇到 AF
 
 Provider Token、Codex/ChatGPT 本地认证和其他 Provider secret 只保留在 Node/Provider 本机，不进入 Hub、MCP 响应或 Working Context。
 
+### 1.1 FastSpider_Local 与协作控制
+
+`fast-spider-node mcp-local` 是现有 STDIO MCP 适配入口，提供 `local_machine`、`local_capability` 和 `collaboration_control`。适配器不实现第二套状态服务；`collaboration_control` 经 Local Bridge 调用正在运行的 Node，由 Node 内部 Go/SQLite 代码完成任务 claim、冻结包摘要、dispatch token、receipt、权威未创建收口、不确定状态和恢复。短期 token 过期后由 Node 在后续写入时顺带清理。调用期间不启动 Python 子进程或新守护进程。
+
+该能力只在 `HandleLocalCapability` 路径开放，不属于 Node 上报 Hub 的能力目录。它不持有 Cloud 凭据、不访问 Hub/provider、不派发 CHAT，也不轮询会话；Cloud 发送仍由调用方使用公网 `FastSpider_FS.codex_cloud_collaboration`。调用方在同一段程序化编排中原样传递 `claim.dispatchRequest → codex_cloud_collaboration → receipt.dispatchResult`，避免模型重写路径、CHAT ID、callback 或幂等键。
+
 ## 2. 多 AI Harness 与 CC Switch Routing
 
 当前内置两个 AI Harness：

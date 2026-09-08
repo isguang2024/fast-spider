@@ -31,6 +31,12 @@ working_context
 
 Current 不提供目录列表工具；`audit_log` 只读查询 Hub 本地 `audit_entries`，始终按当前 MCP Owner 隔离，不依赖 Node 在线，也不开放给 Direct Access Key；`operation_log` 必须带 `machineId`，只读查询当前 Owner 所有且在线 Node 的近期有界操作事件，使用 `level/category/limit/before` 过滤和游标分页，并省略本地路径、消息、IP 与 Extra 字段；`thinking_team` 只返回调用侧角色指导，`working_context` 只保存每个项目一段普通文本。
 
+## 本机 MCP
+
+`FastSpider_Local` 通过当前用户 Local Bridge 提供 3 个工具：`local_machine`、`local_capability`、`collaboration_control`。前两个发现并调用现有 Node 能力；`collaboration_control` 只处理一个任务自己的 SQLite 协作状态，支持 `claim/recover/receipt/uncertain/not_created/verify`。它的事务、SHA-256 和短期 dispatch token 直接在已运行的 Node 进程中执行，不启动 Python、辅助守护进程或第二套 Node，也不访问 Hub、Cloud CHAT 或 provider。只有运行时权威确认没有创建任务时才能调用 `not_created` 关闭被拒轮次；超时或查无结果不能冒充该证据。
+
+`collaboration.control` 是本机专属能力，不加入 Node 向 Hub 注册的 capability catalog，因此公网 MCP 和 Direct API 都不能路由调用。正常编排由调用方把 `claim` 返回的 `dispatchRequest` 对象原样交给公网 `codex_cloud_collaboration action=dispatch`，再把该工具的原始结构化结果原样交给 `receipt`；本机工具不代替 FS 发送 Cloud 请求，也不读取 Cloud 内容。
+
 入口按交付方式选择，而不是按任务看起来“简单”还是“复杂”：
 
 | 用户意图 | 公开入口 | 调用方行为 |

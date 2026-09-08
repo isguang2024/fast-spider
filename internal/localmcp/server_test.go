@@ -31,7 +31,7 @@ func TestLocalMCPListsToolsAndRoutesWithoutMachineID(t *testing.T) {
 	for _, tool := range tools.Tools {
 		names[tool.Name] = true
 	}
-	if len(tools.Tools) != 2 || !names["local_machine"] || !names["local_capability"] {
+	if len(tools.Tools) != 3 || !names["local_machine"] || !names["local_capability"] || !names["collaboration_control"] {
 		t.Fatalf("tools=%v", tools.Tools)
 	}
 
@@ -59,6 +59,20 @@ func TestLocalMCPListsToolsAndRoutesWithoutMachineID(t *testing.T) {
 	output, ok := structured["result"].(map[string]any)
 	if !ok || output["content"] != "ok" {
 		t.Fatalf("result=%v", structured["result"])
+	}
+
+	direct, err := client.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "collaboration_control",
+		Arguments: map[string]any{
+			"action": "verify",
+			"params": map[string]any{"dispatchToken": "token-value"},
+		},
+	})
+	if err != nil || direct.IsError {
+		t.Fatalf("collaboration_control err=%v result=%#v", err, direct)
+	}
+	if got.Capability != protocolv1.CollaborationControlCapability.CapabilityId || got.Action != "verify" || got.Params["dispatchToken"] != "token-value" {
+		t.Fatalf("collaboration request=%+v", got)
 	}
 }
 

@@ -52,6 +52,18 @@ func TestWorkingContextCapabilityAdvertisesSimpleTextActions(t *testing.T) {
 	t.Fatal("working.context capability is missing")
 }
 
+func TestCollaborationControlCapabilityIsLocalOnly(t *testing.T) {
+	want := []string{"claim", "recover", "receipt", "uncertain", "not_created", "verify"}
+	if CollaborationControlCapability.CapabilityId != "collaboration.control" || CollaborationControlCapability.Version != "1.0" || !reflect.DeepEqual(CollaborationControlCapability.Actions, want) {
+		t.Fatalf("collaboration control=%+v", CollaborationControlCapability)
+	}
+	for _, capability := range NodeCapabilities {
+		if capability.CapabilityId == CollaborationControlCapability.CapabilityId {
+			t.Fatal("local collaboration control must not be advertised to the Hub")
+		}
+	}
+}
+
 func TestCodeSearchCapabilityAdvertisesVersionTwoWithoutNewAction(t *testing.T) {
 	for _, capability := range NodeCapabilities {
 		if capability.CapabilityId == "code.search" {

@@ -91,6 +91,11 @@ func (p *projectPolicy) validate(capability, action string, params map[string]an
 		return nil
 	case "working.context":
 		return p.validatePathParam(params, "projectPath", false)
+	case "collaboration.control":
+		if action == "claim" || action == "recover" {
+			return p.validatePathParam(params, "dbPath", false)
+		}
+		return nil
 	case "screenshot.capture":
 		return ErrProjectNativeCaptureDenied
 	case "agent.control":

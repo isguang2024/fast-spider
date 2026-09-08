@@ -101,6 +101,10 @@ type codeSearchResult struct {
 }
 
 func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.CapabilityRequest) protocolv1.CapabilityResponse {
+	return c.handleCapabilityRequestFrom(ctx, req, false)
+}
+
+func (c *Client) handleCapabilityRequestFrom(ctx context.Context, req protocolv1.CapabilityRequest, local bool) protocolv1.CapabilityResponse {
 	started := time.Now()
 	response := protocolv1.CapabilityResponse{MessageType: protocolv1.MessageCapabilityResponse, RequestId: req.RequestId, TraceId: req.TraceId, Timestamp: protocolv1.Timestamp(nowUTC())}
 	if c.operationLog != nil && req.Capability != "" && req.Action != "" {
@@ -173,6 +177,12 @@ func (c *Client) handleCapabilityRequest(ctx context.Context, req protocolv1.Cap
 		result, err = c.operationLogQuery(ctx, req.Params)
 	case "working.context/get", "working.context/set", "working.context/clear":
 		result, err = c.workingContextControl(ctx, req.Action, req.Params)
+	case "collaboration.control/claim", "collaboration.control/recover", "collaboration.control/receipt", "collaboration.control/uncertain", "collaboration.control/not_created", "collaboration.control/verify":
+		if !local {
+			response.Error = protocolError("UNSUPPORTED_CAPABILITY", "capability or action is not available", false)
+			return response
+		}
+		result, err = c.collaborationControl(ctx, req.Action, req.Params)
 	case "browser.automation/readiness", "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/page.close", "browser.automation/pages.list", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/wait", "browser.automation/batch", "browser.automation/snapshot", "browser.automation/screenshot", "browser.automation/events":
 		result, err = c.browserControl(ctx, req.Action, req.Params)
 	case "screenshot.capture/listDisplays", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/listWindows", "screenshot.capture/window":

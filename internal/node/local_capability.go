@@ -32,5 +32,5 @@ func NewLocalCapabilityClient(cfg Config) *Client {
 // HandleLocalCapability is the lightweight adapter used by the standalone
 // Local Bridge transport.
 func (c *Client) HandleLocalCapability(ctx context.Context, req protocolv1.CapabilityRequest) protocolv1.CapabilityResponse {
-	return c.handleCapabilityRequest(ctx, req)
+	return c.handleCapabilityRequestFrom(ctx, req, true)
 }
