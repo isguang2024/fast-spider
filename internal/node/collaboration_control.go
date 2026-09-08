@@ -897,8 +897,15 @@ func localCollaborationBootstrap(packet map[string]any, token collaborationToken
 		writeScope = "(read-only)"
 	}
 	callbackType := mapStringValue(packet, "callbackType")
-	return fmt.Sprintf("FAST_SPIDER_LOCAL_COLLABORATION_V1\nMACHINE_ID: %s\nWORKING_DIRECTORY: %s\nACCESS_MODE: %s\nWRITE_SCOPE: %s\nCALLBACK_TYPE: %s\nDELIVERABLE_PATH: %s\n\nTASK:\n%s\n\nComplete only this round within the frozen scope. The Node will register and deliver the callback automatically. Do not call remote task_result_submit or create another CHAT. In your final response report completed work, blockers, and validation evidence.",
-		mapStringValue(packet, "machineId"), mapStringValue(packet, "workingDirectory"), mapStringValue(packet, "accessMode"), writeScope, callbackType, deliverable, mapStringValue(packet, "prompt"))
+	deliveryRule := ""
+	if callbackType == "local_file" {
+		deliveryRule = " Before ending this turn, save the final report as a UTF-8 file at the exact DELIVERABLE_PATH above and verify that it exists and is readable. The Node delivers the callback but does not write this report for you. A final chat response alone is not a local_file deliverable. If saving fails, report the exact failure; do not claim successful delivery."
+		if mapStringValue(packet, "accessMode") == "read_only" {
+			deliveryRule += " In read_only mode, writing only this Node-assigned report file is permitted; business source and all other files remain read-only."
+		}
+	}
+	return fmt.Sprintf("FAST_SPIDER_LOCAL_COLLABORATION_V1\nMACHINE_ID: %s\nWORKING_DIRECTORY: %s\nACCESS_MODE: %s\nWRITE_SCOPE: %s\nCALLBACK_TYPE: %s\nDELIVERABLE_PATH: %s\n\nTASK:\n%s\n\nComplete only this round within the frozen scope. The Node will register and deliver the callback automatically. Do not call remote task_result_submit or create another CHAT. In your final response report completed work, blockers, and validation evidence.%s",
+		mapStringValue(packet, "machineId"), mapStringValue(packet, "workingDirectory"), mapStringValue(packet, "accessMode"), writeScope, callbackType, deliverable, mapStringValue(packet, "prompt"), deliveryRule)
 }
 
 func stableCollaborationDigest(value string) string {
@@ -1431,6 +1438,9 @@ func (l *collaborationLedger) item(ctx context.Context, itemID string) (map[stri
 }
 
 func (l *collaborationLedger) saveItem(ctx context.Context, item map[string]any) error {
+	if err := l.migrateLegacyExecutionChecks(ctx); err != nil {
+		return err
+	}
 	item = cloneParams(item)
 	if collaborationFinalPhases[mapStringValue(item, "phase")] {
 		packet, _ := item["packet"].(map[string]any)
@@ -1613,7 +1623,7 @@ func (l *collaborationLedger) checkUnique(ctx context.Context, itemID string, it
 		for _, a := range collaborationScopeRoots(packet) {
 			for _, b := range collaborationScopeRoots(otherPacket) {
 				if lexicalPathWithin(a, b) || lexicalPathWithin(b, a) {
-					return errors.New("write scope held by active/uncertain round")
+					return fmt.Errorf("write scope held by active/uncertain round: item=%s scope=%s overlaps requested=%s; preserve the existing writer until terminal evidence", mapStringValue(other, "id"), b, a)
 				}
 			}
 		}
@@ -1804,7 +1814,9 @@ func collaborationScopeRoots(packet map[string]any) []string {
 		if absolute, err := filepath.Abs(root); err == nil {
 			root = filepath.Clean(absolute)
 		}
-		if resolved, err := ResolveMachinePath(root); err == nil {
+		// New target directories still share the identity of their existing
+		// ancestor (including Windows short names and directory junctions).
+		if resolved, err := resolveLocalCollaborationPath("", root, true); err == nil {
 			root = resolved
 		}
 		roots = append(roots, root)

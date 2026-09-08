@@ -57,10 +57,22 @@ func TestCollaborationNextActionsProvidesExecutableCheckAndRecordParams(t *testi
 	if rp["expectedRevision"] != due["revision"] || rp["expectedObservationRevision"] != due["observationRevision"] || rp["itemId"] != nil {
 		t.Fatalf("record args require reconstruction: %#v", rp)
 	}
-	rp["outcome"], rp["evidenceRef"], rp["now"] = "unchanged", "provider:chat-target/running", now
+	rp["outcome"], rp["evidenceRef"], rp["now"], rp["notified"] = "unchanged", "provider:chat-target/running", now, true
 	result := callCollaborationTest(t, c, "record_check", rp)
 	if collaborationIntDefault(result, "retryAt", 0) < now+1800 {
 		t.Fatalf("Cloud check did not respect recovery interval: %#v", result)
+	}
+	edit := collaborationStateIdentity(dbPath, "controller-1")
+	edit["expectedRevision"], edit["items"] = result["revision"], []any{map[string]any{"id": "task-1", "next_action": "Waiting for same Cloud round", "next_check_at": now + 1}}
+	callCollaborationTest(t, c, "apply", edit)
+	q["now"] = now + 1
+	if collaborationTestHasActionKind(callCollaborationTest(t, c, "next_actions", q), "check_execution") {
+		t.Fatal("Cloud description edit bypassed backoff")
+	}
+	q["now"] = result["retryAt"]
+	due = callCollaborationTest(t, c, "next_actions", q)
+	if collaborationTestActionID(due, "check_execution") != action["actionId"] {
+		t.Fatal("Cloud execution identity changed on scheduling edit")
 	}
 }
 
@@ -164,6 +176,13 @@ func TestCollaborationValidationDueProvidesExactNativeCheck(t *testing.T) {
 				call := action["nativeExecutionCheck"].(map[string]any)
 				if call["params"].(map[string]any)["threadId"] != "validator-1" || action["completionRule"] == nil {
 					t.Fatalf("validation action lost handoff: %#v", action)
+				}
+				edit := collaborationStateIdentity(db, "controller-1")
+				edit["expectedRevision"], edit["items"] = due["revision"], []any{map[string]any{"id": "task-1", "next_action": "Waiting for native validation", "next_check_at": int64(1000)}}
+				callCollaborationTest(t, c, "apply", edit)
+				refreshed := callCollaborationTest(t, c, "next_actions", q)
+				if collaborationTestActionID(refreshed, mapStringValue(action, "kind")) != action["actionId"] {
+					t.Fatal("validation check identity changed on scheduling edit")
 				}
 			}
 		}

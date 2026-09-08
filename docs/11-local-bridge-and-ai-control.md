@@ -37,6 +37,8 @@ Provider Token、Codex/ChatGPT 本地认证和其他 Provider secret 只保留�
 
 正常流程为 **主控拆分和准备 → 协调 dispatch → Cloud 执行 → inbox 回调 → 主控 resolve → 协调继续已批准任务**。READY 写入后，主控应同轮通过原生 Codex 消息唤醒协调者；持久 READY/returned/rework 等状态保证消息中断后仍可恢复。Node 不作业务决定、不自动扫描项目、不为了填满槽位造任务。15 分钟协调和 1 小时主控兜底只补漏，不是正常推进的计时入口。
 
+执行/派发/验收检查按真实执行轮绑定稳定身份，普通文案、优先级及 `next_check_at` 更新不会清除检查次数、退避或通知去重；旧版仍有效的记录在更新前保留原预算并转换身份，CAS 仍独立校验。主控和协调的 `brief.scope` 都显示准确的精简写域，不包含任务正文；冲突错误指出占用任务与重叠路径，未创建目录也按现存祖先归一化，避免 Windows 短路径别名漏检。`local_file` bootstrap 明确要求执行者先保存并确认准确报告可读，read_only 只允许额外写入 Node 指定的报告文件；Node 不代写报告。`resolve` 已完成传输 ACK 时无需再调用 `callback_ack`。
+
 新动作使用原有 `dbPath/missionId/actorSessionId` 身份：
 
 - `upgrade`：仅主控在 mission paused 且 dispatch disabled 时使用，传 `expectedRevision/backupPath/evidenceRef`。先创建校验独立 SQLite 备份，再增补 v3 表/列并绑定既有 callback；保留任务、状态和 CHAT。每次尝试使用新的绝对 `.sqlite3` 备份路径。表提交后 callback 绑定失败仍保持暂停，修复明确原因后重试，不重建任务。旧 MCP 适配器可能缓存 v2 能力目录；后台 Node 升级后以新适配器能力与实际动作结果核对，不因此取消既有会话。

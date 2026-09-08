@@ -1333,6 +1333,36 @@ func (l *collaborationLedger) storeObservation(ctx context.Context, observation 
 	return err
 }
 
+// Convert still-current revision-based check IDs before an item changes. This
+// is an internal identity migration, not a new check or a business-state write.
+func (l *collaborationLedger) migrateLegacyExecutionChecks(ctx context.Context) error {
+	observation, err := l.readObservation(ctx)
+	if err != nil {
+		return err
+	}
+	checks, _ := observation["action_checks"].(map[string]any)
+	for key, raw := range checks {
+		var parts []string
+		if json.Unmarshal([]byte(key), &parts) != nil || len(parts) != 3 || !collaborationExecutionCheckKind(parts[1]) {
+			continue
+		}
+		if check, ok := raw.(map[string]any); ok && !strings.HasPrefix(mapStringValue(check, "action_id"), "check-v2-") {
+			// actionCandidates adopts only an exact live legacy ID; stale checks
+			// are pruned as before. Counters and observation CAS remain intact.
+			return l.storeObservation(ctx, observation)
+		}
+	}
+	return nil
+}
+
+func collaborationExecutionCheckKind(kind string) bool {
+	switch kind {
+	case "check_execution", "reconcile_dispatch", "check_validation", "notify_validation_due":
+		return true
+	}
+	return false
+}
+
 func (l *collaborationLedger) role(view string) (string, error) {
 	actual := "coordinator"
 	if mapStringValue(l.mission, "controller") == lActorSession(l) {
@@ -1454,10 +1484,10 @@ func (c *Client) collaborationBrief(ctx context.Context, input collaborationBrie
 		}
 		view := selectCollaborationFields(item, fields...)
 		view["holdsExecution"] = collaborationHoldsExecution(item)
+		scope := collaborationScopePacket(item)
+		view["scope"] = selectCollaborationFields(scope, "machineId", "workingDirectory", "accessMode", "writeScope")
 		if role == "coordinator" {
 			view["binding"] = item["binding"]
-			scope := collaborationScopePacket(item)
-			view["scope"] = selectCollaborationFields(scope, "machineId", "workingDirectory", "accessMode", "writeScope")
 		}
 		if mapStringValue(item, "phase") == "verifying" {
 			view["validationOwner"] = item["validation_owner"]
@@ -1656,7 +1686,34 @@ func (l *collaborationLedger) actionCandidates(ctx context.Context, observation 
 		id := mapStringValue(item, "id")
 		priority := collaborationIntDefault(item, "priority", 100)
 		task := func(kind, role string, due int64) error {
-			return add(kind, role, id, value.revision, due, priority, mapStringValue(item, "owner"))
+			if err := add(kind, role, id, value.revision, due, priority, mapStringValue(item, "owner")); err != nil {
+				return err
+			}
+			if !collaborationExecutionCheckKind(kind) {
+				return nil
+			}
+			action := &actions[len(actions)-1]
+			// Scheduling and descriptive edits do not start a new execution.
+			// Keep the budget/notification identity separate from dueAt and CAS.
+			identity := []any{collaborationIntDefault(item, "current_attempt", 1), item["executor"]}
+			if kind == "check_validation" || kind == "notify_validation_due" {
+				identity = append(identity, item["validation_owner"], item["validation_started_at"])
+			} else if mapStringValue(item, "executor") == "cloud" {
+				identity = append(identity, item["claim"], collaborationDispatchKey(item))
+			} else {
+				identity = append(identity, item["execution_ref"], item["started_at"])
+			}
+			hash, err := collaborationActionHash([]any{mapStringValue(l.mission, "id"), action.Key, identity})
+			if err != nil {
+				return err
+			}
+			stableID := "check-v2-" + hash
+			checks, _ := observation["action_checks"].(map[string]any)
+			if prior, ok := checks[action.Key].(map[string]any); ok && mapStringValue(prior, "action_id") == action.ActionID {
+				prior["action_id"] = stableID
+			}
+			action.ActionID = stableID
+			return nil
 		}
 		if phase == "ready" && canDispatch && (!hasCloudLimit || cloudHeld < cloudLimit) {
 			if dependenciesErr := l.checkDependencies(ctx, item); dependenciesErr == nil {
@@ -2005,6 +2062,14 @@ func (c *Client) collaborationRecordAction(ctx context.Context, input collaborat
 	if input.completeCheck {
 		record := checks[selected.Key].(map[string]any)
 		record["attempts"], record["outcome"], record["exhausted"] = count, input.Outcome, count >= 3
+	} else {
+		// Legacy scheduling calls must not erase a record_check budget.
+		record := checks[selected.Key].(map[string]any)
+		for _, key := range []string{"attempts", "outcome", "exhausted"} {
+			if value, ok := prior[key]; ok {
+				record[key] = value
+			}
+		}
 	}
 	observation["action_checks"] = checks
 	observation["revision"] = collaborationIntDefault(observation, "revision", 0) + 1
