@@ -20,12 +20,49 @@ import (
 )
 
 const (
-	sessionCallbackStoreSchemaVersion = 3
+	sessionCallbackStoreSchemaVersion = 4
 	maxSessionCallbacks               = 64
 	maxRecentCallbackEventKeys        = 256
+	maxRetiredCallbackClaims          = 256
 	maxSessionCallbackClaimBatch      = 64
 	sessionCallbackClaimLease         = 5 * time.Minute
 )
+
+const (
+	callbackClaimTransportHub   = "hub"
+	callbackClaimTransportLocal = "local"
+)
+
+func normalizeCallbackClaimTransport(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return callbackClaimTransportHub, nil
+	}
+	if value != callbackClaimTransportHub && value != callbackClaimTransportLocal {
+		return "", fmt.Errorf("callbackClaimTransport must be hub or local")
+	}
+	return value, nil
+}
+
+func callbackTransportForRegistration(registration sessionCallbackRegistration) string {
+	transport, err := normalizeCallbackClaimTransport(registration.CallbackClaimTransport)
+	if err != nil {
+		return callbackClaimTransportHub
+	}
+	return transport
+}
+
+func callbackTransportForEvent(event sessionCallbackEvent) string {
+	transport, err := normalizeCallbackClaimTransport(event.CallbackClaimTransport)
+	if err != nil {
+		return callbackClaimTransportHub
+	}
+	return transport
+}
+
+func callbackCompletionSourceIsFormal(source string) bool {
+	return source == "submission" || source == "local-submission"
+}
 
 type sessionCallbackError struct {
 	code      string
@@ -45,6 +82,7 @@ type sessionCallbackRegistration struct {
 	TaskID                 string    `json:"taskId"`
 	Generation             int64     `json:"generation"`
 	CallbackType           string    `json:"callbackType"`
+	CallbackClaimTransport string    `json:"callbackClaimTransport,omitempty"`
 	DeliverablePath        string    `json:"deliverablePath,omitempty"`
 	BaselineIdentity       string    `json:"baselineIdentity,omitempty"`
 	ImmediateWake          bool      `json:"immediateWake,omitempty"`
@@ -80,30 +118,31 @@ type sessionCallbackRegistration struct {
 }
 
 type sessionCallbackEvent struct {
-	SourceSessionID   string    `json:"sourceSessionId"`
-	TargetSessionID   string    `json:"targetSessionId"`
-	MissionID         string    `json:"missionId"`
-	TaskID            string    `json:"taskId"`
-	Generation        int64     `json:"generation"`
-	EventSequence     int64     `json:"eventSequence"`
-	EventKey          string    `json:"eventKey"`
-	EventType         string    `json:"eventType"`
-	CompletionSource  string    `json:"completionSource,omitempty"`
-	OccurredAt        time.Time `json:"occurredAt"`
-	CallbackType      string    `json:"callbackType"`
-	ResultText        string    `json:"resultText,omitempty"`
-	CallbackOutcome   string    `json:"callbackOutcome"`
-	CallbackErrorCode string    `json:"callbackErrorCode,omitempty"`
-	ResultID          string    `json:"resultId,omitempty"`
-	ResultStatus      string    `json:"resultStatus,omitempty"`
-	ResultBytes       int64     `json:"resultBytes,omitempty"`
-	ResultSHA256      string    `json:"resultSHA256,omitempty"`
-	ResultPageCount   int       `json:"resultPageCount,omitempty"`
-	DeliverablePath   string    `json:"deliverablePath,omitempty"`
-	DeliverableStatus string    `json:"deliverableStatus,omitempty"`
-	ImmediateWake     bool      `json:"immediateWake,omitempty"`
-	ClaimID           string    `json:"claimId,omitempty"`
-	ClaimedAt         time.Time `json:"claimedAt,omitempty"`
+	SourceSessionID        string    `json:"sourceSessionId"`
+	TargetSessionID        string    `json:"targetSessionId"`
+	MissionID              string    `json:"missionId"`
+	TaskID                 string    `json:"taskId"`
+	Generation             int64     `json:"generation"`
+	EventSequence          int64     `json:"eventSequence"`
+	EventKey               string    `json:"eventKey"`
+	EventType              string    `json:"eventType"`
+	CompletionSource       string    `json:"completionSource,omitempty"`
+	OccurredAt             time.Time `json:"occurredAt"`
+	CallbackType           string    `json:"callbackType"`
+	CallbackClaimTransport string    `json:"callbackClaimTransport,omitempty"`
+	ResultText             string    `json:"resultText,omitempty"`
+	CallbackOutcome        string    `json:"callbackOutcome"`
+	CallbackErrorCode      string    `json:"callbackErrorCode,omitempty"`
+	ResultID               string    `json:"resultId,omitempty"`
+	ResultStatus           string    `json:"resultStatus,omitempty"`
+	ResultBytes            int64     `json:"resultBytes,omitempty"`
+	ResultSHA256           string    `json:"resultSHA256,omitempty"`
+	ResultPageCount        int       `json:"resultPageCount,omitempty"`
+	DeliverablePath        string    `json:"deliverablePath,omitempty"`
+	DeliverableStatus      string    `json:"deliverableStatus,omitempty"`
+	ImmediateWake          bool      `json:"immediateWake,omitempty"`
+	ClaimID                string    `json:"claimId,omitempty"`
+	ClaimedAt              time.Time `json:"claimedAt,omitempty"`
 }
 
 type callbackResultMetadata struct {
@@ -118,6 +157,7 @@ type sessionCallbackIndex struct {
 	SchemaVersion int                           `json:"schemaVersion"`
 	Registrations []sessionCallbackRegistration `json:"registrations"`
 	Pending       []sessionCallbackEvent        `json:"pending"`
+	RetiredClaims map[string]time.Time          `json:"retiredClaims,omitempty"`
 }
 
 type sessionCallbackStore struct {
@@ -125,6 +165,7 @@ type sessionCallbackStore struct {
 	path                     string
 	registrations            map[string]sessionCallbackRegistration
 	pending                  map[string]sessionCallbackEvent
+	retiredClaims            map[string]time.Time
 	loadErr                  error
 	confirming               map[string]int64
 	beforeCommitSaveOverride func() error
@@ -152,6 +193,7 @@ func newSessionCallbackStore(dataDir string) *sessionCallbackStore {
 		path:          filepath.Join(dataDir, "agent", "session-callbacks.json"),
 		registrations: map[string]sessionCallbackRegistration{},
 		pending:       map[string]sessionCallbackEvent{},
+		retiredClaims: map[string]time.Time{},
 		confirming:    map[string]int64{},
 	}
 	store.loadErr = store.load()
@@ -167,7 +209,7 @@ func (s *sessionCallbackStore) load() error {
 		return err
 	}
 	var index sessionCallbackIndex
-	if err := json.Unmarshal(raw, &index); err != nil || (index.SchemaVersion != 1 && index.SchemaVersion != 2 && index.SchemaVersion != sessionCallbackStoreSchemaVersion) || len(index.Registrations) > maxSessionCallbacks || len(index.Pending) > maxSessionCallbacks {
+	if err := json.Unmarshal(raw, &index); err != nil || (index.SchemaVersion != 1 && index.SchemaVersion != 2 && index.SchemaVersion != 3 && index.SchemaVersion != sessionCallbackStoreSchemaVersion) || len(index.Registrations) > maxSessionCallbacks || len(index.Pending) > maxSessionCallbacks || len(index.RetiredClaims) > maxRetiredCallbackClaims {
 		return fmt.Errorf("invalid session callback index")
 	}
 	pendingSources := make(map[string]struct{}, len(index.Pending))
@@ -191,6 +233,9 @@ func (s *sessionCallbackStore) load() error {
 			} else {
 				registration.CallbackType = protocolv1.CloudCallbackTypeStatus
 			}
+		}
+		if registration.CallbackClaimTransport == "" {
+			registration.CallbackClaimTransport = callbackClaimTransportHub
 		}
 		if err := validateSessionCallbackRegistration(registration); err != nil {
 			return fmt.Errorf("invalid session callback index: %w", err)
@@ -238,11 +283,16 @@ func (s *sessionCallbackStore) load() error {
 		if event.CallbackOutcome == "" {
 			event.CallbackOutcome = "completed"
 		}
+		if event.CallbackClaimTransport == "" {
+			if registration, exists := s.registrations[event.SourceSessionID]; exists {
+				event.CallbackClaimTransport = callbackTransportForRegistration(registration)
+			}
+		}
 		if err := validateSessionCallbackEvent(event); err != nil {
 			return fmt.Errorf("invalid session callback index: %w", err)
 		}
 		registration, exists := s.registrations[event.SourceSessionID]
-		if !exists || registration.TargetSessionID != event.TargetSessionID || registration.MissionID != event.MissionID || registration.TaskID != event.TaskID || registration.Generation != event.Generation || registration.CallbackType != event.CallbackType || registration.DeliverablePath != event.DeliverablePath || registration.ImmediateWake != event.ImmediateWake {
+		if !exists || registration.TargetSessionID != event.TargetSessionID || registration.MissionID != event.MissionID || registration.TaskID != event.TaskID || registration.Generation != event.Generation || registration.CallbackType != event.CallbackType || callbackTransportForRegistration(registration) != callbackTransportForEvent(event) || registration.DeliverablePath != event.DeliverablePath || registration.ImmediateWake != event.ImmediateWake {
 			return fmt.Errorf("invalid session callback index: pending event has no matching registration")
 		}
 		if event.EventSequence != registration.LastEventSequence {
@@ -255,6 +305,12 @@ func (s *sessionCallbackStore) load() error {
 			return fmt.Errorf("invalid session callback index: duplicate pending source")
 		}
 		s.pending[event.SourceSessionID] = event
+	}
+	for key, acknowledgedAt := range index.RetiredClaims {
+		if key == "" || len(key) > 512 || strings.ContainsAny(key, "\r\n") || acknowledgedAt.IsZero() {
+			return fmt.Errorf("invalid session callback index: invalid retired claim")
+		}
+		s.retiredClaims[key] = acknowledgedAt.UTC()
 	}
 	return nil
 }
@@ -277,6 +333,9 @@ func validateSessionCallbackRegistration(registration sessionCallbackRegistratio
 	}
 	if registration.CallbackType != protocolv1.CloudCallbackTypeLocalFile && registration.CallbackType != protocolv1.CloudCallbackTypeText && registration.CallbackType != protocolv1.CloudCallbackTypeStatus {
 		return fmt.Errorf("invalid callback type")
+	}
+	if _, err := normalizeCallbackClaimTransport(registration.CallbackClaimTransport); err != nil {
+		return err
 	}
 	if registration.DeliverablePath != "" {
 		if !filepath.IsAbs(registration.DeliverablePath) || len(registration.DeliverablePath) > 4096 || strings.ContainsAny(registration.DeliverablePath, "\x00\r\n") {
@@ -359,15 +418,16 @@ func validateSessionCallbackRegistration(registration sessionCallbackRegistratio
 
 func validateSessionCallbackEvent(event sessionCallbackEvent) error {
 	registration := sessionCallbackRegistration{
-		SourceSessionID: event.SourceSessionID,
-		TargetSessionID: event.TargetSessionID,
-		MissionID:       event.MissionID,
-		TaskID:          event.TaskID,
-		Generation:      event.Generation,
-		CallbackType:    event.CallbackType,
-		DeliverablePath: event.DeliverablePath,
-		RegisteredAt:    time.Unix(1, 0),
-		UpdatedAt:       time.Unix(1, 0),
+		SourceSessionID:        event.SourceSessionID,
+		TargetSessionID:        event.TargetSessionID,
+		MissionID:              event.MissionID,
+		TaskID:                 event.TaskID,
+		Generation:             event.Generation,
+		CallbackType:           event.CallbackType,
+		CallbackClaimTransport: event.CallbackClaimTransport,
+		DeliverablePath:        event.DeliverablePath,
+		RegisteredAt:           time.Unix(1, 0),
+		UpdatedAt:              time.Unix(1, 0),
 	}
 	if err := validateSessionCallbackRegistration(registration); err != nil {
 		return err
@@ -596,6 +656,11 @@ func (s *sessionCallbackStore) register(request sessionCallbackRegistration) (se
 			request.CallbackType = protocolv1.CloudCallbackTypeStatus
 		}
 	}
+	transport, transportErr := normalizeCallbackClaimTransport(request.CallbackClaimTransport)
+	if transportErr != nil {
+		return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "INVALID_REQUEST", message: transportErr.Error()}
+	}
+	request.CallbackClaimTransport = transport
 	request.BaselineIdentity = strings.TrimSpace(request.BaselineIdentity)
 	request.RegisteredAt = now
 	request.UpdatedAt = now
@@ -614,7 +679,7 @@ func (s *sessionCallbackStore) register(request sessionCallbackRegistration) (se
 	}
 	current, exists := s.registrations[request.SourceSessionID]
 	if exists {
-		if current.TargetSessionID != request.TargetSessionID || current.MissionID != request.MissionID || current.TaskID != request.TaskID || current.CallbackType != request.CallbackType || current.ImmediateWake != request.ImmediateWake || !callbackDeliverablePathEqual(current.DeliverablePath, request.DeliverablePath) {
+		if current.TargetSessionID != request.TargetSessionID || current.MissionID != request.MissionID || current.TaskID != request.TaskID || current.CallbackType != request.CallbackType || callbackTransportForRegistration(current) != request.CallbackClaimTransport || current.ImmediateWake != request.ImmediateWake || !callbackDeliverablePathEqual(current.DeliverablePath, request.DeliverablePath) {
 			return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "CALLBACK_OWNER_CONFLICT", message: "source session already has a different callback owner"}
 		}
 		if request.Generation < current.Generation {
@@ -841,12 +906,18 @@ func (s *sessionCallbackStore) enqueue(event chatgptCloudEvent) (bool, error) {
 	if event.EventType == "hub-completion-notify" {
 		source = "submission"
 		eventKey = "submitted_" + strings.TrimPrefix(eventKey, "completion_")
+	} else if callbackTransportForRegistration(registration) == callbackClaimTransportLocal {
+		// A provider completion observed by the co-located Node is the local
+		// execution result. It is formal for the local transport even when the
+		// realtime hint was confirmed through the bounded recovery reader.
+		source = "local-submission"
+		eventKey = "submitted_" + strings.TrimPrefix(eventKey, "completion_")
 	} else {
 		eventKey = "recovery_" + strings.TrimPrefix(eventKey, "completion_")
 	}
 	// A formal result supersedes an observation, including a claimed legacy
 	// observation. The old claim must not acknowledge the replacement.
-	if hadPending && previousPending.CompletionSource == "submission" {
+	if hadPending && callbackCompletionSourceIsFormal(previousPending.CompletionSource) {
 		if source == "recovery" {
 			return false, nil
 		}
@@ -888,28 +959,29 @@ func (s *sessionCallbackStore) enqueue(event chatgptCloudEvent) (bool, error) {
 	}
 	registration.UpdatedAt = now
 	pending := sessionCallbackEvent{
-		SourceSessionID:   registration.SourceSessionID,
-		TargetSessionID:   registration.TargetSessionID,
-		MissionID:         registration.MissionID,
-		TaskID:            registration.TaskID,
-		Generation:        registration.Generation,
-		EventSequence:     event.Sequence,
-		EventKey:          eventKey,
-		EventType:         event.Type,
-		CompletionSource:  source,
-		OccurredAt:        event.Timestamp.UTC(),
-		CallbackType:      event.CallbackType,
-		ResultText:        event.ResultText,
-		CallbackOutcome:   event.CallbackOutcome,
-		CallbackErrorCode: event.CallbackErrorCode,
-		ResultID:          event.ResultID,
-		ResultStatus:      event.ResultStatus,
-		ResultBytes:       event.ResultBytes,
-		ResultSHA256:      event.ResultSHA256,
-		ResultPageCount:   event.ResultPageCount,
-		DeliverablePath:   event.DeliverablePath,
-		DeliverableStatus: event.DeliverableStatus,
-		ImmediateWake:     registration.ImmediateWake,
+		SourceSessionID:        registration.SourceSessionID,
+		TargetSessionID:        registration.TargetSessionID,
+		MissionID:              registration.MissionID,
+		TaskID:                 registration.TaskID,
+		Generation:             registration.Generation,
+		EventSequence:          event.Sequence,
+		EventKey:               eventKey,
+		EventType:              event.Type,
+		CompletionSource:       source,
+		OccurredAt:             event.Timestamp.UTC(),
+		CallbackType:           event.CallbackType,
+		CallbackClaimTransport: callbackTransportForRegistration(registration),
+		ResultText:             event.ResultText,
+		CallbackOutcome:        event.CallbackOutcome,
+		CallbackErrorCode:      event.CallbackErrorCode,
+		ResultID:               event.ResultID,
+		ResultStatus:           event.ResultStatus,
+		ResultBytes:            event.ResultBytes,
+		ResultSHA256:           event.ResultSHA256,
+		ResultPageCount:        event.ResultPageCount,
+		DeliverablePath:        event.DeliverablePath,
+		DeliverableStatus:      event.DeliverableStatus,
+		ImmediateWake:          registration.ImmediateWake,
 	}
 	if err := validateSessionCallbackEvent(pending); err != nil {
 		return false, err
@@ -1002,6 +1074,31 @@ func (s *sessionCallbackStore) pendingForNudge() (map[string][]sessionCallbackEv
 	return s.pendingByTargetMode(true)
 }
 
+type sessionCallbackNudgeGroup struct {
+	TargetSessionID string
+	Transport       string
+}
+
+func (s *sessionCallbackStore) pendingForNudgeByTransport() (map[sessionCallbackNudgeGroup][]sessionCallbackEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return nil, callbackStoreUnavailableError()
+	}
+	grouped := map[sessionCallbackNudgeGroup][]sessionCallbackEvent{}
+	for _, event := range s.pending {
+		if event.CompletionSource == "recovery" && s.registrations[event.SourceSessionID].LastNudgeEventKey == event.EventKey {
+			continue
+		}
+		key := sessionCallbackNudgeGroup{TargetSessionID: event.TargetSessionID, Transport: callbackTransportForEvent(event)}
+		grouped[key] = append(grouped[key], event)
+	}
+	for key := range grouped {
+		sortSessionCallbackEvents(grouped[key])
+	}
+	return grouped, nil
+}
+
 func (s *sessionCallbackStore) pendingByTargetMode(forNudge bool) (map[string][]sessionCallbackEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1065,7 +1162,7 @@ func (s *sessionCallbackStore) pendingSnapshot(sourceSessionID, targetSessionID 
 // claim reserves a bounded batch for one target. A caller-supplied claim ID is
 // idempotent while the lease is active and after it has been acknowledged;
 // omitting it allocates a fresh opaque ID.
-func (s *sessionCallbackStore) claim(targetSessionID, requestedClaimID string, limit int, now time.Time) (string, []sessionCallbackEvent, error) {
+func (s *sessionCallbackStore) claim(targetSessionID, requestedClaimID string, limit int, now time.Time, transportArg ...string) (string, []sessionCallbackEvent, error) {
 	targetSessionID = strings.TrimSpace(targetSessionID)
 	if err := validateCallbackOpaqueID(targetSessionID, "callback target session ID", 256); err != nil {
 		return "", nil, &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
@@ -1077,6 +1174,14 @@ func (s *sessionCallbackStore) claim(targetSessionID, requestedClaimID string, l
 		return "", nil, &sessionCallbackError{code: "INVALID_REQUEST", message: fmt.Sprintf("callbackClaimLimit must be between 1 and %d", maxSessionCallbackClaimBatch)}
 	}
 	requestedClaimID = strings.TrimSpace(requestedClaimID)
+	transport := callbackClaimTransportHub
+	if len(transportArg) > 0 {
+		var transportErr error
+		transport, transportErr = normalizeCallbackClaimTransport(transportArg[0])
+		if transportErr != nil {
+			return "", nil, &sessionCallbackError{code: "INVALID_REQUEST", message: transportErr.Error()}
+		}
+	}
 	if requestedClaimID != "" {
 		if err := validateSessionCallbackClaimID(requestedClaimID); err != nil {
 			return "", nil, &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
@@ -1128,7 +1233,7 @@ func (s *sessionCallbackStore) claim(targetSessionID, requestedClaimID string, l
 
 	var existing []sessionCallbackEvent
 	for _, event := range s.pending {
-		if event.ClaimID != claimID {
+		if event.ClaimID != claimID || callbackTransportForEvent(event) != transport {
 			continue
 		}
 		if event.TargetSessionID != targetSessionID {
@@ -1147,7 +1252,7 @@ func (s *sessionCallbackStore) claim(targetSessionID, requestedClaimID string, l
 	}
 	if requestedClaimID != "" {
 		for _, registration := range s.registrations {
-			if registration.TargetSessionID == targetSessionID && registration.LastDeliveredEnvelope == claimID {
+			if registration.TargetSessionID == targetSessionID && callbackTransportForRegistration(registration) == transport && registration.LastDeliveredEnvelope == claimID {
 				if err := persistReleased(); err != nil {
 					return "", nil, err
 				}
@@ -1158,7 +1263,7 @@ func (s *sessionCallbackStore) claim(targetSessionID, requestedClaimID string, l
 
 	available := make([]sessionCallbackEvent, 0, len(s.pending))
 	for _, event := range s.pending {
-		if event.TargetSessionID != targetSessionID || event.ClaimID != "" {
+		if event.TargetSessionID != targetSessionID || callbackTransportForEvent(event) != transport || event.ClaimID != "" {
 			continue
 		}
 		available = append(available, event)
@@ -1245,7 +1350,7 @@ func (s *sessionCallbackStore) acknowledgeCompletion(expected sessionCallbackReg
 	return 0, nil
 }
 
-func (s *sessionCallbackStore) acknowledgeClaim(targetSessionID, claimID string, now time.Time) (int, error) {
+func (s *sessionCallbackStore) acknowledgeClaim(targetSessionID, claimID string, now time.Time, transportArg ...string) (int, error) {
 	targetSessionID = strings.TrimSpace(targetSessionID)
 	claimID = strings.TrimSpace(claimID)
 	if err := validateCallbackOpaqueID(targetSessionID, "callback target session ID", 256); err != nil {
@@ -1255,6 +1360,14 @@ func (s *sessionCallbackStore) acknowledgeClaim(targetSessionID, claimID string,
 		return 0, &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
 	}
 	now = now.UTC()
+	transport := callbackClaimTransportHub
+	if len(transportArg) > 0 {
+		var transportErr error
+		transport, transportErr = normalizeCallbackClaimTransport(transportArg[0])
+		if transportErr != nil {
+			return 0, &sessionCallbackError{code: "INVALID_REQUEST", message: transportErr.Error()}
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.loadErr != nil {
@@ -1265,7 +1378,7 @@ func (s *sessionCallbackStore) acknowledgeClaim(targetSessionID, claimID string,
 	acked := 0
 	expired := false
 	for source, event := range s.pending {
-		if event.TargetSessionID != targetSessionID || event.ClaimID != claimID {
+		if event.TargetSessionID != targetSessionID || callbackTransportForEvent(event) != transport || event.ClaimID != claimID {
 			continue
 		}
 		if !callbackClaimActive(event, now) {
@@ -1285,7 +1398,7 @@ func (s *sessionCallbackStore) acknowledgeClaim(targetSessionID, claimID string,
 			return 0, &sessionCallbackError{code: "CALLBACK_CLAIM_EXPIRED", message: "callback claim lease expired; claim the queue again before acknowledging"}
 		}
 		for _, registration := range s.registrations {
-			if registration.TargetSessionID == targetSessionID && registration.LastDeliveredEnvelope == claimID {
+			if registration.TargetSessionID == targetSessionID && callbackTransportForRegistration(registration) == transport && registration.LastDeliveredEnvelope == claimID {
 				return 0, nil
 			}
 		}
@@ -1297,6 +1410,115 @@ func (s *sessionCallbackStore) acknowledgeClaim(targetSessionID, claimID string,
 		return 0, err
 	}
 	return acked, nil
+}
+
+// acknowledgeClaimAndRetire atomically consumes a local callback claim and
+// retires each exact source registration. Local callbacks have no Hub
+// completion.ack phase, so retaining the route would leave a stale realtime
+// watcher and make a completed task appear active after restart.
+func (s *sessionCallbackStore) acknowledgeClaimAndRetire(targetSessionID, claimID string, now time.Time, transportArg ...string) (int, []sessionCallbackRegistration, error) {
+	targetSessionID = strings.TrimSpace(targetSessionID)
+	claimID = strings.TrimSpace(claimID)
+	if err := validateCallbackOpaqueID(targetSessionID, "callback target session ID", 256); err != nil {
+		return 0, nil, &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
+	}
+	if err := validateSessionCallbackClaimID(claimID); err != nil {
+		return 0, nil, &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
+	}
+	transport := callbackClaimTransportLocal
+	if len(transportArg) > 0 {
+		var transportErr error
+		transport, transportErr = normalizeCallbackClaimTransport(transportArg[0])
+		if transportErr != nil {
+			return 0, nil, &sessionCallbackError{code: "INVALID_REQUEST", message: transportErr.Error()}
+		}
+	}
+	now = now.UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return 0, nil, callbackStoreUnavailableError()
+	}
+	previousRegistrations := cloneSessionCallbackRegistrations(s.registrations)
+	previousPending := cloneSessionCallbackEvents(s.pending)
+	previousRetiredClaims := cloneRetiredCallbackClaims(s.retiredClaims)
+	type localClaimedEvent struct {
+		source       string
+		event        sessionCallbackEvent
+		registration sessionCallbackRegistration
+	}
+	var claimed []localClaimedEvent
+	for source, event := range s.pending {
+		if event.TargetSessionID != targetSessionID || callbackTransportForEvent(event) != transport || event.ClaimID != claimID {
+			continue
+		}
+		if !callbackClaimActive(event, now) {
+			return 0, nil, &sessionCallbackError{code: "CALLBACK_CLAIM_EXPIRED", message: "callback claim lease expired; claim the queue again before acknowledging"}
+		}
+		registration, exists := s.registrations[source]
+		if !exists || registration.TargetSessionID != targetSessionID || callbackTransportForRegistration(registration) != transport || registration.Generation != event.Generation {
+			return 0, nil, &sessionCallbackError{code: "CALLBACK_OWNER_CONFLICT", message: "callback claim does not match the registered local route"}
+		}
+		claimed = append(claimed, localClaimedEvent{source: source, event: event, registration: registration})
+	}
+	if len(claimed) == 0 {
+		if _, acknowledged := s.retiredClaims[retiredCallbackClaimKey(targetSessionID, transport, claimID)]; acknowledged {
+			return 0, nil, nil
+		}
+		for source, registration := range s.registrations {
+			if registration.TargetSessionID == targetSessionID && callbackTransportForRegistration(registration) == transport && registration.LastDeliveredEnvelope == claimID {
+				_ = source
+				return 0, nil, nil
+			}
+		}
+		return 0, nil, &sessionCallbackError{code: "CALLBACK_CLAIM_NOT_FOUND", message: "callback claim is not active for the target session"}
+	}
+	// All entries are validated before mutating either map. This keeps a
+	// multi-event local ACK atomic when one event is stale or malformed.
+	retired := make([]sessionCallbackRegistration, 0, len(claimed))
+	for _, item := range claimed {
+		delete(s.pending, item.source)
+		delete(s.registrations, item.source)
+		retired = append(retired, item.registration)
+	}
+	if s.retiredClaims == nil {
+		s.retiredClaims = map[string]time.Time{}
+	}
+	s.retiredClaims[retiredCallbackClaimKey(targetSessionID, transport, claimID)] = now
+	if len(s.retiredClaims) > maxRetiredCallbackClaims {
+		oldestKey := ""
+		var oldest time.Time
+		for key, acknowledgedAt := range s.retiredClaims {
+			if key == retiredCallbackClaimKey(targetSessionID, transport, claimID) {
+				continue
+			}
+			if oldestKey == "" || acknowledgedAt.Before(oldest) {
+				oldestKey, oldest = key, acknowledgedAt
+			}
+		}
+		if oldestKey != "" {
+			delete(s.retiredClaims, oldestKey)
+		}
+	}
+	if _, err := s.saveLocked(); err != nil {
+		s.registrations = previousRegistrations
+		s.pending = previousPending
+		s.retiredClaims = previousRetiredClaims
+		return 0, nil, err
+	}
+	return len(retired), retired, nil
+}
+
+func retiredCallbackClaimKey(targetSessionID, transport, claimID string) string {
+	return targetSessionID + "\x00" + transport + "\x00" + claimID
+}
+
+func cloneRetiredCallbackClaims(input map[string]time.Time) map[string]time.Time {
+	output := make(map[string]time.Time, len(input))
+	for key, value := range input {
+		output[key] = value
+	}
+	return output
 }
 
 func (s *sessionCallbackStore) releaseExpiredClaims(now time.Time) (int, error) {
@@ -1332,8 +1554,12 @@ func (s *sessionCallbackStore) releaseExpiredClaims(now time.Time) (int, error) 
 	return released, nil
 }
 
-func (s *sessionCallbackStore) nudgeSchedule(targetSessionID string, now time.Time, interval time.Duration) (bool, time.Time, error) {
+func (s *sessionCallbackStore) nudgeSchedule(targetSessionID string, now time.Time, interval time.Duration, transportArg ...string) (bool, time.Time, error) {
 	targetSessionID = strings.TrimSpace(targetSessionID)
+	transport := callbackClaimTransportHub
+	if len(transportArg) > 0 {
+		transport, _ = normalizeCallbackClaimTransport(transportArg[0])
+	}
 	now = now.UTC()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1343,7 +1569,7 @@ func (s *sessionCallbackStore) nudgeSchedule(targetSessionID string, now time.Ti
 	var latest time.Time
 	found := false
 	for _, registration := range s.registrations {
-		if registration.TargetSessionID != targetSessionID {
+		if registration.TargetSessionID != targetSessionID || callbackTransportForRegistration(registration) != transport {
 			continue
 		}
 		if event, ok := s.pending[registration.SourceSessionID]; ok && event.EventKey != registration.LastNudgeEventKey {
@@ -1367,7 +1593,11 @@ func (s *sessionCallbackStore) nudgeSchedule(targetSessionID string, now time.Ti
 	return !now.Before(next), next, nil
 }
 
-func (s *sessionCallbackStore) nudgeRetryDeadline(targetSessionID, envelopeID string) (time.Time, error) {
+func (s *sessionCallbackStore) nudgeRetryDeadline(targetSessionID, envelopeID string, transportArg ...string) (time.Time, error) {
+	transport := callbackClaimTransportHub
+	if len(transportArg) > 0 {
+		transport, _ = normalizeCallbackClaimTransport(transportArg[0])
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.loadErr != nil {
@@ -1375,14 +1605,18 @@ func (s *sessionCallbackStore) nudgeRetryDeadline(targetSessionID, envelopeID st
 	}
 	var next time.Time
 	for _, registration := range s.registrations {
-		if registration.TargetSessionID == targetSessionID && registration.NudgeFailureEnvelope == envelopeID && registration.NudgeRetryAt.After(next) {
+		if registration.TargetSessionID == targetSessionID && callbackTransportForRegistration(registration) == transport && registration.NudgeFailureEnvelope == envelopeID && registration.NudgeRetryAt.After(next) {
 			next = registration.NudgeRetryAt
 		}
 	}
 	return next, nil
 }
 
-func (s *sessionCallbackStore) recordNudgeFailure(targetSessionID, envelopeID string, class ErrorClass, now time.Time, interval time.Duration) (time.Time, error) {
+func (s *sessionCallbackStore) recordNudgeFailure(targetSessionID, envelopeID string, class ErrorClass, now time.Time, interval time.Duration, transportArg ...string) (time.Time, error) {
+	transport := callbackClaimTransportHub
+	if len(transportArg) > 0 {
+		transport, _ = normalizeCallbackClaimTransport(transportArg[0])
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.loadErr != nil {
@@ -1392,17 +1626,17 @@ func (s *sessionCallbackStore) recordNudgeFailure(targetSessionID, envelopeID st
 	// flight. Never attach its failure to a different queue generation.
 	var events []sessionCallbackEvent
 	for _, event := range s.pending {
-		if event.TargetSessionID == targetSessionID && !callbackClaimActive(event, now) {
+		if event.TargetSessionID == targetSessionID && callbackTransportForEvent(event) == transport && !callbackClaimActive(event, now) {
 			events = append(events, event)
 		}
 	}
 	sortSessionCallbackEvents(events)
-	if len(events) == 0 || sessionCallbackEnvelopeID(targetSessionID, events) != envelopeID {
+	if len(events) == 0 || sessionCallbackEnvelopeIDForTransport(targetSessionID, transport, events) != envelopeID {
 		return time.Time{}, nil
 	}
 	failures := 0
 	for _, registration := range s.registrations {
-		if registration.TargetSessionID == targetSessionID && registration.NudgeFailureEnvelope == envelopeID && registration.NudgeFailureCount > failures {
+		if registration.TargetSessionID == targetSessionID && callbackTransportForRegistration(registration) == transport && registration.NudgeFailureEnvelope == envelopeID && registration.NudgeFailureCount > failures {
 			failures = registration.NudgeFailureCount
 		}
 	}
@@ -1439,7 +1673,12 @@ func (s *sessionCallbackStore) recordNudgeFailure(targetSessionID, envelopeID st
 }
 
 func (s *sessionCallbackStore) recordNudge(targetSessionID, envelopeID string, delivery sessionCallbackDeliveryResult, now time.Time, sent ...sessionCallbackEvent) error {
+	return s.recordNudgeForTransport(targetSessionID, envelopeID, delivery, now, callbackClaimTransportHub, sent...)
+}
+
+func (s *sessionCallbackStore) recordNudgeForTransport(targetSessionID, envelopeID string, delivery sessionCallbackDeliveryResult, now time.Time, transport string, sent ...sessionCallbackEvent) error {
 	targetSessionID = strings.TrimSpace(targetSessionID)
+	transport, _ = normalizeCallbackClaimTransport(transport)
 	if err := validateSessionCallbackClaimID(envelopeID); err != nil {
 		return &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
 	}
@@ -1461,7 +1700,7 @@ func (s *sessionCallbackStore) recordNudge(targetSessionID, envelopeID string, d
 	previous := cloneSessionCallbackRegistrations(s.registrations)
 	var delivered []sessionCallbackEvent
 	for _, event := range s.pending {
-		if event.TargetSessionID == targetSessionID && !callbackClaimActive(event, now) &&
+		if event.TargetSessionID == targetSessionID && callbackTransportForEvent(event) == transport && !callbackClaimActive(event, now) &&
 			!(event.CompletionSource == "recovery" && s.registrations[event.SourceSessionID].LastNudgeEventKey == event.EventKey) {
 			delivered = append(delivered, event)
 		}
@@ -1470,7 +1709,7 @@ func (s *sessionCallbackStore) recordNudge(targetSessionID, envelopeID string, d
 		delivered = append([]sessionCallbackEvent(nil), sent...)
 	}
 	sortSessionCallbackEvents(delivered)
-	if len(delivered) == 0 || sessionCallbackEnvelopeID(targetSessionID, delivered) != envelopeID {
+	if len(delivered) == 0 || sessionCallbackEnvelopeIDForTransport(targetSessionID, transport, delivered) != envelopeID {
 		return nil
 	}
 	deliveredKeys := map[string]string{}
@@ -1481,7 +1720,7 @@ func (s *sessionCallbackStore) recordNudge(targetSessionID, envelopeID string, d
 	}
 	updated := 0
 	for source, registration := range s.registrations {
-		if registration.TargetSessionID != targetSessionID {
+		if registration.TargetSessionID != targetSessionID || callbackTransportForRegistration(registration) != transport {
 			continue
 		}
 		registration.LastNudgeAt = now
@@ -1544,8 +1783,13 @@ func sortSessionCallbackEvents(events []sessionCallbackEvent) {
 }
 
 func sessionCallbackEnvelopeID(targetSessionID string, events []sessionCallbackEvent) string {
+	return sessionCallbackEnvelopeIDForTransport(targetSessionID, callbackClaimTransportHub, events)
+}
+
+func sessionCallbackEnvelopeIDForTransport(targetSessionID, transport string, events []sessionCallbackEvent) string {
 	hash := sha256.New()
 	_, _ = hash.Write([]byte(targetSessionID))
+	_, _ = hash.Write([]byte("\x00" + transport))
 	for _, event := range events {
 		eventKey := event.EventKey
 		if eventKey == "" {
@@ -1622,7 +1866,11 @@ func (s *sessionCallbackStore) saveLocked() (bool, error) {
 		pending = append(pending, event)
 	}
 	sort.Slice(pending, func(i, j int) bool { return pending[i].SourceSessionID < pending[j].SourceSessionID })
-	raw, err := json.Marshal(sessionCallbackIndex{SchemaVersion: sessionCallbackStoreSchemaVersion, Registrations: registrations, Pending: pending})
+	retiredClaims := make(map[string]time.Time, len(s.retiredClaims))
+	for key, acknowledgedAt := range s.retiredClaims {
+		retiredClaims[key] = acknowledgedAt
+	}
+	raw, err := json.Marshal(sessionCallbackIndex{SchemaVersion: sessionCallbackStoreSchemaVersion, Registrations: registrations, Pending: pending, RetiredClaims: retiredClaims})
 	if err != nil {
 		return false, err
 	}

@@ -53,8 +53,8 @@ func TestWorkingContextCapabilityAdvertisesSimpleTextActions(t *testing.T) {
 }
 
 func TestCollaborationControlCapabilityIsLocalOnly(t *testing.T) {
-	want := []string{"claim", "recover", "receipt", "uncertain", "not_created", "verify"}
-	if CollaborationControlCapability.CapabilityId != "collaboration.control" || CollaborationControlCapability.Version != "1.0" || !reflect.DeepEqual(CollaborationControlCapability.Actions, want) {
+	want := []string{"claim", "recover", "receipt", "uncertain", "not_created", "verify", "dispatch", "dispatch_recover", "callback_claim", "callback_ack"}
+	if CollaborationControlCapability.CapabilityId != "collaboration.control" || CollaborationControlCapability.Version != "1.1" || !reflect.DeepEqual(CollaborationControlCapability.Actions, want) {
 		t.Fatalf("collaboration control=%+v", CollaborationControlCapability)
 	}
 	for _, capability := range NodeCapabilities {

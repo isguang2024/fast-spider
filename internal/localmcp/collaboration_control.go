@@ -10,8 +10,8 @@ import (
 )
 
 type collaborationControlInput struct {
-	Action string         `json:"action" jsonschema:"claim, recover, receipt, uncertain, not_created, or verify"`
-	Params map[string]any `json:"params,omitempty" jsonschema:"action-specific task-local ledger parameters; no machineId or Cloud credentials"`
+	Action string         `json:"action" jsonschema:"claim, recover, receipt, uncertain, not_created, verify, dispatch, dispatch_recover, callback_claim, or callback_ack"`
+	Params map[string]any `json:"params,omitempty" jsonschema:"action-specific ledger identity, frozen packet, dispatch, or callback parameters; no Cloud credentials"`
 }
 
 type collaborationControlOutput struct {
@@ -27,13 +27,21 @@ func callCollaborationControl(ctx context.Context, dataDir string, call bridgeCa
 	if params == nil {
 		params = map[string]any{}
 	}
-	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	if action == "callback_claim" || action == "callback_ack" {
+		params = cloneParams(params)
+		params["callbackClaimTransport"] = "local"
+	}
+	timeout := 30 * time.Second
+	if action == "dispatch" || action == "dispatch_recover" {
+		timeout = 180 * time.Second
+	}
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	response, err := call(callCtx, dataDir, protocolv1.CapabilityRequest{
 		Capability: protocolv1.CollaborationControlCapability.CapabilityId,
 		Action:     action,
 		Params:     params,
-		Deadline:   protocolv1.Timestamp(time.Now().UTC().Add(30 * time.Second)),
+		Deadline:   protocolv1.Timestamp(time.Now().UTC().Add(timeout)),
 	})
 	if err != nil {
 		return collaborationControlOutput{}, err
@@ -42,4 +50,12 @@ func callCollaborationControl(ctx context.Context, dataDir string, call bridgeCa
 		return collaborationControlOutput{}, errors.New(response.Error.Code + ": " + response.Error.Message)
 	}
 	return collaborationControlOutput{Result: response.Result}, nil
+}
+
+func cloneParams(input map[string]any) map[string]any {
+	out := make(map[string]any, len(input)+1)
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
 }

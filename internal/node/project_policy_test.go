@@ -1,10 +1,13 @@
 package node
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+
+	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
 
 func TestProjectModePathGuard(t *testing.T) {
@@ -39,6 +42,8 @@ func TestProjectModePathGuard(t *testing.T) {
 		{"shell.exec", "run", map[string]any{"cwd": insideDir}},
 		{"build.exec", "run", map[string]any{"cwd": projectRoot}},
 		{"working.context", "get", map[string]any{"projectPath": projectRoot}},
+		{"collaboration.control", "dispatch", map[string]any{"dbPath": insideFile}},
+		{"collaboration.control", "dispatch_recover", map[string]any{"dbPath": insideFile}},
 	}
 	for _, item := range insideCases {
 		if err := policy.validate(item.capability, item.action, item.params); err != nil {
@@ -57,6 +62,8 @@ func TestProjectModePathGuard(t *testing.T) {
 		{"shell.exec", "run", map[string]any{"cwd": outsideRoot}},
 		{"git.repository", "status", map[string]any{"repositoryPath": outsideRoot}},
 		{"working.context", "get", map[string]any{"projectPath": outsideRoot}},
+		{"collaboration.control", "dispatch", map[string]any{"dbPath": outsideFile}},
+		{"collaboration.control", "dispatch_recover", map[string]any{"dbPath": outsideFile}},
 	}
 	for _, item := range outsideCases {
 		if err := policy.validate(item.capability, item.action, item.params); !errors.Is(err, ErrProjectPathForbidden) {
@@ -117,5 +124,28 @@ func TestProjectModeMachineModeUnchanged(t *testing.T) {
 	outside := filepath.Join(t.TempDir(), "not-created-yet.txt")
 	if err := policy.validate("file.write", "create", map[string]any{"path": outside}); err != nil {
 		t.Fatalf("machine mode unexpectedly rejected path: %v", err)
+	}
+}
+
+func TestLocalCapabilityClientEnforcesConfiguredProjectRoot(t *testing.T) {
+	projectRoot := t.TempDir()
+	outsideFile := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(projectRoot, "node-data"), ProjectRoot: projectRoot})
+	response := client.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{
+		RequestId: "local-project-boundary", Capability: "file.read", Action: "read", Params: map[string]any{"path": outsideFile},
+	})
+	if response.Error == nil || response.Error.Code != "PROJECT_PATH_FORBIDDEN" {
+		t.Fatalf("outside file response=%#v", response)
+	}
+
+	invalid := NewLocalCapabilityClient(Config{DataDir: filepath.Join(projectRoot, "invalid-node-data"), ProjectRoot: filepath.Join(projectRoot, "missing")})
+	invalidResponse := invalid.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{
+		RequestId: "invalid-project-root", Capability: "file.read", Action: "read", Params: map[string]any{"path": outsideFile},
+	})
+	if invalidResponse.Error == nil {
+		t.Fatalf("invalid project root was ignored: %#v", invalidResponse)
 	}
 }

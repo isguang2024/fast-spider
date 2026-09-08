@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -264,6 +265,533 @@ func TestCollaborationTokenCleanupRemovesOnlyExpiredRecords(t *testing.T) {
 	if _, err := os.Stat(currentPath); err != nil {
 		t.Fatalf("current token was removed: %v", err)
 	}
+}
+
+func TestCollaborationControlLocalDispatchCreatesAndArmsCloudChat(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "")
+	createCollaborationTestLedger(t, dbPath, packet)
+	agent := &collaborationTestAgent{results: map[string]map[string]any{"session.create": {"sessionId": "cloud-local-1"}}}
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data"), Agent: agent})
+	claimed := callCollaborationTest(t, client, "claim", map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "expectedRevision": 1, "itemId": "task-1"})
+	completed := callCollaborationTest(t, client, "dispatch", map[string]any{"dispatchToken": claimed["dispatchToken"]})
+	if completed["phase"] != "active" || completed["callerShouldYield"] != true || completed["activePollingAllowed"] != false {
+		t.Fatalf("local dispatch=%#v", completed)
+	}
+	if !agent.hasAction("session.create") || !agent.hasAction("session.callback.register") || !agent.hasAction("session.callback.arm") {
+		t.Fatalf("local dispatch calls=%v", agent.actions)
+	}
+	item := readCollaborationTestItem(t, dbPath)
+	if item["phase"] != "active" {
+		t.Fatalf("stored item=%#v", item)
+	}
+}
+
+func TestCollaborationControlDispatchClaimsIdentityInOneLocalCall(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "")
+	createCollaborationTestLedger(t, dbPath, packet)
+	agent := &collaborationTestAgent{results: map[string]map[string]any{"session.create": {"sessionId": "cloud-direct-1"}}}
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data"), Agent: agent})
+	result, err := client.collaborationControl(context.Background(), "dispatch", map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-1"})
+	if err != nil || result["phase"] != "active" {
+		t.Fatalf("direct dispatch=%#v err=%v", result, err)
+	}
+	if !agent.hasAction("session.create") || readCollaborationTestItem(t, dbPath)["phase"] != "active" {
+		t.Fatalf("direct dispatch did not claim and complete: calls=%v", agent.actions)
+	}
+}
+
+func TestCollaborationControlReadinessFailureRejectsBeforeCreate(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "")
+	createCollaborationTestLedger(t, dbPath, packet)
+	agent := &collaborationTestAgent{errors: map[string]error{"provider.readiness": errors.New("not ready")}}
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data"), Agent: agent})
+	result := client.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{RequestId: "dispatch-ready", Capability: "collaboration.control", Action: "dispatch", Params: map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-1"}})
+	if result.Error != nil || result.Result["phase"] != "dispatch_rejected" {
+		t.Fatalf("readiness result=%#v code=%v message=%v", result, result.Error.Code, result.Error.Message)
+	}
+	if agent.hasAction("session.create") || agent.hasAction("session.send") {
+		t.Fatalf("Cloud action ran after readiness failure: %v", agent.actions)
+	}
+}
+
+func TestCollaborationControlCreateInDoubtNeverBecomesRejected(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "")
+	createCollaborationTestLedger(t, dbPath, packet)
+	agent := &collaborationTestAgent{errors: map[string]error{"session.create": collaborationCreateInDoubtError{}}}
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data"), Agent: agent})
+	identity := map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-1"}
+
+	first := callCollaborationTest(t, client, "dispatch", identity)
+	second := callCollaborationTest(t, client, "dispatch_recover", identity)
+	if first["phase"] != "in_doubt" || second["phase"] != "in_doubt" {
+		t.Fatalf("create in doubt was not preserved: first=%#v second=%#v", first, second)
+	}
+	if item := readCollaborationTestItem(t, dbPath); item["phase"] != "in_doubt" || item["terminal_ref"] != nil {
+		t.Fatalf("create in doubt became terminal: %#v", item)
+	}
+	if agent.actionCount("session.create") != 2 {
+		t.Fatalf("same-key recovery create calls=%v", agent.actions)
+	}
+}
+
+func TestCollaborationControlMissingCreateIdentityStaysInDoubt(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "")
+	createCollaborationTestLedger(t, dbPath, packet)
+	agent := &collaborationTestAgent{results: map[string]map[string]any{"session.create": {}}}
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data"), Agent: agent})
+	identity := map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-1"}
+
+	uncertain := callCollaborationTest(t, client, "dispatch", identity)
+	if uncertain["phase"] != "in_doubt" || agent.actionCount("session.create") != 1 {
+		t.Fatalf("missing create identity=%#v calls=%v", uncertain, agent.actions)
+	}
+	if agent.hasAction("session.callback.register") || agent.hasAction("session.callback.arm") {
+		t.Fatalf("callback was registered without a CHAT identity: %v", agent.actions)
+	}
+	recovered := callCollaborationTest(t, client, "dispatch_recover", identity)
+	if recovered["phase"] != "in_doubt" || agent.actionCount("session.create") != 2 {
+		t.Fatalf("missing identity recovery=%#v calls=%v", recovered, agent.actions)
+	}
+	var creates []collaborationTestCall
+	for _, call := range agent.calls {
+		if call.action == "session.create" {
+			creates = append(creates, call)
+		}
+	}
+	if len(creates) != 2 || creates[0].params["idempotencyKey"] != creates[1].params["idempotencyKey"] || creates[0].params["prompt"] != creates[1].params["prompt"] {
+		t.Fatalf("create recovery drifted: %#v", creates)
+	}
+}
+
+func TestCollaborationControlBootstrapIncludesLocalFileContract(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "")
+	packet["callbackType"] = "local_file"
+	createCollaborationTestLedger(t, dbPath, packet)
+	agent := &collaborationTestAgent{results: map[string]map[string]any{"session.create": {"sessionId": "cloud-bootstrap-1"}}}
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data"), Agent: agent})
+	callCollaborationTest(t, client, "dispatch", map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-1"})
+	resolvedRoot, err := ResolveMachinePath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range agent.calls {
+		if call.action == "session.create" {
+			prompt, _ := call.params["prompt"].(string)
+			for _, required := range []string{
+				"FAST_SPIDER_LOCAL_COLLABORATION_V1",
+				"MACHINE_ID: machine-1",
+				"WORKING_DIRECTORY: " + resolvedRoot,
+				"ACCESS_MODE: write",
+				"WRITE_SCOPE: src/task",
+				"CALLBACK_TYPE: local_file",
+				"DELIVERABLE_PATH: " + resolvedRoot,
+				"TASK:\nImplement and test the bounded task.",
+				"Do not call remote task_result_submit",
+				"completed work, blockers, and validation evidence",
+			} {
+				if !strings.Contains(prompt, required) {
+					t.Fatalf("bootstrap missing %q: %q", required, prompt)
+				}
+			}
+			return
+		}
+	}
+	t.Fatal("session.create call was not recorded")
+}
+
+func TestCollaborationControlLocalDispatchReusesTargetAndPreservesTokenState(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "cloud-existing-1")
+	createCollaborationTestLedger(t, dbPath, packet)
+	agent := &collaborationTestAgent{results: map[string]map[string]any{}}
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data"), Agent: agent})
+	claimed := callCollaborationTest(t, client, "claim", map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "expectedRevision": 1, "itemId": "task-1"})
+	completed := callCollaborationTest(t, client, "dispatch", map[string]any{"dispatchToken": claimed["dispatchToken"]})
+	if completed["phase"] != "active" {
+		t.Fatalf("reuse dispatch=%#v", completed)
+	}
+	if agent.hasAction("session.create") || !agent.hasAction("session.send") {
+		t.Fatalf("reuse dispatch calls=%v", agent.actions)
+	}
+	for _, call := range agent.calls {
+		if call.action == "session.callback.register" && call.params["callbackClaimTransport"] != "local" {
+			t.Fatalf("callback transport=%#v", call.params)
+		}
+	}
+}
+
+func TestCollaborationControlRecoverReusedSessionRegisterFailure(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "cloud-existing-register-1")
+	createCollaborationTestLedger(t, dbPath, packet)
+	agent := &collaborationTestAgent{errors: map[string]error{"session.callback.register": errors.New("callback register unavailable")}}
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data"), Agent: agent})
+	identity := map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-1"}
+
+	uncertain := callCollaborationTest(t, client, "dispatch", identity)
+	if uncertain["phase"] != "in_doubt" || agent.actionCount("session.create") != 0 || agent.actionCount("session.send") != 0 {
+		t.Fatalf("reuse register failure=%#v calls=%v", uncertain, agent.actions)
+	}
+	delete(agent.errors, "session.callback.register")
+	completed := callCollaborationTest(t, client, "dispatch_recover", identity)
+	if completed["phase"] != "active" {
+		t.Fatalf("reuse register recovery=%#v", completed)
+	}
+	if agent.actionCount("session.create") != 0 || agent.actionCount("session.callback.register") != 2 || agent.actionCount("session.send") != 1 || agent.actionCount("session.callback.arm") != 1 {
+		t.Fatalf("reuse register recovery calls=%v", agent.actions)
+	}
+}
+
+func TestCollaborationControlRecoverKeepsCreatedSessionIdentity(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "")
+	createCollaborationTestLedger(t, dbPath, packet)
+	agent := &collaborationTestAgent{
+		results: map[string]map[string]any{"session.create": {"sessionId": "cloud-recover-1"}},
+		errors:  map[string]error{"session.callback.register": errors.New("callback store unavailable")},
+	}
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data"), Agent: agent})
+	identity := map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-1"}
+	uncertain := callCollaborationTest(t, client, "dispatch", identity)
+	if uncertain["phase"] != "in_doubt" {
+		t.Fatalf("dispatch=%#v", uncertain)
+	}
+	recovered := callCollaborationTest(t, client, "recover", map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-1"})
+	if recovered["dispatchToken"] != uncertain["dispatchToken"] {
+		t.Fatalf("recover changed token=%#v uncertain=%#v", recovered, uncertain)
+	}
+	delete(agent.errors, "session.callback.register")
+	completed := callCollaborationTest(t, client, "dispatch_recover", identity)
+	if completed["phase"] != "active" {
+		t.Fatalf("dispatch_recover=%#v", completed)
+	}
+	binding, _ := completed["binding"].(map[string]any)
+	if binding["chatSessionId"] != "cloud-recover-1" {
+		t.Fatalf("recovery created a second CHAT: %#v", binding)
+	}
+	if agent.actionCount("session.create") != 1 {
+		t.Fatalf("recovery created %d CHATs", agent.actionCount("session.create"))
+	}
+}
+
+func TestCollaborationControlRecoverRetriesUncertainSendWithSameKey(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "cloud-existing-1")
+	createCollaborationTestLedger(t, dbPath, packet)
+	agent := &collaborationTestAgent{errors: map[string]error{"session.send": context.DeadlineExceeded}}
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data"), Agent: agent})
+	identity := map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-1"}
+
+	uncertain := callCollaborationTest(t, client, "dispatch", identity)
+	if uncertain["phase"] != "in_doubt" || agent.actionCount("session.callback.arm") != 1 {
+		t.Fatalf("uncertain send=%#v calls=%v", uncertain, agent.actions)
+	}
+	delete(agent.errors, "session.send")
+	completed := callCollaborationTest(t, client, "dispatch_recover", identity)
+	if completed["phase"] != "active" {
+		t.Fatalf("dispatch_recover=%#v", completed)
+	}
+	if agent.actionCount("session.send") != 2 || agent.actionCount("session.create") != 0 || agent.actionCount("session.callback.arm") != 1 {
+		t.Fatalf("send reconciliation calls=%v", agent.actions)
+	}
+	var sends []collaborationTestCall
+	for _, call := range agent.calls {
+		if call.action == "session.send" {
+			sends = append(sends, call)
+		}
+	}
+	if len(sends) != 2 || sends[0].params["idempotencyKey"] != sends[1].params["idempotencyKey"] || sends[0].params["prompt"] != sends[1].params["prompt"] {
+		t.Fatalf("send retry drifted: %#v", sends)
+	}
+}
+
+func TestCollaborationControlRecoverCleansRejectedSendWithoutResending(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "cloud-existing-1")
+	createCollaborationTestLedger(t, dbPath, packet)
+	agent := &collaborationTestAgent{errors: map[string]error{
+		"session.send":                testAgentCapabilityError{},
+		"session.callback.unregister": errors.New("callback unregister unavailable"),
+	}}
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data"), Agent: agent})
+	identity := map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-1"}
+
+	uncertain := callCollaborationTest(t, client, "dispatch", identity)
+	if uncertain["phase"] != "in_doubt" || agent.actionCount("session.send") != 1 {
+		t.Fatalf("rejected send cleanup=%#v calls=%v", uncertain, agent.actions)
+	}
+	delete(agent.errors, "session.callback.unregister")
+	completed := callCollaborationTest(t, client, "dispatch_recover", identity)
+	if completed["phase"] != "dispatch_rejected" {
+		t.Fatalf("rejected send recovery=%#v", completed)
+	}
+	if agent.actionCount("session.send") != 1 || agent.actionCount("session.callback.unregister") != 2 {
+		t.Fatalf("rejected send was resent: %v", agent.actions)
+	}
+}
+
+func TestCollaborationControlRecoverRetriesArmWithoutSecondCreate(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "")
+	createCollaborationTestLedger(t, dbPath, packet)
+	agent := &collaborationTestAgent{
+		results: map[string]map[string]any{"session.create": {"sessionId": "cloud-arm-recover-1"}},
+		errors:  map[string]error{"session.callback.arm": errors.New("callback arm unavailable")},
+	}
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data"), Agent: agent})
+	identity := map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-1"}
+
+	uncertain := callCollaborationTest(t, client, "dispatch", identity)
+	if uncertain["phase"] != "in_doubt" {
+		t.Fatalf("arm failure=%#v", uncertain)
+	}
+	delete(agent.errors, "session.callback.arm")
+	completed := callCollaborationTest(t, client, "dispatch_recover", identity)
+	if completed["phase"] != "active" {
+		t.Fatalf("arm recovery=%#v", completed)
+	}
+	if agent.actionCount("session.create") != 1 || agent.actionCount("session.callback.register") != 1 || agent.actionCount("session.callback.arm") != 2 {
+		t.Fatalf("arm recovery calls=%v", agent.actions)
+	}
+}
+
+func TestCollaborationControlDispatchRecoverRejectsBareToken(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "")
+	createCollaborationTestLedger(t, dbPath, packet)
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data")})
+	claimed := callCollaborationTest(t, client, "claim", map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "expectedRevision": 1, "itemId": "task-1"})
+	if _, err := client.collaborationControl(context.Background(), "dispatch_recover", map[string]any{"dispatchToken": claimed["dispatchToken"]}); err == nil {
+		t.Fatal("dispatch_recover accepted a bare token without checking the ledger recovery phase")
+	}
+}
+
+func TestCollaborationControlCompletedTokenStillHonorsProjectBoundary(t *testing.T) {
+	projectRoot := t.TempDir()
+	outsideRoot := t.TempDir()
+	outsideDB := filepath.Join(outsideRoot, "collaboration.sqlite3")
+	if err := os.WriteFile(outsideDB, []byte("outside"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(projectRoot, "node-data"), ProjectRoot: projectRoot})
+	tokenID := strings.Repeat("a", 64)
+	if err := client.writeCollaborationToken(tokenID, collaborationToken{
+		Version: collaborationTokenVersion, DBPath: outsideDB, MissionID: "mission-1", ActorSessionID: "coordinator-1",
+		ItemID: "task-1", Claim: "claim-1", PacketSHA256: "sha256:" + strings.Repeat("b", 64),
+		Completed: map[string]any{"phase": "active"}, ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.collaborationControl(context.Background(), "dispatch", map[string]any{"dispatchToken": tokenID}); !errors.Is(err, ErrProjectPathForbidden) {
+		t.Fatalf("completed token outside project error=%v", err)
+	}
+}
+
+func TestCollaborationControlRejectsFrozenPathsOutsideTheirBoundaries(t *testing.T) {
+	tests := []struct {
+		name   string
+		packet func(projectRoot, outsideRoot string) map[string]any
+	}{
+		{
+			name: "working directory outside project",
+			packet: func(_ string, outsideRoot string) map[string]any {
+				return collaborationTestPacket(outsideRoot, "")
+			},
+		},
+		{
+			name: "write scope outside working directory",
+			packet: func(projectRoot, outsideRoot string) map[string]any {
+				packet := collaborationTestPacket(projectRoot, "")
+				packet["writeScope"] = outsideRoot
+				return packet
+			},
+		},
+		{
+			name: "deliverable outside write scope",
+			packet: func(projectRoot, _ string) map[string]any {
+				packet := collaborationTestPacket(projectRoot, "")
+				packet["writeScope"] = "src/task"
+				packet["callbackType"] = "local_file"
+				packet["deliverablePath"] = filepath.Join(projectRoot, "reports", "result.md")
+				return packet
+			},
+		},
+		{
+			name: "read only explicit deliverable",
+			packet: func(projectRoot, _ string) map[string]any {
+				packet := collaborationTestPacket(projectRoot, "")
+				packet["accessMode"] = "read_only"
+				delete(packet, "writeScope")
+				packet["callbackType"] = "local_file"
+				packet["deliverablePath"] = filepath.Join(projectRoot, "report.md")
+				return packet
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			projectRoot := t.TempDir()
+			outsideRoot := t.TempDir()
+			dbPath := filepath.Join(projectRoot, "collaboration.sqlite3")
+			packet := tc.packet(projectRoot, outsideRoot)
+			createCollaborationTestLedger(t, dbPath, packet)
+			agent := &collaborationTestAgent{}
+			client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(projectRoot, "node-data"), ProjectRoot: projectRoot, Agent: agent})
+			response := client.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{
+				RequestId: "frozen-path-boundary", Capability: "collaboration.control", Action: "dispatch",
+				Params: map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-1"},
+			})
+			if response.Error == nil {
+				t.Fatalf("unsafe packet was dispatched: %#v", response.Result)
+			}
+			if len(agent.actions) != 0 {
+				t.Fatalf("provider was called before path rejection: %v", agent.actions)
+			}
+		})
+	}
+}
+
+func TestCollaborationControlRejectsFrozenMachineMismatch(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "node-data")
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "")
+	createCollaborationTestLedger(t, dbPath, packet)
+	client := NewLocalCapabilityClient(Config{DataDir: dataDir, Agent: &collaborationTestAgent{}})
+	if err := SaveState(client.statePath, State{
+		HubURL: "https://hub.example", MachineID: "machine-other", CredentialID: "credential-1",
+		HubPublicKey: "public-key", HubFingerprint: "sha256:fingerprint",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response := client.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{
+		RequestId: "frozen-machine-mismatch", Capability: "collaboration.control", Action: "dispatch",
+		Params: map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-1"},
+	})
+	if response.Error == nil || response.Error.Code != "INVALID_REQUEST" {
+		t.Fatalf("machine mismatch response=%#v", response)
+	}
+}
+
+func TestCollaborationControlRecoversActiveLedgerAfterCompletedTokenWriteFailure(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "node-data")
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "")
+	createCollaborationTestLedger(t, dbPath, packet)
+	agent := &collaborationTestAgent{results: map[string]map[string]any{"session.create": {"sessionId": "cloud-active-repair-1"}}}
+	client := NewLocalCapabilityClient(Config{DataDir: dataDir, Agent: agent})
+	injected := errors.New("injected completed token write failure")
+	client.beforeCollaborationTokenWriteOverride = func(record collaborationToken) error {
+		if record.Completed != nil {
+			return injected
+		}
+		return nil
+	}
+	identity := map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-1"}
+	failed := client.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{
+		RequestId: "active-token-failure", Capability: "collaboration.control", Action: "dispatch", Params: identity,
+	})
+	if failed.Error == nil {
+		t.Fatalf("completed token failure=%#v", failed)
+	}
+	item := readCollaborationTestItem(t, dbPath)
+	if item["phase"] != "active" {
+		t.Fatalf("ledger was not committed before token failure: %#v", item)
+	}
+
+	restartedAgent := &collaborationTestAgent{}
+	restarted := NewLocalCapabilityClient(Config{DataDir: dataDir, Agent: restartedAgent})
+	repaired := callCollaborationTest(t, restarted, "dispatch_recover", identity)
+	if repaired["phase"] != "active" || repaired["replayed"] != true {
+		t.Fatalf("active receipt was not repaired: %#v", repaired)
+	}
+	if len(restartedAgent.actions) != 0 {
+		t.Fatalf("active receipt repair repeated provider work: %v", restartedAgent.actions)
+	}
+	binding, _ := repaired["binding"].(map[string]any)
+	if binding["chatSessionId"] != "cloud-active-repair-1" {
+		t.Fatalf("repaired binding=%#v", binding)
+	}
+}
+
+type collaborationTestCall struct {
+	action string
+	params map[string]any
+}
+
+type collaborationCreateInDoubtError struct{}
+
+func (collaborationCreateInDoubtError) Error() string { return "prior create remains unresolved" }
+func (collaborationCreateInDoubtError) CapabilityError() (string, string, bool) {
+	return "AGENT_CREATE_IN_DOUBT", "prior create remains unresolved", false
+}
+
+type collaborationTestAgent struct {
+	mu      sync.Mutex
+	actions []string
+	calls   []collaborationTestCall
+	results map[string]map[string]any
+	errors  map[string]error
+}
+
+func (a *collaborationTestAgent) Control(_ context.Context, action string, params map[string]any) (map[string]any, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.actions = append(a.actions, action)
+	a.calls = append(a.calls, collaborationTestCall{action: action, params: params})
+	if err := a.errors[action]; err != nil {
+		return nil, err
+	}
+	if result := a.results[action]; result != nil {
+		return result, nil
+	}
+	return map[string]any{"prepared": true}, nil
+}
+
+func (a *collaborationTestAgent) Close(context.Context) error { return nil }
+
+func (a *collaborationTestAgent) hasAction(action string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, got := range a.actions {
+		if got == action {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *collaborationTestAgent) actionCount(action string) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	count := 0
+	for _, got := range a.actions {
+		if got == action {
+			count++
+		}
+	}
+	return count
 }
 
 func callCollaborationTest(t *testing.T, client *Client, action string, params map[string]any) map[string]any {

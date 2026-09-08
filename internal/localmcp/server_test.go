@@ -74,6 +74,18 @@ func TestLocalMCPListsToolsAndRoutesWithoutMachineID(t *testing.T) {
 	if got.Capability != protocolv1.CollaborationControlCapability.CapabilityId || got.Action != "verify" || got.Params["dispatchToken"] != "token-value" {
 		t.Fatalf("collaboration request=%+v", got)
 	}
+	for _, action := range []string{"callback_claim", "callback_ack"} {
+		_, err := client.CallTool(context.Background(), &mcp.CallToolParams{
+			Name:      "collaboration_control",
+			Arguments: map[string]any{"action": action, "params": map[string]any{"callbackTargetSessionId": "local-target"}},
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", action, err)
+		}
+		if got.Action != action || got.Params["callbackClaimTransport"] != "local" {
+			t.Fatalf("%s request=%+v", action, got)
+		}
+	}
 }
 
 func TestLocalMCPRejectsInvalidTimeoutBeforeBridgeCall(t *testing.T) {

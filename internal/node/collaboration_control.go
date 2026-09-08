@@ -45,6 +45,15 @@ type collaborationTokenParams struct {
 	NoTaskCreated  bool           `json:"noTaskCreated,omitempty"`
 }
 
+type collaborationDispatchParams struct {
+	DispatchToken    string `json:"dispatchToken"`
+	DBPath           string `json:"dbPath"`
+	MissionID        string `json:"missionId"`
+	ActorSessionID   string `json:"actorSessionId"`
+	ExpectedRevision *int64 `json:"expectedRevision,omitempty"`
+	ItemID           string `json:"itemId"`
+}
+
 type collaborationToken struct {
 	Version         int            `json:"version"`
 	DBPath          string         `json:"dbPath,omitempty"`
@@ -54,6 +63,7 @@ type collaborationToken struct {
 	Claim           string         `json:"claim,omitempty"`
 	PacketSHA256    string         `json:"packetSHA256,omitempty"`
 	DispatchRequest map[string]any `json:"dispatchRequest,omitempty"`
+	DispatchState   map[string]any `json:"dispatchState,omitempty"`
 	Completed       map[string]any `json:"completed,omitempty"`
 	ExpiresAt       int64          `json:"expiresAt"`
 }
@@ -89,7 +99,7 @@ func (c *Client) collaborationControl(ctx context.Context, action string, params
 		if err := decodeParams(params, &input); err != nil {
 			return nil, fmt.Errorf("invalid collaboration control params: %w", err)
 		}
-		return c.collaborationRecover(ctx, input)
+		return c.collaborationRecover(ctx, input, false)
 	case "receipt", "uncertain", "not_created", "verify":
 		required := []string{"dispatchToken"}
 		if action == "receipt" {
@@ -109,9 +119,609 @@ func (c *Client) collaborationControl(ctx context.Context, action string, params
 			return nil, fmt.Errorf("invalid collaboration control params: %w", err)
 		}
 		return c.collaborationUseToken(ctx, action, input)
+	case "dispatch", "dispatch_recover":
+		var input collaborationDispatchParams
+		if err := decodeParams(params, &input); err != nil {
+			return nil, fmt.Errorf("invalid collaboration control params: %w", err)
+		}
+		return c.collaborationDispatch(ctx, action, input)
+	case "callback_claim", "callback_ack":
+		return c.collaborationCallback(ctx, action, params)
 	default:
 		return nil, fmt.Errorf("unsupported collaboration control action %q", action)
 	}
+}
+
+// collaborationDispatch performs the local equivalent of the Hub dispatch
+// sequence. The ledger token is the authority for idempotency; provider calls
+// are made with the frozen packet and are never retried with a new key.
+func (c *Client) collaborationDispatch(ctx context.Context, action string, input collaborationDispatchParams) (map[string]any, error) {
+	dispatchToken := strings.TrimSpace(input.DispatchToken)
+	identityCount := 0
+	for _, value := range []string{input.DBPath, input.MissionID, input.ActorSessionID, input.ItemID} {
+		if strings.TrimSpace(value) != "" {
+			identityCount++
+		}
+	}
+	if dispatchToken != "" && identityCount != 0 {
+		return nil, errors.New("dispatchToken cannot be combined with ledger identity")
+	}
+	if action == "dispatch_recover" && dispatchToken != "" {
+		return nil, errors.New("dispatch_recover requires dbPath, missionId, actorSessionId, and itemId")
+	}
+	if dispatchToken == "" {
+		if identityCount != 4 {
+			return nil, errors.New("dbPath, missionId, actorSessionId, and itemId are required when dispatchToken is omitted")
+		}
+		if action == "dispatch" {
+			revision := int64(0)
+			if input.ExpectedRevision != nil {
+				revision = *input.ExpectedRevision
+			} else {
+				resolvedDBPath, err := validateCollaborationIdentity(input.DBPath, input.MissionID, input.ActorSessionID, input.ItemID)
+				if err != nil {
+					return nil, err
+				}
+				ledger, err := openCollaborationLedger(ctx, resolvedDBPath, input.MissionID, input.ActorSessionID, false)
+				if err != nil {
+					return nil, err
+				}
+				revision = ledger.revision
+				if err := ledger.commit(ctx); err != nil {
+					return nil, err
+				}
+			}
+			claimed, err := c.collaborationClaim(ctx, collaborationClaimParams{DBPath: input.DBPath, MissionID: input.MissionID, ActorSessionID: input.ActorSessionID, ExpectedRevision: revision, ItemID: input.ItemID})
+			if err != nil {
+				return nil, err
+			}
+			dispatchToken = mapStringValue(claimed, "dispatchToken")
+		} else {
+			recovered, err := c.collaborationRecover(ctx, collaborationRecoverParams{DBPath: input.DBPath, MissionID: input.MissionID, ActorSessionID: input.ActorSessionID, ItemID: input.ItemID}, true)
+			if err != nil {
+				return nil, err
+			}
+			dispatchToken = mapStringValue(recovered, "dispatchToken")
+		}
+		if dispatchToken == "" {
+			return nil, errors.New("local dispatch did not produce a dispatchToken")
+		}
+	}
+	return c.collaborationDispatchToken(ctx, dispatchToken)
+}
+
+func (c *Client) collaborationDispatchToken(ctx context.Context, dispatchToken string) (map[string]any, error) {
+	token, err := c.readCollaborationToken(dispatchToken)
+	if err != nil {
+		return nil, err
+	}
+	if c.projectPolicy != nil && c.projectPolicy.root != "" {
+		if err := c.projectPolicy.validate("collaboration.control", "dispatch", map[string]any{"dbPath": token.DBPath}); err != nil {
+			return nil, err
+		}
+	}
+	if token.Completed != nil {
+		return token.Completed, nil
+	}
+	packet, ok := token.DispatchRequest["params"].(map[string]any)
+	if !ok {
+		return nil, errors.New("dispatchToken record is incomplete")
+	}
+	runtimePacket, err := c.localCollaborationRuntimePacket(packet)
+	if err != nil {
+		return nil, err
+	}
+	if completed, active, err := recoverActiveCollaborationReceipt(ctx, token); err != nil {
+		return nil, err
+	} else if active {
+		return c.finishCollaborationToken(dispatchToken, token, completed)
+	}
+	if token.ExpiresAt <= time.Now().Unix() {
+		return nil, errors.New("dispatch token expired; use recover with the exact ledger item")
+	}
+	if err := validateCollaborationDispatchAuthority(ctx, token); err != nil {
+		return nil, err
+	}
+	if c.agent == nil {
+		return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:agent-provider-unavailable")
+	}
+	callbackTarget := mapStringValue(runtimePacket, "callbackSessionId")
+	if callbackTarget == "" {
+		return nil, errors.New("callbackSessionId is required for local dispatch")
+	}
+	missionID, taskID, generation := localCallbackIdentity(token)
+	state := token.DispatchState
+	phase := mapStringValue(state, "phase")
+	if phase != "" && phase != "prepared" && phase != "created" && phase != "registered" && phase != "sent" && phase != "send_in_doubt" && phase != "armed" {
+		return nil, fmt.Errorf("unsupported local dispatch recovery phase %q", phase)
+	}
+	sourceSessionID := mapStringValue(state, "chatSessionId")
+	if sourceSessionID == "" {
+		sourceSessionID = mapStringValue(runtimePacket, "targetSessionId")
+	}
+	stateFromToken := mapStringValue(state, "chatSessionId") != ""
+	sessionMode := mapStringValue(state, "sessionMode")
+	reuseSession := sessionMode == "reuse" || sessionMode == "" && mapStringValue(runtimePacket, "targetSessionId") != ""
+	if state != nil && sessionMode == "new" && sourceSessionID == "" {
+		return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:session-create-missing-session-id")
+	}
+	baselineMode := ""
+	if reuseSession {
+		baselineMode = "reuse"
+	}
+	// Validate the local Codex callback owner before any Cloud create/send.
+	// This is a local target check and cannot create a task by itself.
+	if _, err := c.agent.Control(ctx, "session.callback.prepare", map[string]any{
+		"providerId": "codex", "sessionId": callbackTarget, "mode": "target",
+	}); err != nil {
+		if stateFromToken {
+			return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:callback-target:"+stableCollaborationDigest(err.Error()))
+		}
+		return c.recordCollaborationNotCreated(ctx, dispatchToken, token, "local:callback-target:"+stableCollaborationDigest(err.Error()))
+	}
+	if reuseSession && sourceSessionID != "" && phase == "" {
+		if err := c.ensureLocalCloudReadiness(ctx); err != nil {
+			if stateFromToken {
+				return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:provider-readiness:"+stableCollaborationDigest(err.Error()))
+			}
+			return c.recordCollaborationNotCreated(ctx, dispatchToken, token, "local:provider-readiness:"+stableCollaborationDigest(err.Error()))
+		}
+	}
+	if reuseSession && sourceSessionID != "" && phase == "" {
+		if _, err := c.agent.Control(ctx, "session.callback.prepare", map[string]any{
+			"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": sourceSessionID,
+		}); err != nil {
+			if stateFromToken {
+				return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:callback-prepare:"+stableCollaborationDigest(err.Error()))
+			}
+			return c.finishLocalDispatchError(ctx, dispatchToken, token, err, "local:callback-prepare")
+		}
+		if token.DispatchState == nil {
+			token.DispatchState = map[string]any{"providerAction": "session.send", "sessionMode": "reuse", "chatSessionId": sourceSessionID, "callbackTargetSessionId": callbackTarget, "callbackMissionId": missionID, "callbackTaskId": taskID, "callbackGeneration": generation, "deliverablePath": localCallbackDeliverablePath(runtimePacket, token), "phase": "prepared"}
+			if err := c.persistLocalDispatchState(dispatchToken, token, token.DispatchState); err != nil {
+				return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:dispatch-state:"+stableCollaborationDigest(err.Error()))
+			}
+			phase = "prepared"
+		}
+	} else if !stateFromToken {
+		if err := c.ensureLocalCloudReadiness(ctx); err != nil {
+			return c.recordCollaborationNotCreated(ctx, dispatchToken, token, "local:provider-readiness:"+stableCollaborationDigest(err.Error()))
+		}
+		createParams := map[string]any{
+			"providerId": "codex", "backend": "chatgpt_cloud", "visibility": "visible", "mode": "quick_chat",
+			"workingDirectory": mapStringValue(runtimePacket, "workingDirectory"), "prompt": localCollaborationBootstrap(runtimePacket, token),
+			"idempotencyKey": mapStringValue(runtimePacket, "idempotencyKey"),
+		}
+		result, callErr := c.agent.Control(ctx, "session.create", createParams)
+		if callErr != nil {
+			return c.finishLocalDispatchError(ctx, dispatchToken, token, callErr, "local:session-create")
+		}
+		sourceSessionID = mapStringValue(result, "sessionId")
+		if sourceSessionID == "" {
+			return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:session-create-missing-session-id")
+		}
+		if err := c.persistLocalDispatchState(dispatchToken, token, map[string]any{"providerAction": "session.create", "sessionMode": "new", "chatSessionId": sourceSessionID, "callbackTargetSessionId": callbackTarget, "callbackMissionId": missionID, "callbackTaskId": taskID, "callbackGeneration": generation, "deliverablePath": localCallbackDeliverablePath(runtimePacket, token), "phase": "created"}); err != nil {
+			return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:dispatch-state:"+stableCollaborationDigest(err.Error()))
+		}
+		token.DispatchState = map[string]any{"providerAction": "session.create", "sessionMode": "new", "chatSessionId": sourceSessionID, "callbackTargetSessionId": callbackTarget, "callbackMissionId": missionID, "callbackTaskId": taskID, "callbackGeneration": generation, "deliverablePath": localCallbackDeliverablePath(runtimePacket, token), "phase": "created"}
+		phase = "created"
+	}
+
+	registerParams := map[string]any{
+		"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": sourceSessionID,
+		"callbackTargetSessionId": callbackTarget, "callbackMissionId": missionID, "callbackTaskId": taskID,
+		"callbackGeneration": generation, "callbackType": mapStringValue(runtimePacket, "callbackType"),
+		"callbackDeliverablePath": localCallbackDeliverablePath(runtimePacket, token), "callbackImmediateWake": true,
+		"callbackArmRequired": true, "callbackClaimTransport": "local", "mode": baselineMode,
+	}
+	registerNeeded := phase == "" || phase == "prepared" || phase == "created"
+	if registerNeeded {
+		if _, err := c.agent.Control(ctx, "session.callback.register", registerParams); err != nil {
+			// Register may have committed before a transport or persistence error.
+			// Keep the prepared/created identity and recover the exact route rather
+			// than declaring the round absent or sending a replacement.
+			return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:callback-register:"+stableCollaborationDigest(err.Error()))
+		}
+		if token.DispatchState != nil {
+			token.DispatchState["phase"] = "registered"
+			if err := c.persistLocalDispatchState(dispatchToken, token, token.DispatchState); err != nil {
+				return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:dispatch-state:"+stableCollaborationDigest(err.Error()))
+			}
+			phase = "registered"
+		}
+	}
+	if reuseSession && phase == "registered" && mapStringValue(token.DispatchState, "sendOutcome") == "rejected" {
+		evidence := mapStringValue(token.DispatchState, "sendEvidence")
+		if evidence == "" {
+			evidence = "local:session-send-rejected"
+		}
+		if _, err := c.agent.Control(ctx, "session.callback.unregister", map[string]any{
+			"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": sourceSessionID,
+			"callbackTargetSessionId": callbackTarget, "callbackMissionId": missionID, "callbackTaskId": taskID,
+			"callbackGeneration": generation,
+		}); err != nil {
+			return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:session-send-unregister:"+stableCollaborationDigest(err.Error()))
+		}
+		return c.recordCollaborationNotCreated(ctx, dispatchToken, token, evidence)
+	}
+	previousSendUncertain := phase == "send_in_doubt" || phase == "armed" && mapStringValue(token.DispatchState, "sendOutcome") == "uncertain"
+	sendNeeded := reuseSession && (phase == "registered" || previousSendUncertain)
+	sendUncertain := false
+	if sendNeeded {
+		if err := c.ensureLocalCloudReadiness(ctx); err != nil {
+			return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:provider-readiness:"+stableCollaborationDigest(err.Error()))
+		}
+		if _, err := c.agent.Control(ctx, "session.send", map[string]any{
+			"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": sourceSessionID,
+			"mode": "quick_chat", "prompt": localCollaborationBootstrap(runtimePacket, token), "idempotencyKey": mapStringValue(runtimePacket, "idempotencyKey"),
+		}); err != nil {
+			if !dispatchErrorRetryable(err) && !previousSendUncertain {
+				evidence := "local:session-send:" + stableCollaborationDigest(err.Error())
+				if unregisterErr := func() error {
+					_, unregisterErr := c.agent.Control(ctx, "session.callback.unregister", map[string]any{
+						"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": sourceSessionID,
+						"callbackTargetSessionId": callbackTarget, "callbackMissionId": missionID, "callbackTaskId": taskID,
+						"callbackGeneration": generation,
+					})
+					return unregisterErr
+				}(); unregisterErr == nil {
+					return c.recordCollaborationNotCreated(ctx, dispatchToken, token, evidence)
+				}
+				if token.DispatchState != nil {
+					token.DispatchState["sendOutcome"] = "rejected"
+					token.DispatchState["sendEvidence"] = evidence
+					if persistErr := c.persistLocalDispatchState(dispatchToken, token, token.DispatchState); persistErr != nil {
+						return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:dispatch-state:"+stableCollaborationDigest(persistErr.Error()))
+					}
+				}
+				return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:session-send-unregister:"+stableCollaborationDigest(err.Error()))
+			}
+			sendUncertain = true
+			if token.DispatchState != nil {
+				token.DispatchState["sendOutcome"] = "uncertain"
+				if phase != "armed" {
+					token.DispatchState["phase"] = "send_in_doubt"
+					phase = "send_in_doubt"
+				}
+				if persistErr := c.persistLocalDispatchState(dispatchToken, token, token.DispatchState); persistErr != nil {
+					return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:dispatch-state:"+stableCollaborationDigest(persistErr.Error()))
+				}
+			}
+		} else if token.DispatchState != nil {
+			if phase != "armed" {
+				token.DispatchState["phase"] = "sent"
+				phase = "sent"
+			}
+			token.DispatchState["sendOutcome"] = "sent"
+			if err := c.persistLocalDispatchState(dispatchToken, token, token.DispatchState); err != nil {
+				return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:dispatch-state:"+stableCollaborationDigest(err.Error()))
+			}
+		}
+	}
+	armNeeded := phase != "armed"
+	if armNeeded {
+		if _, err := c.agent.Control(ctx, "session.callback.arm", map[string]any{
+			"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": sourceSessionID,
+			"callbackTargetSessionId": callbackTarget, "callbackMissionId": missionID, "callbackTaskId": taskID,
+			"callbackGeneration": generation, "callbackClaimTransport": "local",
+		}); err != nil {
+			return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:callback-arm:"+stableCollaborationDigest(err.Error()))
+		}
+		if token.DispatchState != nil {
+			token.DispatchState["phase"] = "armed"
+			phase = "armed"
+			if sendUncertain {
+				token.DispatchState["sendOutcome"] = "uncertain"
+			}
+			if err := c.persistLocalDispatchState(dispatchToken, token, token.DispatchState); err != nil {
+				return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:dispatch-state:"+stableCollaborationDigest(err.Error()))
+			}
+		}
+	}
+	if mapStringValue(token.DispatchState, "sendOutcome") == "uncertain" {
+		return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:session-send-uncertain")
+	}
+	binding := map[string]any{"chatSessionId": sourceSessionID, "collaborationId": missionID, "taskRef": taskID, "callbackSessionId": callbackTarget, "idempotencyKey": mapStringValue(runtimePacket, "idempotencyKey")}
+	active, err := c.recordCollaborationActive(ctx, token, binding)
+	if err != nil {
+		return nil, err
+	}
+	completed := localCollaborationActiveReceipt(token, binding, active["revision"], false)
+	return c.finishCollaborationToken(dispatchToken, token, completed)
+}
+
+func recoverActiveCollaborationReceipt(ctx context.Context, token collaborationToken) (map[string]any, bool, error) {
+	ledger, err := openCollaborationLedger(ctx, token.DBPath, token.MissionID, token.ActorSessionID, false)
+	if err != nil {
+		return nil, false, err
+	}
+	defer ledger.rollback()
+	if mapStringValue(ledger.mission, "coordinator") != token.ActorSessionID {
+		return nil, false, errors.New("only bound coordinator recovers an active dispatch receipt")
+	}
+	item, err := ledger.item(ctx, token.ItemID)
+	if err != nil {
+		return nil, false, err
+	}
+	if mapStringValue(item, "claim") != token.Claim {
+		return nil, false, errors.New("wrong dispatch claim")
+	}
+	if mapStringValue(item, "phase") != "active" {
+		if err := ledger.commit(ctx); err != nil {
+			return nil, false, err
+		}
+		return nil, false, nil
+	}
+	packet, ok := item["packet"].(map[string]any)
+	if !ok {
+		return nil, false, errors.New("active ledger item has no frozen packet")
+	}
+	packetBytes, err := json.Marshal(packet)
+	if err != nil {
+		return nil, false, err
+	}
+	digest := "sha256:" + hex.EncodeToString(collaborationHash(packetBytes))
+	if digest != token.PacketSHA256 {
+		return nil, false, errors.New("active ledger packet differs from dispatch token")
+	}
+	binding, ok := item["binding"].(map[string]any)
+	if !ok || binding == nil {
+		return nil, false, errors.New("active ledger item has no dispatch binding")
+	}
+	if err := validateCollaborationBinding(binding, item, ledger.mission); err != nil {
+		return nil, false, err
+	}
+	if err := ledger.commit(ctx); err != nil {
+		return nil, false, err
+	}
+	return localCollaborationActiveReceipt(token, binding, ledger.revision, true), true, nil
+}
+
+func localCollaborationActiveReceipt(token collaborationToken, binding map[string]any, revision any, replayed bool) map[string]any {
+	completed := map[string]any{
+		"itemId": token.ItemID, "binding": binding, "packetSHA256": token.PacketSHA256,
+		"ledgerRevision": revision, "phase": "active",
+		"callerShouldYield": true, "activePollingAllowed": false,
+		"nextAction": "End the current turn and await the formal local callback.",
+	}
+	if replayed {
+		completed["replayed"] = true
+	}
+	return completed
+}
+
+func validateCollaborationDispatchAuthority(ctx context.Context, token collaborationToken) error {
+	ledger, err := openCollaborationLedger(ctx, token.DBPath, token.MissionID, token.ActorSessionID, false)
+	if err != nil {
+		return err
+	}
+	defer ledger.rollback()
+	if mapStringValue(ledger.mission, "coordinator") != token.ActorSessionID {
+		return errors.New("only bound coordinator dispatches a claimed round")
+	}
+	if mapStringValue(ledger.mission, "status") != "active" || !mapBoolValue(ledger.mission, "dispatch_enabled") {
+		return errors.New("dispatch is paused/disabled")
+	}
+	item, err := ledger.item(ctx, token.ItemID)
+	if err != nil {
+		return err
+	}
+	if mapStringValue(item, "claim") != token.Claim {
+		return errors.New("wrong dispatch claim")
+	}
+	phase := mapStringValue(item, "phase")
+	if phase != "dispatching" && phase != "in_doubt" {
+		return fmt.Errorf("item phase %q cannot dispatch or recover", phase)
+	}
+	return ledger.commit(ctx)
+}
+
+func (c *Client) collaborationCallback(ctx context.Context, action string, params map[string]any) (map[string]any, error) {
+	if c.agent == nil {
+		return nil, ErrAgentProviderUnavailable
+	}
+	params = cloneParams(params)
+	params["callbackClaimTransport"] = "local"
+	if action == "callback_claim" {
+		return c.agent.Control(ctx, "session.callback.claim", params)
+	}
+	return c.agent.Control(ctx, "session.callback.ack", params)
+}
+
+func (c *Client) persistLocalDispatchState(dispatchToken string, token collaborationToken, state map[string]any) error {
+	token.DispatchState = state
+	return c.writeCollaborationToken(dispatchToken, token)
+}
+
+func (c *Client) finishLocalDispatchError(ctx context.Context, dispatchToken string, token collaborationToken, err error, evidencePrefix string) (map[string]any, error) {
+	if dispatchErrorRetryable(err) {
+		return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, evidencePrefix+":"+stableCollaborationDigest(err.Error()))
+	}
+	return c.recordCollaborationNotCreated(ctx, dispatchToken, token, evidencePrefix+":"+stableCollaborationDigest(err.Error()))
+}
+
+func (c *Client) finishLocalDispatchUncertain(ctx context.Context, dispatchToken string, token collaborationToken, evidence string) (map[string]any, error) {
+	return c.recordCollaborationUncertain(ctx, dispatchToken, token, evidence)
+}
+
+func dispatchErrorRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var providerErr AgentCapabilityError
+	if errors.As(err, &providerErr) {
+		code, _, retryable := providerErr.CapabilityError()
+		return retryable || code == "AGENT_CREATE_IN_DOUBT"
+	}
+	// Untyped provider/transport failures do not prove that an external create
+	// or send was rejected. Keep the original key in doubt until reconciliation.
+	return true
+}
+
+func localCallbackIdentity(token collaborationToken) (string, string, int64) {
+	mission := "local-collaboration-" + stableCollaborationDigest(token.DBPath + "|" + token.MissionID)[:24]
+	task := "local-task-" + stableCollaborationDigest(token.ItemID + "|" + token.Claim)[:24]
+	return mission, task, 1
+}
+
+func localCallbackDeliverablePath(packet map[string]any, token collaborationToken) string {
+	if path := mapStringValue(packet, "deliverablePath"); path != "" {
+		return path
+	}
+	if mapStringValue(packet, "callbackType") != "local_file" {
+		return ""
+	}
+	return filepath.Join(mapStringValue(packet, "workingDirectory"), ".fast-spider-result-"+stableCollaborationDigest(token.ItemID + "|" + token.Claim)[:24]+".md")
+}
+
+func (c *Client) localCollaborationRuntimePacket(packet map[string]any) (map[string]any, error) {
+	runtimePacket := cloneParams(packet)
+	if c.statePath != "" {
+		state, err := c.State()
+		if err == nil {
+			if mapStringValue(packet, "machineId") != state.MachineID {
+				return nil, errors.New("frozen machineId does not match this Node")
+			}
+		} else if !errors.Is(err, ErrNotRegistered) {
+			return nil, fmt.Errorf("load local Node identity: %w", err)
+		}
+	}
+	workingDirectory, err := resolveLocalCollaborationPath("", mapStringValue(packet, "workingDirectory"), false)
+	if err != nil {
+		return nil, fmt.Errorf("invalid collaboration workingDirectory: %w", err)
+	}
+	info, err := os.Stat(workingDirectory)
+	if err != nil || !info.IsDir() {
+		return nil, errors.New("collaboration workingDirectory must be an existing directory")
+	}
+	if c.projectPolicy != nil && c.projectPolicy.root != "" && !pathWithin(c.projectPolicy.root, workingDirectory) {
+		return nil, fmt.Errorf("%w: workingDirectory", ErrProjectPathForbidden)
+	}
+	runtimePacket["workingDirectory"] = workingDirectory
+
+	var writeBoundary string
+	if mapStringValue(packet, "accessMode") == "write" {
+		writeScope := mapStringValue(packet, "writeScope")
+		writeBoundary, err = resolveLocalCollaborationScopeBoundary(workingDirectory, writeScope)
+		if err != nil {
+			return nil, err
+		}
+		if !lexicalPathWithin(workingDirectory, writeBoundary) {
+			return nil, errors.New("writeScope must stay inside workingDirectory")
+		}
+		if c.projectPolicy != nil && c.projectPolicy.root != "" && !lexicalPathWithin(c.projectPolicy.root, writeBoundary) {
+			return nil, fmt.Errorf("%w: writeScope", ErrProjectPathForbidden)
+		}
+	}
+
+	deliverable := mapStringValue(packet, "deliverablePath")
+	if deliverable == "" {
+		return runtimePacket, nil
+	}
+	if !filepath.IsAbs(deliverable) {
+		return nil, errors.New("deliverablePath must be absolute")
+	}
+	if mapStringValue(packet, "callbackType") != "local_file" {
+		return nil, errors.New("deliverablePath requires callbackType=local_file")
+	}
+	if mapStringValue(packet, "accessMode") != "write" {
+		return nil, errors.New("read_only collaboration must use the Node-assigned result path")
+	}
+	resolvedDeliverable, err := resolveLocalCollaborationPath(workingDirectory, deliverable, true)
+	if err != nil {
+		return nil, fmt.Errorf("invalid deliverablePath: %w", err)
+	}
+	if !lexicalPathWithin(workingDirectory, resolvedDeliverable) || !lexicalPathWithin(writeBoundary, resolvedDeliverable) {
+		return nil, errors.New("deliverablePath must stay inside workingDirectory and writeScope")
+	}
+	if c.projectPolicy != nil && c.projectPolicy.root != "" && !lexicalPathWithin(c.projectPolicy.root, resolvedDeliverable) {
+		return nil, fmt.Errorf("%w: deliverablePath", ErrProjectPathForbidden)
+	}
+	runtimePacket["deliverablePath"] = resolvedDeliverable
+	return runtimePacket, nil
+}
+
+func resolveLocalCollaborationScopeBoundary(workingDirectory, writeScope string) (string, error) {
+	writeScope = strings.TrimSpace(writeScope)
+	if writeScope == "" {
+		return "", errors.New("writeScope is required for write collaboration")
+	}
+	prefix := writeScope
+	if index := strings.IndexAny(prefix, "*?["); index >= 0 {
+		prefix = prefix[:index]
+		if prefix != "" && !strings.HasSuffix(prefix, "/") && !strings.HasSuffix(prefix, "\\") {
+			prefix = filepath.Dir(prefix)
+		}
+	}
+	if strings.TrimSpace(prefix) == "" || prefix == "." {
+		prefix = workingDirectory
+	}
+	return resolveLocalCollaborationPath(workingDirectory, prefix, true)
+}
+
+func resolveLocalCollaborationPath(base, value string, allowCreate bool) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 4096 || strings.ContainsAny(value, "\x00\r\n") {
+		return "", errors.New("path is empty or invalid")
+	}
+	if !filepath.IsAbs(value) {
+		if base == "" {
+			return "", errors.New("path must be absolute")
+		}
+		value = filepath.Join(base, value)
+	}
+	value = filepath.Clean(value)
+	if resolved, err := ResolveMachinePath(value); err == nil {
+		return resolved, nil
+	} else if !allowCreate {
+		return "", err
+	}
+
+	ancestor := filepath.Dir(value)
+	for {
+		if resolvedAncestor, err := ResolveMachinePath(ancestor); err == nil {
+			remainder, relErr := filepath.Rel(ancestor, value)
+			if relErr != nil || remainder == ".." || strings.HasPrefix(remainder, ".."+string(filepath.Separator)) || filepath.IsAbs(remainder) {
+				return "", errors.New("path escapes its existing parent")
+			}
+			return filepath.Clean(filepath.Join(resolvedAncestor, remainder)), nil
+		}
+		parent := filepath.Dir(ancestor)
+		if parent == ancestor {
+			return "", errors.New("path has no resolvable parent")
+		}
+		ancestor = parent
+	}
+}
+
+func (c *Client) ensureLocalCloudReadiness(ctx context.Context) error {
+	result, err := c.agent.Control(ctx, "provider.readiness", map[string]any{"providerId": "codex", "backend": "chatgpt_cloud", "mode": "safe"})
+	if err != nil {
+		return err
+	}
+	if ready, ok := result["readyForSessionCreate"].(bool); ok && !ready {
+		return fmt.Errorf("Cloud provider is not ready: %s", mapStringValue(result, "reasonCode"))
+	}
+	if ready, ok := result["ready"].(bool); ok && !ready {
+		return fmt.Errorf("Cloud provider is not ready: %s", mapStringValue(result, "reasonCode"))
+	}
+	return nil
+}
+
+func localCollaborationBootstrap(packet map[string]any, token collaborationToken) string {
+	deliverable := localCallbackDeliverablePath(packet, token)
+	writeScope := mapStringValue(packet, "writeScope")
+	if writeScope == "" {
+		writeScope = "(read-only)"
+	}
+	callbackType := mapStringValue(packet, "callbackType")
+	return fmt.Sprintf("FAST_SPIDER_LOCAL_COLLABORATION_V1\nMACHINE_ID: %s\nWORKING_DIRECTORY: %s\nACCESS_MODE: %s\nWRITE_SCOPE: %s\nCALLBACK_TYPE: %s\nDELIVERABLE_PATH: %s\n\nTASK:\n%s\n\nComplete only this round within the frozen scope. The Node will register and deliver the callback automatically. Do not call remote task_result_submit or create another CHAT. In your final response report completed work, blockers, and validation evidence.",
+		mapStringValue(packet, "machineId"), mapStringValue(packet, "workingDirectory"), mapStringValue(packet, "accessMode"), writeScope, callbackType, deliverable, mapStringValue(packet, "prompt"))
+}
+
+func stableCollaborationDigest(value string) string {
+	digest := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(digest[:])
 }
 
 func (c *Client) collaborationClaim(ctx context.Context, input collaborationClaimParams) (map[string]any, error) {
@@ -153,6 +763,9 @@ func (c *Client) collaborationClaim(ctx context.Context, input collaborationClai
 	if err := validateCollaborationPacket(packet, ledger.mission, true); err != nil {
 		return nil, err
 	}
+	if _, err := c.localCollaborationRuntimePacket(packet); err != nil {
+		return nil, err
+	}
 	if err := ledger.checkDependencies(ctx, item); err != nil {
 		return nil, err
 	}
@@ -183,7 +796,7 @@ func (c *Client) collaborationClaim(ctx context.Context, input collaborationClai
 	return c.storeCollaborationClaim(dbPath, input.MissionID, input.ActorSessionID, input.ItemID, claim, packet, ledger.revision)
 }
 
-func (c *Client) collaborationRecover(ctx context.Context, input collaborationRecoverParams) (map[string]any, error) {
+func (c *Client) collaborationRecover(ctx context.Context, input collaborationRecoverParams, allowActive bool) (map[string]any, error) {
 	dbPath, err := validateCollaborationIdentity(input.DBPath, input.MissionID, input.ActorSessionID, input.ItemID)
 	if err != nil {
 		return nil, err
@@ -196,21 +809,33 @@ func (c *Client) collaborationRecover(ctx context.Context, input collaborationRe
 	if mapStringValue(ledger.mission, "coordinator") != input.ActorSessionID {
 		return nil, errors.New("only bound coordinator recovers a dispatch token")
 	}
-	if mapStringValue(ledger.mission, "status") != "active" || !mapBoolValue(ledger.mission, "dispatch_enabled") {
-		return nil, errors.New("dispatch is paused/disabled")
-	}
 	item, err := ledger.item(ctx, input.ItemID)
 	if err != nil {
 		return nil, err
 	}
 	phase := mapStringValue(item, "phase")
-	if phase != "dispatching" && phase != "in_doubt" {
+	if phase == "active" && !allowActive {
+		return nil, errors.New("active round already has a binding; use dispatch_recover only to repair its local receipt")
+	}
+	if phase != "active" && (mapStringValue(ledger.mission, "status") != "active" || !mapBoolValue(ledger.mission, "dispatch_enabled")) {
+		return nil, errors.New("dispatch is paused/disabled")
+	}
+	if phase != "dispatching" && phase != "in_doubt" && phase != "active" {
 		return nil, fmt.Errorf("item phase %q cannot recover a dispatch token", phase)
 	}
 	claim := mapStringValue(item, "claim")
 	packet, ok := item["packet"].(map[string]any)
 	if claim == "" || !ok {
 		return nil, errors.New("ledger item has no recoverable frozen packet")
+	}
+	if phase == "active" {
+		binding, bound := item["binding"].(map[string]any)
+		if !bound || binding == nil {
+			return nil, errors.New("active ledger item has no dispatch binding")
+		}
+		if err := validateCollaborationBinding(binding, item, ledger.mission); err != nil {
+			return nil, err
+		}
 	}
 	if err := ledger.commit(ctx); err != nil {
 		return nil, err
@@ -230,6 +855,15 @@ func (c *Client) storeCollaborationClaim(dbPath, missionID, actorSessionID, item
 		ItemID: itemID, Claim: claim, PacketSHA256: digest,
 		DispatchRequest: map[string]any{"action": "dispatch", "params": packet},
 		ExpiresAt:       time.Now().Add(24 * time.Hour).Unix(),
+	}
+	// Recovering the same frozen claim must not erase provider identity or a
+	// completed receipt already recorded by a prior local dispatch attempt.
+	if existing, readErr := c.readCollaborationToken(tokenID); readErr == nil && existing.PacketSHA256 == digest && existing.DBPath == dbPath && existing.MissionID == missionID && existing.ActorSessionID == actorSessionID && existing.ItemID == itemID && existing.Claim == claim {
+		record.DispatchState = existing.DispatchState
+		record.Completed = existing.Completed
+		if existing.Completed != nil {
+			record.ExpiresAt = time.Now().Add(time.Hour).Unix()
+		}
 	}
 	if err := c.writeCollaborationToken(tokenID, record); err != nil {
 		return nil, err
@@ -356,7 +990,12 @@ func (c *Client) recordCollaborationNotCreated(ctx context.Context, dispatchToke
 
 func (c *Client) finishCollaborationToken(dispatchToken string, token collaborationToken, completed map[string]any) (map[string]any, error) {
 	completed["packetSHA256"] = token.PacketSHA256
-	finished := collaborationToken{Version: collaborationTokenVersion, Completed: completed, ExpiresAt: time.Now().Add(time.Hour).Unix()}
+	finished := collaborationToken{
+		Version: collaborationTokenVersion, DBPath: token.DBPath, MissionID: token.MissionID,
+		ActorSessionID: token.ActorSessionID, ItemID: token.ItemID, Claim: token.Claim,
+		PacketSHA256: token.PacketSHA256, DispatchRequest: token.DispatchRequest, DispatchState: token.DispatchState,
+		Completed: completed, ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	}
 	if err := c.writeCollaborationToken(dispatchToken, finished); err != nil {
 		return nil, err
 	}
@@ -396,6 +1035,7 @@ func (c *Client) recordCollaborationUncertain(ctx context.Context, dispatchToken
 	return map[string]any{
 		"revision": ledger.revision, "phase": "in_doubt", "dispatchToken": dispatchToken,
 		"packetSHA256": token.PacketSHA256, "evidenceRef": evidenceRef,
+		"callerShouldYield": true, "activePollingAllowed": false,
 		"nextAction": "Keep the original token, packet and key; schedule one bounded reconciliation and end the turn.",
 	}, nil
 }
@@ -931,6 +1571,11 @@ func (c *Client) writeCollaborationToken(token string, record collaborationToken
 	path, err := c.collaborationTokenPath(token)
 	if err != nil {
 		return err
+	}
+	if c.beforeCollaborationTokenWriteOverride != nil {
+		if err := c.beforeCollaborationTokenWriteOverride(record); err != nil {
+			return err
+		}
 	}
 	temp, err := os.CreateTemp(filepath.Dir(path), "token-*.tmp")
 	if err != nil {

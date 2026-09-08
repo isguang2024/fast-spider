@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"log/slog"
+	"path/filepath"
 
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
@@ -14,13 +15,17 @@ func NewLocalCapabilityClient(cfg Config) *Client {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
+	projectPolicy, projectPolicyErr := newProjectPolicy(cfg.ProjectRoot)
 	client := &Client{
-		cfg:           cfg,
-		jobs:          NewJobManager(cfg.DataDir),
-		requestSem:    make(chan struct{}, 8),
-		screenshotSem: make(chan struct{}, 1),
-		agent:         cfg.Agent,
-		operationLog:  cfg.OperationLog,
+		cfg:              cfg,
+		statePath:        filepath.Join(cfg.DataDir, "state.json"),
+		jobs:             NewJobManager(cfg.DataDir),
+		requestSem:       make(chan struct{}, 8),
+		screenshotSem:    make(chan struct{}, 1),
+		agent:            cfg.Agent,
+		operationLog:     cfg.OperationLog,
+		projectPolicy:    projectPolicy,
+		projectPolicyErr: projectPolicyErr,
 	}
 	client.browser = NewBrowserManager(cfg.DataDir, cfg.BrowserSidecarDir, cfg.Logger)
 	if setter, ok := cfg.Agent.(interface{ SetCloudResultPublisher(any) }); ok {

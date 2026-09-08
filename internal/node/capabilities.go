@@ -139,6 +139,10 @@ func (c *Client) handleCapabilityRequestFrom(ctx context.Context, req protocolv1
 		ctx, cancel = context.WithDeadline(deadlineParent, deadline)
 		defer cancel()
 	}
+	if c.projectPolicyErr != nil {
+		response.Error = capabilityError(c.projectPolicyErr)
+		return response
+	}
 	if err := c.projectPolicy.validate(req.Capability, req.Action, req.Params); err != nil {
 		response.Error = capabilityError(err)
 		return response
@@ -177,7 +181,7 @@ func (c *Client) handleCapabilityRequestFrom(ctx context.Context, req protocolv1
 		result, err = c.operationLogQuery(ctx, req.Params)
 	case "working.context/get", "working.context/set", "working.context/clear":
 		result, err = c.workingContextControl(ctx, req.Action, req.Params)
-	case "collaboration.control/claim", "collaboration.control/recover", "collaboration.control/receipt", "collaboration.control/uncertain", "collaboration.control/not_created", "collaboration.control/verify":
+	case "collaboration.control/claim", "collaboration.control/recover", "collaboration.control/receipt", "collaboration.control/uncertain", "collaboration.control/not_created", "collaboration.control/verify", "collaboration.control/dispatch", "collaboration.control/dispatch_recover", "collaboration.control/callback_claim", "collaboration.control/callback_ack":
 		if !local {
 			response.Error = protocolError("UNSUPPORTED_CAPABILITY", "capability or action is not available", false)
 			return response

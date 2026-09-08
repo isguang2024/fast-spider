@@ -18,7 +18,7 @@ import (
 
 const serverInstructions = `FastSpider_Local connects Codex directly to the Fast Spider Node running as the same OS user. It uses the current-user Local Bridge and never routes capability calls through the Hub.
 
-Call local_machine first when the local Node identity or capability catalog is needed. Use local_capability with one advertised capability/action and its normal Node parameters. Use collaboration_control only for the task-local collaboration SQLite claim/receipt bridge; the existing Node process executes it and it never contacts the Hub or a provider. Local transport does not make an underlying network-dependent action offline: remote Git, browser navigation, cloud AI, artifact publication, and provider authentication may still require network access.
+Call local_machine first when the local Node identity or capability catalog is needed. Use local_capability with one advertised capability/action and its normal Node parameters. Use collaboration_control for the task-local collaboration SQLite claim/receipt bridge and for the local dispatch/callback actions. Ledger-only actions never contact the Hub or a provider; dispatch actions use the co-located Node AgentController to create or reuse a Cloud CHAT and register its local callback. Local transport does not make an underlying network-dependent action offline: remote Git, browser navigation, cloud AI, artifact publication, and provider authentication may still require network access.
 
 Mutations keep their existing Node contracts. Preserve idempotency keys, use file read/SHA/preview/CAS for edits, drive every started job to a terminal state with job.control/watch, close caller-owned browser sessions, and do not retry an uncertain external create with a new key.`
 
@@ -125,7 +125,7 @@ func newServer(dataDir, version string, logger *slog.Logger, call bridgeCaller) 
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "collaboration_control",
-		Description: "Deterministically claim or reconcile one task-local collaboration SQLite dispatch. This local tool never contacts the Hub or a Cloud provider.",
+		Description: "Claim, dispatch, recover, or receive one task-local collaboration round through the co-located Node. Ledger-only actions never contact the Hub; dispatch uses the Node's existing Cloud provider and preserves the original idempotency key.",
 		Annotations: toolAnnotations(false, true, false, false),
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, input collaborationControlInput) (*mcp.CallToolResult, collaborationControlOutput, error) {
 		result, err := callCollaborationControl(ctx, dataDir, call, input)

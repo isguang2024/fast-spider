@@ -20,9 +20,9 @@ Provider Token、Codex/ChatGPT 本地认证和其他 Provider secret 只保留�
 
 ### 1.1 FastSpider_Local 与协作控制
 
-`fast-spider-node mcp-local` 是现有 STDIO MCP 适配入口，提供 `local_machine`、`local_capability` 和 `collaboration_control`。适配器不实现第二套状态服务；`collaboration_control` 经 Local Bridge 调用正在运行的 Node，由 Node 内部 Go/SQLite 代码完成任务 claim、冻结包摘要、dispatch token、receipt、权威未创建收口、不确定状态和恢复。短期 token 过期后由 Node 在后续写入时顺带清理。调用期间不启动 Python 子进程或新守护进程。
+`fast-spider-node mcp-local` 是现有 STDIO MCP 适配入口，提供 `local_machine`、`local_capability` 和 `collaboration_control`。适配器不实现第二套状态服务；`collaboration_control` 经 Local Bridge 调用正在运行的 Node。普通 ledger action 由 Node 内部 Go/SQLite 完成；`dispatch` 在同一次调用中原子 claim 冻结 READY，使用 Node 已有的 AgentController 创建或复用 ChatGPT Cloud CHAT，注册本机 callback，并把准确 binding 写回任务数据库。`dispatch_recover` 通过任务数据库身份找回原 token，只使用原冻结包、CHAT 与幂等键恢复中断阶段，调用方不传机械 token。调用期间不启动 Python 子进程或新守护进程。
 
-该能力只在 `HandleLocalCapability` 路径开放，不属于 Node 上报 Hub 的能力目录。它不持有 Cloud 凭据、不访问 Hub/provider、不派发 CHAT，也不轮询会话；Cloud 发送仍由调用方使用公网 `FastSpider_FS.codex_cloud_collaboration`。调用方在同一段程序化编排中原样传递 `claim.dispatchRequest → codex_cloud_collaboration → receipt.dispatchResult`，避免模型重写路径、CHAT ID、callback 或幂等键。
+该能力只在 `HandleLocalCapability` 路径开放，不属于 Node 上报 Hub 的能力目录。Provider 凭据仍只在本机 Node/Provider 中使用；Cloud create/send 不经过 Hub。Node 将正式结果放入按 transport 隔离的本机 callback 队列，原主控通过 `callback_claim` 领取并用 `callback_ack` 确认；ACK 会退役对应 route 和 watcher。公网 `FastSpider_FS` 的能力目录、远端 dispatch 和 Hub callback 契约保持兼容。
 
 ## 2. 多 AI Harness 与 CC Switch Routing
 
