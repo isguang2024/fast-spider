@@ -44,6 +44,30 @@ func TestCollaborationStateLifecycleUsesStructuredParamsWithoutProviderCalls(t *
 	}
 }
 
+func TestCollaborationStateInvalidTransitionReturnsActionableError(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data")})
+	initialized := callCollaborationTest(t, client, "init", collaborationStateInitParams(dbPath, []any{collaborationStateLocalItem("local-1", "planned")}))
+
+	started := collaborationStateIdentity(dbPath, "controller-1")
+	started["expectedRevision"] = initialized["revision"]
+	started["items"] = []any{map[string]any{"id": "local-1", "phase": "active", "next_action": "Run local work"}}
+	active := callCollaborationTest(t, client, "apply", started)
+
+	invalid := collaborationStateIdentity(dbPath, "controller-1")
+	invalid["expectedRevision"] = active["revision"]
+	invalid["items"] = []any{map[string]any{
+		"id": "local-1", "phase": "verifying", "next_action": "Validate",
+		"evidence": []any{"execution:done"}, "result": "completed", "terminal_ref": "execution:done",
+		"validation_owner": "validator-1", "validation_started_at": int64(1234),
+	}}
+	response := client.HandleLocalCapability(context.Background(), collaborationCapabilityRequest("apply", invalid))
+	if response.Error == nil || response.Error.Code != "INVALID_REQUEST" || response.Error.Message != "invalid transition; use claim/receipt or a new round" {
+		t.Fatalf("invalid transition error=%#v", response.Error)
+	}
+}
+
 func TestCollaborationStateReadsLegacyPythonSchemaAndFields(t *testing.T) {
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "collaboration.sqlite3")

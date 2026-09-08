@@ -3,6 +3,11 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.72 - 2026-09-08
+
+- Return the concrete local `collaboration.control` validation error instead of
+  collapsing state-transition failures into a generic `INVALID_REQUEST`.
+
 ## 0.4.71 - 2026-09-08
 
 - Complete the structured `collaboration.control` 2.0 lifecycle in task-local

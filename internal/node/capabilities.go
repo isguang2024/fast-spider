@@ -202,7 +202,7 @@ func (c *Client) handleCapabilityRequestFrom(ctx context.Context, req protocolv1
 		return response
 	}
 	if err != nil {
-		response.Error = capabilityError(err)
+		response.Error = capabilityErrorFor(req.Capability, err)
 		return response
 	}
 	raw, err := json.Marshal(result)
@@ -407,6 +407,24 @@ func capabilityError(err error) *protocolv1.ProtocolError {
 	default:
 		return protocolError("INVALID_REQUEST", "capability request could not be completed", false)
 	}
+}
+
+func capabilityErrorFor(capability string, err error) *protocolv1.ProtocolError {
+	result := capabilityError(err)
+	if capability != protocolv1.CollaborationControlCapability.CapabilityId || result.Code != "INVALID_REQUEST" || result.Message != "capability request could not be completed" {
+		return result
+	}
+	message := strings.TrimSpace(err.Error())
+	if message == "" {
+		return result
+	}
+	const maxCollaborationErrorRunes = 512
+	runes := []rune(message)
+	if len(runes) > maxCollaborationErrorRunes {
+		message = string(runes[:maxCollaborationErrorRunes])
+	}
+	result.Message = message
+	return result
 }
 
 func protocolError(code, message string, retryable bool) *protocolv1.ProtocolError {
