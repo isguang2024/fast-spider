@@ -100,8 +100,37 @@ func (c *Client) collaborationControl(ctx context.Context, action string, params
 		params = map[string]any{}
 	}
 	switch action {
-	case "init", "brief", "get", "next_actions", "record_action", "apply", "transfer_control", "observe", "observation", "close", "compact", "cleanup":
+	case "upgrade":
+		if err := requireCollaborationParams(params, "dbPath", "missionId", "actorSessionId", "expectedRevision", "backupPath", "evidenceRef"); err != nil {
+			return nil, err
+		}
+		var input collaborationUpgradeParams
+		if err := decodeCollaborationIdentityParams(params, &input); err != nil {
+			return nil, err
+		}
+		return c.collaborationUpgrade(ctx, input)
+	case "tree", "tree_update", "archive":
+		return c.collaborationTreeControl(ctx, action, params)
+	case "retry":
+		var input collaborationRetryParams
+		if err := decodeCollaborationIdentityParams(params, &input); err != nil {
+			return nil, err
+		}
+		return c.collaborationRetry(ctx, input)
+	case "init", "brief", "get", "next_actions", "record_action", "record_check", "apply", "transfer_control", "observe", "observation", "close", "compact", "cleanup":
 		return c.collaborationStateControl(ctx, action, params)
+	case "inbox":
+		var input collaborationInboxParams
+		if err := decodeCollaborationIdentityParams(params, &input); err != nil {
+			return nil, err
+		}
+		return c.collaborationInbox(ctx, input)
+	case "resolve":
+		var input collaborationResolveParams
+		if err := decodeCollaborationIdentityParams(params, &input); err != nil {
+			return nil, err
+		}
+		return c.collaborationResolve(ctx, input)
 	case "claim":
 		if err := requireCollaborationParams(params, "dbPath", "missionId", "actorSessionId", "expectedRevision", "itemId"); err != nil {
 			return nil, err
@@ -454,6 +483,14 @@ func (c *Client) collaborationDispatchToken(ctx context.Context, dispatchToken s
 	}
 	registerNeeded := phase == "" || phase == "prepared" || phase == "created"
 	if registerNeeded {
+		ledger, err := openCollaborationLedger(ctx, token.DBPath, token.MissionID, token.ActorSessionID, false)
+		if err != nil {
+			return nil, err
+		}
+		if ledger.hasInbox(ctx) {
+			registerParams["callbackInboxRoute"] = map[string]any{"dbPath": token.DBPath, "missionId": token.MissionID, "itemId": token.ItemID, "claim": token.Claim}
+		}
+		ledger.rollback()
 		if _, err := c.agent.Control(ctx, "session.callback.register", registerParams); err != nil {
 			// Register may have committed before a transport or persistence error.
 			// Keep the prepared/created identity and recover the exact route rather
@@ -1288,6 +1325,10 @@ func openCollaborationLedger(ctx context.Context, dbPath, missionID, actorSessio
 }
 
 func openCollaborationLedgerMode(ctx context.Context, dbPath, missionID, actorSessionID string, writable, allowClosed bool) (*collaborationLedger, error) {
+	return openCollaborationLedgerAccess(ctx, dbPath, missionID, actorSessionID, writable, allowClosed, false)
+}
+
+func openCollaborationLedgerAccess(ctx context.Context, dbPath, missionID, actorSessionID string, writable, allowClosed, callbackOnly bool) (*collaborationLedger, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open collaboration database: %w", err)
@@ -1332,7 +1373,15 @@ func openCollaborationLedgerMode(ctx context.Context, dbPath, missionID, actorSe
 	}
 	controller := mapStringValue(ledger.mission, "controller")
 	coordinator := mapStringValue(ledger.mission, "coordinator")
-	if actorSessionID != controller && actorSessionID != coordinator {
+	legacyCallback := false
+	if callbackOnly {
+		for _, old := range collaborationStringList(ledger.mission["legacy_callback_sessions"]) {
+			if old == actorSessionID {
+				legacyCallback = true
+			}
+		}
+	}
+	if actorSessionID != controller && actorSessionID != coordinator && !legacyCallback {
 		ledger.rollback()
 		return nil, errors.New("actor not bound to this task")
 	}
@@ -1420,6 +1469,22 @@ func (l *collaborationLedger) saveItem(ctx context.Context, item map[string]any)
 		itemID, phase, kind, l.revision, string(raw), nullableCollaborationString(dispatchKey), nullableCollaborationString(taskRef)); err != nil {
 		return err
 	}
+	var hasTree int
+	if err := l.conn.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='workstreams'").Scan(&hasTree); err != nil {
+		return err
+	}
+	if hasTree != 0 {
+		stream := mapStringValue(item, "workstream_id")
+		if stream != "" {
+			var found int
+			if err := l.conn.QueryRowContext(ctx, "SELECT 1 FROM workstreams WHERE id=?", stream).Scan(&found); err != nil {
+				return errors.New("unknown task workstream")
+			}
+		}
+		if _, err := l.conn.ExecContext(ctx, "UPDATE items SET title=?,workstream_id=?,archived=? WHERE id=?", mapStringValue(item, "title"), stream, boolInt(collaborationBoolDefault(item, "archived", false)), itemID); err != nil {
+			return err
+		}
+	}
 	if _, err := l.conn.ExecContext(ctx, "INSERT INTO events(revision,object_id,phase) VALUES(?,?,?)", l.revision, itemID, phase); err != nil {
 		return err
 	}
@@ -1484,6 +1549,16 @@ func (l *collaborationLedger) checkCloudCapacity(ctx context.Context) error {
 
 func (l *collaborationLedger) checkUnique(ctx context.Context, itemID string, item map[string]any) error {
 	key := collaborationDispatchKey(item)
+	if l.hasAttempts(ctx) && key != "" {
+		var found int
+		err := l.conn.QueryRowContext(ctx, "SELECT 1 FROM execution_attempts WHERE dispatch_key=? LIMIT 1", key).Scan(&found)
+		if err == nil {
+			return errors.New("idempotency key belongs to a historical execution attempt")
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
 	if key != "" {
 		var found int
 		err := l.conn.QueryRowContext(ctx, "SELECT 1 FROM items WHERE id<>? AND dispatch_key=? LIMIT 1", itemID, key).Scan(&found)

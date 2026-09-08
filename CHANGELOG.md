@@ -3,6 +3,15 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.74 - 2026-09-08
+
+- Add local collaboration v3 task trees, durable callback inboxes and atomic
+  result resolution; transport acknowledgement no longer hides unresolved work.
+- Keep stable task identities across retries and bound unchanged recovery checks
+  with backoff, without automatically resuming user-canceled Cloud turns.
+- Explicitly upgrade paused missions in place with a verified database backup
+  and bind existing Cloud callbacks without recreating sessions or completed work.
+
 ## 0.4.73 - 2026-09-08
 
 - Persist terminal callbacks when a ChatGPT Cloud turn fails or is canceled, so

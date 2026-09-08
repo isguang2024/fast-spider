@@ -1,13 +1,376 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/isguang2024/fast-spider/internal/node"
+	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
+
+func TestCallbackInboxRoutePersistsAcrossRegistrationAndPendingEvent(t *testing.T) {
+	dataDir := t.TempDir()
+	route := map[string]any{
+		"dbPath":    filepath.Join(dataDir, "callback-inbox.sqlite3"),
+		"missionId": "mission-route",
+		"itemId":    "item-route",
+		"claim":     "claim-route",
+	}
+	registration := testCallbackRegistration("route-source", "route-target", "route-task", 1)
+	registration.CallbackClaimTransport = callbackClaimTransportLocal
+	registration.CallbackInboxRoute = route
+	store := newSessionCallbackStore(dataDir)
+	if _, _, err := store.register(registration); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := store.enqueue(testCallbackEvent(registration.SourceSessionID, 1)); err != nil || !queued {
+		t.Fatalf("enqueue queued=%v err=%v", queued, err)
+	}
+
+	reloaded := newSessionCallbackStore(dataDir)
+	loaded, exists, err := reloaded.registrationFor(registration.SourceSessionID)
+	if err != nil || !exists || !callbackInboxRoutesEqual(loaded.CallbackInboxRoute, route) {
+		t.Fatalf("registration route=%#v exists=%v err=%v", loaded.CallbackInboxRoute, exists, err)
+	}
+	pending, err := reloaded.pendingSnapshot(registration.SourceSessionID, registration.TargetSessionID)
+	if err != nil || len(pending) != 1 || !callbackInboxRoutesEqual(pending[0].CallbackInboxRoute, route) {
+		t.Fatalf("pending route=%#v err=%v", pending, err)
+	}
+	metadata := collaborationResultMetadata(pending[0])
+	if !callbackInboxRoutesEqual(metadata["callbackInboxRoute"].(map[string]any), route) {
+		t.Fatalf("sink metadata route=%#v", metadata)
+	}
+	if _, ok := metadata["resultText"]; ok {
+		t.Fatal("callback result text crossed sink metadata")
+	}
+
+	hubRoute := registration
+	hubRoute.SourceSessionID = "route-hub-source"
+	hubRoute.CallbackClaimTransport = callbackClaimTransportHub
+	if _, _, err := reloaded.register(hubRoute); err == nil {
+		t.Fatal("accepted callback inbox route on hub transport")
+	}
+}
+
+func TestBindCollaborationInboxPreservesPendingClaimAndRollsBackAtomicFailure(t *testing.T) {
+	dataDir := t.TempDir()
+	store := newSessionCallbackStore(dataDir)
+	registration := testCallbackRegistration("bind-source", "bind-target", "bind-task", 3)
+	registration.CallbackClaimTransport = callbackClaimTransportLocal
+	if _, _, err := store.register(registration); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := store.enqueue(testCallbackEvent(registration.SourceSessionID, 1)); err != nil || !queued {
+		t.Fatalf("enqueue queued=%v err=%v", queued, err)
+	}
+	claimID, claimed, err := store.claim(registration.TargetSessionID, "bind-claim", 1, time.Now().UTC(), callbackClaimTransportLocal)
+	if err != nil || claimID != "bind-claim" || len(claimed) != 1 {
+		t.Fatalf("claim=%q events=%#v err=%v", claimID, claimed, err)
+	}
+	route := map[string]any{"dbPath": filepath.Join(dataDir, "mission.sqlite3"), "missionId": registration.MissionID, "itemId": "item-bind", "claim": "claim-bind"}
+	binding := map[string]any{"sourceSessionId": registration.SourceSessionID, "targetSessionId": registration.TargetSessionID, "missionId": registration.MissionID, "taskId": registration.TaskID, "generation": registration.Generation, "callbackInboxRoute": route}
+	var sinkEvents []map[string]any
+	dispatcher := newSessionCallbackDispatcher(store, nil, nil, nil, nil)
+	dispatcher.setCollaborationResultSink(func(_ context.Context, metadata map[string]any) error {
+		sinkEvents = append(sinkEvents, metadata)
+		return nil
+	})
+	manager := &AgentManager{callbackStore: store, callbackDispatcher: dispatcher}
+	if err := manager.BindCollaborationInbox(context.Background(), []map[string]any{binding}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sinkEvents) != 1 || !callbackInboxRoutesEqual(sinkEvents[0]["callbackInboxRoute"].(map[string]any), route) {
+		t.Fatalf("bind did not project pending event: %#v", sinkEvents)
+	}
+	if err := manager.BindCollaborationInbox(context.Background(), []map[string]any{binding}); err != nil {
+		t.Fatalf("same binding was not idempotent: %v", err)
+	}
+	loaded, exists, err := store.registrationFor(registration.SourceSessionID)
+	if err != nil || !exists || !callbackInboxRoutesEqual(loaded.CallbackInboxRoute, route) {
+		t.Fatalf("bound registration=%#v exists=%v err=%v", loaded, exists, err)
+	}
+	pending, err := store.pendingClaimSnapshot(registration.TargetSessionID, claimID, callbackClaimTransportLocal)
+	if err != nil || len(pending) != 1 || pending[0].ClaimID != claimID || !callbackInboxRoutesEqual(pending[0].CallbackInboxRoute, route) {
+		t.Fatalf("bound pending=%#v err=%v", pending, err)
+	}
+
+	conflicting := make(map[string]any, len(binding))
+	for key, value := range binding {
+		conflicting[key] = value
+	}
+	conflicting["callbackInboxRoute"] = map[string]any{"dbPath": filepath.Join(dataDir, "other.sqlite3"), "missionId": registration.MissionID, "itemId": "item-bind", "claim": "claim-bind"}
+	if err := manager.BindCollaborationInbox(context.Background(), []map[string]any{conflicting}); err == nil {
+		t.Fatal("conflicting binding was accepted")
+	}
+	loaded, _, _ = store.registrationFor(registration.SourceSessionID)
+	if !callbackInboxRoutesEqual(loaded.CallbackInboxRoute, route) {
+		t.Fatalf("conflict changed registration route=%#v", loaded.CallbackInboxRoute)
+	}
+
+	failureStore := newSessionCallbackStore(t.TempDir())
+	failureRegistration := testCallbackRegistration("bind-failure-source", "bind-failure-target", "bind-failure-task", 1)
+	failureRegistration.CallbackClaimTransport = callbackClaimTransportLocal
+	if _, _, err := failureStore.register(failureRegistration); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := failureStore.enqueue(testCallbackEvent(failureRegistration.SourceSessionID, 1)); err != nil || !queued {
+		t.Fatalf("failure enqueue queued=%v err=%v", queued, err)
+	}
+	failureStore.beforeCommitSaveOverride = func() error { return errors.New("injected persistence failure") }
+	failureManager := &AgentManager{callbackStore: failureStore}
+	failureRoute := map[string]any{"dbPath": filepath.Join(t.TempDir(), "failure.sqlite3"), "missionId": failureRegistration.MissionID, "itemId": "item-failure", "claim": "claim-failure"}
+	failureBinding := map[string]any{"sourceSessionId": failureRegistration.SourceSessionID, "targetSessionId": failureRegistration.TargetSessionID, "missionId": failureRegistration.MissionID, "taskId": failureRegistration.TaskID, "generation": failureRegistration.Generation, "callbackInboxRoute": failureRoute}
+	if err := failureManager.BindCollaborationInbox(context.Background(), []map[string]any{failureBinding}); err == nil {
+		t.Fatal("persistence failure was hidden")
+	}
+	failureLoaded, _, _ := failureStore.registrationFor(failureRegistration.SourceSessionID)
+	failurePending, _ := failureStore.pendingSnapshot(failureRegistration.SourceSessionID, failureRegistration.TargetSessionID)
+	if failureLoaded.CallbackInboxRoute != nil || len(failurePending) != 1 || failurePending[0].CallbackInboxRoute != nil {
+		t.Fatalf("failed bind partially mutated state: registration=%#v pending=%#v", failureLoaded, failurePending)
+	}
+}
+
+func TestBindCollaborationInboxRetriesPendingProjectionAfterSinkFailure(t *testing.T) {
+	store := newSessionCallbackStore(t.TempDir())
+	registration := testCallbackRegistration("bind-retry-source", "bind-retry-target", "bind-retry-task", 1)
+	registration.CallbackClaimTransport = callbackClaimTransportLocal
+	if _, _, err := store.register(registration); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := store.enqueue(testCallbackEvent(registration.SourceSessionID, 1)); err != nil || !queued {
+		t.Fatalf("enqueue queued=%v err=%v", queued, err)
+	}
+	route := map[string]any{"dbPath": filepath.Join(t.TempDir(), "retry.sqlite3"), "missionId": registration.MissionID, "itemId": "item-retry", "claim": "claim-retry"}
+	binding := map[string]any{"sourceSessionId": registration.SourceSessionID, "targetSessionId": registration.TargetSessionID, "missionId": registration.MissionID, "taskId": registration.TaskID, "generation": registration.Generation, "callbackInboxRoute": route}
+	dispatcher := newSessionCallbackDispatcher(store, nil, nil, nil, nil)
+	sinkCalls := 0
+	dispatcher.setCollaborationResultSink(func(_ context.Context, metadata map[string]any) error {
+		sinkCalls++
+		if sinkCalls == 1 {
+			return errors.New("inbox temporarily unavailable")
+		}
+		if !callbackInboxRoutesEqual(metadata["callbackInboxRoute"].(map[string]any), route) {
+			t.Fatalf("retry metadata route=%#v", metadata)
+		}
+		return nil
+	})
+	manager := &AgentManager{callbackStore: store, callbackDispatcher: dispatcher}
+	if err := manager.BindCollaborationInbox(context.Background(), []map[string]any{binding}); err == nil {
+		t.Fatal("sink failure was hidden")
+	}
+	if err := manager.BindCollaborationInbox(context.Background(), []map[string]any{binding}); err != nil {
+		t.Fatalf("same route retry failed: %v", err)
+	}
+	if sinkCalls != 2 {
+		t.Fatalf("sink calls=%d", sinkCalls)
+	}
+	pending, err := store.pendingSnapshot(registration.SourceSessionID, registration.TargetSessionID)
+	if err != nil || len(pending) != 1 || !callbackInboxRoutesEqual(pending[0].CallbackInboxRoute, route) {
+		t.Fatalf("pending after sink retry=%#v err=%v", pending, err)
+	}
+}
+
+func TestCallbackClaimAndCompletionAckRequireResultSinkBeforeMutation(t *testing.T) {
+	store := newSessionCallbackStore(t.TempDir())
+	registration := testCallbackRegistration("sink-claim-source", "sink-claim-target", "sink-claim-task", 1)
+	if _, _, err := store.register(registration); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := store.enqueue(testCallbackEvent(registration.SourceSessionID, 1)); err != nil || !queued {
+		t.Fatalf("enqueue queued=%v err=%v", queued, err)
+	}
+	dispatcher := newSessionCallbackDispatcher(store, nil, nil, nil, nil)
+	manager := &AgentManager{callbackStore: store, callbackDispatcher: dispatcher}
+	dispatcher.setCollaborationResultSink(func(context.Context, map[string]any) error {
+		return errors.New("inbox unavailable")
+	})
+	_, err := manager.sessionCallbackClaimContext(context.Background(), agentControlParams{
+		CallbackTargetSessionID: registration.TargetSessionID,
+		CallbackClaimID:         "sink-claim",
+		CallbackClaimLimit:      1,
+	})
+	if err == nil {
+		t.Fatal("claim succeeded while result sink failed")
+	}
+	pending, err := store.pendingSnapshot(registration.SourceSessionID, registration.TargetSessionID)
+	if err != nil || len(pending) != 1 || pending[0].ClaimID != "" {
+		t.Fatalf("failed claim did not release pending event: %#v err=%v", pending, err)
+	}
+
+	completionStore := newSessionCallbackStore(t.TempDir())
+	completionRegistration := testCallbackRegistration("sink-ack-source", "sink-ack-target", "sink-ack-task", 1)
+	if _, _, err := completionStore.register(completionRegistration); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := completionStore.enqueue(testCallbackEvent(completionRegistration.SourceSessionID, 1)); err != nil || !queued {
+		t.Fatalf("completion enqueue queued=%v err=%v", queued, err)
+	}
+	completionDispatcher := newSessionCallbackDispatcher(completionStore, nil, nil, nil, nil)
+	completionManager := &AgentManager{callbackStore: completionStore, callbackDispatcher: completionDispatcher}
+	completionDispatcher.setCollaborationResultSink(func(context.Context, map[string]any) error {
+		return errors.New("inbox unavailable")
+	})
+	_, err = completionManager.sessionCallbackAckContext(context.Background(), agentControlParams{
+		Mode:                    "completion",
+		SessionID:               completionRegistration.SourceSessionID,
+		CallbackTargetSessionID: completionRegistration.TargetSessionID,
+		CallbackMissionID:       completionRegistration.MissionID,
+		CallbackTaskID:          completionRegistration.TaskID,
+		CallbackGeneration:      completionRegistration.Generation,
+	})
+	if err == nil {
+		t.Fatal("completion ACK succeeded while result sink failed")
+	}
+	if pending, pendingErr := completionStore.pendingSnapshot(completionRegistration.SourceSessionID, completionRegistration.TargetSessionID); pendingErr != nil || len(pending) != 1 {
+		t.Fatalf("failed completion ACK removed pending event: %#v err=%v", pending, pendingErr)
+	}
+	if _, exists, registrationErr := completionStore.registrationFor(completionRegistration.SourceSessionID); registrationErr != nil || !exists {
+		t.Fatalf("failed completion ACK retired route: exists=%v err=%v", exists, registrationErr)
+	}
+}
+
+type callbackSinkCaptureAgent struct {
+	registerParams map[string]any
+}
+
+func (a *callbackSinkCaptureAgent) Control(_ context.Context, action string, params map[string]any) (map[string]any, error) {
+	if action == "session.callback.register" {
+		raw, err := json.Marshal(params)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(raw, &a.registerParams); err != nil {
+			return nil, err
+		}
+	}
+	switch action {
+	case "provider.readiness":
+		return map[string]any{"ready": true, "readyForSessionCreate": true}, nil
+	case "session.create":
+		return map[string]any{"sessionId": "cloud-sink-source"}, nil
+	case "session.send":
+		return map[string]any{"sessionId": "cloud-sink-source", "phase": "running"}, nil
+	default:
+		return map[string]any{"prepared": true}, nil
+	}
+}
+
+func (*callbackSinkCaptureAgent) Close(context.Context) error { return nil }
+
+func TestAgentManagerNodeLocalSinkProjectsInjectedMetadataToSQLite(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "mission.sqlite3")
+	fakeAgent := &callbackSinkCaptureAgent{}
+	fakeNode := node.NewLocalCapabilityClient(node.Config{DataDir: filepath.Join(root, "capture-node"), Agent: fakeAgent})
+	item := map[string]any{
+		"id": "task-sink", "kind": "implement", "phase": "ready", "owner": "owner-1", "executor": "cloud",
+		"next_action": "Wait", "evidence": []any{}, "depends_on": []any{}, "packet": map[string]any{
+			"machineId": "machine-1", "callbackSessionId": "controller-1", "workingDirectory": root,
+			"prompt": "Exercise the local callback sink.", "idempotencyKey": "sink-integration-key-001",
+			"targetSessionId": "cloud-sink-target", "accessMode": "write", "writeScope": "src/task", "callbackType": "text",
+		},
+		"binding": nil, "callback": "none", "result": "none", "validation": "pending", "integration": "pending",
+		"blocker": nil, "claim": nil, "source_ref": nil, "dispatch_key": nil, "terminal_ref": nil,
+		"validation_owner": nil, "validation_started_at": nil, "next_check_at": nil, "started_at": nil,
+		"priority": int64(100), "contract_refs": []any{}, "acceptance_ref": nil, "execution_ref": nil, "local_scope": nil,
+	}
+	initResponse := fakeNode.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{
+		RequestId: "sink-init", Capability: "collaboration.control", Action: "init",
+		Params: map[string]any{
+			"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "controller-1", "coordinator": "coordinator-1",
+			"authorityRef": "user-scope-1", "goal": "Deliver the bounded mission", "strategyRef": "strategy-1",
+			"nextAction": "Process current work", "dispatchEnabled": true, "continuation": map[string]any{"enabled": false},
+			"capacity": map[string]any{"cloud": int64(4), "local": int64(2)}, "items": []any{item},
+		},
+	})
+	if initResponse.Error != nil {
+		t.Fatalf("init failed: %#v", initResponse.Error)
+	}
+	claimResponse := fakeNode.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{
+		RequestId: "sink-claim", Capability: "collaboration.control", Action: "claim",
+		Params: map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-sink", "expectedRevision": initResponse.Result["revision"]},
+	})
+	if claimResponse.Error != nil {
+		t.Fatalf("claim failed: %#v", claimResponse.Error)
+	}
+	dispatchResponse := fakeNode.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{
+		RequestId: "sink-dispatch", Capability: "collaboration.control", Action: "dispatch",
+		Params: map[string]any{"dispatchToken": claimResponse.Result["dispatchToken"]},
+	})
+	if dispatchResponse.Error != nil {
+		t.Fatalf("dispatch failed: %#v", dispatchResponse.Error)
+	}
+	if fakeAgent.registerParams == nil {
+		t.Fatalf("dispatch did not capture callback registration: response=%#v", dispatchResponse.Result)
+	}
+	route, ok := fakeAgent.registerParams["callbackInboxRoute"].(map[string]any)
+	if !ok {
+		t.Fatalf("callback inbox route missing from registration: %#v", fakeAgent.registerParams)
+	}
+
+	manager := New(filepath.Join(root, "agent"), nil)
+	defer manager.Close(context.Background())
+	localNode := node.NewLocalCapabilityClient(node.Config{DataDir: filepath.Join(root, "real-node"), Agent: manager})
+	if manager.callbackDispatcher.collaborationResultSink() == nil {
+		t.Fatal("NewLocalCapabilityClient did not inject collaboration result sink")
+	}
+	generation, ok := fakeAgent.registerParams["callbackGeneration"].(float64)
+	if !ok {
+		t.Fatalf("callback generation missing from registration: %#v", fakeAgent.registerParams)
+	}
+	event := sessionCallbackEvent{
+		SourceSessionID:        fakeAgent.registerParams["sessionId"].(string),
+		TargetSessionID:        fakeAgent.registerParams["callbackTargetSessionId"].(string),
+		MissionID:              fakeAgent.registerParams["callbackMissionId"].(string),
+		TaskID:                 fakeAgent.registerParams["callbackTaskId"].(string),
+		Generation:             int64(generation),
+		EventSequence:          1,
+		EventKey:               "submitted_sink_integration",
+		EventType:              "conversation.turn.complete",
+		CompletionSource:       "local-submission",
+		OccurredAt:             time.Now().UTC(),
+		CallbackType:           "text",
+		CallbackClaimTransport: callbackClaimTransportLocal,
+		CallbackInboxRoute:     route,
+		CallbackOutcome:        "completed",
+		ResultStatus:           "completed",
+	}
+	if err := manager.persistCollaborationCallbackEvents(context.Background(), []sessionCallbackEvent{event}); err != nil {
+		t.Fatalf("AgentManager sink projection failed: %v", err)
+	}
+	inbox := localNode.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{
+		RequestId: "sink-inbox", Capability: "collaboration.control", Action: "inbox",
+		Params: map[string]any{"dbPath": route["dbPath"], "missionId": route["missionId"], "actorSessionId": event.TargetSessionID},
+	})
+	if inbox.Error != nil {
+		t.Fatalf("inbox read failed: %#v", inbox.Error)
+	}
+	results, ok := inbox.Result["results"].([]any)
+	if !ok || len(results) != 1 {
+		t.Fatalf("projected inbox=%#v", inbox.Result)
+	}
+	resultSummary, ok := results[0].(map[string]any)
+	if !ok {
+		t.Fatalf("projected inbox result=%#v", results[0])
+	}
+	detail := localNode.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{
+		RequestId: "sink-inbox-detail", Capability: "collaboration.control", Action: "inbox",
+		Params: map[string]any{"dbPath": route["dbPath"], "missionId": route["missionId"], "actorSessionId": event.TargetSessionID, "resultId": resultSummary["resultId"]},
+	})
+	if detail.Error != nil {
+		t.Fatalf("inbox detail failed: %#v", detail.Error)
+	}
+	stored, ok := detail.Result["result"].(map[string]any)
+	if !ok || stored["eventKey"] != event.EventKey || stored["callbackInboxRoute"] == nil || stored["callbackOutcome"] != event.CallbackOutcome {
+		t.Fatalf("stored metadata=%#v", stored)
+	}
+}
 
 func TestCallbackStoreSchema3DefaultsTransportToHubAndSchema4PersistsLocal(t *testing.T) {
 	dir := t.TempDir()

@@ -99,3 +99,122 @@ func TestCallbackRetryBackoffCapSuccessAndSaveFailure(t *testing.T) {
 		t.Fatalf("success did not clear retry: %v %v", items, err)
 	}
 }
+
+func TestCollaborationResultSinkMustSucceedBeforeCallbackWakeAndReplaysAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	store := newSessionCallbackStore(dir)
+	registration := testCallbackRegistration("sink-source", "sink-target", "sink-task", 7)
+	registration.CallbackType = "text"
+	registration.ImmediateWake = true
+	if _, _, err := store.register(registration); err != nil {
+		t.Fatal(err)
+	}
+	event := testCallbackEvent(registration.SourceSessionID, 1)
+	event.CallbackType = registration.CallbackType
+	event.CallbackOutcome = "failed"
+	event.CallbackErrorCode = "CALLBACK_TEXT_REQUIRED"
+	event.ResultText = "must not cross sink"
+	if queued, err := store.enqueue(event); err != nil || !queued {
+		t.Fatalf("queued=%v err=%v", queued, err)
+	}
+
+	var sinkCalls int
+	var sendCalls int
+	dispatcher := newSessionCallbackDispatcher(store, nil, nil, func(context.Context, string, string) (sessionCallbackDeliveryResult, error) {
+		sendCalls++
+		return testAppServerCallbackDelivery(), nil
+	}, nil)
+	dispatcher.setCollaborationResultSink(func(_ context.Context, metadata map[string]any) error {
+		sinkCalls++
+		if _, leaked := metadata["resultText"]; leaked {
+			t.Fatal("callback text crossed result sink")
+		}
+		if metadata["sourceSessionId"] != registration.SourceSessionID || metadata["targetSessionId"] != registration.TargetSessionID || metadata["taskId"] != registration.TaskID || metadata["missionId"] != registration.MissionID || metadata["generation"] != registration.Generation || metadata["callbackOutcome"] != "failed" || metadata["callbackErrorCode"] != event.CallbackErrorCode {
+			t.Fatalf("metadata=%#v", metadata)
+		}
+		return errors.New("task database unavailable")
+	})
+	dispatcher.dispatchOnce()
+	if sendCalls != 0 || sinkCalls != 1 {
+		t.Fatalf("failed sink still woke target: sends=%d sinkCalls=%d", sendCalls, sinkCalls)
+	}
+	registrations, _, err := store.registrationsSnapshot(registration.SourceSessionID, "")
+	if err != nil || len(registrations) != 1 || registrations[0].NudgeFailureCount != 1 {
+		t.Fatalf("sink failure retry state=%#v err=%v", registrations, err)
+	}
+	if pending, err := store.pendingSnapshot(registration.SourceSessionID, registration.TargetSessionID); err != nil || len(pending) != 1 {
+		t.Fatalf("sink failure removed pending=%#v err=%v", pending, err)
+	}
+
+	dispatcher.setCollaborationResultSink(func(_ context.Context, metadata map[string]any) error {
+		sinkCalls++
+		if metadata["resultTextAvailable"] != true {
+			t.Fatalf("metadata omitted bounded text presence=%#v", metadata)
+		}
+		return nil
+	})
+	store.mu.Lock()
+	registrationState := store.registrations[registration.SourceSessionID]
+	registrationState.NudgeRetryAt = time.Time{}
+	store.registrations[registration.SourceSessionID] = registrationState
+	store.mu.Unlock()
+	dispatcher.dispatchOnce()
+	if sendCalls != 1 || sinkCalls != 2 {
+		t.Fatalf("successful retry did not wake target: sends=%d sinkCalls=%d", sendCalls, sinkCalls)
+	}
+
+	restartRegistration := testCallbackRegistration("sink-source-restart", "sink-target", "sink-task-restart", 8)
+	restartRegistration.CallbackType = "text"
+	restartRegistration.ImmediateWake = true
+	if _, _, err := store.register(restartRegistration); err != nil {
+		t.Fatal(err)
+	}
+	restartEvent := testCallbackEvent(restartRegistration.SourceSessionID, 1)
+	restartEvent.CallbackType = restartRegistration.CallbackType
+	restartEvent.CallbackOutcome = "completed"
+	restartEvent.ResultText = "restart body stays out of sink metadata"
+	if queued, err := store.enqueue(restartEvent); err != nil || !queued {
+		t.Fatalf("restart queued=%v err=%v", queued, err)
+	}
+	dispatcher.setCollaborationResultSink(func(_ context.Context, _ map[string]any) error {
+		sinkCalls++
+		return errors.New("task database unavailable before restart")
+	})
+	dispatcher.dispatchOnce()
+	if sendCalls != 1 {
+		t.Fatalf("failed restart sink woke target: sends=%d", sendCalls)
+	}
+
+	restarted := newSessionCallbackStore(dir)
+	restartedSinkCalls := 0
+	restartedSendCalls := 0
+	restartedDispatcher := newSessionCallbackDispatcher(restarted, nil, nil, func(context.Context, string, string) (sessionCallbackDeliveryResult, error) {
+		restartedSendCalls++
+		return testAppServerCallbackDelivery(), nil
+	}, nil)
+	restarted.mu.Lock()
+	restartedState := restarted.registrations[restartRegistration.SourceSessionID]
+	restartedState.NudgeRetryAt = time.Time{}
+	restarted.registrations[restartRegistration.SourceSessionID] = restartedState
+	if _, err := restarted.saveLocked(); err != nil {
+		restarted.mu.Unlock()
+		t.Fatal(err)
+	}
+	restarted.mu.Unlock()
+	restartedDispatcher.setCollaborationResultSink(func(_ context.Context, metadata map[string]any) error {
+		restartedSinkCalls++
+		if metadata["eventKey"] == "" || metadata["callbackOutcome"] != "completed" {
+			t.Fatalf("replayed metadata=%#v", metadata)
+		}
+		if metadata["resultText"] != nil {
+			t.Fatalf("replayed metadata leaked result text=%#v", metadata)
+		}
+		return nil
+	})
+	// The second pending event survives the failed nudge until the business
+	// callback ACK. A fresh dispatcher must replay it for the restarted task DB.
+	restartedDispatcher.dispatchOnce()
+	if restartedSinkCalls != 1 || restartedSendCalls != 1 {
+		t.Fatalf("durable pending did not replay sink/wake after restart: sink=%d sends=%d", restartedSinkCalls, restartedSendCalls)
+	}
+}
