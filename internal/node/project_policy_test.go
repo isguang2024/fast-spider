@@ -149,3 +149,23 @@ func TestLocalCapabilityClientEnforcesConfiguredProjectRoot(t *testing.T) {
 		t.Fatalf("invalid project root was ignored: %#v", invalidResponse)
 	}
 }
+
+func TestProjectModeCollaborationStateKeepsEachDatabaseInsideProject(t *testing.T) {
+	projectRoot := t.TempDir()
+	outsideRoot := t.TempDir()
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(projectRoot, "node-data"), ProjectRoot: projectRoot})
+	params := collaborationStateInitParams(filepath.Join(outsideRoot, "collaboration.sqlite3"), nil)
+	response := client.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{
+		RequestId: "outside-collaboration-state", Capability: "collaboration.control", Action: "init", Params: params,
+	})
+	if response.Error == nil || response.Error.Code != "PROJECT_PATH_FORBIDDEN" {
+		t.Fatalf("outside collaboration database response=%#v", response)
+	}
+	inside := collaborationStateInitParams(filepath.Join(projectRoot, "collaboration.sqlite3"), nil)
+	response = client.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{
+		RequestId: "inside-collaboration-state", Capability: "collaboration.control", Action: "init", Params: inside,
+	})
+	if response.Error != nil {
+		t.Fatalf("inside collaboration database rejected: %#v", response.Error)
+	}
+}

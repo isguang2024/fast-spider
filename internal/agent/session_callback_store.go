@@ -1244,6 +1244,17 @@ func (s *sessionCallbackStore) claim(targetSessionID, requestedClaimID string, l
 		}
 	}
 	if len(existing) > 0 {
+		for i := range existing {
+			event := s.pending[existing[i].SourceSessionID]
+			registration := s.registrations[existing[i].SourceSessionID]
+			if refreshLocalFileCallbackMetadata(&event, &registration) {
+				released = true // also persists refreshed deliverable metadata
+				registration.UpdatedAt = now
+				s.registrations[existing[i].SourceSessionID] = registration
+				s.pending[existing[i].SourceSessionID] = event
+				existing[i] = event
+			}
+		}
 		if err := persistReleased(); err != nil {
 			return "", nil, err
 		}
@@ -1292,14 +1303,16 @@ func (s *sessionCallbackStore) claim(targetSessionID, requestedClaimID string, l
 		}
 		return requestedClaimID, nil, nil
 	}
-	for _, selected := range available {
+	for i, selected := range available {
 		event := s.pending[selected.SourceSessionID]
+		registration := s.registrations[selected.SourceSessionID]
+		refreshLocalFileCallbackMetadata(&event, &registration)
 		event.ClaimID = claimID
 		event.ClaimedAt = now
 		s.pending[selected.SourceSessionID] = event
-		registration := s.registrations[selected.SourceSessionID]
 		registration.UpdatedAt = now
 		s.registrations[selected.SourceSessionID] = registration
+		available[i] = event
 	}
 	if _, err := s.saveLocked(); err != nil {
 		restore()
@@ -1476,6 +1489,25 @@ func (s *sessionCallbackStore) acknowledgeClaimAndRetire(targetSessionID, claimI
 	// All entries are validated before mutating either map. This keeps a
 	// multi-event local ACK atomic when one event is stale or malformed.
 	retired := make([]sessionCallbackRegistration, 0, len(claimed))
+	metadataChanged := false
+	for i := range claimed {
+		item := &claimed[i]
+		if refreshLocalFileCallbackMetadata(&item.event, &item.registration) {
+			metadataChanged = true
+		}
+		s.pending[item.source] = item.event
+		s.registrations[item.source] = item.registration
+		if item.event.CallbackType == protocolv1.CloudCallbackTypeLocalFile && item.event.DeliverableStatus != "ready" {
+			if metadataChanged {
+				if _, err := s.saveLocked(); err != nil {
+					s.registrations = previousRegistrations
+					s.pending = previousPending
+					return 0, nil, err
+				}
+			}
+			return 0, nil, &sessionCallbackError{code: "TASK_RESULT_FILE_INVALID", message: "the assigned local result must be a readable regular file no larger than 256 MiB"}
+		}
+	}
 	for _, item := range claimed {
 		delete(s.pending, item.source)
 		delete(s.registrations, item.source)
@@ -1507,6 +1539,57 @@ func (s *sessionCallbackStore) acknowledgeClaimAndRetire(targetSessionID, claimI
 		return 0, nil, err
 	}
 	return len(retired), retired, nil
+}
+
+// refreshLocalFileCallbackMetadata revalidates a local_file deliverable at the
+// point where it is exposed or retired. enqueue intentionally clears result
+// metadata for a new event, and a file can also disappear after claim, so the
+// durable queue must never report or consume stale file state.
+func refreshLocalFileCallbackMetadata(event *sessionCallbackEvent, registration *sessionCallbackRegistration) bool {
+	if event == nil || registration == nil || registration.CallbackType != protocolv1.CloudCallbackTypeLocalFile {
+		return false
+	}
+	oldCallbackType := event.CallbackType
+	oldDeliverablePath := event.DeliverablePath
+	oldDeliverableStatus := event.DeliverableStatus
+	oldResultStatus := event.ResultStatus
+	oldResultBytes := event.ResultBytes
+	oldResultSHA256 := event.ResultSHA256
+	oldLastResultID := registration.LastResultID
+	oldLastResultStatus := registration.LastResultStatus
+	oldLastResultBytes := registration.LastResultBytes
+	oldLastResultSHA256 := registration.LastResultSHA256
+	oldLastResultPageCount := registration.LastResultPageCount
+	path := registration.DeliverablePath
+	status, bytes, digest := inspectCallbackDeliverable(path)
+	event.CallbackType = registration.CallbackType
+	event.DeliverablePath = path
+	event.DeliverableStatus = status
+	if status == "ready" {
+		event.ResultStatus = "ready"
+		event.ResultBytes = bytes
+		event.ResultSHA256 = digest
+	} else {
+		event.ResultStatus = "failed"
+		event.ResultBytes = 0
+		event.ResultSHA256 = ""
+	}
+	registration.LastResultID = event.ResultID
+	registration.LastResultStatus = event.ResultStatus
+	registration.LastResultBytes = event.ResultBytes
+	registration.LastResultSHA256 = event.ResultSHA256
+	registration.LastResultPageCount = event.ResultPageCount
+	return oldCallbackType != event.CallbackType ||
+		oldDeliverablePath != event.DeliverablePath ||
+		oldDeliverableStatus != event.DeliverableStatus ||
+		oldResultStatus != event.ResultStatus ||
+		oldResultBytes != event.ResultBytes ||
+		oldResultSHA256 != event.ResultSHA256 ||
+		oldLastResultID != registration.LastResultID ||
+		oldLastResultStatus != registration.LastResultStatus ||
+		oldLastResultBytes != registration.LastResultBytes ||
+		oldLastResultSHA256 != registration.LastResultSHA256 ||
+		oldLastResultPageCount != registration.LastResultPageCount
 }
 
 func retiredCallbackClaimKey(targetSessionID, transport, claimID string) string {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -77,6 +78,28 @@ func TestCollaborationControlMCPLocalBridgeNodeFakeAgentE2E(t *testing.T) {
 	sort.Strings(names)
 	if got, want := names, []string{"collaboration_control", "local_capability", "local_machine"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 		t.Fatalf("tools=%v", got)
+	}
+
+	stateDB := filepath.Join(workingDirectory, "state-v2.sqlite3")
+	stateCall, err := client.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "collaboration_control",
+		Arguments: map[string]any{
+			"action": "init",
+			"params": map[string]any{
+				"dbPath": stateDB, "missionId": "state-e2e", "actorSessionId": "state-controller",
+				"coordinator": "state-coordinator", "authorityRef": "test:authorized", "nextAction": "Wait",
+				"dispatchEnabled": true, "continuation": map[string]any{"enabled": false}, "items": []any{},
+			},
+		},
+	})
+	if err != nil || stateCall.IsError {
+		t.Fatalf("structured init failed: result=%#v err=%v", stateCall, err)
+	}
+	if _, err := os.Stat(stateDB); err != nil {
+		t.Fatalf("structured init did not create the task database: %v", err)
+	}
+	if len(agent.actionsSnapshot()) != 0 {
+		t.Fatalf("ledger-only MCP action contacted provider: %v", agent.actionsSnapshot())
 	}
 
 	callResult, err := client.CallTool(context.Background(), &mcp.CallToolParams{

@@ -70,6 +70,127 @@ func TestCollaborationControlIsLocalOnlyAndClosesDispatchReceipt(t *testing.T) {
 	}
 }
 
+func TestCollaborationControlConcurrentReceiptsShareCompletedResult(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "chat-target")
+	createCollaborationTestLedger(t, dbPath, packet)
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data")})
+	claimed := callCollaborationTest(t, client, "claim", map[string]any{
+		"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1",
+		"expectedRevision": 1, "itemId": "task-1",
+	})
+	token := claimed["dispatchToken"].(string)
+	dispatchResult := map[string]any{"chatSessionId": "chat-target", "collaborationId": "collaboration-concurrent", "taskRef": "task-ref-concurrent", "callbackSessionId": "controller-1"}
+
+	start := make(chan struct{})
+	responses := make(chan protocolv1.CapabilityResponse, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			<-start
+			responses <- client.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{
+				RequestId: "concurrent-receipt", Capability: "collaboration.control", Action: "receipt",
+				Params: map[string]any{"dispatchToken": token, "dispatchResult": dispatchResult},
+			})
+		}()
+	}
+	close(start)
+	first, second := <-responses, <-responses
+	if first.Error != nil || second.Error != nil {
+		t.Fatalf("concurrent receipts failed: first=%#v second=%#v", first, second)
+	}
+	delete(first.Result, "timing")
+	delete(second.Result, "timing")
+	if !collaborationMapsEqual(first.Result, second.Result) || first.Result["phase"] != "active" {
+		t.Fatalf("concurrent receipt results diverged: first=%#v second=%#v", first.Result, second.Result)
+	}
+	completed, err := client.readCollaborationToken(token)
+	if err != nil || completed.Completed == nil {
+		t.Fatalf("completed receipt was not persisted: token=%#v err=%v", completed, err)
+	}
+	if !collaborationMapsEqual(completed.Completed, first.Result) {
+		t.Fatalf("persisted completed receipt changed: persisted=%#v response=%#v", completed.Completed, first.Result)
+	}
+	if item := readCollaborationTestItem(t, dbPath); item["phase"] != "active" {
+		t.Fatalf("concurrent receipt regressed ledger: %#v", item)
+	}
+}
+
+func TestCollaborationControlReceiptAndUncertainDoNotRegress(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "chat-target")
+	createCollaborationTestLedger(t, dbPath, packet)
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data")})
+	claimed := callCollaborationTest(t, client, "claim", map[string]any{
+		"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1",
+		"expectedRevision": 1, "itemId": "task-1",
+	})
+	token := claimed["dispatchToken"].(string)
+	uncertain := callCollaborationTest(t, client, "uncertain", map[string]any{"dispatchToken": token, "evidenceRef": "fs:uncertain-first"})
+	if uncertain["phase"] != "in_doubt" {
+		t.Fatalf("uncertain transition=%#v", uncertain)
+	}
+	receipt := callCollaborationTest(t, client, "receipt", map[string]any{
+		"dispatchToken":  token,
+		"dispatchResult": map[string]any{"chatSessionId": "chat-target", "collaborationId": "collaboration-after-uncertain", "taskRef": "task-ref-after-uncertain", "callbackSessionId": "controller-1"},
+	})
+	if receipt["phase"] != "active" {
+		t.Fatalf("receipt did not advance in-doubt state: %#v", receipt)
+	}
+	replayed := callCollaborationTest(t, client, "uncertain", map[string]any{"dispatchToken": token, "evidenceRef": "fs:late-uncertain"})
+	if !collaborationMapsEqual(receipt, replayed) {
+		t.Fatalf("late uncertain receipt overwrote completed active result: receipt=%#v late=%#v", receipt, replayed)
+	}
+	if item := readCollaborationTestItem(t, dbPath); item["phase"] != "active" {
+		t.Fatalf("receipt/uncertain sequence regressed ledger: %#v", item)
+	}
+}
+
+func TestCollaborationControlReceiptAndNotCreatedDoNotOverwriteCompletedState(t *testing.T) {
+	for _, firstAction := range []string{"not_created", "receipt"} {
+		t.Run(firstAction+"-first", func(t *testing.T) {
+			root := t.TempDir()
+			dbPath := filepath.Join(root, "collaboration.sqlite3")
+			packet := collaborationTestPacket(root, "chat-target")
+			createCollaborationTestLedger(t, dbPath, packet)
+			client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data")})
+			claimed := callCollaborationTest(t, client, "claim", map[string]any{
+				"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1",
+				"expectedRevision": 1, "itemId": "task-1",
+			})
+			token := claimed["dispatchToken"].(string)
+			receiptParams := map[string]any{
+				"dispatchToken":  token,
+				"dispatchResult": map[string]any{"chatSessionId": "chat-target", "collaborationId": "collaboration-order", "taskRef": "task-ref-order", "callbackSessionId": "controller-1"},
+			}
+			notCreatedParams := map[string]any{"dispatchToken": token, "noTaskCreated": true, "evidenceRef": "fs:not-created-order"}
+
+			var first, second map[string]any
+			if firstAction == "not_created" {
+				first = callCollaborationTest(t, client, "not_created", notCreatedParams)
+				second = callCollaborationTest(t, client, "receipt", receiptParams)
+				if first["phase"] != "dispatch_rejected" || second["phase"] != "dispatch_rejected" {
+					t.Fatalf("not_created then receipt changed terminal state: first=%#v second=%#v", first, second)
+				}
+			} else {
+				first = callCollaborationTest(t, client, "receipt", receiptParams)
+				second = callCollaborationTest(t, client, "not_created", notCreatedParams)
+				if first["phase"] != "active" || second["phase"] != "active" {
+					t.Fatalf("receipt then not_created changed active state: first=%#v second=%#v", first, second)
+				}
+			}
+			completed, err := client.readCollaborationToken(token)
+			if err != nil || completed.Completed == nil {
+				t.Fatalf("terminal result was not persisted: token=%#v err=%v", completed, err)
+			}
+			if !collaborationMapsEqual(completed.Completed, second) {
+				t.Fatalf("terminal result was overwritten: persisted=%#v second=%#v", completed.Completed, second)
+			}
+		})
+	}
+}
+
 func TestCollaborationControlSerializesClaimsAndPreservesUncertainPacket(t *testing.T) {
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "collaboration.sqlite3")
@@ -301,6 +422,117 @@ func TestCollaborationControlDispatchClaimsIdentityInOneLocalCall(t *testing.T) 
 	}
 	if !agent.hasAction("session.create") || readCollaborationTestItem(t, dbPath)["phase"] != "active" {
 		t.Fatalf("direct dispatch did not claim and complete: calls=%v", agent.actions)
+	}
+}
+
+func TestCollaborationControlDispatchIdentityRetryReplaysActiveReceipt(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "")
+	createCollaborationTestLedger(t, dbPath, packet)
+	agent := &collaborationTestAgent{results: map[string]map[string]any{"session.create": {"sessionId": "cloud-identity-replay-1"}}}
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data"), Agent: agent})
+	identity := map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-1"}
+
+	first := callCollaborationTest(t, client, "dispatch", identity)
+	second := callCollaborationTest(t, client, "dispatch", identity)
+	if !collaborationMapsEqual(first, second) {
+		t.Fatalf("identity retry changed active receipt: first=%#v second=%#v", first, second)
+	}
+	if agent.actionCount("session.create") != 1 || agent.actionCount("session.send") != 0 {
+		t.Fatalf("identity retry repeated provider work: %v", agent.actions)
+	}
+}
+
+func TestCollaborationControlDispatchIdentityRetryReusesInDoubtToken(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "cloud-existing-in-doubt-1")
+	createCollaborationTestLedger(t, dbPath, packet)
+	agent := &collaborationTestAgent{errors: map[string]error{"session.callback.register": errors.New("callback register unavailable")}}
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data"), Agent: agent})
+	identity := map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-1"}
+
+	first := callCollaborationTest(t, client, "dispatch", identity)
+	second := callCollaborationTest(t, client, "dispatch", identity)
+	if first["phase"] != "in_doubt" || second["phase"] != "in_doubt" || first["dispatchToken"] != second["dispatchToken"] {
+		t.Fatalf("identity retry changed in-doubt state: first=%#v second=%#v", first, second)
+	}
+	if agent.actionCount("session.create") != 0 || agent.actionCount("session.send") != 0 {
+		t.Fatalf("in-doubt identity retry created or sent a second task: %v", agent.actions)
+	}
+}
+
+func TestCollaborationControlDispatchIdentityRetryUsesExistingDispatchingClaim(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "")
+	createCollaborationTestLedger(t, dbPath, packet)
+	agent := &collaborationTestAgent{results: map[string]map[string]any{"session.create": {"sessionId": "cloud-dispatching-retry-1"}}}
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data"), Agent: agent})
+	claim := callCollaborationTest(t, client, "claim", map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "expectedRevision": 1, "itemId": "task-1"})
+	identity := map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-1"}
+
+	retried := callCollaborationTest(t, client, "dispatch", identity)
+	if retried["phase"] != "active" {
+		t.Fatalf("dispatching identity retry did not reuse claim: claim=%#v retry=%#v", claim, retried)
+	}
+	item := readCollaborationTestItem(t, dbPath)
+	if item["claim"] != claim["claim"] {
+		t.Fatalf("dispatching identity retry changed claim: item=%#v claim=%#v", item, claim)
+	}
+	if agent.actionCount("session.create") != 1 {
+		t.Fatalf("dispatching identity retry created %d CHATs", agent.actionCount("session.create"))
+	}
+}
+
+func TestCollaborationControlConcurrentDirectDispatchesReuseClaimAndReceipt(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "")
+	createCollaborationTestLedger(t, dbPath, packet)
+	agent := &collaborationTestAgent{results: map[string]map[string]any{"session.create": {"sessionId": "cloud-concurrent-direct-1"}}}
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data"), Agent: agent})
+	identity := map[string]any{"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1", "itemId": "task-1"}
+
+	var barrierMu sync.Mutex
+	arrived := 0
+	release := make(chan struct{})
+	collaborationDirectReadyHook = func() {
+		barrierMu.Lock()
+		arrived++
+		if arrived == 2 {
+			close(release)
+		}
+		barrierMu.Unlock()
+		<-release
+	}
+	defer func() { collaborationDirectReadyHook = nil }()
+
+	responses := make(chan protocolv1.CapabilityResponse, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			responses <- client.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{
+				RequestId: "concurrent-direct-dispatch", Capability: "collaboration.control", Action: "dispatch", Params: identity,
+			})
+		}()
+	}
+	first, second := <-responses, <-responses
+	if first.Error != nil || second.Error != nil {
+		t.Fatalf("concurrent direct dispatch failed: first=%#v second=%#v", first, second)
+	}
+	delete(first.Result, "timing")
+	delete(second.Result, "timing")
+	if !collaborationMapsEqual(first.Result, second.Result) || first.Result["phase"] != "active" {
+		t.Fatalf("concurrent direct dispatches diverged: first=%#v second=%#v", first.Result, second.Result)
+	}
+	if agent.actionCount("session.create") != 1 || agent.actionCount("session.callback.register") != 1 || agent.actionCount("session.callback.arm") != 1 {
+		t.Fatalf("concurrent direct dispatch repeated provider/callback work: %v", agent.actions)
+	}
+	collaborationDispatchLocks.Lock()
+	defer collaborationDispatchLocks.Unlock()
+	if len(collaborationDispatchLocks.locks) != 0 {
+		t.Fatalf("per-token dispatch lock was not cleaned up: %d locks remain", len(collaborationDispatchLocks.locks))
 	}
 }
 
@@ -606,6 +838,67 @@ func TestCollaborationControlCompletedTokenStillHonorsProjectBoundary(t *testing
 	}
 }
 
+func TestCollaborationControlRejectsCorruptCompletedTokenBeforeShortCircuit(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "collaboration.sqlite3")
+	packet := collaborationTestPacket(root, "")
+	createCollaborationTestLedger(t, dbPath, packet)
+	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node-data")})
+	claimed := callCollaborationTest(t, client, "claim", map[string]any{
+		"dbPath": dbPath, "missionId": "mission-1", "actorSessionId": "coordinator-1",
+		"expectedRevision": 1, "itemId": "task-1",
+	})
+	tokenID := claimed["dispatchToken"].(string)
+	record, err := client.readCollaborationToken(tokenID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Completed = map[string]any{"phase": "active"}
+
+	t.Run("missing identity", func(t *testing.T) {
+		corrupt := record
+		corrupt.ActorSessionID = ""
+		if err := client.writeCollaborationToken(tokenID, corrupt); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.collaborationControl(context.Background(), "dispatch", map[string]any{"dispatchToken": tokenID}); err == nil || !strings.Contains(err.Error(), "incomplete") {
+			t.Fatalf("missing completed identity was accepted: %v", err)
+		}
+	})
+
+	t.Run("token identity", func(t *testing.T) {
+		alias := strings.Repeat("c", 64)
+		if err := client.writeCollaborationToken(alias, record); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.collaborationControl(context.Background(), "dispatch", map[string]any{"dispatchToken": alias}); err == nil || !strings.Contains(err.Error(), "identity") {
+			t.Fatalf("completed token id drift was accepted: %v", err)
+		}
+	})
+
+	t.Run("packet digest", func(t *testing.T) {
+		corrupt := record
+		corrupt.PacketSHA256 = "sha256:" + strings.Repeat("0", 64)
+		if err := client.writeCollaborationToken(tokenID, corrupt); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.collaborationControl(context.Background(), "dispatch", map[string]any{"dispatchToken": tokenID}); err == nil || !strings.Contains(err.Error(), "digest") {
+			t.Fatalf("completed packet digest drift was accepted: %v", err)
+		}
+	})
+
+	t.Run("dispatch request", func(t *testing.T) {
+		corrupt := record
+		corrupt.DispatchRequest = map[string]any{"action": "dispatch"}
+		if err := client.writeCollaborationToken(tokenID, corrupt); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.collaborationControl(context.Background(), "dispatch", map[string]any{"dispatchToken": tokenID}); err == nil || !strings.Contains(err.Error(), "dispatchRequest") {
+			t.Fatalf("completed dispatchRequest corruption was accepted: %v", err)
+		}
+	})
+}
+
 func TestCollaborationControlRejectsFrozenPathsOutsideTheirBoundaries(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -722,16 +1015,27 @@ func TestCollaborationControlRecoversActiveLedgerAfterCompletedTokenWriteFailure
 
 	restartedAgent := &collaborationTestAgent{}
 	restarted := NewLocalCapabilityClient(Config{DataDir: dataDir, Agent: restartedAgent})
-	repaired := callCollaborationTest(t, restarted, "dispatch_recover", identity)
-	if repaired["phase"] != "active" || repaired["replayed"] != true {
-		t.Fatalf("active receipt was not repaired: %#v", repaired)
+	identityRepaired := callCollaborationTest(t, restarted, "dispatch", identity)
+	if identityRepaired["phase"] != "active" || identityRepaired["replayed"] != true {
+		t.Fatalf("active receipt was not repaired by identity retry: %#v", identityRepaired)
 	}
 	if len(restartedAgent.actions) != 0 {
 		t.Fatalf("active receipt repair repeated provider work: %v", restartedAgent.actions)
 	}
+	repaired := callCollaborationTest(t, restarted, "dispatch_recover", identity)
+	if !collaborationMapsEqual(identityRepaired, repaired) {
+		t.Fatalf("explicit recovery changed identity-repaired receipt: identity=%#v recover=%#v", identityRepaired, repaired)
+	}
 	binding, _ := repaired["binding"].(map[string]any)
 	if binding["chatSessionId"] != "cloud-active-repair-1" {
 		t.Fatalf("repaired binding=%#v", binding)
+	}
+	retried := callCollaborationTest(t, restarted, "dispatch", identity)
+	if !collaborationMapsEqual(repaired, retried) {
+		t.Fatalf("identity retry changed repaired active receipt: repaired=%#v retry=%#v", repaired, retried)
+	}
+	if len(restartedAgent.actions) != 0 {
+		t.Fatalf("identity retry repeated provider work after receipt repair: %v", restartedAgent.actions)
 	}
 }
 

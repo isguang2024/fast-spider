@@ -10,8 +10,8 @@ import (
 )
 
 type collaborationControlInput struct {
-	Action string         `json:"action" jsonschema:"claim, recover, receipt, uncertain, not_created, verify, dispatch, dispatch_recover, callback_claim, or callback_ack"`
-	Params map[string]any `json:"params,omitempty" jsonschema:"action-specific ledger identity, frozen packet, dispatch, or callback parameters; no Cloud credentials"`
+	Action string         `json:"action" jsonschema:"collaboration.control v2 action such as init, brief, next_actions, apply, dispatch, callback_claim, close, or cleanup"`
+	Params map[string]any `json:"params,omitempty" jsonschema:"action-specific structured task ledger, dispatch, or callback parameters; never a JSON input file path and never Cloud credentials"`
 }
 
 type collaborationControlOutput struct {
@@ -34,6 +34,8 @@ func callCollaborationControl(ctx context.Context, dataDir string, call bridgeCa
 	timeout := 30 * time.Second
 	if action == "dispatch" || action == "dispatch_recover" {
 		timeout = 180 * time.Second
+	} else if action == "compact" {
+		timeout = 120 * time.Second
 	}
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

@@ -23,6 +23,23 @@ const collaborationTokenVersion = 1
 
 var collaborationTokenStoreMu sync.Mutex
 
+type collaborationDispatchLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+var collaborationDispatchLocks = struct {
+	sync.Mutex
+	locks map[string]*collaborationDispatchLock
+}{
+	locks: make(map[string]*collaborationDispatchLock),
+}
+
+// collaborationDirectReadyHook is a test seam used to make the two-readers
+// race deterministic. It is nil in normal operation and carries no runtime
+// coordination responsibility.
+var collaborationDirectReadyHook func()
+
 type collaborationClaimParams struct {
 	DBPath           string `json:"dbPath"`
 	MissionID        string `json:"missionId"`
@@ -69,11 +86,12 @@ type collaborationToken struct {
 }
 
 type collaborationLedger struct {
-	db       *sql.DB
-	conn     *sql.Conn
-	mission  map[string]any
-	revision int64
-	closed   bool
+	db             *sql.DB
+	conn           *sql.Conn
+	mission        map[string]any
+	revision       int64
+	actorSessionID string
+	closed         bool
 }
 
 func (c *Client) collaborationControl(ctx context.Context, action string, params map[string]any) (map[string]any, error) {
@@ -82,6 +100,8 @@ func (c *Client) collaborationControl(ctx context.Context, action string, params
 		params = map[string]any{}
 	}
 	switch action {
+	case "init", "brief", "get", "next_actions", "record_action", "apply", "transfer_control", "observe", "observation", "close", "compact", "cleanup":
+		return c.collaborationStateControl(ctx, action, params)
 	case "claim":
 		if err := requireCollaborationParams(params, "dbPath", "missionId", "actorSessionId", "expectedRevision", "itemId"); err != nil {
 			return nil, err
@@ -154,28 +174,59 @@ func (c *Client) collaborationDispatch(ctx context.Context, action string, input
 			return nil, errors.New("dbPath, missionId, actorSessionId, and itemId are required when dispatchToken is omitted")
 		}
 		if action == "dispatch" {
-			revision := int64(0)
-			if input.ExpectedRevision != nil {
-				revision = *input.ExpectedRevision
-			} else {
-				resolvedDBPath, err := validateCollaborationIdentity(input.DBPath, input.MissionID, input.ActorSessionID, input.ItemID)
-				if err != nil {
-					return nil, err
-				}
-				ledger, err := openCollaborationLedger(ctx, resolvedDBPath, input.MissionID, input.ActorSessionID, false)
-				if err != nil {
-					return nil, err
-				}
-				revision = ledger.revision
-				if err := ledger.commit(ctx); err != nil {
-					return nil, err
-				}
-			}
-			claimed, err := c.collaborationClaim(ctx, collaborationClaimParams{DBPath: input.DBPath, MissionID: input.MissionID, ActorSessionID: input.ActorSessionID, ExpectedRevision: revision, ItemID: input.ItemID})
+			resolvedDBPath, err := validateCollaborationIdentity(input.DBPath, input.MissionID, input.ActorSessionID, input.ItemID)
 			if err != nil {
 				return nil, err
 			}
-			dispatchToken = mapStringValue(claimed, "dispatchToken")
+			ledger, err := openCollaborationLedger(ctx, resolvedDBPath, input.MissionID, input.ActorSessionID, false)
+			if err != nil {
+				return nil, err
+			}
+			item, itemErr := ledger.item(ctx, input.ItemID)
+			if itemErr != nil {
+				ledger.rollback()
+				return nil, itemErr
+			}
+			phase := mapStringValue(item, "phase")
+			switch phase {
+			case "ready":
+				revision := ledger.revision
+				if input.ExpectedRevision != nil {
+					revision = *input.ExpectedRevision
+				}
+				if collaborationDirectReadyHook != nil {
+					collaborationDirectReadyHook()
+				}
+				if err := ledger.commit(ctx); err != nil {
+					return nil, err
+				}
+				claimed, claimErr := c.collaborationClaim(ctx, collaborationClaimParams{DBPath: input.DBPath, MissionID: input.MissionID, ActorSessionID: input.ActorSessionID, ExpectedRevision: revision, ItemID: input.ItemID})
+				if claimErr != nil {
+					recoveredToken, reused, recoverErr := c.collaborationReuseIdentityToken(ctx, input, resolvedDBPath)
+					if recoverErr != nil {
+						return nil, recoverErr
+					}
+					if reused {
+						dispatchToken = recoveredToken
+					} else {
+						return nil, claimErr
+					}
+				}
+				if dispatchToken == "" {
+					dispatchToken = mapStringValue(claimed, "dispatchToken")
+				}
+			case "dispatching", "in_doubt", "active":
+				if err := ledger.commit(ctx); err != nil {
+					return nil, err
+				}
+				dispatchToken, _, err = c.collaborationReuseIdentityToken(ctx, input, resolvedDBPath)
+				if err != nil {
+					return nil, err
+				}
+			default:
+				ledger.rollback()
+				return nil, fmt.Errorf("item phase %q cannot be retried by identity", phase)
+			}
 		} else {
 			recovered, err := c.collaborationRecover(ctx, collaborationRecoverParams{DBPath: input.DBPath, MissionID: input.MissionID, ActorSessionID: input.ActorSessionID, ItemID: input.ItemID}, true)
 			if err != nil {
@@ -190,7 +241,94 @@ func (c *Client) collaborationDispatch(ctx context.Context, action string, input
 	return c.collaborationDispatchToken(ctx, dispatchToken)
 }
 
+func (c *Client) collaborationReuseIdentityToken(ctx context.Context, input collaborationDispatchParams, resolvedDBPath string) (string, bool, error) {
+	ledger, err := openCollaborationLedger(ctx, resolvedDBPath, input.MissionID, input.ActorSessionID, false)
+	if err != nil {
+		return "", false, err
+	}
+	item, err := ledger.item(ctx, input.ItemID)
+	if err != nil {
+		ledger.rollback()
+		return "", false, err
+	}
+	phase := mapStringValue(item, "phase")
+	if phase == "ready" {
+		ledger.rollback()
+		return "", false, nil
+	}
+	if phase != "dispatching" && phase != "in_doubt" && phase != "active" {
+		ledger.rollback()
+		return "", true, fmt.Errorf("item phase %q cannot be retried by identity", phase)
+	}
+	claim := mapStringValue(item, "claim")
+	packet, packetOK := item["packet"].(map[string]any)
+	if claim == "" || !packetOK {
+		ledger.rollback()
+		return "", true, errors.New("existing dispatch phase has no recoverable claim or packet")
+	}
+	if err := validateCollaborationPacket(packet, ledger.mission, false); err != nil {
+		ledger.rollback()
+		return "", true, err
+	}
+	revision := ledger.revision
+	if err := ledger.commit(ctx); err != nil {
+		return "", true, err
+	}
+	token, err := c.reuseOrRebuildCollaborationToken(resolvedDBPath, input.MissionID, input.ActorSessionID, input.ItemID, claim, packet, revision)
+	return token, true, err
+}
+
+func acquireCollaborationDispatchLock(tokenID string) func() {
+	collaborationDispatchLocks.Lock()
+	lock := collaborationDispatchLocks.locks[tokenID]
+	if lock == nil {
+		lock = &collaborationDispatchLock{}
+		collaborationDispatchLocks.locks[tokenID] = lock
+	}
+	lock.refs++
+	collaborationDispatchLocks.Unlock()
+
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
+		collaborationDispatchLocks.Lock()
+		lock.refs--
+		if lock.refs == 0 && collaborationDispatchLocks.locks[tokenID] == lock {
+			delete(collaborationDispatchLocks.locks, tokenID)
+		}
+		collaborationDispatchLocks.Unlock()
+	}
+}
+
+func validateCollaborationTokenRecord(tokenID string, token collaborationToken) (map[string]any, error) {
+	if token.DBPath == "" || token.MissionID == "" || token.ActorSessionID == "" || token.ItemID == "" || token.Claim == "" || token.PacketSHA256 == "" {
+		return nil, errors.New("dispatchToken record is incomplete")
+	}
+	if collaborationTokenID(token.DBPath, token.MissionID, token.ItemID, token.Claim) != tokenID {
+		return nil, errors.New("dispatchToken identity does not match its token id")
+	}
+	if token.DispatchRequest == nil || mapStringValue(token.DispatchRequest, "action") != "dispatch" {
+		return nil, errors.New("dispatchToken record has an invalid dispatchRequest")
+	}
+	packet, ok := token.DispatchRequest["params"].(map[string]any)
+	if !ok || packet == nil {
+		return nil, errors.New("dispatchToken record has an invalid dispatchRequest")
+	}
+	packetBytes, err := json.Marshal(packet)
+	if err != nil {
+		return nil, fmt.Errorf("dispatchToken packet is invalid: %w", err)
+	}
+	digest := "sha256:" + hex.EncodeToString(collaborationHash(packetBytes))
+	if token.PacketSHA256 != digest {
+		return nil, errors.New("dispatchToken packet digest does not match dispatchRequest")
+	}
+	return packet, nil
+}
+
 func (c *Client) collaborationDispatchToken(ctx context.Context, dispatchToken string) (map[string]any, error) {
+	release := acquireCollaborationDispatchLock(dispatchToken)
+	defer release()
+
 	token, err := c.readCollaborationToken(dispatchToken)
 	if err != nil {
 		return nil, err
@@ -200,12 +338,12 @@ func (c *Client) collaborationDispatchToken(ctx context.Context, dispatchToken s
 			return nil, err
 		}
 	}
+	packet, err := validateCollaborationTokenRecord(dispatchToken, token)
+	if err != nil {
+		return nil, err
+	}
 	if token.Completed != nil {
 		return token.Completed, nil
-	}
-	packet, ok := token.DispatchRequest["params"].(map[string]any)
-	if !ok {
-		return nil, errors.New("dispatchToken record is incomplete")
 	}
 	runtimePacket, err := c.localCollaborationRuntimePacket(packet)
 	if err != nil {
@@ -616,6 +754,13 @@ func (c *Client) localCollaborationRuntimePacket(packet map[string]any) (map[str
 
 	deliverable := mapStringValue(packet, "deliverablePath")
 	if deliverable == "" {
+		if mapStringValue(packet, "callbackType") == "local_file" {
+			base := workingDirectory
+			if writeBoundary != "" {
+				base = writeBoundary
+			}
+			runtimePacket["deliverablePath"] = filepath.Join(base, ".fast-spider-result-"+stableCollaborationDigest(mapStringValue(packet, "idempotencyKey"))+".md")
+		}
 		return runtimePacket, nil
 	}
 	if !filepath.IsAbs(deliverable) {
@@ -843,6 +988,33 @@ func (c *Client) collaborationRecover(ctx context.Context, input collaborationRe
 	return c.storeCollaborationClaim(dbPath, input.MissionID, input.ActorSessionID, input.ItemID, claim, packet, ledger.revision)
 }
 
+// reuseOrRebuildCollaborationToken returns the token bound to an existing
+// ledger claim. A retry by ledger identity must never mint a new claim or
+// provider idempotency key: the original token is the durable authority for
+// both in-flight and completed dispatches.
+func (c *Client) reuseOrRebuildCollaborationToken(dbPath, missionID, actorSessionID, itemID, claim string, packet map[string]any, revision int64) (string, error) {
+	packetBytes, err := json.Marshal(packet)
+	if err != nil {
+		return "", err
+	}
+	digest := "sha256:" + hex.EncodeToString(collaborationHash(packetBytes))
+	tokenID := collaborationTokenID(dbPath, missionID, itemID, claim)
+	existing, readErr := c.readCollaborationToken(tokenID)
+	if readErr == nil {
+		if existing.DBPath != dbPath || existing.MissionID != missionID || existing.ActorSessionID != actorSessionID || existing.ItemID != itemID || existing.Claim != claim || existing.PacketSHA256 != digest {
+			return "", errors.New("existing dispatch token does not match the frozen ledger claim")
+		}
+		return tokenID, nil
+	}
+	if readErr.Error() != "dispatchToken was not found; use recover with the exact ledger item" {
+		return "", readErr
+	}
+	if _, err := c.storeCollaborationClaim(dbPath, missionID, actorSessionID, itemID, claim, packet, revision); err != nil {
+		return "", err
+	}
+	return tokenID, nil
+}
+
 func (c *Client) storeCollaborationClaim(dbPath, missionID, actorSessionID, itemID, claim string, packet map[string]any, revision int64) (map[string]any, error) {
 	packetBytes, err := json.Marshal(packet)
 	if err != nil {
@@ -876,8 +1048,21 @@ func (c *Client) storeCollaborationClaim(dbPath, missionID, actorSessionID, item
 }
 
 func (c *Client) collaborationUseToken(ctx context.Context, action string, input collaborationTokenParams) (map[string]any, error) {
+	var release func()
+	if action != "verify" {
+		release = acquireCollaborationDispatchLock(input.DispatchToken)
+		defer release()
+	}
 	token, err := c.readCollaborationToken(input.DispatchToken)
 	if err != nil {
+		return nil, err
+	}
+	if c.projectPolicy != nil && c.projectPolicy.root != "" {
+		if err := c.projectPolicy.validate("collaboration.control", "brief", map[string]any{"dbPath": token.DBPath}); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := validateCollaborationTokenRecord(input.DispatchToken, token); err != nil {
 		return nil, err
 	}
 	if token.Completed != nil {
@@ -1099,6 +1284,10 @@ func (c *Client) recordCollaborationActive(ctx context.Context, token collaborat
 }
 
 func openCollaborationLedger(ctx context.Context, dbPath, missionID, actorSessionID string, writable bool) (*collaborationLedger, error) {
+	return openCollaborationLedgerMode(ctx, dbPath, missionID, actorSessionID, writable, false)
+}
+
+func openCollaborationLedgerMode(ctx context.Context, dbPath, missionID, actorSessionID string, writable, allowClosed bool) (*collaborationLedger, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open collaboration database: %w", err)
@@ -1123,7 +1312,7 @@ func openCollaborationLedger(ctx context.Context, dbPath, missionID, actorSessio
 		db.Close()
 		return nil, fmt.Errorf("begin collaboration transaction: %w", err)
 	}
-	ledger := &collaborationLedger{db: db, conn: conn}
+	ledger := &collaborationLedger{db: db, conn: conn, actorSessionID: actorSessionID}
 	var raw string
 	if err := conn.QueryRowContext(ctx, "SELECT data, revision FROM mission WHERE singleton=1").Scan(&raw, &ledger.revision); err != nil {
 		ledger.rollback()
@@ -1147,7 +1336,7 @@ func openCollaborationLedger(ctx context.Context, dbPath, missionID, actorSessio
 		ledger.rollback()
 		return nil, errors.New("actor not bound to this task")
 	}
-	if writable && mapStringValue(ledger.mission, "status") == "closed" {
+	if writable && !allowClosed && mapStringValue(ledger.mission, "status") == "closed" {
 		ledger.rollback()
 		return nil, errors.New("mission closed; no more writes")
 	}
@@ -1193,6 +1382,20 @@ func (l *collaborationLedger) item(ctx context.Context, itemID string) (map[stri
 }
 
 func (l *collaborationLedger) saveItem(ctx context.Context, item map[string]any) error {
+	item = cloneParams(item)
+	if collaborationFinalPhases[mapStringValue(item, "phase")] {
+		packet, _ := item["packet"].(map[string]any)
+		key := mapStringValue(packet, "idempotencyKey")
+		if key == "" {
+			if binding, _ := item["binding"].(map[string]any); binding != nil {
+				key = mapStringValue(binding, "idempotencyKey")
+			}
+		}
+		delete(item, "packet")
+		if key != "" {
+			item["dispatch_key"] = key
+		}
+	}
 	itemID := mapStringValue(item, "id")
 	phase := mapStringValue(item, "phase")
 	kind := mapStringValue(item, "kind")
@@ -1334,7 +1537,7 @@ func (l *collaborationLedger) checkUnique(ctx context.Context, itemID string, it
 		}
 		for _, a := range collaborationScopeRoots(packet) {
 			for _, b := range collaborationScopeRoots(otherPacket) {
-				if pathWithin(a, b) || pathWithin(b, a) {
+				if lexicalPathWithin(a, b) || lexicalPathWithin(b, a) {
 					return errors.New("write scope held by active/uncertain round")
 				}
 			}
@@ -1344,6 +1547,17 @@ func (l *collaborationLedger) checkUnique(ctx context.Context, itemID string, it
 }
 
 func validateCollaborationIdentity(dbPath, missionID, actorSessionID, itemID string) (string, error) {
+	resolved, err := validateCollaborationBaseIdentity(dbPath, missionID, actorSessionID)
+	if err != nil {
+		return "", err
+	}
+	if err := validateCollaborationOpaqueID(itemID, "itemId"); err != nil {
+		return "", err
+	}
+	return resolved, nil
+}
+
+func validateCollaborationBaseIdentity(dbPath, missionID, actorSessionID string) (string, error) {
 	if !filepath.IsAbs(dbPath) || !strings.EqualFold(filepath.Ext(dbPath), ".sqlite3") {
 		return "", errors.New("dbPath must be an absolute .sqlite3 path")
 	}
@@ -1358,10 +1572,9 @@ func validateCollaborationIdentity(dbPath, missionID, actorSessionID, itemID str
 	if err != nil {
 		return "", err
 	}
-	for name, value := range map[string]string{"missionId": missionID, "actorSessionId": actorSessionID, "itemId": itemID} {
-		value = strings.TrimSpace(value)
-		if value == "" || len(value) > 256 || strings.ContainsAny(value, "\x00\r\n\t ") {
-			return "", fmt.Errorf("%s must be a bounded opaque ID", name)
+	for name, value := range map[string]string{"missionId": missionID, "actorSessionId": actorSessionID} {
+		if err := validateCollaborationOpaqueID(value, name); err != nil {
+			return "", err
 		}
 	}
 	return resolved, nil
@@ -1380,8 +1593,18 @@ func validateCollaborationPacket(packet, mission map[string]any, dispatchable bo
 		}
 	}
 	callback := mapStringValue(packet, "callbackSessionId")
-	if dispatchable && callback != mapStringValue(mission, "controller") {
-		return errors.New("new READY must callback to current controller")
+	if dispatchable {
+		if callback != mapStringValue(mission, "controller") {
+			return errors.New("new READY must callback to current controller")
+		}
+	} else {
+		sessions, err := collaborationCallbackSessions(mission)
+		if err != nil {
+			return err
+		}
+		if !sessions[callback] {
+			return errors.New("unknown callback owner")
+		}
 	}
 	key := mapStringValue(packet, "idempotencyKey")
 	if len(key) < 12 || len(key) > 128 {
@@ -1395,10 +1618,18 @@ func validateCollaborationPacket(packet, mission map[string]any, dispatchable bo
 		return errors.New("explicit accessMode required")
 	}
 	if accessMode == "write" {
-		if dispatchable {
-			if err := validateCollaborationText(packet["writeScope"], "writeScope", 1024); err != nil {
-				return errors.New("FS writeScope must be one string; split independent paths into separate task rounds")
+		if scope, ok := packet["writeScope"].(string); ok {
+			if err := validateCollaborationText(scope, "writeScope", 1024); err != nil {
+				return err
 			}
+		} else if legacy, ok := packet["writeScope"].([]any); !dispatchable && ok && len(legacy) > 0 {
+			for _, scope := range legacy {
+				if err := validateCollaborationText(scope, "legacy writeScope", 1024); err != nil {
+					return err
+				}
+			}
+		} else {
+			return errors.New("FS writeScope must be one string; split independent paths into separate task rounds")
 		}
 	}
 	callbackType := mapStringValue(packet, "callbackType")

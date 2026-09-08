@@ -181,7 +181,7 @@ func (c *Client) handleCapabilityRequestFrom(ctx context.Context, req protocolv1
 		result, err = c.operationLogQuery(ctx, req.Params)
 	case "working.context/get", "working.context/set", "working.context/clear":
 		result, err = c.workingContextControl(ctx, req.Action, req.Params)
-	case "collaboration.control/claim", "collaboration.control/recover", "collaboration.control/receipt", "collaboration.control/uncertain", "collaboration.control/not_created", "collaboration.control/verify", "collaboration.control/dispatch", "collaboration.control/dispatch_recover", "collaboration.control/callback_claim", "collaboration.control/callback_ack":
+	case "collaboration.control/init", "collaboration.control/brief", "collaboration.control/get", "collaboration.control/next_actions", "collaboration.control/record_action", "collaboration.control/apply", "collaboration.control/transfer_control", "collaboration.control/claim", "collaboration.control/recover", "collaboration.control/receipt", "collaboration.control/uncertain", "collaboration.control/not_created", "collaboration.control/verify", "collaboration.control/dispatch", "collaboration.control/dispatch_recover", "collaboration.control/observe", "collaboration.control/observation", "collaboration.control/callback_claim", "collaboration.control/callback_ack", "collaboration.control/close", "collaboration.control/compact", "collaboration.control/cleanup":
 		if !local {
 			response.Error = protocolError("UNSUPPORTED_CAPABILITY", "capability or action is not available", false)
 			return response

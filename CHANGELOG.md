@@ -3,6 +3,15 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.71 - 2026-09-08
+
+- Complete the structured `collaboration.control` 2.0 lifecycle in task-local
+  SQLite without Python or JSON intermediary state, including local atomic
+  dispatch/recovery and project/write-scope boundaries.
+- Revalidate `local_file` callback metadata during claim and acknowledgement;
+  invalid batches remain pending instead of retiring their routes.
+- Keep this local-only capability out of the Hub-routable catalog.
+
 ## 0.4.70 - 2026-09-08
 
 - Let `FastSpider_Local.collaboration_control` atomically claim and dispatch a

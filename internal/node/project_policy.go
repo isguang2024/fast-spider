@@ -92,7 +92,10 @@ func (p *projectPolicy) validate(capability, action string, params map[string]an
 	case "working.context":
 		return p.validatePathParam(params, "projectPath", false)
 	case "collaboration.control":
-		if action == "claim" || action == "recover" || action == "dispatch" || action == "dispatch_recover" {
+		if action == "init" {
+			return p.validatePathParam(params, "dbPath", true)
+		}
+		if action == "brief" || action == "get" || action == "next_actions" || action == "record_action" || action == "apply" || action == "transfer_control" || action == "claim" || action == "recover" || action == "dispatch" || action == "dispatch_recover" || action == "observe" || action == "observation" || action == "close" || action == "compact" || action == "cleanup" {
 			if (action == "dispatch" || action == "dispatch_recover") && params != nil {
 				if token, ok := params["dispatchToken"].(string); ok && strings.TrimSpace(token) != "" {
 					return nil
