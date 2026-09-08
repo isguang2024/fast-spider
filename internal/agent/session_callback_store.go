@@ -894,7 +894,6 @@ func (s *sessionCallbackStore) enqueue(event chatgptCloudEvent) (bool, error) {
 	event.ResultPageCount = 0
 	if registration.CallbackType != protocolv1.CloudCallbackTypeText {
 		event.ResultText = ""
-		event.CallbackErrorCode = ""
 	}
 	if event.Sequence <= registration.LastEventSequence {
 		return false, nil

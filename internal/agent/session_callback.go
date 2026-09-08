@@ -947,7 +947,7 @@ func (m *AgentManager) initializeCloudCallbackSubscription(parent context.Contex
 // recoverCompletedCloudCallback is the deliberately low-frequency Node
 // fallback. Realtime callback delivery remains authoritative; this single
 // status read only synthesizes a terminal event when a registered Cloud CHAT
-// is already completed and the realtime event was missed.
+// already completed, failed, or was canceled and the realtime event was missed.
 func (m *AgentManager) recoverCompletedCloudCallback(ctx context.Context, sourceSessionID string, generation int64) error {
 	if chatGPTCloudReadSource(ctx) == "conversation_read" {
 		ctx = withChatGPTCloudReadSource(ctx, "scheduled_recovery")
@@ -992,7 +992,7 @@ func (m *AgentManager) recoverCompletedCloudCallbackState(ctx context.Context, s
 		return false, err
 	}
 	status := chatgptCloudConversationStatus(detail)
-	if status != "completed" {
+	if status != "completed" && status != "failed" && status != "canceled" {
 		return false, nil
 	}
 	latest, current, err := m.callbackStore.registrationFor(sourceSessionID)
@@ -1010,14 +1010,17 @@ func (m *AgentManager) recoverCompletedCloudCallbackState(ctx context.Context, s
 		return true, nil
 	}
 	now := time.Now().UTC()
-	identity := chatgptCloudCompletionIdentity(detail)
-	if identity == "" {
-		return false, nil
-	}
-	if latest.BaselineIdentity != "" && identity == latest.BaselineIdentity {
-		// A terminal hint can precede propagation of the new final message. The
-		// old generation baseline is not evidence that this turn has settled.
-		return false, nil
+	identity := "provider-status:" + status
+	if status == "completed" {
+		identity = chatgptCloudCompletionIdentity(detail)
+		if identity == "" {
+			return false, nil
+		}
+		if latest.BaselineIdentity != "" && identity == latest.BaselineIdentity {
+			// A terminal hint can precede propagation of the new final message. The
+			// old generation baseline is not evidence that this turn has settled.
+			return false, nil
+		}
 	}
 	eventKey := ""
 	sum := sha256.Sum256([]byte(sourceSessionID + "\x00" + fmt.Sprintf("%d", generation) + "\x00" + identity))
@@ -1036,7 +1039,10 @@ func (m *AgentManager) recoverCompletedCloudCallbackState(ctx context.Context, s
 		CallbackType:    latest.CallbackType,
 		CallbackOutcome: "completed",
 	}
-	if latest.CallbackType == protocolv1.CloudCallbackTypeText {
+	if status == "failed" || status == "canceled" {
+		callbackEvent.CallbackOutcome = "failed"
+		callbackEvent.CallbackErrorCode = "CLOUD_CHAT_" + strings.ToUpper(status)
+	} else if latest.CallbackType == protocolv1.CloudCallbackTypeText {
 		text, textErr := chatgptCloudLatestAssistantTextLimit(detail, protocolv1.CloudCallbackTextMaxBytes)
 		if textErr != nil || utf8.RuneCountInString(text) > protocolv1.CloudCallbackTextMaxRunes {
 			callbackEvent.CallbackOutcome = "failed"

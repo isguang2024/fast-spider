@@ -3,6 +3,12 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.73 - 2026-09-08
+
+- Persist terminal callbacks when a ChatGPT Cloud turn fails or is canceled, so
+  the owning controller can distinguish the outcome and decide whether to resume
+  without the Node automatically continuing a stopped task.
+
 ## 0.4.72 - 2026-09-08
 
 - Return the concrete local `collaboration.control` validation error instead of
