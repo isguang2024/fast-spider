@@ -425,6 +425,9 @@ func TestLocalCallbackNudgeUsesLocalControlPlane(t *testing.T) {
 	if !strings.Contains(prompt, "FastSpider_Local collaboration_control") || !strings.Contains(prompt, "callback_claim") || !strings.Contains(prompt, "callback_ack") || strings.Contains(prompt, "FastSpider_FS") {
 		t.Fatalf("local callback must stay on the local control plane: %s", prompt)
 	}
+	if !strings.Contains(prompt, "resume any unfinished authorized validation/next_actions") || !strings.Contains(prompt, "Empty or already-consumed") {
+		t.Fatalf("transport notification can discard unfinished business work: %s", prompt)
+	}
 }
 
 func TestLocalCallbackNudgeJSONDrivesClaimAndAck(t *testing.T) {

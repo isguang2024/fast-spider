@@ -578,6 +578,7 @@ func buildSessionCallbackNudgeForTransport(targetSessionID string, envelopeID st
 		claimArgs, _ := json.Marshal(map[string]any{"action": "callback_claim", "params": map[string]any{"callbackTargetSessionId": targetSessionID, "callbackClaimId": envelopeID, "callbackClaimTransport": callbackClaimTransportLocal}})
 		ackArgs, _ := json.Marshal(map[string]any{"action": "callback_ack", "params": map[string]any{"callbackTargetSessionId": targetSessionID, "callbackClaimId": envelopeID, "callbackClaimTransport": callbackClaimTransportLocal}})
 		_, _ = fmt.Fprintf(&builder, "Call FastSpider_Local collaboration_control(%s), process the returned callback events, then call FastSpider_Local collaboration_control(%s).", claimArgs, ackArgs)
+		builder.WriteString(" This is a transport notification, not a replacement for pending business work. Empty or already-consumed events only close this notification; resume any unfinished authorized validation/next_actions from the current turn. ACK is not business acceptance; the controller retains that decision, then notifies the coordinator for READY work.")
 		return builder.String()
 	}
 	args, _ := json.Marshal(map[string]any{"action": "completion.claim", "params": map[string]any{"actorSessionId": targetSessionID, "claimId": envelopeID}})

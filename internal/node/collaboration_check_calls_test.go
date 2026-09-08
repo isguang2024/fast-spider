@@ -92,3 +92,116 @@ func TestCollaborationPlannedDependencyDoesNotGeneratePreparationNoise(t *testin
 		}
 	}
 }
+
+func TestCollaborationLocalCheckUsesNativeBindingWithoutProviderCalls(t *testing.T) {
+	for _, ref := range []string{"codex-thread:child-1", "codex-agent:parent-1#/root/validator", "", "codex-thread:parent-1#/root/validator"} {
+		t.Run(ref, func(t *testing.T) {
+			root := t.TempDir()
+			db := filepath.Join(root, "mission.sqlite3")
+			a := &collaborationTestAgent{}
+			c := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node"), Agent: a})
+			item := collaborationStateLocalItem("local-1", "planned")
+			if ref != "" {
+				item["execution_ref"] = ref
+			}
+			init := callCollaborationTest(t, c, "init", collaborationStateInitParams(db, []any{item}))
+			p := collaborationStateIdentity(db, "controller-1")
+			p["expectedRevision"], p["items"] = init["revision"], []any{map[string]any{"id": "local-1", "phase": "active", "next_check_at": int64(1000)}}
+			callCollaborationTest(t, c, "apply", p)
+			q := collaborationStateIdentity(db, "coordinator-1")
+			q["now"] = int64(1000)
+			due := callCollaborationTest(t, c, "next_actions", q)
+			var check map[string]any
+			for _, action := range collaborationTestActions(due) {
+				if action["kind"] == "check_execution" {
+					check = action
+				}
+			}
+			if check == nil || check["executionCheck"] != nil || len(a.actions) != 0 {
+				t.Fatalf("native inspection crossed FS provider boundary: %#v", check)
+			}
+			switch ref {
+			case "codex-thread:child-1":
+				call := check["nativeExecutionCheck"].(map[string]any)
+				if call["tool"] != "read_thread" || call["params"].(map[string]any)["threadId"] != "child-1" {
+					t.Fatalf("wrong child binding: %#v", call)
+				}
+			case "codex-agent:parent-1#/root/validator":
+				call := check["nativeBindingLookup"].(map[string]any)
+				if call["params"].(map[string]any)["threadId"] != "parent-1" || check["nativeExecutionCheck"] != nil {
+					t.Fatalf("invented child binding: %#v", check)
+				}
+			default:
+				if check["checkUnavailable"] == nil || check["nativeExecutionCheck"] != nil {
+					t.Fatalf("invalid binding treated as readable: %#v", check)
+				}
+			}
+			if check["terminalHandoff"].(map[string]any)["params"].(map[string]any)["threadId"] != "controller-1" {
+				t.Fatal("terminal handoff lost original controller")
+			}
+		})
+	}
+}
+
+func TestCollaborationValidationDueProvidesExactNativeCheck(t *testing.T) {
+	c, _, db, event := collaborationInboxFixture(t)
+	if err := c.PersistCollaborationCallback(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	box := callCollaborationTest(t, c, "inbox", collaborationStateIdentity(db, "controller-1"))
+	p := collaborationStateIdentity(db, "controller-1")
+	p["expectedRevision"], p["resultId"] = box["revision"], collaborationAnyList(box["results"])[0].(map[string]any)["resultId"]
+	p["decision"], p["evidenceRef"], p["validationOwner"] = "verify", "test:verify", "codex-thread:validator-1"
+	callCollaborationTest(t, c, "resolve", p)
+	for _, actor := range []string{"controller-1", "coordinator-1"} {
+		q := collaborationStateIdentity(db, actor)
+		q["now"] = time.Now().Unix() + 3600
+		due := callCollaborationTest(t, c, "next_actions", q)
+		found := false
+		for _, action := range collaborationTestActions(due) {
+			if action["kind"] == "check_validation" || action["kind"] == "notify_validation_due" {
+				found = true
+				call := action["nativeExecutionCheck"].(map[string]any)
+				if call["params"].(map[string]any)["threadId"] != "validator-1" || action["completionRule"] == nil {
+					t.Fatalf("validation action lost handoff: %#v", action)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("missing validation action for %s", actor)
+		}
+	}
+}
+
+func TestCollaborationObserveExplainsAuditAlreadyClosed(t *testing.T) {
+	root := t.TempDir()
+	db := filepath.Join(root, "mission.sqlite3")
+	c := NewLocalCapabilityClient(Config{DataDir: filepath.Join(root, "node")})
+	callCollaborationTest(t, c, "init", collaborationStateInitParams(db, []any{collaborationStateLocalItem("local-1", "planned")}))
+	q := collaborationStateIdentity(db, "coordinator-1")
+	due := callCollaborationTest(t, c, "next_actions", q)
+	var audit map[string]any
+	for _, action := range collaborationTestActions(due) {
+		if action["kind"] == "consistency_audit" {
+			audit = action
+		}
+	}
+	if audit == nil || audit["completionRule"] == nil {
+		t.Fatal("audit does not explain single-step completion")
+	}
+	p := collaborationStateIdentity(db, "coordinator-1")
+	p["expectedObservationRevision"], p["checkedRevision"], p["full"], p["conflicts"] = due["observationRevision"], due["revision"], true, []any{}
+	observed := callCollaborationTest(t, c, "observe", p)
+	if observed["auditRecorded"] != true || observed["recordCheckRequired"] != false {
+		t.Fatalf("ambiguous observe response: %#v", observed)
+	}
+	rp := audit["recordCheck"].(map[string]any)["params"].(map[string]any)
+	rp["expectedObservationRevision"], rp["outcome"], rp["evidenceRef"] = observed["revision"], "completed", "test:audit"
+	_, err := c.collaborationControl(context.Background(), "record_check", rp)
+	if err == nil || !strings.Contains(err.Error(), "refresh local next_actions once") {
+		t.Fatalf("stale action invites blind retry: %v", err)
+	}
+	if collaborationTestHasActionKind(callCollaborationTest(t, c, "next_actions", q), "consistency_audit") {
+		t.Fatal("completed audit remains due")
+	}
+}

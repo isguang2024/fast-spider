@@ -3,6 +3,13 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.76 - 2026-09-09
+
+- Return native Codex child-task lookup and terminal handoff hints for local execution
+  and validation checks, without querying local tasks through Fast Spider.
+- Make full-audit completion a single action and explain obsolete audit recovery;
+  callback notifications preserve unfinished validation and business work.
+
 ## 0.4.75 - 2026-09-09
 
 - Return executable, exact-binding Cloud metadata checks and complete check-record

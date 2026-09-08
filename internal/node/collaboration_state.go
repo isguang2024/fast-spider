@@ -1941,7 +1941,7 @@ func (c *Client) collaborationRecordAction(ctx context.Context, input collaborat
 		}
 	}
 	if selected == nil || selected.DueAt > now {
-		return nil, errors.New("action stale, not due, or owned by another role")
+		return nil, errors.New("action stale, not due, or owned by another role; refresh local next_actions once and continue remaining due actions. Do not retry an absent action or repeat executor checks. A successful observe(full=true) already closes its prior consistency audit")
 	}
 	if !input.completeCheck && input.RetryAt <= now {
 		return nil, errors.New("record a finite future retry time, not permanent suppression")
@@ -2066,7 +2066,14 @@ func (c *Client) collaborationObserve(ctx context.Context, input collaborationOb
 	if err := ledger.commit(ctx); err != nil {
 		return nil, err
 	}
-	return collaborationObservationOutput(newObservation), nil
+	result := collaborationObservationOutput(newObservation)
+	if input.Full {
+		result["auditRecorded"] = true
+		result["recordCheckRequired"] = false
+		result["nextAction"] = "refresh_next_actions"
+		result["completionRule"] = "Full audit is already recorded. Do not record_check the old consistency action; continue other current due actions. For v3 use record_check(completed) alone on future audits."
+	}
+	return result, nil
 }
 
 func (c *Client) collaborationObservation(ctx context.Context, input collaborationIdentityParams) (map[string]any, error) {
