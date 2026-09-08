@@ -45,7 +45,7 @@ Provider Token、Codex/ChatGPT 本地认证和其他 Provider secret 只保留�
 - `resolve`：`expectedRevision/resultId/decision/evidenceRef`；decision 为 `accept/verify/integrate/rework/block`。accept 明确传 `validation=passed|not_required` 和 `integration=done|not_required`；verify 传 `validationOwner`；block 传现有 blocker 契约。后续验证和集成仍按已有业务状态更新，不把 Cloud 完成当作交付。
 - `retry`：`expectedRevision/itemId/evidenceRef/item`；item 仅包含新执行者、packet、local_scope 等新执行参数。Cloud 必须新幂等键，`targetSessionId` 可复用同域原 CHAT。不确定派发只用 `dispatch_recover`，不能用 retry。
 - 本地 item 的 execution_ref：独立 Codex 任务用 `codex-thread:<threadId>`；工具只返回子 Agent canonical path 时用 `codex-agent:<parentThreadId>#<canonicalPath>`。后者依赖父任务的 Agent 树，不可冒充 read_thread 目标或保证重启恢复。local_scope 是 `{machineId,workingDirectory,accessMode:"read_only"}` 对象，写任务再加 `accessMode:"write",writeScope:["<准确写域>"]`；本地数组与 Cloud 单字符串写域不是同一契约。
-- `record_check`：`expectedRevision/expectedObservationRevision/actionId/outcome/evidenceRef`，必要时传更长 `retryAt`；它不是业务 resolve，也不调用 provider。
+- `record_check`：`expectedRevision/expectedObservationRevision/actionId/outcome/evidenceRef`，必要时传更长 `retryAt`；它不是业务 resolve，也不调用 provider。`next_actions` 的检查动作返回 `recordCheck.params`，调用方只补 outcome/evidenceRef，不传 itemId/evidence。Cloud 检查另返回精确 `executionCheck` 与仅终态使用的 `terminalRecovery`；只返回请求，不自动查询。`agent.control/session.get(metadataOnly=true)` 在 Node 0.4.75 起返回白名单执行状态/观察时间，不返回正文；unknown 不标权威。账本 active 不能作为 unchanged 证据，Cloud 检查按 30/60/120 分钟退避，普通检查保留 15/30/60 分钟。
 - `archive`：完成 task 的 `itemId/expectedRevision/archived`；`cleanup` 仍只在明确授权且 mission 关闭后删除准确数据库，不影响其它任务。
 
 快速验证对应受影响 Agent/Node/LocalMCP/协议包，以及重复回调、ACK 后重启、resolve 后 ACK 中断、旧 attempt 回调、幂等创建、人工取消、暂停、检查收口与任务树分页。Local Bridge + fake Agent 测试属于本机协议集成证据，不等同真实 Cloud 或生产升级。

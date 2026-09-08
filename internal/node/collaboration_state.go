@@ -203,11 +203,11 @@ func (c *Client) collaborationStateControl(ctx context.Context, action string, p
 	case "record_action", "record_check":
 		if action == "record_check" {
 			if err := requireCollaborationParams(params, "expectedRevision", "expectedObservationRevision", "actionId", "outcome", "evidenceRef"); err != nil {
-				return nil, err
+				return nil, collaborationRecordCheckParamError(err)
 			}
 			var input collaborationRecordActionParams
 			if err := decodeCollaborationIdentityParams(params, &input); err != nil {
-				return nil, err
+				return nil, collaborationRecordCheckParamError(err)
 			}
 			input.completeCheck = true
 			return c.collaborationRecordAction(ctx, input)
@@ -1667,7 +1667,7 @@ func (l *collaborationLedger) actionCandidates(ctx context.Context, observation 
 				}
 			}
 		}
-		if phase == "planned" && canDispatch {
+		if phase == "planned" && canDispatch && l.checkDependencies(ctx, item) == nil {
 			if err := task("prepare_task", "controller", 0); err != nil {
 				return nil, err
 			}
@@ -1842,6 +1842,9 @@ func (c *Client) collaborationNextActions(ctx context.Context, input collaborati
 		if action.SubjectOwner != "" {
 			entry["subjectOwner"] = action.SubjectOwner
 		}
+		if err := ledger.addCollaborationCheckCalls(ctx, input, action, observation, entry); err != nil {
+			return nil, err
+		}
 		due = append(due, entry)
 	}
 	sort.Slice(due, func(i, j int) bool {
@@ -1978,7 +1981,17 @@ func (c *Client) collaborationRecordAction(ctx context.Context, input collaborat
 			if count > 3 {
 				return nil, errors.New("check budget exhausted; controller decision required")
 			}
-			backoff := now + 900*(1<<(count-1))
+			interval := int64(900)
+			if selected.Kind == "check_execution" {
+				item, err := ledger.item(ctx, fmt.Sprint(selected.ItemID))
+				if err != nil {
+					return nil, err
+				}
+				if mapStringValue(item, "executor") == "cloud" {
+					interval = 1800 // Provider recovery is not a 15-minute ledger poll.
+				}
+			}
+			backoff := now + interval*(1<<(count-1))
 			if input.RetryAt < backoff {
 				input.RetryAt = backoff
 			}

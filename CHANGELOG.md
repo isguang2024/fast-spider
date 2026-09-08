@@ -3,6 +3,13 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.75 - 2026-09-09
+
+- Return executable, exact-binding Cloud metadata checks and complete check-record
+  arguments from local collaboration next-actions, instead of ledger-only polling.
+- Honor Cloud metadata-only reads without exposing transcripts, suppress dependent
+  preparation noise, and keep unchanged Cloud recovery checks at least 30 minutes apart.
+
 ## 0.4.74 - 2026-09-08
 
 - Add local collaboration v3 task trees, durable callback inboxes and atomic

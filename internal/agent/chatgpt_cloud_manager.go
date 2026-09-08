@@ -509,6 +509,20 @@ func (m *AgentManager) chatgptCloudGet(ctx context.Context, input agentControlPa
 	} else {
 		defaultChatGPTCloudVisibilityRecord(input.SessionID).applyToResult(detail)
 	}
+	if input.MetadataOnly {
+		// Keep transcripts and provider-specific fields inside the Node. A ledger
+		// phase is not an observation of the current Cloud execution.
+		status := chatgptCloudConversationStatus(detail)
+		session := map[string]any{
+			"sessionId": input.SessionID, "providerId": "codex", "backend": sessionBackendChatGPTCloud,
+			"status": status, "metadataOnly": true,
+		}
+		return map[string]any{
+			"session": session, "source": "chatgpt_cloud", "providerStatus": status,
+			"observedAt":    time.Now().UTC().Format(time.RFC3339Nano),
+			"authoritative": status != "unknown", "pendingRequests": []map[string]any{},
+		}, nil
+	}
 	session, messages, nextCursor, hasMore, hasEarlier, err := chatgptCloudBoundedSessionView(detail, input.PageCursor, limit)
 	if err != nil {
 		return nil, err
