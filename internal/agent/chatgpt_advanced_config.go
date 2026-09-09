@@ -21,8 +21,15 @@ const (
 var chatGPTThinkingIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 type ChatGPTAdvancedConfig struct {
-	Version int                    `json:"version"`
-	Models  []ChatGPTAdvancedModel `json:"models"`
+	Version         int                          `json:"version"`
+	Models          []ChatGPTAdvancedModel       `json:"models"`
+	RequestDefaults ChatGPTCloudRequestDefaults `json:"requestDefaults"`
+}
+
+type ChatGPTCloudRequestDefaults struct {
+	EnableServiceTier                  bool `json:"enableServiceTier"`
+	EnableConsumerLockdownModeDisabled bool `json:"enableConsumerLockdownModeDisabled"`
+	EnableForceParallelSwitch          bool `json:"enableForceParallelSwitch"`
 }
 
 type ChatGPTAdvancedModel struct {
@@ -40,7 +47,7 @@ type ChatGPTThinkingOption struct {
 }
 
 func DefaultChatGPTAdvancedConfig() ChatGPTAdvancedConfig {
-	return ChatGPTAdvancedConfig{Version: chatGPTAdvancedConfigVersion, Models: []ChatGPTAdvancedModel{}}
+	return ChatGPTAdvancedConfig{Version: chatGPTAdvancedConfigVersion, Models: []ChatGPTAdvancedModel{}, RequestDefaults: ChatGPTCloudRequestDefaults{EnableServiceTier: true, EnableConsumerLockdownModeDisabled: true, EnableForceParallelSwitch: true}}
 }
 
 func LoadChatGPTAdvancedConfig(dataDir string) (ChatGPTAdvancedConfig, error) {

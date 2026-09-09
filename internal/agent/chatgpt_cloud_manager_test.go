@@ -680,7 +680,7 @@ func TestChatGPTCloudSessionCreateTracksThinkingSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created["model"] != "gpt-5-6-thinking" || created["thinking"] != "extended" {
+	if created["model"] != "gpt-5-6-thinking" || created["thinking"] != "extended" || created["service_tier"] != "fast" {
 		t.Fatalf("created=%#v", created)
 	}
 	conflicting := cloneAgentMap(params)
@@ -731,7 +731,7 @@ func TestChatGPTCloudSessionSendInheritsInitialSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if model != "gpt-5-6-thinking" || thinking != "max" || result["model"] != model || result["thinking"] != thinking {
+	if model != "gpt-5-6-thinking" || thinking != "max" || result["model"] != model || result["thinking"] != thinking || result["service_tier"] != "fast" {
 		t.Fatalf("model=%q thinking=%q result=%#v", model, thinking, result)
 	}
 	if result["sendMode"] != "complete" {

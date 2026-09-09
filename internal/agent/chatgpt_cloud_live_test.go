@@ -4,11 +4,90 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestChatGPTCloudServiceTierRealE2E(t *testing.T) {
+	if os.Getenv("FAST_SPIDER_CHATGPT_E2E") != "1" {
+		t.Skip("set FAST_SPIDER_CHATGPT_E2E=1 to run the real ChatGPT service-tier comparison")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	if _, err := manager.codex.Availability(ctx); err != nil {
+		t.Skipf("Codex app-server unavailable: %v", err)
+	}
+
+	prompt := `在一个黑色的袋子里放有三种口味的糖果，每种糖果有两种不同的形状（圆形和五角星形，不同的形状靠手感可以分辨）。数量如下：苹果味圆形 7、五角星形 7；桃子味圆形 9、五角星形 6；西瓜味圆形 8、五角星形 4。最少取出多少个糖果，才能保证手中同时拥有不同形状的苹果味和桃子味糖？圆形苹果味配五角星桃子味，或圆形桃子味配五角星苹果味，均算满足。请先单独用阿拉伯数字写出答案，再用不超过三句说明理由。`
+	create := func(name, serviceTier string) (map[string]any, time.Duration) {
+		params := map[string]any{
+			"providerId": "codex", "backend": sessionBackendChatGPTCloud, "visibility": "visible",
+			"mode": "complete", "model": "gpt-5-6-thinking", "prompt": prompt, "workingDirectory": workingDirectory,
+			"thinking":       "max",
+			"idempotencyKey": fmt.Sprintf("service-tier-e2e-%s-%d", name, time.Now().UnixNano()),
+		}
+		if serviceTier != "" {
+				params["service_tier"] = serviceTier
+		}
+		started := time.Now()
+		created, err := manager.Control(ctx, "session.create", params)
+		if err != nil {
+			t.Fatalf("%s create: %v", name, err)
+		}
+		if sessionID := mapString(created, "sessionId"); sessionID == "" {
+			t.Fatalf("%s create returned no sessionId: %#v", name, created)
+		}
+		if mapString(created, "externalIdType") != "chatgpt_conversation" {
+			t.Fatalf("%s create did not make a ChatGPT conversation: %#v", name, created)
+		}
+			if got := mapString(created, "service_tier"); got != serviceTier {
+				t.Fatalf("%s service_tier=%q want %q: %#v", name, got, serviceTier, created)
+		}
+		return created, time.Since(started)
+	}
+	readAnswer := func(name string, created map[string]any) string {
+		deadline := time.Now().Add(90 * time.Second)
+		for {
+			result, err := manager.Control(ctx, "session.get", map[string]any{
+				"providerId": "codex", "backend": sessionBackendChatGPTCloud,
+				"sessionId": mapString(created, "sessionId"), "limit": 8,
+			})
+			if err != nil {
+				t.Fatalf("%s read answer: %v", name, err)
+			}
+			session, _ := result["session"].(map[string]any)
+			messages, _ := session["messages"].([]map[string]any)
+			for index := len(messages) - 1; index >= 0; index-- {
+				if mapString(messages[index], "role") == "assistant" && mapString(messages[index], "text") != "" {
+					return mapString(messages[index], "text")
+				}
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s read no assistant answer within 90 seconds: %#v", name, result)
+			}
+			time.Sleep(2 * time.Second)
+		}
+	}
+
+	baseline, baselineElapsed := create("baseline", "")
+	priority, priorityElapsed := create("priority", "priority")
+	baselineAnswer := readAnswer("baseline", baseline)
+	priorityAnswer := readAnswer("priority", priority)
+	t.Logf("baseline session=%s elapsed=%s", mapString(baseline, "sessionId"), baselineElapsed.Round(time.Millisecond))
+	t.Logf("baseline answer=%q", baselineAnswer)
+	t.Logf("priority session=%s elapsed=%s", mapString(priority, "sessionId"), priorityElapsed.Round(time.Millisecond))
+	t.Logf("priority answer=%q", priorityAnswer)
+}
 
 // TestChatGPTCloudAdapterRealE2E creates a real cloud conversation through the
 // desktop app-server's ChatGPT token. Requires:

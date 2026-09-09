@@ -67,7 +67,7 @@ type agentControlParams struct {
 	Effort                   string              `json:"effort,omitempty"`
 	Permissions              string              `json:"permissions,omitempty"`
 	Personality              string              `json:"personality,omitempty"`
-	ServiceTier              string              `json:"serviceTier,omitempty"`
+	ServiceTier              string              `json:"service_tier,omitempty"`
 	Summary                  string              `json:"summary,omitempty"`
 	ReviewType               string              `json:"reviewType,omitempty"`
 	ReviewDelivery           string              `json:"reviewDelivery,omitempty"`

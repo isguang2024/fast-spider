@@ -312,6 +312,8 @@ func chatgptQuickChatBodyWithThinking(prompt, model, thinking string) map[string
 		"parent_message_id":    chatgptCloudUUID(),
 		"client_prepare_state": "none",
 		"supported_encodings":  []string{"v1"},
+		"consumer_lockdown_mode_disabled": true,
+		"force_parallel_switch": "off",
 		"timezone_offset_min":  -480,
 		"timezone":             "Etc/GMT-8",
 	}
@@ -322,6 +324,12 @@ func chatgptQuickChatBodyWithThinking(prompt, model, thinking string) map[string
 func chatgptApplyThinkingEffort(body map[string]any, thinking string) {
 	if thinking = strings.TrimSpace(thinking); thinking != "" {
 		body["thinking_effort"] = thinking
+	}
+}
+
+func chatgptApplyServiceTier(body map[string]any, serviceTier string) {
+	if serviceTier = strings.TrimSpace(serviceTier); serviceTier != "" {
+		body["service_tier"] = serviceTier
 	}
 }
 
@@ -344,13 +352,14 @@ func chatgptConversationBody(prompt, model, conversationID, parentMessageID, pre
 		"timezone_offset_min":                  -480,
 		"timezone":                             "Etc/GMT-8",
 		"conversation_mode":                    map[string]any{"kind": "primary_assistant"},
+		"consumer_lockdown_mode_disabled":       true,
 		"enable_message_followups":             true,
 		"system_hints":                         []any{},
 		"supports_buffering":                   true,
 		"supported_encodings":                  []string{"v1"},
-		"client_contextual_info":               map[string]any{"app_name": "fast_spider"},
+		"client_contextual_info":               map[string]any{"app_name": "chatgpt.com"},
 		"paragen_cot_summary_display_override": "allow",
-		"force_parallel_switch":                "auto",
+		"force_parallel_switch":                "off",
 		"local_function_names":                 []string{},
 	}
 	if conversationID != "" {
@@ -703,7 +712,11 @@ func (a *ChatGPTCloudAdapter) Send(ctx context.Context, conversationID, parentMe
 // effort selected for the conversation's first assistant turn unless explicitly
 // overridden by the caller.
 func (a *ChatGPTCloudAdapter) SendWithThinking(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking string) (chatgptCloudTurnResult, error) {
-	body, parentMessageID, model, thinking, err := a.followUpBody(ctx, conversationID, parentMessageID, prompt, model, thinking)
+	return a.SendWithThinkingAndServiceTier(ctx, conversationID, parentMessageID, prompt, model, thinking, "")
+}
+
+func (a *ChatGPTCloudAdapter) SendWithThinkingAndServiceTier(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking, serviceTier string) (chatgptCloudTurnResult, error) {
+	body, parentMessageID, model, thinking, err := a.followUpBody(ctx, conversationID, parentMessageID, prompt, model, thinking, serviceTier)
 	if err != nil {
 		return chatgptCloudTurnResult{}, err
 	}
@@ -724,7 +737,11 @@ func (a *ChatGPTCloudAdapter) SendWithThinking(ctx context.Context, conversation
 // accepted the turn for the existing conversation. The response stream keeps
 // draining in the background, matching Quick chat creation semantics.
 func (a *ChatGPTCloudAdapter) SendQuickWithThinking(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking string) (chatgptCloudTurnResult, error) {
-	body, parentMessageID, model, thinking, err := a.followUpBody(ctx, conversationID, parentMessageID, prompt, model, thinking)
+	return a.SendQuickWithThinkingAndServiceTier(ctx, conversationID, parentMessageID, prompt, model, thinking, "")
+}
+
+func (a *ChatGPTCloudAdapter) SendQuickWithThinkingAndServiceTier(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking, serviceTier string) (chatgptCloudTurnResult, error) {
+	body, parentMessageID, model, thinking, err := a.followUpBody(ctx, conversationID, parentMessageID, prompt, model, thinking, serviceTier)
 	if err != nil {
 		return chatgptCloudTurnResult{}, err
 	}
@@ -749,6 +766,10 @@ func (a *ChatGPTCloudAdapter) SendQuickWithThinking(ctx context.Context, convers
 // conversation and therefore does not create a second turn after a process or
 // transport interruption.
 func (a *ChatGPTCloudAdapter) SendQuickIdempotentWithThinking(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking, requestMessageID string) (chatgptCloudTurnResult, error) {
+	return a.SendQuickIdempotentWithThinkingAndServiceTier(ctx, conversationID, parentMessageID, prompt, model, thinking, "", requestMessageID)
+}
+
+func (a *ChatGPTCloudAdapter) SendQuickIdempotentWithThinkingAndServiceTier(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking, serviceTier, requestMessageID string) (chatgptCloudTurnResult, error) {
 	conversationID = strings.TrimSpace(conversationID)
 	prompt = strings.TrimSpace(prompt)
 	requestMessageID = strings.TrimSpace(requestMessageID)
@@ -789,6 +810,7 @@ func (a *ChatGPTCloudAdapter) SendQuickIdempotentWithThinking(ctx context.Contex
 		thinking = inheritedThinking
 	}
 	body := chatgptFollowUpBodyWithThinking(conversationID, parentMessageID, prompt, model, thinking)
+	chatgptApplyServiceTier(body, serviceTier)
 	if err := chatgptCloudSetRequestMessageID(body, requestMessageID); err != nil {
 		return chatgptCloudTurnResult{}, err
 	}
@@ -819,7 +841,7 @@ func (a *ChatGPTCloudAdapter) SendQuickIdempotentWithThinking(ctx context.Contex
 	return result, err
 }
 
-func (a *ChatGPTCloudAdapter) followUpBody(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking string) (map[string]any, string, string, string, error) {
+func (a *ChatGPTCloudAdapter) followUpBody(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking, serviceTier string) (map[string]any, string, string, string, error) {
 	if conversationID == "" {
 		return nil, "", "", "", fmt.Errorf("conversationId is required")
 	}
@@ -848,7 +870,9 @@ func (a *ChatGPTCloudAdapter) followUpBody(ctx context.Context, conversationID, 
 	if parentMessageID == "" {
 		return nil, "", "", "", fmt.Errorf("could not resolve a parent message for the conversation")
 	}
-	return chatgptFollowUpBodyWithThinking(conversationID, parentMessageID, prompt, model, thinking), parentMessageID, model, thinking, nil
+	body := chatgptFollowUpBodyWithThinking(conversationID, parentMessageID, prompt, model, thinking)
+	chatgptApplyServiceTier(body, serviceTier)
+	return body, parentMessageID, model, thinking, nil
 }
 
 // Steer appends a correction to an active compatible TPP turn through

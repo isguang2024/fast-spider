@@ -328,7 +328,7 @@ func TestChatGPTCloudAdapterSendQuickSkipsPrepareAndReturnsBeforeCompletion(t *t
 	}
 	sent := make(chan sendResult, 1)
 	go func() {
-		result, err := adapter.SendQuickWithThinking(context.Background(), "quick-conversation-1", "", "continue", "", "")
+		result, err := adapter.SendQuickWithThinkingAndServiceTier(context.Background(), "quick-conversation-1", "", "continue", "", "", "priority")
 		sent <- sendResult{result: result, err: err}
 	}()
 	var outcome sendResult
@@ -342,6 +342,9 @@ func TestChatGPTCloudAdapterSendQuickSkipsPrepareAndReturnsBeforeCompletion(t *t
 	}
 	if prepareCalls != 0 || mapString(requestBody, "conversation_id") != "quick-conversation-1" || mapString(requestBody, "parent_message_id") != "assistant-1" {
 		t.Fatalf("prepareCalls=%d requestBody=%#v", prepareCalls, requestBody)
+	}
+	if got := mapString(requestBody, "service_tier"); got != "priority" {
+		t.Fatalf("Quick send service_tier=%q requestBody=%#v", got, requestBody)
 	}
 	select {
 	case <-streamBody.secondReadStarted:
@@ -368,12 +371,27 @@ func TestChatGPTCloudCreateBodiesCarryThinkingEffort(t *testing.T) {
 	if _, ok := chatgptQuickChatBody("quick", "auto")["thinking_effort"]; ok {
 		t.Fatal("quick body sent an unselected thinking effort")
 	}
+	chatgptApplyServiceTier(quick, "priority")
+	if got := mapString(quick, "service_tier"); got != "priority" {
+		t.Fatalf("quick service_tier=%q", got)
+	}
+	if _, ok := chatgptQuickChatBody("quick", "auto")["service_tier"]; ok {
+		t.Fatal("quick body sent an unselected service tier")
+	}
 	followUp := chatgptFollowUpBodyWithThinking("conversation-1", "assistant-1", "continue", "gpt-5-6-thinking", "max")
 	if got := mapString(followUp, "model"); got != "gpt-5-6-thinking" {
 		t.Fatalf("follow-up model=%q", got)
 	}
 	if got := mapString(followUp, "thinking_effort"); got != "max" {
 		t.Fatalf("follow-up thinking_effort=%q", got)
+	}
+	for name, body := range map[string]map[string]any{"quick": quick, "complete": complete, "follow-up": followUp} {
+		if got, ok := body["consumer_lockdown_mode_disabled"].(bool); !ok || !got {
+			t.Fatalf("%s consumer_lockdown_mode_disabled=%#v", name, body["consumer_lockdown_mode_disabled"])
+		}
+		if got := mapString(body, "force_parallel_switch"); got != "off" {
+			t.Fatalf("%s force_parallel_switch=%#v", name, body["force_parallel_switch"])
+		}
 	}
 }
 
