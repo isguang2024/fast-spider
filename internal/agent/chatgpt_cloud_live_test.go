@@ -37,7 +37,7 @@ func TestChatGPTCloudServiceTierRealE2E(t *testing.T) {
 			"idempotencyKey": fmt.Sprintf("service-tier-e2e-%s-%d", name, time.Now().UnixNano()),
 		}
 		if serviceTier != "" {
-				params["service_tier"] = serviceTier
+			params["service_tier"] = serviceTier
 		}
 		started := time.Now()
 		created, err := manager.Control(ctx, "session.create", params)
@@ -50,8 +50,8 @@ func TestChatGPTCloudServiceTierRealE2E(t *testing.T) {
 		if mapString(created, "externalIdType") != "chatgpt_conversation" {
 			t.Fatalf("%s create did not make a ChatGPT conversation: %#v", name, created)
 		}
-			if got := mapString(created, "service_tier"); got != serviceTier {
-				t.Fatalf("%s service_tier=%q want %q: %#v", name, got, serviceTier, created)
+		if got := mapString(created, "service_tier"); got != serviceTier {
+			t.Fatalf("%s service_tier=%q want %q: %#v", name, got, serviceTier, created)
 		}
 		return created, time.Since(started)
 	}

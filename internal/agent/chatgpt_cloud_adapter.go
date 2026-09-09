@@ -306,16 +306,16 @@ func chatgptQuickChatBody(prompt, model string) map[string]any {
 
 func chatgptQuickChatBodyWithThinking(prompt, model, thinking string) map[string]any {
 	body := map[string]any{
-		"action":               "next",
-		"messages":             []any{chatgptUserMessage(prompt)},
-		"model":                firstNonEmptyString(model, "auto"),
-		"parent_message_id":    chatgptCloudUUID(),
-		"client_prepare_state": "none",
-		"supported_encodings":  []string{"v1"},
+		"action":                          "next",
+		"messages":                        []any{chatgptUserMessage(prompt)},
+		"model":                           firstNonEmptyString(model, "auto"),
+		"parent_message_id":               chatgptCloudUUID(),
+		"client_prepare_state":            "none",
+		"supported_encodings":             []string{"v1"},
 		"consumer_lockdown_mode_disabled": true,
-		"force_parallel_switch": "off",
-		"timezone_offset_min":  -480,
-		"timezone":             "Etc/GMT-8",
+		"force_parallel_switch":           "off",
+		"timezone_offset_min":             -480,
+		"timezone":                        "Etc/GMT-8",
 	}
 	chatgptApplyThinkingEffort(body, thinking)
 	return body
@@ -352,7 +352,7 @@ func chatgptConversationBody(prompt, model, conversationID, parentMessageID, pre
 		"timezone_offset_min":                  -480,
 		"timezone":                             "Etc/GMT-8",
 		"conversation_mode":                    map[string]any{"kind": "primary_assistant"},
-		"consumer_lockdown_mode_disabled":       true,
+		"consumer_lockdown_mode_disabled":      true,
 		"enable_message_followups":             true,
 		"system_hints":                         []any{},
 		"supports_buffering":                   true,

@@ -21,8 +21,8 @@ const (
 var chatGPTThinkingIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
 type ChatGPTAdvancedConfig struct {
-	Version         int                          `json:"version"`
-	Models          []ChatGPTAdvancedModel       `json:"models"`
+	Version         int                         `json:"version"`
+	Models          []ChatGPTAdvancedModel      `json:"models"`
 	RequestDefaults ChatGPTCloudRequestDefaults `json:"requestDefaults"`
 }
 
