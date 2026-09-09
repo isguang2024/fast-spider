@@ -122,9 +122,15 @@ func collaborationValidationLaunchParent(ref string) string {
 }
 
 func validateCollaborationValidationExecutionRef(ref string) error {
-	value := strings.TrimPrefix(strings.TrimSpace(ref), "codex-thread:")
+	if ref != strings.TrimSpace(ref) {
+		return errors.New("validation executionRef must not contain surrounding whitespace")
+	}
+	if strings.HasPrefix(ref, "codex-agent:") {
+		return validateCollaborationValidationLaunchRef(ref)
+	}
+	value := strings.TrimPrefix(ref, "codex-thread:")
 	if value == ref || value == "" || strings.ContainsAny(value, "# /\\\t\r\n") {
-		return errors.New("validation executionRef must be the real codex-thread:<threadId>")
+		return errors.New("validation executionRef must be a native codex-agent:<parent>#<canonicalPath> or codex-thread:<threadId>")
 	}
 	return validateCollaborationOpaqueID(value, "validation execution thread")
 }
@@ -199,7 +205,7 @@ func (c *Client) collaborationValidationClaim(ctx context.Context, p collaborati
 	item["validation_claim"] = claim
 	item["validation_launch_ref"] = p.LaunchRef
 	item["validation_claimed_at"] = time.Now().Unix()
-	item["next_action"] = "Launch exactly one validation and bind its real thread with validation_receipt"
+	item["next_action"] = "Launch one native spawn_agent child and bind its returned canonical executionRef with validation_receipt; do not create a top-level tracking task"
 	if err := validateCollaborationItem(item, l.mission); err != nil {
 		return nil, err
 	}
@@ -216,7 +222,7 @@ func (c *Client) collaborationValidationClaim(ctx context.Context, p collaborati
 	return map[string]any{
 		"revision": l.revision, "itemId": p.ItemID, "validationClaim": claim, "launchRef": p.LaunchRef,
 		"capacity":   collaborationValidationCapacityView(l.mission, held+1),
-		"nextAction": "Launch once. If receipt is lost, use next_actions recover_validation_binding to find the existing child; never spawn a replacement validator.",
+		"nextAction": "Use spawn_agent once under this coordinator, then bind codex-agent:<parent>#<returned canonical path> (or the real child thread ID). If receipt is lost, recover the same child; never create a tracked top-level substitute.",
 	}, nil
 }
 
@@ -248,6 +254,9 @@ func (c *Client) collaborationValidationReceipt(ctx context.Context, p collabora
 	}
 	if mapStringValue(item, "phase") != "verifying" || mapStringValue(item, "validation_claim") != p.ValidationClaim {
 		return nil, errors.New("validation receipt does not match the active validation claim")
+	}
+	if strings.HasPrefix(p.ExecutionRef, "codex-agent:") && p.ExecutionRef != mapStringValue(item, "validation_launch_ref") {
+		return nil, errors.New("canonical validation executionRef must match this claim's launchRef")
 	}
 	if existing := mapStringValue(item, "validation_execution_ref"); existing != "" {
 		if existing != p.ExecutionRef {

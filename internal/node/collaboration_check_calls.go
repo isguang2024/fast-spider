@@ -30,7 +30,7 @@ func (l *collaborationLedger) addCollaborationCheckCalls(ctx context.Context, in
 				},
 				"requiredInput": map[string]any{"launchRef": "codex-agent:<this coordinator thread id>#/<canonical validator path>"},
 			}
-			entry["completionRule"] = "Claim one validation slot before launch. Launch exactly once, then validation_receipt binds the real codex-thread executionRef. If launch receipt is lost, recover the claimed binding; never spawn a substitute validator."
+			entry["completionRule"] = "Claim one validation slot, then use native spawn_agent to launch exactly one child of this coordinator. Bind the returned canonical child with executionRef=codex-agent:<this coordinator thread id>#<returned canonical path>; a real child thread ID is also accepted. Do not use create_thread or create a tracked duplicate merely to obtain a thread ID. Lost receipt recovers the original child."
 			return nil
 		}
 		l.addCollaborationNativeCheck(entry, mapStringValue(item, "validation_launch_ref"))
@@ -41,7 +41,7 @@ func (l *collaborationLedger) addCollaborationCheckCalls(ctx context.Context, in
 				"dbPath": input.DBPath, "missionId": input.MissionID, "actorSessionId": input.ActorSessionID,
 				"expectedRevision": l.revision, "itemId": action.ItemID, "validationClaim": item["validation_claim"],
 			},
-			"requiredInput": map[string]any{"executionRef": "real codex-thread:<agentThreadId> recovered from nativeBindingLookup"},
+			"requiredInput": map[string]any{"executionRef": "original codex-agent:<parent>#<canonicalPath> after native spawn succeeded, or real child codex-thread:<agentThreadId>; never create another task to obtain an ID"},
 		}
 		entry["completionRule"] = "Recover only the child created for validation_launch_ref and bind it with validation_receipt. Do not record unavailable checks or relaunch while the claim is unbound."
 		return nil

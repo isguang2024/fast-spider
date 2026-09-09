@@ -26,6 +26,8 @@ Provider Token、Codex/ChatGPT 本地认证和其他 Provider secret 只保留�
 
 ### 1.2 轻量持久协作 v3：改造范围与运行契约
 
+0.4.83 的 `validation_receipt.executionRef` 同时接受真实子代理的 `codex-agent:<parentThreadId>#<canonicalPath>` 和既有 `codex-thread:<id>`。canonical ref 必须与当前 claim 的 launchRef 完全一致；首尾空白、不同父任务或路径均拒绝。`next_actions` 继续通过已有 nativeBindingLookup 定向恢复子代理。验收默认由交付协调 `spawn_agent` 创建子代，不能为了获取可登记的 threadId 创建独立 tracked 任务；旧独立验收绑定继续收口，不强制迁移或重跑。
+
 0.4.81 保留原主控的唯一业务决策权，并为长期 Luna 协调提供按需 Cloud 技术分析。主控通过 `apply` 设置 `mission.analysis_policy={enabled,authorityRef,model,thinking,machineId,workingDirectory,instructions}`；交付协调用 `analysis_prepare(expectedRevision,sourceItemIds,reason,question,brief)` 提交 1..8 个已有结果或后继准备项。reason 为 `successor_planning/conflicting_evidence/repeated_rework/cross_owner_design`。Node 从策略冻结只读、text callback、回原主控的 Cloud decision READY，执行协调原样 dispatch；model/thinking 真实透传到 create/send。相同来源版本、原因、问题、简报和策略幂等复用，已变化来源或撤销策略阻止旧请求新派发；同 mission 一次只运行一个分析，其它独立工作继续。Cloud 给技术结论与完整建议参数，最终采纳仍由主控执行。
 
 `resolve/decision_batch` 的 accept 可加 `followup=prepare`，在同一事务建立独立 local planned decision 准备项；`prepare_followup` 路由给交付协调，不因源报告归档丢失。交付准备完整后继方案，必要时按策略调用分析，主控批准实际实现 READY 时同一次 apply 收口准备项。没有后继义务时省略该字段，旧 resolution 幂等重放保持兼容。
