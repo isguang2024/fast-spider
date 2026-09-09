@@ -5,8 +5,18 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestCollaborationRoleWakeCarriesExactActorAndCall(t *testing.T) {
+	prompt := collaborationRoleWakePrompt(collaborationRoleWakeRoute{DBPath: `C:\task\ledger.sqlite3`, MissionID: "mission-1"}, collaborationRoleWakeRecord{TargetRole: "delivery_coordinator", TargetSessionID: "delivery-1"})
+	for _, required := range []string{"ACTOR_SESSION_ID: delivery-1", `"actorSessionId":"delivery-1"`, `"action":"next_actions"`, `"dbPath":"C:\\task\\ledger.sqlite3"`} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("wake lacks exact native call identity %q: %s", required, prompt)
+		}
+	}
+}
 
 func TestCollaborationRoleWakesCoalesceAndWaitForResume(t *testing.T) {
 	root := t.TempDir()

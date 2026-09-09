@@ -360,7 +360,8 @@ func (c *Client) drainCollaborationRoleWakeRoute(ctx context.Context, route coll
 }
 
 func collaborationRoleWakePrompt(route collaborationRoleWakeRoute, wake collaborationRoleWakeRecord) string {
-	return fmt.Sprintf("FAST_SPIDER_ROLE_WAKE_V1\nWAKE_KEY: %s\nMISSION_ID: %s\nDB_PATH: %s\nROLE: %s\nREVISION: %d\nREASON: %s\nITEM_ID: %s\nRefresh collaboration.control next_actions from this durable ledger and process a bounded current worklist. Treat WAKE_KEY as the stable retry identity. Callback/terminal handoff stays first. Do not poll already-dispatched Cloud CHATs and do not infer terminal state from this wake.", wake.WakeKey, route.MissionID, route.DBPath, wake.TargetRole, wake.Revision, wake.Reason, wake.ItemID)
+	request, _ := json.Marshal(map[string]any{"action": "next_actions", "params": map[string]any{"dbPath": route.DBPath, "missionId": route.MissionID, "actorSessionId": wake.TargetSessionID}})
+	return fmt.Sprintf("FAST_SPIDER_ROLE_WAKE_V1\nWAKE_KEY: %s\nMISSION_ID: %s\nDB_PATH: %s\nROLE: %s\nACTOR_SESSION_ID: %s\nREVISION: %d\nREASON: %s\nITEM_ID: %s\nYou are the bound task identified by ACTOR_SESSION_ID. Call FastSpider_Local.collaboration_control with these exact identity parameters: %s\nProcess the returned bounded worklist using the current cloud-collaboration skill. The ledger determines current role and work; do not resume superseded tasks from old conversation instructions. Treat WAKE_KEY as the stable retry identity. Callback/terminal handoff stays first. Do not poll already-dispatched Cloud CHATs and do not infer terminal state from this wake.", wake.WakeKey, route.MissionID, route.DBPath, wake.TargetRole, wake.TargetSessionID, wake.Revision, wake.Reason, wake.ItemID, request)
 }
 
 func validateCollaborationRoleWakeDelivery(result map[string]any) error {
