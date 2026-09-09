@@ -143,6 +143,12 @@ func (c *Client) collaborationControl(ctx context.Context, action string, params
 			return nil, err
 		}
 		return c.collaborationAnalysisPrepare(ctx, input)
+	case "result_recover":
+		var input collaborationResultRecoverParams
+		if err := decodeCollaborationIdentityParams(params, &input); err != nil {
+			return nil, err
+		}
+		return c.collaborationResultRecover(ctx, input)
 	case "validation_claim":
 		if err := requireCollaborationParams(params, "dbPath", "missionId", "actorSessionId", "expectedRevision", "itemId", "launchRef"); err != nil {
 			return nil, err

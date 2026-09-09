@@ -152,16 +152,20 @@ func (c *Client) collaborationInbox(ctx context.Context, p collaborationInboxPar
 		return nil, errors.New("mission has no durable inbox; use legacy callback_claim/ack")
 	}
 	if p.ResultID != "" {
-		var raw string
+		var raw, itemID string
 		var resolution sql.NullString
-		if err := l.conn.QueryRowContext(ctx, "SELECT data,resolution FROM callback_inbox WHERE result_id=?", p.ResultID).Scan(&raw, &resolution); err != nil {
+		if err := l.conn.QueryRowContext(ctx, "SELECT data,resolution,item_id FROM callback_inbox WHERE result_id=?", p.ResultID).Scan(&raw, &resolution, &itemID); err != nil {
 			return nil, err
 		}
 		var data map[string]any
 		if err := json.Unmarshal([]byte(raw), &data); err != nil {
 			return nil, err
 		}
-		return map[string]any{"revision": l.revision, "result": data, "resolved": resolution.Valid}, nil
+		entry := map[string]any{"revision": l.revision, "result": data, "resolved": resolution.Valid}
+		if err := l.addCollaborationResultHints(ctx, itemID, p.ResultID, data, entry); err != nil {
+			return nil, err
+		}
+		return entry, nil
 	}
 	if p.Limit == 0 {
 		p.Limit = 20
@@ -175,6 +179,7 @@ func (c *Client) collaborationInbox(ctx context.Context, p collaborationInboxPar
 	}
 	defer rows.Close()
 	results := []map[string]any{}
+	events := []map[string]any{}
 	for rows.Next() {
 		var id, itemID, raw string
 		var received int64
@@ -194,9 +199,18 @@ func (c *Client) collaborationInbox(ctx context.Context, p collaborationInboxPar
 			}
 		}
 		results = append(results, entry)
+		events = append(events, data)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for i, entry := range results {
+		if err := l.addCollaborationResultHints(ctx, mapStringValue(entry, "itemId"), mapStringValue(entry, "resultId"), events[i], entry); err != nil {
+			return nil, err
+		}
 	}
 	var after any
 	if int64(len(results)) > p.Limit {

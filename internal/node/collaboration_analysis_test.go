@@ -166,7 +166,7 @@ func TestCollaborationAnalysisPrepareIsIdempotentAndUsesRevisionCAS(t *testing.T
 
 	item := analysisItem(t, c, dbPath, "delivery-1", first["itemId"].(string))
 	packet := item["packet"].(map[string]any)
-	for key, want := range map[string]any{"model": policy["model"], "thinking": policy["thinking"], "machineId": policy["machineId"], "workingDirectory": policy["workingDirectory"], "accessMode": "read_only", "callbackType": "text", "callbackSessionId": "controller-1"} {
+	for key, want := range map[string]any{"model": policy["model"], "thinking": policy["thinking"], "machineId": policy["machineId"], "workingDirectory": policy["workingDirectory"], "accessMode": "read_only", "callbackType": "status", "callbackSessionId": "controller-1"} {
 		if !collaborationValueEqual(packet[key], want) {
 			t.Fatalf("frozen packet %s=%#v want=%#v item=%#v", key, packet[key], want, item)
 		}

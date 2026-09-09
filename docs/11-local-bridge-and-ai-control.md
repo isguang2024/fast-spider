@@ -30,7 +30,7 @@ Cloud模型选择通过Agent请求的`model`与`thinking`字段传入；`configu
 
 0.4.83 的 `validation_receipt.executionRef` 同时接受真实子代理的 `codex-agent:<parentThreadId>#<canonicalPath>` 和既有 `codex-thread:<id>`。canonical ref 必须与当前 claim 的 launchRef 完全一致；首尾空白、不同父任务或路径均拒绝。`next_actions` 继续通过已有 nativeBindingLookup 定向恢复子代理。验收默认由交付协调 `spawn_agent` 创建子代，不能为了获取可登记的 threadId 创建独立 tracked 任务；旧独立验收绑定继续收口，不强制迁移或重跑。
 
-0.4.81 保留原主控的唯一业务决策权，并为长期 Luna 协调提供按需 Cloud 技术分析。主控通过 `apply` 设置 `mission.analysis_policy={enabled,authorityRef,model,thinking,machineId,workingDirectory,instructions}`；交付协调用 `analysis_prepare(expectedRevision,sourceItemIds,reason,question,brief)` 提交 1..8 个已有结果或后继准备项。reason 为 `successor_planning/conflicting_evidence/repeated_rework/cross_owner_design`。Node 从策略冻结只读、text callback、回原主控的 Cloud decision READY，执行协调原样 dispatch；model/thinking 真实透传到 create/send。相同来源版本、原因、问题、简报和策略幂等复用，已变化来源或撤销策略阻止旧请求新派发；同 mission 一次只运行一个分析，其它独立工作继续。Cloud 给技术结论与完整建议参数，最终采纳仍由主控执行。
+0.4.81 保留原主控的唯一业务决策权，并为长期 Luna 协调提供按需 Cloud 技术分析。主控通过 `apply` 设置 `mission.analysis_policy={enabled,authorityRef,model,thinking,machineId,workingDirectory,instructions}`；交付协调用 `analysis_prepare(expectedRevision,sourceItemIds,reason,question,brief)` 提交 1..8 个已有结果或后继准备项。reason 为 `successor_planning/conflicting_evidence/repeated_rework/cross_owner_design`。Node 从策略冻结只读、status callback、回原主控的 Cloud decision READY，执行协调原样 dispatch；model/thinking 真实透传到 create/send。相同来源版本、原因、问题、简报和策略幂等复用，已变化来源或撤销策略阻止旧请求新派发；同 mission 一次只运行一个分析，其它独立工作继续。Cloud 给技术结论与完整建议参数，最终采纳仍由主控执行。
 
 `resolve/decision_batch` 的 accept 可加 `followup=prepare`，在同一事务建立独立 local planned decision 准备项；`prepare_followup` 路由给交付协调，不因源报告归档丢失。交付准备完整后继方案，必要时按策略调用分析，主控批准实际实现 READY 时同一次 apply 收口准备项。没有后继义务时省略该字段，旧 resolution 幂等重放保持兼容。
 
@@ -489,3 +489,7 @@ Node loopback UI 继续使用 Edge App Window，不引入 Electron/Wails。一�
 - AI 与路由、诊断只返回显式 allowlist DTO；页面加载不自动执行真实模型健康测试。
 - 组件中心只允许 `browser` 与 `search-ripgrep`，安装/更新必须手动点击并复用 component manager；状态响应不公开组件根目录、安装绝对路径或 Hub 凭据。
 - 搜索与文件自检只在 NodeUI data-dir 下建立隔离临时目录，通过同一 Node local capability 调用 code.search、file.read 2.0 与 file.write preview，结束后清理；不读写用户项目、不下载组件、不执行 AI。
+
+### 0.4.85 分析完整结果与溢出恢复
+
+分析 READY 使用 status 回调避免将完整技术报告塞入短文本传输。inbox 的 resultFetch 提供原 CHAT、原幂等键和 session.result(manifest) 参数，协调取得完整报告后再准备决策。旧 text 回调的 CALLBACK_TEXT_TOO_LARGE 可由原主控调用 result_recover(expectedRevision,resultId)：Node 在事务外核验原 provider 的 completed/ready manifest，并以 revision CAS 更正同一 inbox/item 的传输结果事实，保留 resolution、ACK、phase、blocker、attempt 与后继。已决策结果仅支持保留 resolve(block) 的审计，不重复 resolve；后续业务采纳仍由主控 apply。不同错误、旧 attempt、非主控、无效 manifest 或过期 revision 均不能更正结果。动作幂等，不调用 create/send。

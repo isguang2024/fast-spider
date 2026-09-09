@@ -98,7 +98,7 @@ func (p *projectPolicy) validate(capability, action string, params map[string]an
 			}
 			return p.validatePathParam(params, "backupPath", true)
 		}
-		if action == "analysis_prepare" {
+		if action == "analysis_prepare" || action == "result_recover" {
 			return p.validatePathParam(params, "dbPath", false)
 		}
 		if action == "init" {
