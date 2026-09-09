@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -216,5 +218,218 @@ func TestCollaborationResultSinkMustSucceedBeforeCallbackWakeAndReplaysAfterRest
 	restartedDispatcher.dispatchOnce()
 	if restartedSinkCalls != 1 || restartedSendCalls != 1 {
 		t.Fatalf("durable pending did not replay sink/wake after restart: sink=%d sends=%d", restartedSinkCalls, restartedSendCalls)
+	}
+}
+
+func TestManagedLocalCallbackProjectionSuppressesRawNudgeAndSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	store := newSessionCallbackStore(dir)
+	managed := testCallbackRegistration("managed-source", "same-target", "managed-task", 1)
+	managed.CallbackClaimTransport = callbackClaimTransportLocal
+	managed.CallbackInboxRoute = map[string]any{
+		"dbPath":    filepath.Join(dir, "managed.sqlite3"),
+		"missionId": managed.MissionID,
+		"itemId":    "managed-item",
+		"claim":     "managed-claim",
+	}
+	legacy := testCallbackRegistration("legacy-source", "same-target", "legacy-task", 1)
+	legacy.CallbackClaimTransport = callbackClaimTransportLocal
+	for _, registration := range []sessionCallbackRegistration{managed, legacy} {
+		if _, _, err := store.register(registration); err != nil {
+			t.Fatal(err)
+		}
+		if queued, err := store.enqueue(testCallbackEvent(registration.SourceSessionID, 1)); err != nil || !queued {
+			t.Fatalf("enqueue %s queued=%v err=%v", registration.SourceSessionID, queued, err)
+		}
+	}
+
+	var sinkCalls int
+	var sentPrompts []string
+	dispatcher := newSessionCallbackDispatcher(store, nil, nil, func(_ context.Context, target, prompt string) (sessionCallbackDeliveryResult, error) {
+		if target != "same-target" {
+			t.Fatalf("target=%q", target)
+		}
+		sentPrompts = append(sentPrompts, prompt)
+		return testAppServerCallbackDelivery(), nil
+	}, nil)
+	dispatcher.setCollaborationResultSink(func(_ context.Context, metadata map[string]any) error {
+		sinkCalls++
+		if metadata["sourceSessionId"] != managed.SourceSessionID && metadata["sourceSessionId"] != legacy.SourceSessionID {
+			t.Fatalf("sink received unexpected event: %#v", metadata)
+		}
+		return nil
+	})
+
+	dispatcher.dispatchOnce()
+	legacyEvents, err := store.pendingSnapshot(legacy.SourceSessionID, legacy.TargetSessionID)
+	if err != nil || len(legacyEvents) != 1 {
+		t.Fatalf("legacy pending after dispatch=%#v err=%v", legacyEvents, err)
+	}
+	legacyEnvelope := sessionCallbackEnvelopeIDForTransport(legacy.TargetSessionID, callbackClaimTransportLocal, legacyEvents)
+	if sinkCalls != 2 || len(sentPrompts) != 1 || !strings.Contains(sentPrompts[0], "callback_claim") || !strings.Contains(sentPrompts[0], legacyEnvelope) {
+		t.Fatalf("mixed managed/legacy delivery sink=%d legacyEnvelope=%q prompts=%q", sinkCalls, legacyEnvelope, sentPrompts)
+	}
+	managedEvents, err := store.pendingSnapshot(managed.SourceSessionID, managed.TargetSessionID)
+	if err != nil || len(managedEvents) != 1 {
+		t.Fatalf("managed pending after dispatch=%#v err=%v", managedEvents, err)
+	}
+	managedEnvelope := sessionCallbackEnvelopeIDForTransport(managed.TargetSessionID, callbackClaimTransportLocal, managedEvents)
+	if strings.Contains(sentPrompts[0], managedEnvelope) {
+		t.Fatalf("managed callback was included in raw nudge: prompt=%q managedEnvelope=%q", sentPrompts[0], managedEnvelope)
+	}
+	if managedEvents[0].CollaborationInboxProjectedAt.IsZero() {
+		t.Fatalf("managed callback was not durably projected while pending: pending=%#v", managedEvents)
+	}
+	if _, exists, err := store.registrationFor(managed.SourceSessionID); err != nil || !exists {
+		t.Fatalf("managed registration was retired or lost: exists=%v err=%v", exists, err)
+	}
+	legacyRegistration, exists, err := store.registrationFor(legacy.SourceSessionID)
+	if err != nil || !exists || legacyRegistration.LastNudgeAt.IsZero() {
+		t.Fatalf("legacy nudge evidence missing: registration=%#v exists=%v err=%v", legacyRegistration, exists, err)
+	}
+	managedRegistration, exists, err := store.registrationFor(managed.SourceSessionID)
+	if err != nil || !exists || !managedRegistration.LastNudgeAt.IsZero() {
+		t.Fatalf("managed callback was recorded as nudged: registration=%#v exists=%v err=%v", managedRegistration, exists, err)
+	}
+
+	restarted := newSessionCallbackStore(dir)
+	restartedSinkCalls := 0
+	restartedSendCalls := 0
+	restartedDispatcher := newSessionCallbackDispatcher(restarted, nil, nil, func(context.Context, string, string) (sessionCallbackDeliveryResult, error) {
+		restartedSendCalls++
+		return testAppServerCallbackDelivery(), nil
+	}, nil)
+	restartedDispatcher.setCollaborationResultSink(func(_ context.Context, metadata map[string]any) error {
+		restartedSinkCalls++
+		if metadata["sourceSessionId"] != legacy.SourceSessionID {
+			t.Fatalf("successful managed projection was repeated after restart: %#v", metadata)
+		}
+		return nil
+	})
+	// Make the remaining legacy nudge immediately eligible; the managed item
+	// must stay out of the batch based on its durable projection marker.
+	restarted.mu.Lock()
+	legacyState := restarted.registrations[legacy.SourceSessionID]
+	legacyState.LastNudgeAt = time.Time{}
+	restarted.registrations[legacy.SourceSessionID] = legacyState
+	if _, err := restarted.saveLocked(); err != nil {
+		restarted.mu.Unlock()
+		t.Fatal(err)
+	}
+	restarted.mu.Unlock()
+	restartedDispatcher.dispatchOnce()
+	if restartedSinkCalls != 1 || restartedSendCalls != 1 {
+		t.Fatalf("restart replay did not keep managed callback out of nudge: sink=%d sends=%d", restartedSinkCalls, restartedSendCalls)
+	}
+}
+
+func TestManagedLocalCallbackProjectionFailureDoesNotSuppressRecovery(t *testing.T) {
+	dir := t.TempDir()
+	store := newSessionCallbackStore(dir)
+	registration := testCallbackRegistration("managed-failure-source", "managed-failure-target", "managed-failure-task", 1)
+	registration.CallbackClaimTransport = callbackClaimTransportLocal
+	registration.CallbackInboxRoute = map[string]any{
+		"dbPath":    filepath.Join(dir, "failure.sqlite3"),
+		"missionId": registration.MissionID,
+		"itemId":    "failure-item",
+		"claim":     "failure-claim",
+	}
+	if _, _, err := store.register(registration); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := store.enqueue(testCallbackEvent(registration.SourceSessionID, 1)); err != nil || !queued {
+		t.Fatalf("enqueue queued=%v err=%v", queued, err)
+	}
+	sinkCalls := 0
+	sendCalls := 0
+	dispatcher := newSessionCallbackDispatcher(store, nil, nil, func(context.Context, string, string) (sessionCallbackDeliveryResult, error) {
+		sendCalls++
+		return testAppServerCallbackDelivery(), nil
+	}, nil)
+	dispatcher.setCollaborationResultSink(func(context.Context, map[string]any) error {
+		sinkCalls++
+		return errors.New("inbox unavailable")
+	})
+	dispatcher.dispatchOnce()
+	if sinkCalls != 1 || sendCalls != 0 {
+		t.Fatalf("failed projection woke controller: sink=%d send=%d", sinkCalls, sendCalls)
+	}
+	pending, err := store.pendingSnapshot(registration.SourceSessionID, registration.TargetSessionID)
+	if err != nil || len(pending) != 1 || !pending[0].CollaborationInboxProjectedAt.IsZero() {
+		t.Fatalf("failed projection mutated pending state: pending=%#v err=%v", pending, err)
+	}
+	if _, exists, err := store.registrationFor(registration.SourceSessionID); err != nil || !exists {
+		t.Fatalf("failed projection removed registration: exists=%v err=%v", exists, err)
+	}
+}
+
+func TestManagedLocalProjectionIsExcludedFromMixedNudgeClaimAndAck(t *testing.T) {
+	dir := t.TempDir()
+	store := newSessionCallbackStore(dir)
+	managed := testCallbackRegistration("managed-claim-source", "mixed-claim-target", "managed-claim-task", 1)
+	managed.CallbackClaimTransport = callbackClaimTransportLocal
+	managed.CallbackType = "local_file"
+	managed.DeliverablePath = filepath.Join(dir, "missing-report.md")
+	managed.CallbackInboxRoute = map[string]any{
+		"dbPath":    filepath.Join(dir, "managed.sqlite3"),
+		"missionId": managed.MissionID,
+		"itemId":    "managed-claim-item",
+		"claim":     "managed-claim-token",
+	}
+	legacy := testCallbackRegistration("legacy-claim-source", "mixed-claim-target", "legacy-claim-task", 1)
+	legacy.CallbackClaimTransport = callbackClaimTransportLocal
+	for _, registration := range []sessionCallbackRegistration{managed, legacy} {
+		if _, _, err := store.register(registration); err != nil {
+			t.Fatal(err)
+		}
+		if queued, err := store.enqueue(testCallbackEvent(registration.SourceSessionID, 1)); err != nil || !queued {
+			t.Fatalf("enqueue %s queued=%v err=%v", registration.SourceSessionID, queued, err)
+		}
+	}
+	var prompt string
+	dispatcher := newSessionCallbackDispatcher(store, nil, nil, func(_ context.Context, _ string, deliveredPrompt string) (sessionCallbackDeliveryResult, error) {
+		prompt = deliveredPrompt
+		return testAppServerCallbackDelivery(), nil
+	}, nil)
+	dispatcher.setCollaborationResultSink(func(context.Context, map[string]any) error { return nil })
+	dispatcher.dispatchOnce()
+	legacyEvents, err := store.pendingSnapshot(legacy.SourceSessionID, legacy.TargetSessionID)
+	if err != nil || len(legacyEvents) != 1 {
+		t.Fatalf("legacy pending=%#v err=%v", legacyEvents, err)
+	}
+	claimID := sessionCallbackEnvelopeIDForTransport(legacy.TargetSessionID, callbackClaimTransportLocal, legacyEvents)
+	if !strings.Contains(prompt, claimID) || !strings.Contains(prompt, "callback_claim") {
+		t.Fatalf("nudge did not use the legacy-only claim envelope: claimID=%q prompt=%q", claimID, prompt)
+	}
+
+	manager := &AgentManager{callbackStore: store, callbackDispatcher: dispatcher}
+	claimed, err := manager.sessionCallbackClaim(agentControlParams{
+		CallbackTargetSessionID: legacy.TargetSessionID,
+		CallbackClaimID:         claimID,
+		CallbackClaimLimit:      64,
+		CallbackClaimTransport:  callbackClaimTransportLocal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimedEvents, ok := claimed["claimed"].([]map[string]any)
+	if !ok || len(claimedEvents) != 1 || claimedEvents[0]["sourceSessionId"] != legacy.SourceSessionID {
+		t.Fatalf("mixed nudge claim included managed event: %#v", claimed)
+	}
+	if _, err := manager.sessionCallbackAck(agentControlParams{
+		CallbackTargetSessionID: legacy.TargetSessionID,
+		CallbackClaimID:         claimID,
+		CallbackClaimTransport:  callbackClaimTransportLocal,
+	}); err != nil {
+		t.Fatalf("legacy ACK was blocked by managed local_file: %v", err)
+	}
+	if pending, err := store.pendingSnapshot(legacy.SourceSessionID, legacy.TargetSessionID); err != nil || len(pending) != 0 {
+		t.Fatalf("legacy pending after ACK=%#v err=%v", pending, err)
+	}
+	if pending, err := store.pendingSnapshot(managed.SourceSessionID, managed.TargetSessionID); err != nil || len(pending) != 1 || pending[0].CollaborationInboxProjectedAt.IsZero() {
+		t.Fatalf("managed callback was consumed or lost: pending=%#v err=%v", pending, err)
+	}
+	if _, exists, err := store.registrationFor(managed.SourceSessionID); err != nil || !exists {
+		t.Fatalf("managed registration was retired by legacy ACK: exists=%v err=%v", exists, err)
 	}
 }

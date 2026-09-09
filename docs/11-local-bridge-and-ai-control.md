@@ -26,6 +26,12 @@ Provider Token、Codex/ChatGPT 本地认证和其他 Provider secret 只保留�
 
 ### 1.2 轻量持久协作 v3：改造范围与运行契约
 
+0.4.81 保留原主控的唯一业务决策权，并为长期 Luna 协调提供按需 Cloud 技术分析。主控通过 `apply` 设置 `mission.analysis_policy={enabled,authorityRef,model,thinking,machineId,workingDirectory,instructions}`；交付协调用 `analysis_prepare(expectedRevision,sourceItemIds,reason,question,brief)` 提交 1..8 个已有结果或后继准备项。reason 为 `successor_planning/conflicting_evidence/repeated_rework/cross_owner_design`。Node 从策略冻结只读、text callback、回原主控的 Cloud decision READY，执行协调原样 dispatch；model/thinking 真实透传到 create/send。相同来源版本、原因、问题、简报和策略幂等复用，已变化来源或撤销策略阻止旧请求新派发；同 mission 一次只运行一个分析，其它独立工作继续。Cloud 给技术结论与完整建议参数，最终采纳仍由主控执行。
+
+`resolve/decision_batch` 的 accept 可加 `followup=prepare`，在同一事务建立独立 local planned decision 准备项；`prepare_followup` 路由给交付协调，不因源报告归档丢失。交付准备完整后继方案，必要时按策略调用分析，主控批准实际实现 READY 时同一次 apply 收口准备项。没有后继义务时省略该字段，旧 resolution 幂等重放保持兼容。
+
+成功投影本机 collaboration inbox 的 managed callback 持久标记后，由 role-wakeup 推进；不再重复发送主控原始 claim/ACK nudge，也不混入新的 legacy claim。未 ACK 事件与注册继续保留，sink 失败可恢复，已有 claim 重放和最终文件校验不被放宽。业务决定提交后仍按结果单独结清 ACK。
+
 本次改造沿用 Node 进程、Local Bridge 和总任务自己的 SQLite，不增加 Python、服务或 Markdown 状态镜像。新 `init` 建立 v3 所需表；旧库仍可使用 v2 动作，读取 v3 任务树/收件箱不会隐式迁移旧库。能力版本为 `collaboration.control/3.0`，仅本地 MCP 可见。源码升级、安装新版 Node、迁移活动任务是不同操作，不因测试通过自动迁移。
 
 实施分为四部分：

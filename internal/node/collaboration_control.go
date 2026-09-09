@@ -137,6 +137,12 @@ func (c *Client) collaborationControl(ctx context.Context, action string, params
 			return nil, err
 		}
 		return c.collaborationDecisionBatch(ctx, input)
+	case "analysis_prepare":
+		var input collaborationAnalysisPrepareParams
+		if err := decodeCollaborationIdentityParams(params, &input); err != nil {
+			return nil, err
+		}
+		return c.collaborationAnalysisPrepare(ctx, input)
 	case "validation_claim":
 		if err := requireCollaborationParams(params, "dbPath", "missionId", "actorSessionId", "expectedRevision", "itemId", "launchRef"); err != nil {
 			return nil, err
@@ -483,6 +489,7 @@ func (c *Client) collaborationDispatchToken(ctx context.Context, dispatchToken s
 			"workingDirectory": mapStringValue(runtimePacket, "workingDirectory"), "prompt": localCollaborationBootstrap(runtimePacket, token),
 			"idempotencyKey": mapStringValue(runtimePacket, "idempotencyKey"),
 		}
+		applyCollaborationModelParams(runtimePacket, createParams)
 		result, callErr := c.agent.Control(ctx, "session.create", createParams)
 		if callErr != nil {
 			return c.finishLocalDispatchError(ctx, dispatchToken, token, callErr, "local:session-create")
@@ -550,10 +557,12 @@ func (c *Client) collaborationDispatchToken(ctx context.Context, dispatchToken s
 		if err := c.ensureLocalCloudReadiness(ctx); err != nil {
 			return c.finishLocalDispatchUncertain(ctx, dispatchToken, token, "local:provider-readiness:"+stableCollaborationDigest(err.Error()))
 		}
-		if _, err := c.agent.Control(ctx, "session.send", map[string]any{
+		sendParams := map[string]any{
 			"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": sourceSessionID,
 			"mode": "quick_chat", "prompt": localCollaborationBootstrap(runtimePacket, token), "idempotencyKey": mapStringValue(runtimePacket, "idempotencyKey"),
-		}); err != nil {
+		}
+		applyCollaborationModelParams(runtimePacket, sendParams)
+		if _, err := c.agent.Control(ctx, "session.send", sendParams); err != nil {
 			if !dispatchErrorRetryable(err) && !previousSendUncertain {
 				evidence := "local:session-send:" + stableCollaborationDigest(err.Error())
 				if unregisterErr := func() error {
@@ -737,6 +746,9 @@ func validateCollaborationDispatchAuthority(ctx context.Context, token collabora
 	phase := mapStringValue(item, "phase")
 	if phase != "dispatching" && phase != "in_doubt" {
 		return fmt.Errorf("item phase %q cannot dispatch or recover", phase)
+	}
+	if err := ledger.checkAnalysisAuthority(ctx, item); err != nil {
+		return err
 	}
 	return ledger.commit(ctx)
 }
@@ -1608,6 +1620,15 @@ func (l *collaborationLedger) checkCloudCapacity(ctx context.Context) error {
 }
 
 func (l *collaborationLedger) checkUnique(ctx context.Context, itemID string, item map[string]any) error {
+	phase := mapStringValue(item, "phase")
+	if collaborationAnalysisItem(item) && (phase == "ready" || phase == "dispatching" || phase == "in_doubt") {
+		if err := l.checkAnalysisAuthority(ctx, item); err != nil {
+			return err
+		}
+		if err := l.checkAnalysisCapacity(ctx, itemID); err != nil {
+			return err
+		}
+	}
 	key := collaborationDispatchKey(item)
 	if l.hasAttempts(ctx) && key != "" {
 		var found int
@@ -1716,7 +1737,14 @@ func validateCollaborationBaseIdentity(dbPath, missionID, actorSessionID string)
 }
 
 func validateCollaborationPacket(packet, mission map[string]any, dispatchable bool) error {
-	allowed := map[string]bool{"machineId": true, "callbackSessionId": true, "workingDirectory": true, "prompt": true, "idempotencyKey": true, "accessMode": true, "writeScope": true, "callbackType": true, "targetSessionId": true, "deliverablePath": true}
+	allowed := map[string]bool{"machineId": true, "callbackSessionId": true, "workingDirectory": true, "prompt": true, "idempotencyKey": true, "accessMode": true, "writeScope": true, "callbackType": true, "targetSessionId": true, "deliverablePath": true, "model": true, "thinking": true}
+	for _, key := range []string{"model", "thinking"} {
+		if value, exists := packet[key]; exists {
+			if err := validateCollaborationText(value, "packet "+key, 128); err != nil {
+				return err
+			}
+		}
+	}
 	for key := range packet {
 		if !allowed[key] {
 			return errors.New("unknown packet fields")

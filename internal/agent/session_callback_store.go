@@ -136,16 +136,20 @@ type sessionCallbackEvent struct {
 	ResultText             string         `json:"resultText,omitempty"`
 	CallbackOutcome        string         `json:"callbackOutcome"`
 	CallbackErrorCode      string         `json:"callbackErrorCode,omitempty"`
-	ResultID               string         `json:"resultId,omitempty"`
-	ResultStatus           string         `json:"resultStatus,omitempty"`
-	ResultBytes            int64          `json:"resultBytes,omitempty"`
-	ResultSHA256           string         `json:"resultSHA256,omitempty"`
-	ResultPageCount        int            `json:"resultPageCount,omitempty"`
-	DeliverablePath        string         `json:"deliverablePath,omitempty"`
-	DeliverableStatus      string         `json:"deliverableStatus,omitempty"`
-	ImmediateWake          bool           `json:"immediateWake,omitempty"`
-	ClaimID                string         `json:"claimId,omitempty"`
-	ClaimedAt              time.Time      `json:"claimedAt,omitempty"`
+	// CollaborationInboxProjectedAt records successful projection into the
+	// Node-owned collaboration inbox. It is separate from claim and ACK state:
+	// projection wakes the coordinator but does not consume the callback.
+	CollaborationInboxProjectedAt time.Time `json:"collaborationInboxProjectedAt,omitempty"`
+	ResultID                      string    `json:"resultId,omitempty"`
+	ResultStatus                  string    `json:"resultStatus,omitempty"`
+	ResultBytes                   int64     `json:"resultBytes,omitempty"`
+	ResultSHA256                  string    `json:"resultSHA256,omitempty"`
+	ResultPageCount               int       `json:"resultPageCount,omitempty"`
+	DeliverablePath               string    `json:"deliverablePath,omitempty"`
+	DeliverableStatus             string    `json:"deliverableStatus,omitempty"`
+	ImmediateWake                 bool      `json:"immediateWake,omitempty"`
+	ClaimID                       string    `json:"claimId,omitempty"`
+	ClaimedAt                     time.Time `json:"claimedAt,omitempty"`
 }
 
 type callbackResultMetadata struct {
@@ -1282,6 +1286,9 @@ func (s *sessionCallbackStore) pendingForNudgeByTransport() (map[sessionCallback
 	}
 	grouped := map[sessionCallbackNudgeGroup][]sessionCallbackEvent{}
 	for _, event := range s.pending {
+		if callbackEventHasSuccessfulCollaborationProjection(event) {
+			continue
+		}
 		if event.CompletionSource == "recovery" && s.registrations[event.SourceSessionID].LastNudgeEventKey == event.EventKey {
 			continue
 		}
@@ -1292,6 +1299,50 @@ func (s *sessionCallbackStore) pendingForNudgeByTransport() (map[sessionCallback
 		sortSessionCallbackEvents(grouped[key])
 	}
 	return grouped, nil
+}
+
+func callbackEventHasSuccessfulCollaborationProjection(event sessionCallbackEvent) bool {
+	return event.CallbackInboxRoute != nil && callbackTransportForEvent(event) == callbackClaimTransportLocal && !event.CollaborationInboxProjectedAt.IsZero()
+}
+
+// markCollaborationInboxProjected persists a successful managed local
+// projection without changing the callback's pending, claim, or ACK state.
+// Event identity is fenced so an in-flight sink result cannot mark a replaced
+// generation or a newer event for the same source session.
+func (s *sessionCallbackStore) markCollaborationInboxProjected(events []sessionCallbackEvent, projectedAt time.Time) error {
+	if len(events) == 0 {
+		return nil
+	}
+	projectedAt = projectedAt.UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return callbackStoreUnavailableError()
+	}
+	previous := cloneSessionCallbackEvents(s.pending)
+	changed := false
+	for _, event := range events {
+		if event.CallbackInboxRoute == nil || callbackTransportForEvent(event) != callbackClaimTransportLocal {
+			continue
+		}
+		current, exists := s.pending[event.SourceSessionID]
+		if !exists || current.Generation != event.Generation || current.EventSequence != event.EventSequence || current.EventKey != event.EventKey {
+			continue
+		}
+		if current.CollaborationInboxProjectedAt.IsZero() {
+			current.CollaborationInboxProjectedAt = projectedAt
+			s.pending[event.SourceSessionID] = current
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	if _, err := s.saveLocked(); err != nil {
+		s.pending = previous
+		return err
+	}
+	return nil
 }
 
 func (s *sessionCallbackStore) pendingByTargetMode(forNudge bool) (map[string][]sessionCallbackEvent, error) {
@@ -1470,6 +1521,13 @@ func (s *sessionCallbackStore) claim(targetSessionID, requestedClaimID string, l
 	available := make([]sessionCallbackEvent, 0, len(s.pending))
 	for _, event := range s.pending {
 		if event.TargetSessionID != targetSessionID || callbackTransportForEvent(event) != transport || event.ClaimID != "" {
+			continue
+		}
+		// A managed local event already owns a durable collaboration inbox
+		// item. A fresh generic claim belongs only to the legacy callback
+		// transport; an active explicit claim was handled above and remains
+		// replayable as-is.
+		if callbackEventHasSuccessfulCollaborationProjection(event) {
 			continue
 		}
 		available = append(available, event)
@@ -2048,6 +2106,9 @@ func (s *sessionCallbackStore) recordNudgeForTransport(targetSessionID, envelope
 	updated := 0
 	for source, registration := range s.registrations {
 		if registration.TargetSessionID != targetSessionID || callbackTransportForRegistration(registration) != transport {
+			continue
+		}
+		if _, delivered := deliveredKeys[source]; !delivered {
 			continue
 		}
 		registration.LastNudgeAt = now

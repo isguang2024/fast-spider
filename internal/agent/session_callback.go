@@ -522,6 +522,9 @@ func (d *sessionCallbackDispatcher) dispatchOnce() time.Time {
 				ctx, cancel := context.WithTimeout(d.rootCtx, 2*time.Minute)
 				sinkErr := sink(ctx, collaborationResultMetadata(event))
 				cancel()
+				if sinkErr == nil && event.CallbackInboxRoute != nil && callbackTransportForEvent(event) == callbackClaimTransportLocal {
+					sinkErr = d.store.markCollaborationInboxProjected([]sessionCallbackEvent{event}, time.Now().UTC())
+				}
 				if sinkErr == nil {
 					continue
 				}
@@ -541,6 +544,25 @@ func (d *sessionCallbackDispatcher) dispatchOnce() time.Time {
 			if sinkFailed {
 				continue
 			}
+			// A managed local callback has already been delivered to the
+			// coordinator's durable inbox by the sink. Keep its pending event
+			// for the controller's per-result resolve/ACK flow, but remove it from
+			// this raw controller nudge. Legacy events in the same target batch
+			// remain eligible and are sent below.
+			legacyClaimable := claimable[:0]
+			for _, event := range claimable {
+				if event.CallbackInboxRoute == nil || callbackTransportForEvent(event) != callbackClaimTransportLocal {
+					legacyClaimable = append(legacyClaimable, event)
+				}
+			}
+			claimable = legacyClaimable
+			if len(claimable) == 0 {
+				continue
+			}
+			// The managed events were removed from this notification, so the
+			// envelope must be recomputed before recording or retrying the
+			// legacy-only nudge.
+			envelopeID = sessionCallbackEnvelopeIDForTransport(target.TargetSessionID, target.Transport, claimable)
 		}
 		prompt := buildSessionCallbackNudgeForTransport(target.TargetSessionID, envelopeID, target.Transport, claimable...)
 		ctx, cancel := context.WithTimeout(d.rootCtx, 2*time.Minute)
@@ -870,8 +892,16 @@ func (m *AgentManager) persistCollaborationCallbackEvents(ctx context.Context, e
 		return nil
 	}
 	for _, event := range events {
+		if callbackEventHasSuccessfulCollaborationProjection(event) {
+			continue
+		}
 		if err := sink(ctx, collaborationResultMetadata(event)); err != nil {
 			return fmt.Errorf("persist collaboration callback result: %w", err)
+		}
+		if event.CallbackInboxRoute != nil && callbackTransportForEvent(event) == callbackClaimTransportLocal {
+			if err := m.callbackStore.markCollaborationInboxProjected([]sessionCallbackEvent{event}, time.Now().UTC()); err != nil {
+				return fmt.Errorf("persist collaboration callback projection state: %w", err)
+			}
 		}
 	}
 	return nil

@@ -40,6 +40,7 @@ var collaborationItemFields = map[string]bool{
 	"priority": true, "contract_refs": true, "acceptance_ref": true,
 	"execution_ref": true, "local_scope": true,
 	"title": true, "workstream_id": true, "archived": true, "current_attempt": true,
+	"analysis_sources": true, "analysis_policy_ref": true,
 }
 
 var collaborationTransitions = map[string]map[string]bool{
@@ -640,6 +641,9 @@ func validateCollaborationItem(item, mission map[string]any) error {
 		return errors.New("invalid local_scope")
 	}
 	packet, packetOK := item["packet"].(map[string]any)
+	if err := validateCollaborationAnalysisItem(item); err != nil {
+		return err
+	}
 	if item["packet"] != nil && !packetOK {
 		return errors.New("invalid packet")
 	}
@@ -1097,7 +1101,16 @@ func (c *Client) collaborationApply(ctx context.Context, input collaborationAppl
 }
 
 func validateCollaborationMissionPatch(patch map[string]any) error {
-	allowed := map[string]bool{"status": true, "dispatch_enabled": true, "authority_ref": true, "next_action": true, "continuation": true, "goal": true, "strategy_ref": true, "capacity": true, "delivery_coordinator": true, "coordination_ref": true}
+	allowed := map[string]bool{"status": true, "dispatch_enabled": true, "authority_ref": true, "next_action": true, "continuation": true, "goal": true, "strategy_ref": true, "capacity": true, "delivery_coordinator": true, "coordination_ref": true, "analysis_policy": true}
+	if raw, exists := patch["analysis_policy"]; exists {
+		policy, ok := raw.(map[string]any)
+		if !ok {
+			return errors.New("invalid analysis policy")
+		}
+		if err := validateCollaborationAnalysisPolicy(policy); err != nil {
+			return err
+		}
+	}
 	if err := validateCollaborationMapKeys(patch, allowed, "mission"); err != nil {
 		return err
 	}
@@ -1527,7 +1540,7 @@ func (c *Client) collaborationBrief(ctx context.Context, input collaborationBrie
 	}
 	mission := cloneParams(ledger.mission)
 	if role != "controller" {
-		mission = selectCollaborationFields(ledger.mission, "id", "controller", "coordinator", "delivery_coordinator", "status", "dispatch_enabled", "capacity", "authority_ref", "legacy_callback_sessions", "control_handoff_ref", "coordination_ref")
+		mission = selectCollaborationFields(ledger.mission, "id", "controller", "coordinator", "delivery_coordinator", "status", "dispatch_enabled", "capacity", "authority_ref", "legacy_callback_sessions", "control_handoff_ref", "coordination_ref", "analysis_policy")
 	}
 	result := map[string]any{"mission": mission, "role": role, "revision": ledger.revision, "counts": counts}
 	if input.Since != nil {
@@ -1564,7 +1577,7 @@ func (c *Client) collaborationBrief(ctx context.Context, input collaborationBrie
 	}
 	views := make([]any, 0, len(visible))
 	for _, item := range visible {
-		fields := []string{"id", "kind", "phase", "owner", "executor", "next_action", "blocker", "priority", "depends_on", "execution_ref", "next_check_at"}
+		fields := []string{"id", "kind", "phase", "owner", "executor", "next_action", "blocker", "priority", "depends_on", "execution_ref", "next_check_at", "source_ref", "analysis_sources"}
 		if role == "controller" {
 			fields = append(fields, "validation", "integration", "callback", "result", "contract_refs", "acceptance_ref")
 		}
@@ -1818,6 +1831,13 @@ func (l *collaborationLedger) actionCandidates(ctx context.Context, observation 
 		}
 	}
 	_, _, validationLimit := collaborationValidationCapacity(l.mission)
+	analysisPendingSources := map[string]bool{}
+	for _, value := range values {
+		for _, raw := range collaborationAnyList(value.item["analysis_sources"]) {
+			source, _ := raw.(map[string]any)
+			analysisPendingSources[mapStringValue(source, "itemId")] = true
+		}
+	}
 	for _, value := range values {
 		item := value.item
 		phase := mapStringValue(item, "phase")
@@ -1865,8 +1885,12 @@ func (l *collaborationLedger) actionCandidates(ctx context.Context, observation 
 				}
 			}
 		}
-		if phase == "planned" && canDispatch && l.checkDependencies(ctx, item) == nil {
-			if err := task("prepare_task", "controller", 0); err != nil {
+		if phase == "planned" && canDispatch && l.checkDependencies(ctx, item) == nil && !(collaborationFollowupItem(item) && analysisPendingSources[id]) {
+			kind, role := "prepare_task", "controller"
+			if collaborationFollowupItem(item) {
+				kind, role = "prepare_followup", collaborationDeliveryRole(l.mission)
+			}
+			if err := task(kind, role, 0); err != nil {
 				return nil, err
 			}
 		}
@@ -2146,6 +2170,7 @@ func (c *Client) collaborationNextActions(ctx context.Context, input collaborati
 	}
 	result := map[string]any{
 		"revision": ledger.revision, "changed": changed,
+		"analysisPolicy":      ledger.mission["analysis_policy"],
 		"observationRevision": collaborationIntDefault(observation, "revision", 0),
 		"actions":             page, "totalDue": len(due), "nextAfter": nextAfter, "nextDueAt": nextDueAt,
 		"dispatchCapacity": map[string]any{
@@ -2156,6 +2181,9 @@ func (c *Client) collaborationNextActions(ctx context.Context, input collaborati
 		"readyBlocked":       refillPlan.BlockedReady,
 		"refillInputs":       refillInputs,
 		"refillHasMore":      refillPlan.HasMore,
+	}
+	if input.ActorSessionID == mapStringValue(ledger.mission, collaborationDeliveryRole(ledger.mission)) && mapBoolValue(collaborationOptionalMap(ledger.mission["analysis_policy"]), "enabled") {
+		result["analysisPrepare"] = map[string]any{"action": "analysis_prepare", "params": map[string]any{"dbPath": input.DBPath, "missionId": input.MissionID, "actorSessionId": input.ActorSessionID, "expectedRevision": ledger.revision}, "requiredEvidenceFields": []string{"sourceItemIds", "reason", "question", "brief"}, "reasons": []string{"successor_planning", "conflicting_evidence", "repeated_rework", "cross_owner_design"}}
 	}
 	if err := ledger.commit(ctx); err != nil {
 		return nil, err

@@ -216,6 +216,7 @@ type collaborationResolveParams struct {
 	Integration      string         `json:"integration,omitempty"`
 	ValidationOwner  string         `json:"validationOwner,omitempty"`
 	Blocker          map[string]any `json:"blocker,omitempty"`
+	Followup         string         `json:"followup,omitempty"`
 }
 
 type collaborationDecisionBatchParams struct {
@@ -332,7 +333,14 @@ func (c *Client) resolveCollaborationInTransaction(ctx context.Context, l *colla
 	if err := json.Unmarshal([]byte(raw), &event); err != nil {
 		return nil, nil, err
 	}
-	wanted, _ := json.Marshal(map[string]any{"decision": p.Decision, "evidenceRef": p.EvidenceRef, "validation": p.Validation, "integration": p.Integration, "validationOwner": p.ValidationOwner, "blocker": p.Blocker})
+	wantedFields := map[string]any{"decision": p.Decision, "evidenceRef": p.EvidenceRef, "validation": p.Validation, "integration": p.Integration, "validationOwner": p.ValidationOwner, "blocker": p.Blocker}
+	if p.Followup != "" {
+		if p.Followup != "prepare" || p.Decision != "accept" {
+			return nil, nil, errors.New("followup=prepare requires an accept decision")
+		}
+		wantedFields["followup"] = p.Followup
+	}
+	wanted, _ := json.Marshal(wantedFields)
 	duplicate := resolution.Valid
 	if duplicate {
 		if resolution.String != string(wanted) {
@@ -387,6 +395,11 @@ func (c *Client) resolveCollaborationInTransaction(ctx context.Context, l *colla
 		if err := l.saveItem(ctx, item); err != nil {
 			return nil, nil, err
 		}
+		if p.Followup == "prepare" {
+			if err := c.createCollaborationFollowup(ctx, l, item, p.ResultID, p.EvidenceRef); err != nil {
+				return nil, nil, err
+			}
+		}
 		wakeReason := "result_resolved_" + p.Decision
 		if err := c.enqueueCollaborationRoleWake(ctx, l, "coordinator", wakeReason, itemID, p.ResultID); err != nil {
 			return nil, nil, err
@@ -395,7 +408,11 @@ func (c *Client) resolveCollaborationInTransaction(ctx context.Context, l *colla
 			return nil, nil, err
 		}
 	}
-	return map[string]any{"resolved": true, "duplicate": duplicate, "itemId": itemID}, event, nil
+	result := map[string]any{"resolved": true, "duplicate": duplicate, "itemId": itemID}
+	if p.Followup == "prepare" {
+		result["followupItemId"] = "followup-" + stableCollaborationDigest(p.ResultID)[:24]
+	}
+	return result, event, nil
 }
 
 func (c *Client) ackCollaborationInbox(ctx context.Context, identity collaborationIdentityParams, itemID string, event map[string]any) (int64, error) {

@@ -88,6 +88,11 @@ func (c *Client) enqueueCollaborationRoleWakeAt(ctx context.Context, l *collabor
 	if targetRole == "coordinator" && (reason == "validation_required" || reason == "validation_capacity_released" || reason == "result_resolved_verify" || reason == "result_resolved_integrate") {
 		targetRole = collaborationDeliveryRole(l.mission)
 	}
+	if targetRole == "coordinator" && strings.HasPrefix(reason, "result_resolved_") && mapStringValue(l.mission, "delivery_coordinator") != "" {
+		if err := c.enqueueCollaborationRoleWakeAt(ctx, l, "delivery_coordinator", reason, itemID, version, notBefore); err != nil {
+			return err
+		}
+	}
 	if targetRole != "controller" && targetRole != "coordinator" && targetRole != "delivery_coordinator" {
 		return errors.New("invalid collaboration role wake target")
 	}
