@@ -813,9 +813,22 @@ func TestSessionCallbackDispatcherRequiresConfirmedLocalCodexTurnDelivery(t *tes
 	if err != nil || len(items) != 1 {
 		t.Fatalf("registrations=%#v err=%v", items, err)
 	}
-	if !items[0].LastNudgeAt.IsZero() || items[0].LastNudgeEnvelope != "" {
-		t.Fatalf("unconfirmed delivery recorded nudge: %#v", items[0])
+	if !items[0].LastNudgeAt.IsZero() || items[0].LastNudgeEnvelope != "" || items[0].NudgeErrorClass != string(ErrorLocalTurnUnconfirmed) || items[0].NudgeRetryAt.IsZero() {
+		t.Fatalf("unconfirmed delivery did not persist failure evidence: %#v", items[0])
 	}
+	forceCallbackRetryDue := func() {
+		t.Helper()
+		store.mu.Lock()
+		current := store.registrations["source-desktop-required"]
+		current.NudgeRetryAt = time.Time{}
+		store.registrations[current.SourceSessionID] = current
+		_, saveErr := store.saveLocked()
+		store.mu.Unlock()
+		if saveErr != nil {
+			t.Fatal(saveErr)
+		}
+	}
+	forceCallbackRetryDue()
 	grouped, err := store.pendingByTarget()
 	if err != nil || len(grouped["coordinator"]) != 1 {
 		t.Fatalf("unconfirmed delivery changed pending queue=%#v err=%v", grouped, err)
@@ -829,9 +842,10 @@ func TestSessionCallbackDispatcherRequiresConfirmedLocalCodexTurnDelivery(t *tes
 	if err != nil || len(items) != 1 {
 		t.Fatalf("registrations after empty turnId delivery=%#v err=%v", items, err)
 	}
-	if !items[0].LastNudgeAt.IsZero() || items[0].LastNudgeEnvelope != "" {
-		t.Fatalf("empty turnId delivery recorded nudge: %#v", items[0])
+	if !items[0].LastNudgeAt.IsZero() || items[0].LastNudgeEnvelope != "" || items[0].NudgeErrorClass != string(ErrorLocalTurnUnconfirmed) {
+		t.Fatalf("empty turnId delivery recorded invalid state: %#v", items[0])
 	}
+	forceCallbackRetryDue()
 
 	delivery = testAppServerCallbackDelivery()
 	dispatcher.dispatchOnce()
@@ -1011,27 +1025,24 @@ func TestSessionCallbackRecoveryCannotCreateWatcherAfterUnregister(t *testing.T)
 		<-allowCreate
 		return realtime.ensurePersistentWatchingForGeneration(context.Background(), source, generation)
 	})
-	unregisterDone := make(chan struct{})
-	go dispatcher.reconcileSubscriptions()
-	<-started
+	dispatcher.release = func(source string, generation int64) { realtime.releasePersistentWatching(source, generation) }
+	recoveryDone := make(chan struct{})
 	go func() {
-		removed, err := store.unregister("source-race", 1)
-		if err != nil || !removed {
-			t.Errorf("unregister removed=%v err=%v", removed, err)
-		}
-		realtime.releasePersistentWatching("source-race", 1)
-		close(unregisterDone)
+		dispatcher.reconcileSubscriptions()
+		close(recoveryDone)
 	}()
-	select {
-	case <-unregisterDone:
-		t.Fatal("unregister crossed watcher recovery critical section")
-	case <-time.After(50 * time.Millisecond):
+	<-started
+	removed, err := store.unregister("source-race", 1)
+	if err != nil || !removed {
+		t.Fatalf("unregister removed=%v err=%v", removed, err)
 	}
+	// Network subscription readiness must not hold the durable callback-store
+	// mutex. The stale generation is instead fenced and released after setup.
 	close(allowCreate)
 	select {
-	case <-unregisterDone:
+	case <-recoveryDone:
 	case <-time.After(time.Second):
-		t.Fatal("unregister did not complete after recovery")
+		t.Fatal("recovery did not finish after subscription setup")
 	}
 	realtime.mu.Lock()
 	_, exists := realtime.watching["source-race"]
@@ -1265,6 +1276,38 @@ func TestSessionCallbackRegisterReconcilesAlreadyCompletedCloudTurn(t *testing.T
 	manager.chatgptCloud = NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token", nil })
 	manager.chatgptCloud.baseURL, manager.chatgptCloud.http = server.URL, server.Client()
 	manager.chatgptCloud.realtime.baseURL, manager.chatgptCloud.realtime.http = server.URL, server.Client()
+	manager.chatgptCloud.SetRealtimeObserver(manager.handleChatGPTCloudCallbackEvent, manager.callbackStore.maxEventSequence())
+	manager.callbackDispatcher.ensure = manager.chatgptCloud.EnsureCallbackRealtimeForGeneration
+	manager.callbackDispatcher.release = manager.chatgptCloud.ReleaseCallbackRealtimeForGeneration
+	manager.callbackDispatcher.recoveryState = manager.chatgptCloud.CallbackRealtimeRecoveryState
+	// This test exercises registration catch-up, not websocket framing. Prevent
+	// a real dial and explicitly satisfy the exact conversation/generation
+	// subscription-ready fence after the watcher is registered.
+	manager.chatgptCloud.realtime.startOnce.Do(func() {})
+	ready := make(chan struct{})
+	go func() {
+		deadline := time.Now().Add(time.Second)
+		for time.Now().Before(deadline) {
+			r := manager.chatgptCloud.realtime
+			r.mu.Lock()
+			_, watching := r.watching["source-completed"]
+			if watching {
+				if r.connectionEpoch == 0 {
+					r.connectionEpoch = 1
+				}
+				r.connected = true
+				epoch := r.connectionEpoch
+				close(r.stateNotify)
+				r.stateNotify = make(chan struct{})
+				r.mu.Unlock()
+				r.markSubscriptionReady("source-completed", epoch)
+				close(ready)
+				return
+			}
+			r.mu.Unlock()
+			time.Sleep(time.Millisecond)
+		}
+	}()
 	manager.SetCloudResultPublisher(&testCloudResultPublisher{})
 	manager.codex.requestOverride = func(_ context.Context, method string, params map[string]any) (map[string]any, error) {
 		return map[string]any{"thread": map[string]any{"id": "coordinator-local", "cwd": t.TempDir()}}, nil

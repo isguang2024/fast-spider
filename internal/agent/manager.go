@@ -237,8 +237,17 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 			return manager.chatgptCloud.EnsureCallbackRealtimeForGeneration(ctx, sessionID, generation)
 		},
 	)
+	manager.callbackDispatcher.release = manager.chatgptCloud.ReleaseCallbackRealtimeForGeneration
 	manager.callbackDispatcher.recoverStatus = manager.recoverCompletedCloudCallback
 	manager.callbackDispatcher.recoveryState = manager.chatgptCloud.CallbackRealtimeRecoveryState
+	manager.chatgptCloud.SetCallbackRealtimeRecoveryObserver(func(connected bool, disconnectEpoch uint64) {
+		// A completed CHAT may have been missed while the account socket was
+		// disconnected. Reconnect requests one coalesced recovery pass; healthy
+		// realtime operation never status-polls active CHATs.
+		if connected && disconnectEpoch > 0 && manager.callbackDispatcher != nil {
+			manager.callbackDispatcher.requestProviderRecovery()
+		}
+	})
 	return manager
 }
 

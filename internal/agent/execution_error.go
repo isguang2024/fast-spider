@@ -11,15 +11,16 @@ import (
 type ErrorClass string
 
 const (
-	ErrorAuthFailed          ErrorClass = "auth_failed"
-	ErrorRateLimited         ErrorClass = "rate_limited"
-	ErrorProviderUnavailable ErrorClass = "provider_unavailable"
-	ErrorNetworkFailed       ErrorClass = "network_failed"
-	ErrorInvalidModel        ErrorClass = "invalid_model"
-	ErrorRuntimeUnavailable  ErrorClass = "runtime_unavailable"
-	ErrorRouteMismatch       ErrorClass = "route_mismatch"
-	ErrorConfigInvalid       ErrorClass = "config_invalid"
-	ErrorUnknown             ErrorClass = "unknown"
+	ErrorAuthFailed           ErrorClass = "auth_failed"
+	ErrorRateLimited          ErrorClass = "rate_limited"
+	ErrorProviderUnavailable  ErrorClass = "provider_unavailable"
+	ErrorNetworkFailed        ErrorClass = "network_failed"
+	ErrorInvalidModel         ErrorClass = "invalid_model"
+	ErrorRuntimeUnavailable   ErrorClass = "runtime_unavailable"
+	ErrorLocalTurnUnconfirmed ErrorClass = "local_turn_unconfirmed"
+	ErrorRouteMismatch        ErrorClass = "route_mismatch"
+	ErrorConfigInvalid        ErrorClass = "config_invalid"
+	ErrorUnknown              ErrorClass = "unknown"
 )
 
 type ExecutionError struct {

@@ -35,7 +35,11 @@ Provider Token、Codex/ChatGPT 本地认证和其他 Provider secret 只保留�
 3. **稳定任务与执行轮次**：`items.id` 是稳定业务 ID；`retry` 仅由主控对已确认结束并处理过结果的执行发起，旧 claim/key/taskRef 写入 `execution_attempts`，当前 item 原子变成新 READY，后继依赖不需改 ID。新 READY 本身就是持久派发意图，沿用既有 dispatch 锁、CAS、唯一键和不确定恢复，不再造第二套 dispatcher。旧轮次迟到 callback 只归入历史，不能结束新轮次。人工取消必须带明确 `userDecisionRef` 才可重试。
 4. **有界检查**：`record_check` 对一致性审计的 `completed` 自动更新完整检查时间；执行/派发/验收/阻塞检查使用 `unchanged` 或 `unavailable`，自动退避 15/30/60 分钟并尊重更长 Retry-After。连续三次无新事实后停止该检查，产生一次主控裁决义务，不判失败、不重建 CHAT。暂停/关闭不做定时业务续跑。历史事件保留最近 100 条，检查指纹覆盖并剪除失效项，终态身份用于去重而不逐轮回读。
 
-正常流程为 **主控拆分和准备 → 协调 dispatch → Cloud 执行 → inbox 回调 → 主控 resolve → 协调继续已批准任务**。READY 写入后，主控应同轮通过原生 Codex 消息唤醒协调者；持久 READY/returned/rework 等状态保证消息中断后仍可恢复。Node 不作业务决定、不自动扫描项目、不为了填满槽位造任务。15 分钟协调和 1 小时主控兜底只补漏，不是正常推进的计时入口。
+正常流程为 **主控批准 → 执行协调 dispatch → Cloud 执行 → inbox → 交付协调准备决策包 → 主控批量决定**。Node 在状态事务中写入 role-wakeup outbox，同一目标的待投递通知合并唤醒；主控不再重复手动发送同一变化。暂停 mission 时保留通知并停止角色唤醒，恢复后继续；已替换角色的旧通知不会发给旧任务。定时兜底只补漏。
+
+0.4.79 支持在原 mission 上启用双协调：原 `coordinator` 负责派发和执行观察，`delivery_coordinator` 负责结果证据、`validation_claim/validation_receipt` 和验收跟踪。运行时更新、两任务实际模型与思考配置核对后，原主控在已暂停派发的 mission 中调用一次 `apply`，设置 `delivery_coordinator`、`coordination_ref`，可同次恢复 active/dispatch。不更换原主控、数据库或在途 CHAT；切换前已领取验收仍由原领取者回填。交付协调不能派发或作业务决定。
+
+`decision_batch` 接收 `expectedRevision` 和最多 20 条 `decisions`，各项沿用 resolve 的结果与决定字段；所有业务决定在同一事务提交，任何一项失败全批回滚。提交后逐项 ACK；重放相同批次只结清传输，不重做业务。独立 READY 通过同一 next_actions revision 的 `refillInputs` 有界补齐，某项等待不会阻塞其它可执行项。
 
 执行/派发/验收检查按真实执行轮绑定稳定身份，普通文案、优先级及 `next_check_at` 更新不会清除检查次数、退避或通知去重；旧版仍有效的记录在更新前保留原预算并转换身份，CAS 仍独立校验。主控和协调的 `brief.scope` 都显示准确的精简写域，不包含任务正文；冲突错误指出占用任务与重叠路径，未创建目录也按现存祖先归一化，避免 Windows 短路径别名漏检。`local_file` bootstrap 明确要求执行者先保存并确认准确报告可读，read_only 只允许额外写入 Node 指定的报告文件；Node 不代写报告。`resolve` 已完成传输 ACK 时无需再调用 `callback_ack`。
 

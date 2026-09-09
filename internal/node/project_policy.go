@@ -101,7 +101,7 @@ func (p *projectPolicy) validate(capability, action string, params map[string]an
 		if action == "init" {
 			return p.validatePathParam(params, "dbPath", true)
 		}
-		if action == "upgrade" || action == "tree" || action == "tree_update" || action == "archive" || action == "retry" || action == "inbox" || action == "resolve" || action == "record_check" || action == "brief" || action == "get" || action == "next_actions" || action == "record_action" || action == "apply" || action == "transfer_control" || action == "claim" || action == "recover" || action == "dispatch" || action == "dispatch_recover" || action == "observe" || action == "observation" || action == "close" || action == "compact" || action == "cleanup" {
+		if action == "upgrade" || action == "tree" || action == "tree_update" || action == "archive" || action == "retry" || action == "inbox" || action == "resolve" || action == "decision_batch" || action == "validation_claim" || action == "validation_receipt" || action == "record_check" || action == "brief" || action == "get" || action == "next_actions" || action == "record_action" || action == "apply" || action == "transfer_control" || action == "claim" || action == "recover" || action == "dispatch" || action == "dispatch_recover" || action == "observe" || action == "observation" || action == "close" || action == "compact" || action == "cleanup" {
 			if (action == "dispatch" || action == "dispatch_recover") && params != nil {
 				if token, ok := params["dispatchToken"].(string); ok && strings.TrimSpace(token) != "" {
 					return nil

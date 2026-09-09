@@ -105,7 +105,7 @@ func (c *Client) collaborationRetry(ctx context.Context, p collaborationRetryPar
 		return nil, err
 	}
 	item := cloneParams(old)
-	for _, key := range []string{"binding", "claim", "dispatch_key", "terminal_ref", "started_at", "next_check_at", "blocker", "validation_owner", "validation_started_at", "acceptance_ref", "execution_ref", "packet", "local_scope"} {
+	for _, key := range []string{"binding", "claim", "dispatch_key", "terminal_ref", "started_at", "next_check_at", "blocker", "validation_owner", "validation_claim", "validation_launch_ref", "validation_execution_ref", "validation_claimed_at", "validation_started_at", "acceptance_ref", "execution_ref", "packet", "local_scope"} {
 		item[key] = nil
 	}
 	for key, value := range p.Item {
@@ -152,8 +152,12 @@ func (c *Client) collaborationRetry(ctx context.Context, p collaborationRetryPar
 	if err := l.saveItem(ctx, item); err != nil {
 		return nil, err
 	}
+	if err := c.enqueueCollaborationRoleWake(ctx, l, "coordinator", "retry_ready", p.ItemID, item["current_attempt"]); err != nil {
+		return nil, err
+	}
 	if err := l.commit(ctx); err != nil {
 		return nil, err
 	}
+	c.signalCollaborationRoleWake()
 	return map[string]any{"revision": l.revision, "itemId": p.ItemID, "attempt": item["current_attempt"], "phase": item["phase"], "nextAction": "coordinator dispatches the persisted READY; do not create another business task"}, nil
 }

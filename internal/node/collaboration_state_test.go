@@ -60,7 +60,7 @@ func TestCollaborationStateInvalidTransitionReturnsActionableError(t *testing.T)
 	invalid["items"] = []any{map[string]any{
 		"id": "local-1", "phase": "verifying", "next_action": "Validate",
 		"evidence": []any{"execution:done"}, "result": "completed", "terminal_ref": "execution:done",
-		"validation_owner": "validator-1", "validation_started_at": int64(1234),
+		"validation_owner": "validator-1",
 	}}
 	response := client.HandleLocalCapability(context.Background(), collaborationCapabilityRequest("apply", invalid))
 	if response.Error == nil || response.Error.Code != "INVALID_REQUEST" || response.Error.Message != "invalid transition; use claim/receipt or a new round" {

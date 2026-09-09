@@ -131,6 +131,30 @@ func (c *Client) collaborationControl(ctx context.Context, action string, params
 			return nil, err
 		}
 		return c.collaborationResolve(ctx, input)
+	case "decision_batch":
+		var input collaborationDecisionBatchParams
+		if err := decodeCollaborationIdentityParams(params, &input); err != nil {
+			return nil, err
+		}
+		return c.collaborationDecisionBatch(ctx, input)
+	case "validation_claim":
+		if err := requireCollaborationParams(params, "dbPath", "missionId", "actorSessionId", "expectedRevision", "itemId", "launchRef"); err != nil {
+			return nil, err
+		}
+		var input collaborationValidationClaimParams
+		if err := decodeCollaborationIdentityParams(params, &input); err != nil {
+			return nil, err
+		}
+		return c.collaborationValidationClaim(ctx, input)
+	case "validation_receipt":
+		if err := requireCollaborationParams(params, "dbPath", "missionId", "actorSessionId", "expectedRevision", "itemId", "validationClaim", "executionRef"); err != nil {
+			return nil, err
+		}
+		var input collaborationValidationReceiptParams
+		if err := decodeCollaborationIdentityParams(params, &input); err != nil {
+			return nil, err
+		}
+		return c.collaborationValidationReceipt(ctx, input)
 	case "claim":
 		if err := requireCollaborationParams(params, "dbPath", "missionId", "actorSessionId", "expectedRevision", "itemId"); err != nil {
 			return nil, err
@@ -378,7 +402,7 @@ func (c *Client) collaborationDispatchToken(ctx context.Context, dispatchToken s
 	if err != nil {
 		return nil, err
 	}
-	if completed, active, err := recoverActiveCollaborationReceipt(ctx, token); err != nil {
+	if completed, active, err := c.recoverActiveCollaborationReceipt(ctx, token); err != nil {
 		return nil, err
 	} else if active {
 		return c.finishCollaborationToken(dispatchToken, token, completed)
@@ -601,11 +625,12 @@ func (c *Client) collaborationDispatchToken(ctx context.Context, dispatchToken s
 	if err != nil {
 		return nil, err
 	}
-	completed := localCollaborationActiveReceipt(token, binding, active["revision"], false)
+	continueRefill := c.collaborationShouldContinueRefill(ctx, token)
+	completed := localCollaborationActiveReceipt(token, binding, active["revision"], false, continueRefill)
 	return c.finishCollaborationToken(dispatchToken, token, completed)
 }
 
-func recoverActiveCollaborationReceipt(ctx context.Context, token collaborationToken) (map[string]any, bool, error) {
+func (c *Client) recoverActiveCollaborationReceipt(ctx context.Context, token collaborationToken) (map[string]any, bool, error) {
 	ledger, err := openCollaborationLedger(ctx, token.DBPath, token.MissionID, token.ActorSessionID, false)
 	if err != nil {
 		return nil, false, err
@@ -646,18 +671,43 @@ func recoverActiveCollaborationReceipt(ctx context.Context, token collaborationT
 	if err := validateCollaborationBinding(binding, item, ledger.mission); err != nil {
 		return nil, false, err
 	}
+	plan, err := ledger.boundedCollaborationRefillPlan(ctx, collaborationRefillWorklistLimit)
+	if err != nil {
+		return nil, false, err
+	}
+	continueRefill := len(plan.DispatchItemIDs) > 0
 	if err := ledger.commit(ctx); err != nil {
 		return nil, false, err
 	}
-	return localCollaborationActiveReceipt(token, binding, ledger.revision, true), true, nil
+	return localCollaborationActiveReceipt(token, binding, ledger.revision, true, continueRefill), true, nil
 }
 
-func localCollaborationActiveReceipt(token collaborationToken, binding map[string]any, revision any, replayed bool) map[string]any {
+func (c *Client) collaborationShouldContinueRefill(ctx context.Context, token collaborationToken) bool {
+	ledger, err := openCollaborationLedger(ctx, token.DBPath, token.MissionID, token.ActorSessionID, false)
+	if err != nil {
+		return false
+	}
+	defer ledger.rollback()
+	if mapStringValue(ledger.mission, "coordinator") != token.ActorSessionID {
+		return false
+	}
+	plan, err := ledger.boundedCollaborationRefillPlan(ctx, collaborationRefillWorklistLimit)
+	if err != nil {
+		return false
+	}
+	_ = ledger.commit(ctx)
+	return len(plan.DispatchItemIDs) > 0
+}
+
+func localCollaborationActiveReceipt(token collaborationToken, binding map[string]any, revision any, replayed, continueRefill bool) map[string]any {
 	completed := map[string]any{
 		"itemId": token.ItemID, "binding": binding, "packetSHA256": token.PacketSHA256,
-		"ledgerRevision": revision, "phase": "active",
-		"callerShouldYield": true, "activePollingAllowed": false,
+		"ledgerRevision": revision, "phase": "active", "activePollingAllowed": false,
+		"callerShouldYield": !continueRefill, "refillRecommended": continueRefill,
 		"nextAction": "End the current turn and await the formal local callback.",
+	}
+	if continueRefill {
+		completed["nextAction"] = "Continue this coordinator wake with the bounded pagination-safe refillInputs from collaboration.control next_actions; dispatch only preselected independent READY work. Do not poll or wait on the dispatched CHAT."
 	}
 	if replayed {
 		completed["replayed"] = true
@@ -1388,7 +1438,7 @@ func openCollaborationLedgerAccess(ctx context.Context, dbPath, missionID, actor
 			}
 		}
 	}
-	if actorSessionID != controller && actorSessionID != coordinator && !legacyCallback {
+	if actorSessionID != controller && actorSessionID != coordinator && actorSessionID != mapStringValue(ledger.mission, "delivery_coordinator") && !legacyCallback {
 		ledger.rollback()
 		return nil, errors.New("actor not bound to this task")
 	}

@@ -110,11 +110,25 @@ func (c *Client) PersistCollaborationCallback(ctx context.Context, event map[str
 		if err := l.saveItem(ctx, item); err != nil {
 			return err
 		}
+		if err := c.enqueueCollaborationRoleWake(ctx, l, "coordinator", "callback_capacity_released", mapStringValue(item, "id"), resultID); err != nil {
+			return err
+		}
+		if mapStringValue(l.mission, "delivery_coordinator") != "" {
+			if err := c.enqueueCollaborationRoleWake(ctx, l, "delivery_coordinator", "result_received", mapStringValue(item, "id"), resultID); err != nil {
+				return err
+			}
+		}
 	}
 	if _, err := l.conn.ExecContext(ctx, "INSERT INTO callback_inbox(result_id,item_id,data,received_at,resolution,resolved_at) VALUES(?,?,?,?,?,?)", resultID, mapStringValue(item, "id"), string(raw), time.Now().Unix(), resolution, resolvedAt); err != nil {
 		return err
 	}
-	return l.commit(ctx)
+	if err := l.commit(ctx); err != nil {
+		return err
+	}
+	if !historical {
+		c.signalCollaborationRoleWake()
+	}
+	return nil
 }
 
 type collaborationInboxParams struct {
@@ -204,6 +218,70 @@ type collaborationResolveParams struct {
 	Blocker          map[string]any `json:"blocker,omitempty"`
 }
 
+type collaborationDecisionBatchParams struct {
+	collaborationIdentityParams
+	ExpectedRevision int64                        `json:"expectedRevision"`
+	Decisions        []collaborationResolveParams `json:"decisions"`
+}
+
+// All business decisions commit together. Transport ACKs happen afterwards and
+// replay the immutable result resolutions, so a failed ACK never reruns work.
+func (c *Client) collaborationDecisionBatch(ctx context.Context, p collaborationDecisionBatchParams) (map[string]any, error) {
+	dbPath, err := validateCollaborationBaseIdentity(p.DBPath, p.MissionID, p.ActorSessionID)
+	if err != nil {
+		return nil, err
+	}
+	if len(p.Decisions) == 0 || len(p.Decisions) > 20 {
+		return nil, errors.New("decision batch must contain 1..20 results")
+	}
+	l, err := openCollaborationLedger(ctx, dbPath, p.MissionID, p.ActorSessionID, true)
+	if err != nil {
+		return nil, err
+	}
+	defer l.rollback()
+	if mapStringValue(l.mission, "controller") != p.ActorSessionID {
+		return nil, errors.New("controller-only result resolution")
+	}
+	baseRevision := l.revision
+	seen := map[string]bool{}
+	results := []map[string]any{}
+	events := []map[string]any{}
+	for _, decision := range p.Decisions {
+		if seen[decision.ResultID] {
+			return nil, errors.New("duplicate result in decision batch")
+		}
+		seen[decision.ResultID] = true
+		decision.collaborationIdentityParams = p.collaborationIdentityParams
+		decision.ExpectedRevision = p.ExpectedRevision
+		if p.ExpectedRevision == baseRevision {
+			decision.ExpectedRevision = l.revision
+		}
+		result, event, err := c.resolveCollaborationInTransaction(ctx, l, decision)
+		if err != nil {
+			return nil, err
+		}
+		results, events = append(results, result), append(events, event)
+	}
+	if err := l.commit(ctx); err != nil {
+		return nil, err
+	}
+	c.signalCollaborationRoleWake()
+	revision := l.revision
+	identity := p.collaborationIdentityParams
+	identity.DBPath = dbPath
+	for i, result := range results {
+		ackRevision, ackErr := c.ackCollaborationInbox(ctx, identity, mapStringValue(result, "itemId"), events[i])
+		if ackRevision > revision {
+			revision = ackRevision
+		}
+		result["transportAcked"] = ackErr == nil
+		if ackErr != nil {
+			result["ackPending"], result["ackError"] = true, ackErr.Error()
+		}
+	}
+	return map[string]any{"revision": revision, "resolved": true, "results": results}, nil
+}
+
 func (c *Client) collaborationResolve(ctx context.Context, p collaborationResolveParams) (map[string]any, error) {
 	dbPath, err := validateCollaborationBaseIdentity(p.DBPath, p.MissionID, p.ActorSessionID)
 	if err != nil {
@@ -217,73 +295,15 @@ func (c *Client) collaborationResolve(ctx context.Context, p collaborationResolv
 	if mapStringValue(l.mission, "controller") != p.ActorSessionID {
 		return nil, errors.New("controller-only result resolution")
 	}
-	var itemID, raw string
-	var resolution sql.NullString
-	if err := l.conn.QueryRowContext(ctx, "SELECT item_id,data,resolution FROM callback_inbox WHERE result_id=?", p.ResultID).Scan(&itemID, &raw, &resolution); err != nil {
+	result, event, err := c.resolveCollaborationInTransaction(ctx, l, p)
+	if err != nil {
 		return nil, err
 	}
-	var event map[string]any
-	if err := json.Unmarshal([]byte(raw), &event); err != nil {
-		return nil, err
-	}
-	wanted, _ := json.Marshal(map[string]any{"decision": p.Decision, "evidenceRef": p.EvidenceRef, "validation": p.Validation, "integration": p.Integration, "validationOwner": p.ValidationOwner, "blocker": p.Blocker})
-	duplicate := resolution.Valid
-	if duplicate {
-		if resolution.String != string(wanted) {
-			return nil, errors.New("result already resolved differently")
-		}
-	} else {
-		if l.revision != p.ExpectedRevision {
-			return nil, fmt.Errorf("revision conflict; current=%d", l.revision)
-		}
-		if err := validateCollaborationText(p.EvidenceRef, "resolution evidence", 1024); err != nil {
-			return nil, err
-		}
-		item, err := l.item(ctx, itemID)
-		if err != nil {
-			return nil, err
-		}
-		old := cloneParams(item)
-		item["blocker"] = nil
-		switch p.Decision {
-		case "accept":
-			item["phase"], item["validation"], item["integration"] = "accepted", p.Validation, p.Integration
-			if mapStringValue(item, "callback") == "acked" {
-				item["phase"] = "done"
-			}
-			item["acceptance_ref"] = p.EvidenceRef
-		case "verify":
-			item["phase"], item["validation_owner"], item["validation_started_at"] = "verifying", p.ValidationOwner, time.Now().Unix()
-		case "integrate":
-			item["phase"], item["validation"] = "integrating", p.Validation
-			if p.Validation != "passed" && p.Validation != "not_required" {
-				return nil, errors.New("integration needs completed validation")
-			}
-		case "rework":
-			item["phase"] = "rework"
-		case "block":
-			item["phase"], item["blocker"] = "blocked", p.Blocker
-		default:
-			return nil, errors.New("decision must be accept, verify, integrate, rework or block")
-		}
-		item["evidence"] = append(collaborationAnyList(item["evidence"]), p.EvidenceRef)
-		item["next_action"] = "Controller decision: " + p.Decision
-		if err := validateCollaborationItem(item, l.mission); err != nil {
-			return nil, err
-		}
-		if err := validateCollaborationItemUpdate(old, item); err != nil {
-			return nil, err
-		}
-		if err := l.saveItem(ctx, item); err != nil {
-			return nil, err
-		}
-		if _, err := l.conn.ExecContext(ctx, "UPDATE callback_inbox SET resolution=?,resolved_at=? WHERE result_id=?", string(wanted), time.Now().Unix(), p.ResultID); err != nil {
-			return nil, err
-		}
-	}
+	itemID := mapStringValue(result, "itemId")
 	if err := l.commit(ctx); err != nil {
 		return nil, err
 	}
+	c.signalCollaborationRoleWake()
 	// Business decision is durable before transport ACK. A crash/error here is
 	// recoverable by replaying this same resolve, never by repeating Cloud work.
 	identity := p.collaborationIdentityParams
@@ -293,13 +313,89 @@ func (c *Client) collaborationResolve(ctx context.Context, p collaborationResolv
 	if ackRevision > 0 {
 		revision = ackRevision
 	}
-	result := map[string]any{"resolved": true, "duplicate": duplicate, "itemId": itemID, "transportAcked": ackErr == nil, "revision": revision}
+	result["transportAcked"], result["revision"] = ackErr == nil, revision
 	if ackErr != nil {
 		result["ackError"] = ackErr.Error()
 		result["nextAction"] = "retry same resolve to settle callback transport"
 		result["ackPending"] = true
 	}
 	return result, nil
+}
+
+func (c *Client) resolveCollaborationInTransaction(ctx context.Context, l *collaborationLedger, p collaborationResolveParams) (map[string]any, map[string]any, error) {
+	var itemID, raw string
+	var resolution sql.NullString
+	if err := l.conn.QueryRowContext(ctx, "SELECT item_id,data,resolution FROM callback_inbox WHERE result_id=?", p.ResultID).Scan(&itemID, &raw, &resolution); err != nil {
+		return nil, nil, err
+	}
+	var event map[string]any
+	if err := json.Unmarshal([]byte(raw), &event); err != nil {
+		return nil, nil, err
+	}
+	wanted, _ := json.Marshal(map[string]any{"decision": p.Decision, "evidenceRef": p.EvidenceRef, "validation": p.Validation, "integration": p.Integration, "validationOwner": p.ValidationOwner, "blocker": p.Blocker})
+	duplicate := resolution.Valid
+	if duplicate {
+		if resolution.String != string(wanted) {
+			return nil, nil, errors.New("result already resolved differently")
+		}
+	} else {
+		if l.revision != p.ExpectedRevision {
+			return nil, nil, fmt.Errorf("revision conflict; current=%d", l.revision)
+		}
+		if err := validateCollaborationText(p.EvidenceRef, "resolution evidence", 1024); err != nil {
+			return nil, nil, err
+		}
+		item, err := l.item(ctx, itemID)
+		if err != nil {
+			return nil, nil, err
+		}
+		old := cloneParams(item)
+		item["blocker"] = nil
+		if p.Decision != "verify" && mapStringValue(item, "phase") == "verifying" {
+			clearCollaborationValidationExecution(item)
+		}
+		switch p.Decision {
+		case "accept":
+			item["phase"], item["validation"], item["integration"] = "accepted", p.Validation, p.Integration
+			if mapStringValue(item, "callback") == "acked" {
+				item["phase"] = "done"
+			}
+			item["acceptance_ref"] = p.EvidenceRef
+		case "verify":
+			clearCollaborationValidationExecution(item)
+			item["phase"], item["validation_owner"] = "verifying", p.ValidationOwner
+		case "integrate":
+			item["phase"], item["validation"] = "integrating", p.Validation
+			if p.Validation != "passed" && p.Validation != "not_required" {
+				return nil, nil, errors.New("integration needs completed validation")
+			}
+		case "rework":
+			item["phase"] = "rework"
+		case "block":
+			item["phase"], item["blocker"] = "blocked", p.Blocker
+		default:
+			return nil, nil, errors.New("decision must be accept, verify, integrate, rework or block")
+		}
+		item["evidence"] = append(collaborationAnyList(item["evidence"]), p.EvidenceRef)
+		item["next_action"] = "Controller decision: " + p.Decision
+		if err := validateCollaborationItem(item, l.mission); err != nil {
+			return nil, nil, err
+		}
+		if err := validateCollaborationItemUpdate(old, item); err != nil {
+			return nil, nil, err
+		}
+		if err := l.saveItem(ctx, item); err != nil {
+			return nil, nil, err
+		}
+		wakeReason := "result_resolved_" + p.Decision
+		if err := c.enqueueCollaborationRoleWake(ctx, l, "coordinator", wakeReason, itemID, p.ResultID); err != nil {
+			return nil, nil, err
+		}
+		if _, err := l.conn.ExecContext(ctx, "UPDATE callback_inbox SET resolution=?,resolved_at=? WHERE result_id=?", string(wanted), time.Now().Unix(), p.ResultID); err != nil {
+			return nil, nil, err
+		}
+	}
+	return map[string]any{"resolved": true, "duplicate": duplicate, "itemId": itemID}, event, nil
 }
 
 func (c *Client) ackCollaborationInbox(ctx context.Context, identity collaborationIdentityParams, itemID string, event map[string]any) (int64, error) {

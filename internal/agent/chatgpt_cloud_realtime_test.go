@@ -328,3 +328,81 @@ func TestChatgptCloudRealtimeDoesNotEvictPersistentCallback(t *testing.T) {
 		t.Fatal("released persistent callback subscription remained active without waiters")
 	}
 }
+
+func TestChatgptCloudRealtimeSubscriptionReadyFenceUsesGenerationAndConnectionEpoch(t *testing.T) {
+	r := newChatGPTCloudRealtime(nil, "https://chatgpt.com", nil, nil)
+	defer r.Close(context.Background())
+	r.mu.Lock()
+	r.connectionEpoch = 7
+	r.connected = true
+	r.watching["conversation-fence"] = &realtimeSubscription{
+		conversationID: "conversation-fence",
+		generation:     3,
+		persistent:     true,
+		lastUsed:       time.Now(),
+	}
+	r.mu.Unlock()
+
+	wait := func(generation int64) chan error {
+		done := make(chan error, 1)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			done <- r.waitUntilSubscriptionReady(ctx, "conversation-fence", generation)
+		}()
+		return done
+	}
+	first := wait(3)
+	select {
+	case err := <-first:
+		t.Fatalf("subscription fence opened before subscribe write: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	r.markSubscriptionReady("conversation-fence", 7)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+
+	// The old socket epoch cannot satisfy a reconnect fence.
+	r.setConnected(false)
+	epoch := r.beginConnectionEpoch()
+	r.setConnected(true)
+	second := wait(3)
+	select {
+	case err := <-second:
+		t.Fatalf("old connection epoch satisfied reconnect fence: %v", err)
+	case <-time.After(30 * time.Millisecond):
+	}
+	r.markSubscriptionReady("conversation-fence", epoch)
+	if err := <-second; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestChatgptCloudRealtimeReconnectObserverCarriesDisconnectEpoch(t *testing.T) {
+	r := newChatGPTCloudRealtime(nil, "https://chatgpt.com", nil, nil)
+	defer r.Close(context.Background())
+	type state struct {
+		connected bool
+		epoch     uint64
+	}
+	states := make(chan state, 4)
+	r.setStateObserver(func(connected bool, epoch uint64) { states <- state{connected: connected, epoch: epoch} })
+	r.beginConnectionEpoch()
+	r.setConnected(true)
+	initial := <-states
+	if !initial.connected || initial.epoch != 0 {
+		t.Fatalf("initial realtime state=%#v", initial)
+	}
+	r.setConnected(false)
+	disconnected := <-states
+	if disconnected.connected || disconnected.epoch != 1 {
+		t.Fatalf("disconnect realtime state=%#v", disconnected)
+	}
+	r.beginConnectionEpoch()
+	r.setConnected(true)
+	reconnected := <-states
+	if !reconnected.connected || reconnected.epoch != 1 {
+		t.Fatalf("reconnect realtime state=%#v", reconnected)
+	}
+}

@@ -13,6 +13,39 @@ func collaborationRecordCheckParamError(err error) error {
 // Return concrete call arguments rather than requiring an AI to reconstruct
 // identities and CAS fields from prose. This function never calls an executor.
 func (l *collaborationLedger) addCollaborationCheckCalls(ctx context.Context, input collaborationNextActionsParams, action collaborationActionCandidate, observation, entry map[string]any) error {
+	if action.Kind == "launch_validation" || action.Kind == "recover_validation_binding" {
+		if action.ItemID == nil {
+			return nil
+		}
+		item, err := l.item(ctx, fmt.Sprint(action.ItemID))
+		if err != nil {
+			return err
+		}
+		if action.Kind == "launch_validation" {
+			entry["validationClaim"] = map[string]any{
+				"action": "validation_claim",
+				"params": map[string]any{
+					"dbPath": input.DBPath, "missionId": input.MissionID, "actorSessionId": input.ActorSessionID,
+					"expectedRevision": l.revision, "itemId": action.ItemID,
+				},
+				"requiredInput": map[string]any{"launchRef": "codex-agent:<this coordinator thread id>#/<canonical validator path>"},
+			}
+			entry["completionRule"] = "Claim one validation slot before launch. Launch exactly once, then validation_receipt binds the real codex-thread executionRef. If launch receipt is lost, recover the claimed binding; never spawn a substitute validator."
+			return nil
+		}
+		l.addCollaborationNativeCheck(entry, mapStringValue(item, "validation_launch_ref"))
+		entry["validationClaim"] = item["validation_claim"]
+		entry["validationReceipt"] = map[string]any{
+			"action": "validation_receipt",
+			"params": map[string]any{
+				"dbPath": input.DBPath, "missionId": input.MissionID, "actorSessionId": input.ActorSessionID,
+				"expectedRevision": l.revision, "itemId": action.ItemID, "validationClaim": item["validation_claim"],
+			},
+			"requiredInput": map[string]any{"executionRef": "real codex-thread:<agentThreadId> recovered from nativeBindingLookup"},
+		}
+		entry["completionRule"] = "Recover only the child created for validation_launch_ref and bind it with validation_receipt. Do not record unavailable checks or relaunch while the claim is unbound."
+		return nil
+	}
 	switch action.Kind {
 	case "consistency_audit", "check_execution", "reconcile_dispatch", "check_validation", "notify_validation_due", "recheck_blocker", "decide_stalled_check":
 	default:
@@ -45,8 +78,15 @@ func (l *collaborationLedger) addCollaborationCheckCalls(ctx context.Context, in
 	}
 	entry["evidenceRule"] = "get/brief/tree only read the ledger. Do not report unchanged from phase=active. Use one exact executor observation; missing, unknown or inaccessible evidence is unavailable. Terminal facts go to the controller, not unchanged."
 	if action.Kind == "check_validation" || action.Kind == "notify_validation_due" {
-		l.addCollaborationNativeCheck(entry, mapStringValue(item, "validation_owner"))
-		entry["completionRule"] = "Validation due is not an already-processed Cloud callback. Inspect the exact local validation result or notify the controller once. The controller consumes terminal evidence through apply and wakes the coordinator for newly READY work in the same turn."
+		l.addCollaborationNativeCheck(entry, mapStringValue(item, "validation_execution_ref"))
+		entry["logicalValidationOwner"] = item["validation_owner"]
+		entry["completionRule"] = "Inspect only the bound local validation execution. Terminal validation evidence is applied by the controller; validation stalls never recover, continue, cancel, or otherwise touch the original Cloud writer."
+		return nil
+	}
+	if action.Kind == "decide_stalled_check" && (action.SourceKind == "check_validation" || action.SourceKind == "notify_validation_due") {
+		l.addCollaborationNativeCheck(entry, mapStringValue(item, "validation_execution_ref"))
+		entry["logicalValidationOwner"] = item["validation_owner"]
+		entry["recoveryRule"] = "Recover or replace only the validation execution under its validation claim. Never use the business item's Cloud binding/executor to recover a stalled validator. Controller remains the only authority that applies PASS/FAIL."
 		return nil
 	}
 	if mapStringValue(item, "executor") != "cloud" {

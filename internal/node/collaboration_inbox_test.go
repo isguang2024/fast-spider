@@ -16,6 +16,43 @@ func collaborationTestInboxResults(box map[string]any) []map[string]any {
 	return out
 }
 
+func TestInboxResultNeedsReviewNotRecoveryAndReleasesCapacity(t *testing.T) {
+	c, a, db, event := collaborationInboxFixture(t)
+	before := callCollaborationTest(t, c, "brief", collaborationStateIdentity(db, "controller-1"))
+	used := before["executionHeld"].(map[string]any)
+	if collaborationIntDefault(used, "cloud", 0) != 1 {
+		t.Fatalf("fixture not holding execution: %#v", before)
+	}
+	if err := c.PersistCollaborationCallback(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	due := callCollaborationTest(t, c, "next_actions", collaborationStateIdentity(db, "controller-1"))
+	if !collaborationTestHasActionKind(due, "review_result") || collaborationTestHasActionKind(due, "recover_callback") {
+		t.Fatalf("durable result misrouted to recovery: %#v", due)
+	}
+	brief := callCollaborationTest(t, c, "brief", collaborationStateIdentity(db, "controller-1"))
+	if collaborationIntDefault(brief["counts"].(map[string]any), "returned", 0) != 1 || collaborationIntDefault(brief["executionHeld"].(map[string]any), "cloud", -1) != 0 {
+		t.Fatalf("returned consumed execution capacity: %#v", brief)
+	}
+	cap := brief["mission"].(map[string]any)["capacity"].(map[string]any)
+	if collaborationIntDefault(brief["executionAvailable"].(map[string]any), "cloud", -1) != collaborationIntDefault(cap, "cloud", 0) {
+		t.Fatalf("available capacity differs from same snapshot: %#v", brief)
+	}
+	// Resolving while ACK fails still leaves a genuine transport obligation.
+	box := callCollaborationTest(t, c, "inbox", collaborationStateIdentity(db, "controller-1"))
+	p := collaborationStateIdentity(db, "controller-1")
+	p["expectedRevision"], p["resultId"], p["decision"], p["evidenceRef"], p["validation"], p["integration"] = box["revision"], collaborationTestInboxResults(box)[0]["resultId"], "accept", "test:accepted", "passed", "not_required"
+	a.errors["session.callback.ack"] = errors.New("transport unavailable")
+	callCollaborationTest(t, c, "resolve", p)
+	after := callCollaborationTest(t, c, "next_actions", collaborationStateIdentity(db, "controller-1"))
+	if !collaborationTestHasActionKind(after, "recover_callback") {
+		t.Fatalf("real ACK recovery hidden: %#v", after)
+	}
+	if a.actionCount("session.get") != 0 || a.actionCount("session.send") != 0 {
+		t.Fatal("ledger views contacted provider")
+	}
+}
+
 func collaborationInboxFixture(t *testing.T) (*Client, *collaborationTestAgent, string, map[string]any) {
 	t.Helper()
 	root := t.TempDir()

@@ -175,20 +175,34 @@ type sessionCallbackStore struct {
 	syncParentOverride       func(string) error
 }
 
-// withCurrentRegistration serializes recovery's watcher creation with owner
-// mutations. The callback starts the watcher while the registration lock is
-// held, so a snapshot that races unregister cannot leave an orphan watcher.
-func (s *sessionCallbackStore) withCurrentRegistration(sourceSessionID string, generation int64, ensure func() error) (bool, error) {
+// currentProviderRegistration is a short critical section used on both sides
+// of potentially blocking realtime subscription setup. Network/socket waits
+// must never hold the callback store mutex: unregister/ACK remain locally
+// available while the provider is slow or disconnected.
+func (s *sessionCallbackStore) currentProviderRegistration(sourceSessionID string, generation int64) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.loadErr != nil {
 		return false, callbackStoreUnavailableError()
 	}
-	registration, exists := s.registrations[sourceSessionID]
+	registration, exists := s.registrations[strings.TrimSpace(sourceSessionID)]
+	return exists && registration.Generation == generation && callbackRegistrationProviderActive(registration), nil
+}
+
+// withCurrentRegistration remains for short, non-blocking state fences and
+// compatibility with local lifecycle tests. Provider/socket work must use the
+// two-phase currentProviderRegistration check instead.
+func (s *sessionCallbackStore) withCurrentRegistration(sourceSessionID string, generation int64, fn func() error) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadErr != nil {
+		return false, callbackStoreUnavailableError()
+	}
+	registration, exists := s.registrations[strings.TrimSpace(sourceSessionID)]
 	if !exists || registration.Generation != generation || !callbackRegistrationProviderActive(registration) {
 		return false, nil
 	}
-	return true, ensure()
+	return true, fn()
 }
 
 func newSessionCallbackStore(dataDir string) *sessionCallbackStore {

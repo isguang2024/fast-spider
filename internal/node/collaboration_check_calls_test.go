@@ -163,8 +163,15 @@ func TestCollaborationValidationDueProvidesExactNativeCheck(t *testing.T) {
 	box := callCollaborationTest(t, c, "inbox", collaborationStateIdentity(db, "controller-1"))
 	p := collaborationStateIdentity(db, "controller-1")
 	p["expectedRevision"], p["resultId"] = box["revision"], collaborationAnyList(box["results"])[0].(map[string]any)["resultId"]
-	p["decision"], p["evidenceRef"], p["validationOwner"] = "verify", "test:verify", "codex-thread:validator-1"
-	callCollaborationTest(t, c, "resolve", p)
+	p["decision"], p["evidenceRef"], p["validationOwner"] = "verify", "test:verify", "validator-owner-1"
+	verified := callCollaborationTest(t, c, "resolve", p)
+	claim := collaborationStateIdentity(db, "coordinator-1")
+	claim["expectedRevision"], claim["itemId"], claim["launchRef"] = verified["revision"], "task-1", "codex-agent:coordinator-1#/validator-1"
+	claimed := callCollaborationTest(t, c, "validation_claim", claim)
+	receipt := collaborationStateIdentity(db, "coordinator-1")
+	receipt["expectedRevision"], receipt["itemId"] = claimed["revision"], "task-1"
+	receipt["validationClaim"], receipt["executionRef"] = claimed["validationClaim"], "codex-thread:validator-1"
+	callCollaborationTest(t, c, "validation_receipt", receipt)
 	for _, actor := range []string{"controller-1", "coordinator-1"} {
 		q := collaborationStateIdentity(db, actor)
 		q["now"] = time.Now().Unix() + 3600

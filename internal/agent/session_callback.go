@@ -25,6 +25,7 @@ const (
 	// actual local delivery/persistence error; normal queue work is event/deadline
 	// driven and does not scan on a fixed cadence.
 	sessionCallbackDeliveryRetryInterval = 30 * time.Second
+	sessionCallbackRecoveryBatchLimit    = 16
 	// Provider status reads are a recovery path for a missed callback, not the
 	// normal completion channel. Keep them deliberately infrequent.
 	sessionCallbackRecoveryInterval = 30 * time.Minute
@@ -40,6 +41,7 @@ type sessionCallbackDispatcher struct {
 	resultSinkMu sync.RWMutex
 	resultSink   CollaborationResultSink
 	ensure       func(context.Context, string, int64) error
+	release      func(string, int64)
 	// recoverStatus performs one bounded provider status read for a registered
 	// Cloud CHAT. It is intentionally separate from ensure so tests and callers
 	// can keep callback subscription recovery free of provider polling.
@@ -47,6 +49,7 @@ type sessionCallbackDispatcher struct {
 	recoveryState func() (connected bool, disconnectEpoch uint64)
 
 	notify                      chan struct{}
+	recoveryNotify              chan struct{}
 	rootCtx                     context.Context
 	cancel                      context.CancelFunc
 	startOnce                   sync.Once
@@ -60,6 +63,8 @@ type sessionCallbackDispatcher struct {
 	lastRealtimeDisconnectEpoch uint64
 	recoveryRequests            uint64
 	recoveredRequests           uint64
+	recoveryCursor              int
+	recoveryBatchMore           bool
 }
 
 // CollaborationResultSink receives the durable callback event metadata before
@@ -129,7 +134,7 @@ func newSessionCallbackDispatcher(
 	rootCtx, cancel := context.WithCancel(context.Background())
 	return &sessionCallbackDispatcher{
 		store: store, logger: logger, active: active, send: send, ensure: ensure,
-		notify: make(chan struct{}, 1), rootCtx: rootCtx, cancel: cancel, retryInterval: sessionCallbackDeliveryRetryInterval,
+		notify: make(chan struct{}, 1), recoveryNotify: make(chan struct{}, 1), rootCtx: rootCtx, cancel: cancel, retryInterval: sessionCallbackDeliveryRetryInterval,
 	}
 }
 
@@ -244,11 +249,17 @@ func (d *sessionCallbackDispatcher) runRecovery() {
 	defer d.wg.Done()
 	recoveryTicker := time.NewTicker(sessionCallbackRecoveryInterval)
 	defer recoveryTicker.Stop()
-	d.reconcileSubscriptionsWithRecovery(false)
+	// Startup performs one bounded authoritative catch-up across the durable
+	// callback registry. Healthy operation remains realtime/event driven.
+	d.reconcileSubscriptions()
+	d.signal()
 	for {
 		select {
 		case <-d.rootCtx.Done():
 			return
+		case <-d.recoveryNotify:
+			d.reconcileSubscriptions()
+			d.signal()
 		case <-recoveryTicker.C:
 			d.reconcileSubscriptions()
 			d.signal()
@@ -271,14 +282,23 @@ func (d *sessionCallbackDispatcher) reconcileSubscriptions() {
 		readProvider = !recoveryInitialized || requestedRecovery != recoveredRequests || !connected || disconnectEpoch != lastDisconnectEpoch
 	}
 	recovered := d.reconcileSubscriptionsWithRecovery(readProvider)
-	if d.recoveryState != nil && readProvider && recovered {
-		d.recoveryMu.Lock()
+	d.recoveryMu.Lock()
+	more := d.recoveryBatchMore
+	if d.recoveryState != nil && readProvider && recovered && !more {
 		d.recoveryInitialized = true
 		d.lastRealtimeDisconnectEpoch = disconnectEpoch
 		if requestedRecovery > d.recoveredRequests {
 			d.recoveredRequests = requestedRecovery
 		}
-		d.recoveryMu.Unlock()
+	}
+	d.recoveryMu.Unlock()
+	if recovered && more {
+		// Continue the same startup/recovery cycle in another bounded work unit.
+		// The buffered channel coalesces duplicate continuations.
+		select {
+		case d.recoveryNotify <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -289,6 +309,12 @@ func (d *sessionCallbackDispatcher) requestProviderRecovery() {
 	d.recoveryMu.Lock()
 	d.recoveryRequests++
 	d.recoveryMu.Unlock()
+	// Coalesce bursts into one recovery wake. This is not provider polling: a
+	// read is triggered only by startup, a realtime gap, or an explicit failure.
+	select {
+	case d.recoveryNotify <- struct{}{}:
+	default:
+	}
 }
 
 func (d *sessionCallbackDispatcher) reconcileSubscriptionsWithRecovery(readProvider bool) bool {
@@ -300,17 +326,50 @@ func (d *sessionCallbackDispatcher) reconcileSubscriptionsWithRecovery(readProvi
 		d.logger.Warn("load session callbacks for realtime recovery", "error", err)
 		return false
 	}
-	recovered := true
+	active := registrations[:0]
 	for _, registration := range registrations {
+		if callbackRegistrationProviderActive(registration) {
+			active = append(active, registration)
+		}
+	}
+	d.recoveryMu.Lock()
+	start := d.recoveryCursor
+	if start < 0 || start >= len(active) {
+		start = 0
+	}
+	end := start + sessionCallbackRecoveryBatchLimit
+	if end > len(active) {
+		end = len(active)
+	}
+	d.recoveryBatchMore = false
+	d.recoveryMu.Unlock()
+	batch := active[start:end]
+	recovered := true
+	for _, registration := range batch {
 		if !callbackRegistrationProviderActive(registration) {
 			continue
 		}
 		if d.ensure != nil {
-			ctx, cancel := context.WithTimeout(d.rootCtx, 10*time.Second)
-			_, ensureErr := d.store.withCurrentRegistration(registration.SourceSessionID, registration.Generation, func() error {
-				return d.ensure(ctx, registration.SourceSessionID, registration.Generation)
-			})
+			current, currentErr := d.store.currentProviderRegistration(registration.SourceSessionID, registration.Generation)
+			if currentErr != nil {
+				recovered = false
+				d.logger.Warn("check callback registration before subscription setup", "sourceSessionId", registration.SourceSessionID, "error", currentErr)
+				continue
+			}
+			if !current {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(d.rootCtx, 5*time.Second)
+			ensureErr := d.ensure(ctx, registration.SourceSessionID, registration.Generation)
 			cancel()
+			current, currentErr = d.store.currentProviderRegistration(registration.SourceSessionID, registration.Generation)
+			if currentErr != nil {
+				recovered = false
+				d.logger.Warn("recheck callback registration after subscription setup", "sourceSessionId", registration.SourceSessionID, "error", currentErr)
+			}
+			if !current && d.release != nil {
+				d.release(registration.SourceSessionID, registration.Generation)
+			}
 			if ensureErr != nil && !errors.Is(ensureErr, context.Canceled) {
 				d.logger.Warn("restore ChatGPT Cloud callback subscription", "sourceSessionId", registration.SourceSessionID, "error", ensureErr)
 				if classifyExecutionError(ensureErr) == ErrorRateLimited {
@@ -344,7 +403,19 @@ func (d *sessionCallbackDispatcher) reconcileSubscriptionsWithRecovery(readProvi
 			}
 		}
 	}
-	return !readProvider || recovered
+	success := !readProvider || recovered
+	if success {
+		d.recoveryMu.Lock()
+		if end < len(active) {
+			d.recoveryCursor = end
+			d.recoveryBatchMore = true
+		} else {
+			d.recoveryCursor = 0
+			d.recoveryBatchMore = false
+		}
+		d.recoveryMu.Unlock()
+	}
+	return success
 }
 
 func (d *sessionCallbackDispatcher) dispatchOnce() time.Time {
@@ -503,7 +574,12 @@ func (d *sessionCallbackDispatcher) dispatchOnce() time.Time {
 				"turnId", delivery.TurnID,
 				"error", err,
 			)
-			schedule(retryAt())
+			next, persistErr := d.store.recordNudgeFailure(target.TargetSessionID, envelopeID, ErrorLocalTurnUnconfirmed, time.Now().UTC(), d.retryInterval, target.Transport)
+			if persistErr != nil {
+				d.logger.Warn("persist unconfirmed callback delivery retry deadline", "error", persistErr)
+				next = retryAt()
+			}
+			schedule(next)
 			continue
 		}
 		sentAt := time.Now().UTC()
@@ -997,11 +1073,22 @@ func (m *AgentManager) initializeCloudCallbackSubscription(parent context.Contex
 	if m == nil || m.callbackStore == nil || m.chatgptCloud == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
-	_, err := m.callbackStore.withCurrentRegistration(sourceSessionID, generation, func() error {
-		return m.chatgptCloud.EnsureCallbackRealtimeForGeneration(ctx, sourceSessionID, generation)
-	})
+	current, err := m.callbackStore.currentProviderRegistration(sourceSessionID, generation)
+	if err != nil || !current {
+		return
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
+	err = m.chatgptCloud.EnsureCallbackRealtimeForGeneration(ctx, sourceSessionID, generation)
 	cancel()
+	current, currentErr := m.callbackStore.currentProviderRegistration(sourceSessionID, generation)
+	if currentErr != nil {
+		m.logger.Warn("recheck callback registration after subscription setup", "sourceSessionId", sourceSessionID, "error", currentErr)
+		return
+	}
+	if !current {
+		m.chatgptCloud.ReleaseCallbackRealtimeForGeneration(sourceSessionID, generation)
+		return
+	}
 	if err != nil && !errors.Is(err, context.Canceled) {
 		m.logger.Warn("establish ChatGPT Cloud callback subscription", "sourceSessionId", sourceSessionID, "error", err)
 		if m.callbackDispatcher != nil {
@@ -1009,15 +1096,12 @@ func (m *AgentManager) initializeCloudCallbackSubscription(parent context.Contex
 		}
 		return
 	}
-	// Give the official shared websocket a brief chance to finish subscribing,
-	// then perform exactly one catch-up read. This closes the registration race
-	// without the previous 500ms provider polling loop.
-	readyCtx, readyCancel := context.WithTimeout(parent, 250*time.Millisecond)
-	_ = m.chatgptCloud.WaitCallbackRealtime(readyCtx)
-	readyCancel()
+	// EnsureCallbackRealtimeForGeneration returns only after this exact
+	// conversation/generation topic has been written on the current socket.
+	// Perform one authoritative catch-up after that fence; never poll the CHAT.
 	statusCtx, statusCancel := context.WithTimeout(parent, 20*time.Second)
 	statusCtx = withChatGPTCloudReadSource(statusCtx, "registration_catchup")
-	currentErr := m.recoverCompletedCloudCallback(statusCtx, sourceSessionID, generation)
+	currentErr = m.recoverCompletedCloudCallback(statusCtx, sourceSessionID, generation)
 	statusCancel()
 	if currentErr != nil && !errors.Is(currentErr, context.Canceled) {
 		m.logger.Warn("reconcile completed ChatGPT Cloud callback after registration", "sourceSessionId", sourceSessionID, "error", currentErr)

@@ -58,6 +58,8 @@ type Client struct {
 	windowTokenKey                        [32]byte
 	statePath                             string
 	writeMu                               sync.Mutex
+	collaborationWakeMu                   sync.Mutex
+	collaborationWakeNotify               chan struct{}
 	activityMu                            sync.Mutex
 	releaseDrain                          bool
 	jobs                                  *JobManager

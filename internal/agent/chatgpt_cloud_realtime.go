@@ -47,24 +47,26 @@ type chatgptCloudRealtime struct {
 	http        *http.Client
 	tokenSource func(ctx context.Context) (string, error)
 
-	mu          sync.Mutex
-	events      []chatgptCloudEvent
-	nextEvent   int64
-	seenKeys    map[string]struct{}
-	seenOrder   []string
-	notify      chan struct{}
-	stateNotify chan struct{}
-	subNotify   chan struct{}
-	watching    map[string]*realtimeSubscription
-	observer    func(chatgptCloudEvent)
-	connected   bool
-	disconnects uint64
-	closed      bool
-	rootCtx     context.Context
-	cancel      context.CancelFunc
-	startOnce   sync.Once
-	closeOnce   sync.Once
-	wg          sync.WaitGroup
+	mu              sync.Mutex
+	events          []chatgptCloudEvent
+	nextEvent       int64
+	seenKeys        map[string]struct{}
+	seenOrder       []string
+	notify          chan struct{}
+	stateNotify     chan struct{}
+	subNotify       chan struct{}
+	watching        map[string]*realtimeSubscription
+	observer        func(chatgptCloudEvent)
+	stateObserver   func(connected bool, disconnectEpoch uint64)
+	connected       bool
+	disconnects     uint64
+	connectionEpoch uint64
+	closed          bool
+	rootCtx         context.Context
+	cancel          context.CancelFunc
+	startOnce       sync.Once
+	closeOnce       sync.Once
+	wg              sync.WaitGroup
 }
 
 const (
@@ -75,11 +77,13 @@ const (
 )
 
 type realtimeSubscription struct {
-	conversationID string
-	generation     int64
-	lastUsed       time.Time
-	waiters        int
-	persistent     bool
+	conversationID  string
+	generation      int64
+	readyGeneration int64
+	readyEpoch      uint64
+	lastUsed        time.Time
+	waiters         int
+	persistent      bool
 }
 
 func newChatGPTCloudRealtime(logger *slog.Logger, baseURL string, httpClient *http.Client, tokenSource func(ctx context.Context) (string, error)) *chatgptCloudRealtime {
@@ -161,6 +165,12 @@ func (r *chatgptCloudRealtime) setObserver(observer func(chatgptCloudEvent)) {
 	r.mu.Unlock()
 }
 
+func (r *chatgptCloudRealtime) setStateObserver(observer func(bool, uint64)) {
+	r.mu.Lock()
+	r.stateObserver = observer
+	r.mu.Unlock()
+}
+
 func (r *chatgptCloudRealtime) setSequenceFloor(sequence int64) {
 	r.mu.Lock()
 	if sequence > r.nextEvent {
@@ -185,15 +195,21 @@ func (r *chatgptCloudRealtime) ensureWatchingForGeneration(_ context.Context, co
 		return nil, fmt.Errorf("chatgpt_cloud realtime is closed")
 	}
 	if active := r.watching[conversationID]; active != nil {
-		if generation > 0 && active.generation == 0 {
-			active.generation = generation
-		}
 		if generation > 0 && active.generation != 0 && active.generation > generation {
 			r.mu.Unlock()
 			return nil, fmt.Errorf("chatgpt_cloud realtime watcher generation is newer than requested generation")
 		}
-		if generation > 0 && active.generation != 0 && active.generation < generation {
+		generationChanged := generation > 0 && active.generation != generation
+		if generation > 0 {
 			active.generation = generation
+		}
+		// An already-subscribed conversation remains subscribed when only the
+		// local callback generation advances. Extend the readiness fence to the
+		// new generation only while this exact socket epoch is still connected.
+		if generationChanged && r.connected && active.readyEpoch == r.connectionEpoch {
+			active.readyGeneration = active.generation
+			close(r.stateNotify)
+			r.stateNotify = make(chan struct{})
 		}
 		active.lastUsed = time.Now()
 		if isWaiting {
@@ -390,6 +406,7 @@ func (r *chatgptCloudRealtime) runOnce(ctx context.Context) error {
 		return err
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "done")
+	epoch := r.beginConnectionEpoch()
 
 	// Connect and subscribe in one batch, like the official client. A dedicated
 	// writer below keeps this same socket synchronized when watched CHATs change.
@@ -405,6 +422,9 @@ func (r *chatgptCloudRealtime) runOnce(ctx context.Context) error {
 	if err := writeWSFrame(ctx, conn, subscribe); err != nil {
 		return err
 	}
+	for _, conversationID := range initialIDs {
+		r.markSubscriptionReady(conversationID, epoch)
+	}
 	connectionCtx, cancelConnection := context.WithCancel(ctx)
 	writerDone := make(chan error, 1)
 	initial := make(map[string]struct{}, len(initialIDs))
@@ -412,7 +432,7 @@ func (r *chatgptCloudRealtime) runOnce(ctx context.Context) error {
 		initial[conversationID] = struct{}{}
 	}
 	go func() {
-		writerDone <- r.runSubscriptionWriter(connectionCtx, cancelConnection, conn, initial, len(subscribe)+2)
+		writerDone <- r.runSubscriptionWriter(connectionCtx, cancelConnection, conn, initial, len(subscribe)+2, epoch)
 	}()
 	r.setConnected(true)
 	defer r.setConnected(false)
@@ -436,7 +456,7 @@ func (r *chatgptCloudRealtime) runOnce(ctx context.Context) error {
 	}
 }
 
-func (r *chatgptCloudRealtime) runSubscriptionWriter(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, subscribed map[string]struct{}, nextCommandID int) error {
+func (r *chatgptCloudRealtime) runSubscriptionWriter(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, subscribed map[string]struct{}, nextCommandID int, epoch uint64) error {
 	defer cancel()
 	for {
 		select {
@@ -479,6 +499,7 @@ func (r *chatgptCloudRealtime) runSubscriptionWriter(ctx context.Context, cancel
 			}
 			for _, conversationID := range added {
 				subscribed[conversationID] = struct{}{}
+				r.markSubscriptionReady(conversationID, epoch)
 			}
 			for _, conversationID := range removed {
 				delete(subscribed, conversationID)
@@ -505,9 +526,33 @@ func (r *chatgptCloudRealtime) isWatching(conversationID string) bool {
 	return ok
 }
 
+func (r *chatgptCloudRealtime) beginConnectionEpoch() uint64 {
+	r.mu.Lock()
+	r.connectionEpoch++
+	epoch := r.connectionEpoch
+	close(r.stateNotify)
+	r.stateNotify = make(chan struct{})
+	r.mu.Unlock()
+	return epoch
+}
+
+func (r *chatgptCloudRealtime) markSubscriptionReady(conversationID string, epoch uint64) {
+	r.mu.Lock()
+	if epoch == r.connectionEpoch {
+		if sub := r.watching[conversationID]; sub != nil {
+			sub.readyEpoch = epoch
+			sub.readyGeneration = sub.generation
+			close(r.stateNotify)
+			r.stateNotify = make(chan struct{})
+		}
+	}
+	r.mu.Unlock()
+}
+
 func (r *chatgptCloudRealtime) setConnected(connected bool) {
 	r.mu.Lock()
-	if r.connected != connected {
+	changed := r.connected != connected
+	if changed {
 		if r.connected && !connected {
 			r.disconnects++
 		}
@@ -515,7 +560,11 @@ func (r *chatgptCloudRealtime) setConnected(connected bool) {
 		close(r.stateNotify)
 		r.stateNotify = make(chan struct{})
 	}
+	observer, disconnects := r.stateObserver, r.disconnects
 	r.mu.Unlock()
+	if changed && observer != nil {
+		observer(connected, disconnects)
+	}
 }
 
 func (r *chatgptCloudRealtime) recoveryState() (bool, uint64) {
@@ -526,6 +575,28 @@ func (r *chatgptCloudRealtime) recoveryState() (bool, uint64) {
 	connected, disconnects := r.connected, r.disconnects
 	r.mu.Unlock()
 	return connected, disconnects
+}
+
+func (r *chatgptCloudRealtime) waitUntilSubscriptionReady(ctx context.Context, conversationID string, generation int64) error {
+	for {
+		r.mu.Lock()
+		sub := r.watching[conversationID]
+		if sub != nil && r.connected && sub.readyEpoch == r.connectionEpoch && (generation == 0 || sub.readyGeneration >= generation) {
+			r.mu.Unlock()
+			return nil
+		}
+		if r.closed {
+			r.mu.Unlock()
+			return fmt.Errorf("chatgpt_cloud realtime is closed")
+		}
+		notify := r.stateNotify
+		r.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-notify:
+		}
+	}
 }
 
 func (r *chatgptCloudRealtime) waitUntilConnected(ctx context.Context) error {

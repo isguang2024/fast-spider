@@ -181,7 +181,13 @@ func (c *Client) handleCapabilityRequestFrom(ctx context.Context, req protocolv1
 		result, err = c.operationLogQuery(ctx, req.Params)
 	case "working.context/get", "working.context/set", "working.context/clear":
 		result, err = c.workingContextControl(ctx, req.Action, req.Params)
-	case "collaboration.control/upgrade", "collaboration.control/tree", "collaboration.control/tree_update", "collaboration.control/archive", "collaboration.control/retry", "collaboration.control/inbox", "collaboration.control/resolve", "collaboration.control/record_check", "collaboration.control/init", "collaboration.control/brief", "collaboration.control/get", "collaboration.control/next_actions", "collaboration.control/record_action", "collaboration.control/apply", "collaboration.control/transfer_control", "collaboration.control/claim", "collaboration.control/recover", "collaboration.control/receipt", "collaboration.control/uncertain", "collaboration.control/not_created", "collaboration.control/verify", "collaboration.control/dispatch", "collaboration.control/dispatch_recover", "collaboration.control/observe", "collaboration.control/observation", "collaboration.control/callback_claim", "collaboration.control/callback_ack", "collaboration.control/close", "collaboration.control/compact", "collaboration.control/cleanup":
+	case "collaboration.control/decision_batch":
+		if !local {
+			response.Error = protocolError("UNSUPPORTED_CAPABILITY", "capability or action is not available", false)
+			return response
+		}
+		result, err = c.collaborationControl(ctx, req.Action, req.Params)
+	case "collaboration.control/upgrade", "collaboration.control/tree", "collaboration.control/tree_update", "collaboration.control/archive", "collaboration.control/retry", "collaboration.control/inbox", "collaboration.control/resolve", "collaboration.control/validation_claim", "collaboration.control/validation_receipt", "collaboration.control/record_check", "collaboration.control/init", "collaboration.control/brief", "collaboration.control/get", "collaboration.control/next_actions", "collaboration.control/record_action", "collaboration.control/apply", "collaboration.control/transfer_control", "collaboration.control/claim", "collaboration.control/recover", "collaboration.control/receipt", "collaboration.control/uncertain", "collaboration.control/not_created", "collaboration.control/verify", "collaboration.control/dispatch", "collaboration.control/dispatch_recover", "collaboration.control/observe", "collaboration.control/observation", "collaboration.control/callback_claim", "collaboration.control/callback_ack", "collaboration.control/close", "collaboration.control/compact", "collaboration.control/cleanup":
 		if !local {
 			response.Error = protocolError("UNSUPPORTED_CAPABILITY", "capability or action is not available", false)
 			return response

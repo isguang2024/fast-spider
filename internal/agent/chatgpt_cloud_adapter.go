@@ -119,7 +119,10 @@ func (a *ChatGPTCloudAdapter) EnsureCallbackRealtimeForGeneration(ctx context.Co
 	if a == nil || a.realtime == nil {
 		return fmt.Errorf("chatgpt_cloud realtime is unavailable")
 	}
-	return a.realtime.ensurePersistentWatchingForGeneration(ctx, conversationID, generation)
+	if err := a.realtime.ensurePersistentWatchingForGeneration(ctx, conversationID, generation); err != nil {
+		return err
+	}
+	return a.realtime.waitUntilSubscriptionReady(ctx, conversationID, generation)
 }
 
 func (a *ChatGPTCloudAdapter) WaitCallbackRealtime(ctx context.Context) error {
@@ -138,6 +141,12 @@ func (a *ChatGPTCloudAdapter) CallbackRealtimeRecoveryState() (bool, uint64) {
 		return false, 0
 	}
 	return a.realtime.recoveryState()
+}
+
+func (a *ChatGPTCloudAdapter) SetCallbackRealtimeRecoveryObserver(observer func(bool, uint64)) {
+	if a != nil && a.realtime != nil {
+		a.realtime.setStateObserver(observer)
+	}
 }
 
 func (a *ChatGPTCloudAdapter) ReleaseCallbackRealtime(conversationID string) {

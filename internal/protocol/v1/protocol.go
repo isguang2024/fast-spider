@@ -49,7 +49,7 @@ var CollaborationControlCapability = CapabilityDescriptor{
 		"init", "brief", "get", "next_actions", "record_action", "apply", "transfer_control",
 		"claim", "recover", "receipt", "uncertain", "not_created", "verify", "dispatch", "dispatch_recover",
 		"observe", "observation", "callback_claim", "callback_ack", "close", "compact", "cleanup",
-		"inbox", "resolve", "record_check", "tree", "tree_update", "archive", "retry", "upgrade",
+		"inbox", "resolve", "decision_batch", "validation_claim", "validation_receipt", "record_check", "tree", "tree_update", "archive", "retry", "upgrade",
 	},
 }
 
