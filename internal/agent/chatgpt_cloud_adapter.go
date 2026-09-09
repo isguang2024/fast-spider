@@ -463,12 +463,28 @@ func (a *ChatGPTCloudAdapter) streamPathObserved(ctx context.Context, path, toke
 		}
 		return chatgptCloudTurnResult{}, a.providerHTTPError(label, resp)
 	}
-	return chatgptParseStreamObserved(resp.Body, 20000, onConversationID)
+	result, parseErr := chatgptParseStreamObserved(resp.Body, 20000, onConversationID)
+	notifyChatGPTCloudStreamEnd(ctx, result)
+	return result, parseErr
 }
 
 type chatgptCloudTurnOutcome struct {
 	Result chatgptCloudTurnResult
 	Err    error
+}
+
+// A registered sender owns this bounded completion hint. It is deliberately
+// carried by the request context, not looked up after a possibly late stream:
+// an old response must not wake a replacement callback generation.
+type chatgptCloudStreamEndKey struct{}
+
+func notifyChatGPTCloudStreamEnd(ctx context.Context, result chatgptCloudTurnResult) {
+	if result.ConversationID == "" {
+		return
+	}
+	if notify, ok := ctx.Value(chatgptCloudStreamEndKey{}).(func()); ok {
+		notify()
+	}
 }
 
 // streamQuick starts the same unprepared /f/conversation stream used by Codex
@@ -529,6 +545,10 @@ func (a *ChatGPTCloudAdapter) streamQuick(ctx context.Context, token string, bod
 			firstResult <- chatgptCloudTurnOutcome{Result: observed}
 			return nil
 		})
+		// SSE completion/EOF is a hint, not proof of Cloud finality. Even an
+		// accepted stream whose tail failed must trigger the same bounded
+		// authoritative confirmation as a websocket completion notification.
+		notifyChatGPTCloudStreamEnd(ctx, result)
 		if !announced {
 			firstResult <- chatgptCloudTurnOutcome{Result: result, Err: parseErr}
 			return

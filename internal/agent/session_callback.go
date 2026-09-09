@@ -608,21 +608,28 @@ func (m *AgentManager) handleChatGPTCloudCallbackEvent(event chatgptCloudEvent) 
 		return
 	}
 	// A websocket event is a hint, including for new and non-text tasks.
+	m.startCloudCallbackConfirmation(event.ConversationID, registration.Generation)
+}
+
+// Both provider websocket hints and our own accepted response stream converge
+// here. Confirmation is generation-fenced, coalesced and bounded; neither hint
+// can declare business completion or start an independent polling loop.
+func (m *AgentManager) startCloudCallbackConfirmation(sourceSessionID string, generation int64) {
 	if m.callbackDispatcher != nil {
-		started, beginErr := m.callbackStore.beginProviderConfirmation(event.ConversationID, registration.Generation)
+		started, beginErr := m.callbackStore.beginProviderConfirmation(sourceSessionID, generation)
 		if beginErr != nil {
-			m.logger.Warn("start ChatGPT Cloud callback confirmation", "sourceSessionId", event.ConversationID, "error", beginErr)
+			m.logger.Warn("start ChatGPT Cloud callback confirmation", "sourceSessionId", sourceSessionID, "error", beginErr)
 			return
 		}
 		if !started {
 			return
 		}
-		m.invalidateChatGPTCloudRead(event.ConversationID)
+		m.invalidateChatGPTCloudRead(sourceSessionID)
 		if !m.callbackDispatcher.startBackground(func(backgroundCtx context.Context) {
-			defer m.callbackStore.endProviderConfirmation(event.ConversationID, registration.Generation)
-			m.confirmChatGPTCloudCallbackEvent(backgroundCtx, event.ConversationID, registration.Generation)
+			defer m.callbackStore.endProviderConfirmation(sourceSessionID, generation)
+			m.confirmChatGPTCloudCallbackEvent(backgroundCtx, sourceSessionID, generation)
 		}) {
-			m.callbackStore.endProviderConfirmation(event.ConversationID, registration.Generation)
+			m.callbackStore.endProviderConfirmation(sourceSessionID, generation)
 		}
 	}
 }

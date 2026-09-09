@@ -59,7 +59,7 @@ func TestCollaborationNextActionsProvidesExecutableCheckAndRecordParams(t *testi
 	}
 	rp["outcome"], rp["evidenceRef"], rp["now"], rp["notified"] = "unchanged", "provider:chat-target/running", now, true
 	result := callCollaborationTest(t, c, "record_check", rp)
-	if collaborationIntDefault(result, "retryAt", 0) < now+1800 {
+	if collaborationIntDefault(result, "retryAt", 0) != now+600 {
 		t.Fatalf("Cloud check did not respect recovery interval: %#v", result)
 	}
 	edit := collaborationStateIdentity(dbPath, "controller-1")

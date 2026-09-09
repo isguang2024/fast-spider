@@ -973,7 +973,7 @@ func (c *Client) collaborationClaim(ctx context.Context, input collaborationClai
 	item["claim"] = claim
 	item["started_at"] = now
 	if _, ok := item["next_check_at"]; !ok || item["next_check_at"] == nil {
-		item["next_check_at"] = now + 900
+		item["next_check_at"] = now + 1800
 	}
 	item["next_action"] = "Await dispatch receipt; uncertainty requires original-key reconciliation"
 	if err := ledger.saveItem(ctx, item); err != nil {

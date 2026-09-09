@@ -402,6 +402,19 @@ func (m *AgentManager) chatgptCloudSend(ctx context.Context, input agentControlP
 	if idempotencyKey != "" && sendMode != "quick_chat" {
 		return nil, fmt.Errorf("idempotencyKey requires mode=quick_chat for backend=chatgpt_cloud session.send")
 	}
+	if m.callbackStore != nil {
+		route, exists, routeErr := m.callbackStore.registrationFor(input.SessionID)
+		if routeErr != nil {
+			return nil, routeErr
+		}
+		// Reused CHAT dispatch registers before send and arms after acceptance.
+		// Capture even that unarmed route; confirmation itself requires it armed.
+		if exists && route.CompletionAckedAt.IsZero() {
+			ctx = context.WithValue(ctx, chatgptCloudStreamEndKey{}, func() {
+				m.startCloudCallbackConfirmation(route.SourceSessionID, route.Generation)
+			})
+		}
+	}
 	var result chatgptCloudTurnResult
 	if sendMode == "quick_chat" && idempotencyKey != "" {
 		result, err = m.chatgptCloud.SendQuickIdempotentWithThinking(ctx, input.SessionID, "", input.Prompt, input.Model, selectedThinking, chatgptCloudSendRequestMessageID(input.SessionID, idempotencyKey))
@@ -414,6 +427,10 @@ func (m *AgentManager) chatgptCloudSend(ctx context.Context, input agentControlP
 		return nil, err
 	}
 	m.invalidateChatGPTCloudRead(input.SessionID)
+	if result.Replayed {
+		// The original stream may have belonged to a prior Node process.
+		notifyChatGPTCloudStreamEnd(ctx, result)
+	}
 	out := map[string]any{
 		"sessionId": result.ConversationID,
 		"phase":     "running",
@@ -520,7 +537,8 @@ func (m *AgentManager) chatgptCloudGet(ctx context.Context, input agentControlPa
 		return map[string]any{
 			"session": session, "source": "chatgpt_cloud", "providerStatus": status,
 			"observedAt":    time.Now().UTC().Format(time.RFC3339Nano),
-			"authoritative": status != "unknown", "pendingRequests": []map[string]any{},
+			"authoritative": status != "unknown", "activity": chatgptCloudActivity(detail),
+			"pendingRequestsKnown": false,
 		}, nil
 	}
 	session, messages, nextCursor, hasMore, hasEarlier, err := chatgptCloudBoundedSessionView(detail, input.PageCursor, limit)
@@ -534,7 +552,7 @@ func (m *AgentManager) chatgptCloudGet(ctx context.Context, input agentControlPa
 	session["historyHasEarlier"] = hasEarlier
 	session["historyMessageLimit"] = limit
 	session["fullMappingOmitted"] = true
-	return map[string]any{"session": session, "nextCursor": nextCursor, "pendingRequests": []map[string]any{}}, nil
+	return map[string]any{"session": session, "nextCursor": nextCursor, "pendingRequestsKnown": false}, nil
 }
 
 // chatgptCloudBoundedSessionView keeps the provider's full mapping inside the

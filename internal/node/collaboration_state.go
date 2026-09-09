@@ -117,6 +117,7 @@ type collaborationRecordActionParams struct {
 	Notified                    bool   `json:"notified,omitempty"`
 	Now                         *int64 `json:"now,omitempty"`
 	Outcome                     string `json:"outcome,omitempty"`
+	ProgressToken               string `json:"progressToken,omitempty"`
 	completeCheck               bool
 }
 
@@ -1700,6 +1701,9 @@ func (l *collaborationLedger) actionCandidates(ctx context.Context, observation 
 				identity = append(identity, item["validation_owner"], item["validation_started_at"])
 			} else if mapStringValue(item, "executor") == "cloud" {
 				identity = append(identity, item["claim"], collaborationDispatchKey(item))
+				if ref := mapStringValue(item, "execution_ref"); ref != "" {
+					identity = append(identity, ref)
+				}
 			} else {
 				identity = append(identity, item["execution_ref"], item["started_at"])
 			}
@@ -1741,7 +1745,11 @@ func (l *collaborationLedger) actionCandidates(ctx context.Context, observation 
 		if active && (phase == "dispatching" || phase == "in_doubt" || collaborationHoldsExecution(item)) {
 			due := collaborationIntDefault(item, "next_check_at", 0)
 			if due == 0 {
-				due = collaborationIntDefault(item, "started_at", 0) + 900
+				interval := int64(900)
+				if mapStringValue(item, "executor") == "cloud" {
+					interval = 1800
+				}
+				due = collaborationIntDefault(item, "started_at", 0) + interval
 			}
 			kind := "check_execution"
 			if phase == "dispatching" || phase == "in_doubt" {
@@ -2015,8 +2023,15 @@ func (c *Client) collaborationRecordAction(ctx context.Context, input collaborat
 		prior = nil
 	}
 	var count int64
+	budget := int64(3)
+	progressState := ""
+	if input.ProgressToken != "" {
+		if err := validateCollaborationText(input.ProgressToken, "progressToken", 256); err != nil {
+			return nil, err
+		}
+	}
 	if input.completeCheck {
-		if mapStringValue(prior, "outcome") == input.Outcome && mapStringValue(prior, "evidence_ref") == input.EvidenceRef && (collaborationIntDefault(prior, "retry_at", 0) > now || collaborationBoolDefault(prior, "exhausted", false)) {
+		if mapStringValue(prior, "outcome") == input.Outcome && mapStringValue(prior, "evidence_ref") == input.EvidenceRef && mapStringValue(prior, "progress_token") == input.ProgressToken && (collaborationIntDefault(prior, "retry_at", 0) > now || collaborationBoolDefault(prior, "exhausted", false)) {
 			return map[string]any{"revision": ledger.revision, "observationRevision": observation["revision"], "duplicate": true}, nil
 		}
 		if selected.Kind == "consistency_audit" {
@@ -2031,41 +2046,73 @@ func (c *Client) collaborationRecordAction(ctx context.Context, input collaborat
 			default:
 				return nil, errors.New("record_check only closes due checks; use resolve/apply for business decisions")
 			}
-			if input.Outcome != "unchanged" && input.Outcome != "unavailable" {
-				return nil, errors.New("check outcome must be unchanged or unavailable; persist new facts through resolve/apply")
-			}
-			count = collaborationIntDefault(prior, "attempts", 0) + 1
-			if count > 3 {
-				return nil, errors.New("check budget exhausted; controller decision required")
-			}
-			interval := int64(900)
+			cloudExecution := false
 			if selected.Kind == "check_execution" {
 				item, err := ledger.item(ctx, fmt.Sprint(selected.ItemID))
 				if err != nil {
 					return nil, err
 				}
-				if mapStringValue(item, "executor") == "cloud" {
-					interval = 1800 // Provider recovery is not a 15-minute ledger poll.
+				cloudExecution = mapStringValue(item, "executor") == "cloud"
+			}
+			if input.Outcome != "unchanged" && input.Outcome != "unavailable" && !(cloudExecution && input.Outcome == "observed") {
+				return nil, errors.New("check outcome must be unchanged or unavailable; Cloud execution also accepts observed with progressToken. Terminal business facts use resolve/apply")
+			}
+			count = collaborationIntDefault(prior, "attempts", 0) + 1
+			if cloudExecution {
+				budget = 2
+				progressState = "unavailable"
+				if input.Outcome == "observed" {
+					if input.ProgressToken == "" {
+						return nil, errors.New("observed requires progressToken from real executor activity, not a running status label")
+					}
+					progressState = "unchanged"
+					if input.ProgressToken != mapStringValue(prior, "progress_token") {
+						count, progressState = 0, "progressed"
+						if mapStringValue(prior, "progress_token") == "" {
+							progressState = "baseline"
+						}
+					}
 				}
 			}
-			backoff := now + interval*(1<<(count-1))
+			if count > budget {
+				return nil, errors.New("check budget exhausted; controller must arrange bounded recovery or an explicit actionable external blocker, not silent indefinite waiting")
+			}
+			var backoff int64
+			if cloudExecution {
+				backoff = now + 600 // Real progress keeps the next bounded check ten minutes away.
+			} else {
+				backoff = now + 900*(1<<(count-1))
+			}
 			if input.RetryAt < backoff {
 				input.RetryAt = backoff
 			}
 		}
 	}
 	notified := input.Notified || mapStringValue(prior, "action_id") == selected.ActionID && collaborationBoolDefault(prior, "notified", false)
+	if progressState == "progressed" {
+		notified = input.Notified
+	}
 	checks[selected.Key] = map[string]any{
 		"action_id": selected.ActionID, "retry_at": input.RetryAt, "checked_at": now,
 		"evidence_ref": input.EvidenceRef, "notified": notified,
 	}
 	if input.completeCheck {
 		record := checks[selected.Key].(map[string]any)
-		record["attempts"], record["outcome"], record["exhausted"] = count, input.Outcome, count >= 3
+		record["attempts"], record["outcome"], record["exhausted"] = count, input.Outcome, count >= budget
+		if progressState != "" {
+			record["progress_token"], record["last_progress_at"] = prior["progress_token"], prior["last_progress_at"]
+			record["progress_state"] = progressState
+			if input.Outcome == "observed" {
+				record["progress_token"] = input.ProgressToken
+				if count == 0 {
+					record["last_progress_at"] = now
+				}
+			}
+		}
 	} else {
 		// Legacy scheduling calls must not erase a record_check budget.
 		record := checks[selected.Key].(map[string]any)
-		for _, key := range []string{"attempts", "outcome", "exhausted"} {
+		for _, key := range []string{"attempts", "outcome", "exhausted", "progress_token", "last_progress_at", "progress_state"} {
 			if value, ok := prior[key]; ok {
 				record[key] = value
 			}
@@ -2079,7 +2126,7 @@ func (c *Client) collaborationRecordAction(ctx context.Context, input collaborat
 	if err := ledger.commit(ctx); err != nil {
 		return nil, err
 	}
-	return map[string]any{"revision": ledger.revision, "observationRevision": observation["revision"], "retryAt": input.RetryAt}, nil
+	return map[string]any{"revision": ledger.revision, "observationRevision": observation["revision"], "retryAt": input.RetryAt, "progressState": progressState, "stalled": input.completeCheck && count >= budget}, nil
 }
 
 func (c *Client) collaborationObserve(ctx context.Context, input collaborationObserveParams) (map[string]any, error) {

@@ -7,14 +7,14 @@ import (
 )
 
 func collaborationRecordCheckParamError(err error) error {
-	return fmt.Errorf("%w; record_check requires dbPath, missionId, actorSessionId, expectedRevision, expectedObservationRevision, actionId, outcome, evidenceRef; optional retryAt, notified, now. Do not pass itemId or evidence. Copy next_actions.actions[].recordCheck.params, then add outcome and evidenceRef", err)
+	return fmt.Errorf("%w; record_check requires dbPath, missionId, actorSessionId, expectedRevision, expectedObservationRevision, actionId, outcome, evidenceRef; optional progressToken, retryAt, notified, now. Do not pass itemId or evidence. Copy next_actions.actions[].recordCheck.params, then add outcome and evidenceRef", err)
 }
 
 // Return concrete call arguments rather than requiring an AI to reconstruct
 // identities and CAS fields from prose. This function never calls an executor.
 func (l *collaborationLedger) addCollaborationCheckCalls(ctx context.Context, input collaborationNextActionsParams, action collaborationActionCandidate, observation, entry map[string]any) error {
 	switch action.Kind {
-	case "consistency_audit", "check_execution", "reconcile_dispatch", "check_validation", "notify_validation_due", "recheck_blocker":
+	case "consistency_audit", "check_execution", "reconcile_dispatch", "check_validation", "notify_validation_due", "recheck_blocker", "decide_stalled_check":
 	default:
 		return nil
 	}
@@ -23,15 +23,20 @@ func (l *collaborationLedger) addCollaborationCheckCalls(ctx context.Context, in
 		outcomes = []string{"completed"}
 		entry["completionRule"] = "record_check(completed) records the full audit atomically; do not call observe first. If observe(full=true) already succeeded, refresh next_actions and continue remaining actions, not the obsolete audit action."
 	}
-	entry["recordCheck"] = map[string]any{
-		"action": "record_check",
-		"params": map[string]any{
-			"dbPath": input.DBPath, "missionId": input.MissionID, "actorSessionId": input.ActorSessionID,
-			"expectedRevision": l.revision, "expectedObservationRevision": collaborationIntDefault(observation, "revision", 0), "actionId": action.ActionID,
-		},
-		"requiredInput": map[string]any{"outcome": outcomes, "evidenceRef": "Reference to the actual check result, not the ledger phase"},
+	if action.Kind != "decide_stalled_check" {
+		entry["recordCheck"] = map[string]any{
+			"action": "record_check",
+			"params": map[string]any{
+				"dbPath": input.DBPath, "missionId": input.MissionID, "actorSessionId": input.ActorSessionID,
+				"expectedRevision": l.revision, "expectedObservationRevision": collaborationIntDefault(observation, "revision", 0), "actionId": action.ActionID,
+			},
+			"requiredInput": map[string]any{"outcome": outcomes, "evidenceRef": "Reference to the actual check result, not the ledger phase"},
+		}
 	}
-	if action.Kind != "check_execution" && action.Kind != "check_validation" && action.Kind != "notify_validation_due" {
+	if action.Kind != "check_execution" && action.Kind != "check_validation" && action.Kind != "notify_validation_due" && action.Kind != "decide_stalled_check" {
+		return nil
+	}
+	if action.ItemID == nil {
 		return nil
 	}
 	item, err := l.item(ctx, fmt.Sprint(action.ItemID))
@@ -45,6 +50,10 @@ func (l *collaborationLedger) addCollaborationCheckCalls(ctx context.Context, in
 		return nil
 	}
 	if mapStringValue(item, "executor") != "cloud" {
+		if action.Kind == "decide_stalled_check" {
+			entry["recoveryRule"] = "Controller assigns one bounded recovery to the actual blocked owner or records an actionable external/user blocker. Do not turn exhausted checks into indefinite silent waiting."
+			return nil
+		}
 		l.addCollaborationNativeCheck(entry, mapStringValue(item, "execution_ref"))
 		return nil
 	}
@@ -58,7 +67,31 @@ func (l *collaborationLedger) addCollaborationCheckCalls(ctx context.Context, in
 		"capability": "agent.control", "action": "session.get",
 		"params": map[string]any{"providerId": "codex", "backend": "chatgpt_cloud", "sessionId": sessionID, "metadataOnly": true},
 	}
-	entry["minimumIntervalSeconds"] = int64(1800)
+	entry["minimumIntervalSeconds"] = int64(600)
+	entry["firstCheckAfterSeconds"] = int64(1800)
+	entry["evidenceRule"] = "Status=running is not progress. Use activity.fingerprint (optionally combined with verified exact tool/job progress) as progressToken with outcome=observed; Node compares it with the prior checkpoint. Unknown status may still have observable activity. No fingerprint or inaccessible evidence is unavailable. pendingRequestsKnown=false is not evidence that no tools/jobs are running. Terminal facts require callback recovery."
+	if call, ok := entry["recordCheck"].(map[string]any); ok {
+		call["requiredInput"] = map[string]any{"outcome": []string{"observed", "unchanged", "unavailable"}, "progressToken": "Required for observed: actual activity.fingerprint or a bounded combined executor/job progress fingerprint", "evidenceRef": "Exact observation reference, not ledger state"}
+	}
+	key, err := encodeCollaborationJSON([]any{"coordinator", "check_execution", action.ItemID})
+	if err != nil {
+		return err
+	}
+	checks, _ := observation["action_checks"].(map[string]any)
+	if prior, ok := checks[key].(map[string]any); ok {
+		entry["progressCheckpoint"] = selectCollaborationFields(prior, "progress_token", "last_progress_at", "attempts", "progress_state")
+		if action.Kind == "decide_stalled_check" {
+			entry["progressRecoveryRecord"] = map[string]any{
+				"action": "record_check",
+				"params": map[string]any{
+					"dbPath": input.DBPath, "missionId": input.MissionID, "actorSessionId": mapStringValue(l.mission, "coordinator"),
+					"expectedRevision": l.revision, "expectedObservationRevision": collaborationIntDefault(observation, "revision", 0),
+					"actionId": prior["action_id"], "outcome": "observed",
+				},
+				"requiredInput": "Coordinator uses a genuinely changed progressToken and evidenceRef from the exact executor/job; unchanged evidence cannot reset the exhausted check. Refresh CAS after intervening ledger writes.",
+			}
+		}
+	}
 	claim := mapStringValue(item, "claim")
 	if claim == "" {
 		return nil
@@ -76,6 +109,14 @@ func (l *collaborationLedger) addCollaborationCheckCalls(ctx context.Context, in
 				"callbackTargetSessionId": binding["callbackSessionId"], "callbackMissionId": mission,
 				"callbackTaskId": task, "callbackGeneration": generation,
 			},
+		}
+		if action.Kind == "decide_stalled_check" {
+			params := cloneParams(entry["terminalRecovery"].(map[string]any)["params"].(map[string]any))
+			params["idempotencyKey"] = "continue-" + action.ActionID
+			params["prompt"] = "Continue the current task without restarting. Finish missing validation, save the UTF-8 report at the original DELIVERABLE_PATH, verify it is readable, then finish for callback."
+			entry["continuation"] = map[string]any{"capability": "agent.control", "action": "session.callback.continue", "params": params}
+			entry["automaticContinuationUsed"] = strings.HasPrefix(mapStringValue(item, "execution_ref"), "cloud-continuation:")
+			entry["recoveryRule"] = "Controller must arrange one bounded diagnosis of this exact Cloud/tool execution. A frozen fingerprint is suspicion, not proof of a stopped writer. If genuinely progressing, record fresh evidence; otherwise confirm a quiescent/explicitly canceled turn and its relevant jobs before continuing in the original CHAT. Use at most one automatic continuation per business attempt; if it stalls again, assign a concrete repair/external action. Do not use nativeBindingLookup for Cloud, repeatedly cancel/continue, or release unknown writers. After continueSent=true, apply returned executionRef and nextCheckAt to this item once; preserve binding/claim/scope."
 		}
 	}
 	return nil
