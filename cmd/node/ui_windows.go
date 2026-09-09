@@ -116,7 +116,9 @@ func ensureInstalledExecutable() (string, error) {
 func executableVersion(path string) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	raw, err := exec.CommandContext(ctx, path, "version").Output()
+	cmd := exec.CommandContext(ctx, path, "version")
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
+	raw, err := cmd.Output()
 	if err != nil {
 		return "", false
 	}

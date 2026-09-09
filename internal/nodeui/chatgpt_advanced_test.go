@@ -51,6 +51,7 @@ func TestLocalUIManagesChatGPTAdvancedModelsInNodeDataDir(t *testing.T) {
 	cfg := agent.ChatGPTAdvancedConfig{Version: 1, Models: []agent.ChatGPTAdvancedModel{{
 		ID: "gpt-5.6-terra-wm", Title: "GPT-5.6 Terra", Thinking: []string{"auto", "extended"}, CustomThinking: []string{"model-specific"},
 	}}}
+	cfg.RequestDefaults = agent.ChatGPTCloudRequestDefaults{EnableServiceTier: true, ServiceTier: "priority", EnableConsumerLockdownModeDisabled: true, ConsumerLockdownModeDisabled: false, EnableForceParallelSwitch: false, ForceParallelSwitch: "off"}
 	body, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -64,6 +65,9 @@ func TestLocalUIManagesChatGPTAdvancedModelsInNodeDataDir(t *testing.T) {
 		t.Fatalf("save status=%d body=%s", response.Code, response.Body.String())
 	}
 	loaded, err := agent.LoadChatGPTAdvancedConfig(dataDir)
+	if loaded.RequestDefaults != cfg.RequestDefaults {
+		t.Fatalf("request defaults not saved: %+v", loaded.RequestDefaults)
+	}
 	if err != nil || len(loaded.Models) != 1 || loaded.Models[0].ID != "gpt-5.6-terra-wm" || len(loaded.Models[0].CustomThinking) != 1 || loaded.Models[0].CustomThinking[0] != "model-specific" {
 		t.Fatalf("saved config=%+v err=%v", loaded, err)
 	}
@@ -81,6 +85,9 @@ func TestLocalUIManagesChatGPTAdvancedModelsInNodeDataDir(t *testing.T) {
 	}
 	if len(result.ThinkingOptions) != 4 || result.ThinkingOptions[2].ID != "extended" || len(result.Models) != 1 || len(result.Models[0].CustomThinking) != 1 || result.Models[0].CustomThinking[0] != "model-specific" || len(result.LiveModels) != 1 || result.LiveModels[0]["id"] != "gpt-5-6-thinking" || len(result.CreationModes) != 2 || result.ConfigFile == "" {
 		t.Fatalf("advanced response=%+v", result)
+	}
+	if result.RequestDefaults != cfg.RequestDefaults {
+		t.Fatalf("request defaults not returned: %+v", result.RequestDefaults)
 	}
 }
 

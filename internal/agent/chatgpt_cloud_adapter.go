@@ -744,8 +744,8 @@ func (a *ChatGPTCloudAdapter) SendWithThinking(ctx context.Context, conversation
 	return a.SendWithThinkingAndServiceTier(ctx, conversationID, parentMessageID, prompt, model, thinking, "")
 }
 
-func (a *ChatGPTCloudAdapter) SendWithThinkingAndServiceTier(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking, serviceTier string) (chatgptCloudTurnResult, error) {
-	body, parentMessageID, model, thinking, err := a.followUpBody(ctx, conversationID, parentMessageID, prompt, model, thinking, serviceTier)
+func (a *ChatGPTCloudAdapter) SendWithThinkingAndServiceTier(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking, serviceTier string, defaults ...ChatGPTCloudRequestDefaults) (chatgptCloudTurnResult, error) {
+	body, parentMessageID, model, thinking, err := a.followUpBody(ctx, conversationID, parentMessageID, prompt, model, thinking, serviceTier, defaults...)
 	if err != nil {
 		return chatgptCloudTurnResult{}, err
 	}
@@ -769,8 +769,8 @@ func (a *ChatGPTCloudAdapter) SendQuickWithThinking(ctx context.Context, convers
 	return a.SendQuickWithThinkingAndServiceTier(ctx, conversationID, parentMessageID, prompt, model, thinking, "")
 }
 
-func (a *ChatGPTCloudAdapter) SendQuickWithThinkingAndServiceTier(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking, serviceTier string) (chatgptCloudTurnResult, error) {
-	body, parentMessageID, model, thinking, err := a.followUpBody(ctx, conversationID, parentMessageID, prompt, model, thinking, serviceTier)
+func (a *ChatGPTCloudAdapter) SendQuickWithThinkingAndServiceTier(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking, serviceTier string, defaults ...ChatGPTCloudRequestDefaults) (chatgptCloudTurnResult, error) {
+	body, parentMessageID, model, thinking, err := a.followUpBody(ctx, conversationID, parentMessageID, prompt, model, thinking, serviceTier, defaults...)
 	if err != nil {
 		return chatgptCloudTurnResult{}, err
 	}
@@ -798,7 +798,7 @@ func (a *ChatGPTCloudAdapter) SendQuickIdempotentWithThinking(ctx context.Contex
 	return a.SendQuickIdempotentWithThinkingAndServiceTier(ctx, conversationID, parentMessageID, prompt, model, thinking, "", requestMessageID)
 }
 
-func (a *ChatGPTCloudAdapter) SendQuickIdempotentWithThinkingAndServiceTier(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking, serviceTier, requestMessageID string) (chatgptCloudTurnResult, error) {
+func (a *ChatGPTCloudAdapter) SendQuickIdempotentWithThinkingAndServiceTier(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking, serviceTier, requestMessageID string, defaults ...ChatGPTCloudRequestDefaults) (chatgptCloudTurnResult, error) {
 	conversationID = strings.TrimSpace(conversationID)
 	prompt = strings.TrimSpace(prompt)
 	requestMessageID = strings.TrimSpace(requestMessageID)
@@ -840,6 +840,9 @@ func (a *ChatGPTCloudAdapter) SendQuickIdempotentWithThinkingAndServiceTier(ctx 
 	}
 	body := chatgptFollowUpBodyWithThinking(conversationID, parentMessageID, prompt, model, thinking)
 	chatgptApplyServiceTier(body, serviceTier)
+	if len(defaults) > 0 {
+		defaults[0].applyToBody(body, serviceTier)
+	}
 	if err := chatgptCloudSetRequestMessageID(body, requestMessageID); err != nil {
 		return chatgptCloudTurnResult{}, err
 	}
@@ -870,7 +873,7 @@ func (a *ChatGPTCloudAdapter) SendQuickIdempotentWithThinkingAndServiceTier(ctx 
 	return result, err
 }
 
-func (a *ChatGPTCloudAdapter) followUpBody(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking, serviceTier string) (map[string]any, string, string, string, error) {
+func (a *ChatGPTCloudAdapter) followUpBody(ctx context.Context, conversationID, parentMessageID, prompt, model, thinking, serviceTier string, defaults ...ChatGPTCloudRequestDefaults) (map[string]any, string, string, string, error) {
 	if conversationID == "" {
 		return nil, "", "", "", fmt.Errorf("conversationId is required")
 	}
@@ -901,6 +904,9 @@ func (a *ChatGPTCloudAdapter) followUpBody(ctx context.Context, conversationID, 
 	}
 	body := chatgptFollowUpBodyWithThinking(conversationID, parentMessageID, prompt, model, thinking)
 	chatgptApplyServiceTier(body, serviceTier)
+	if len(defaults) > 0 {
+		defaults[0].applyToBody(body, serviceTier)
+	}
 	return body, parentMessageID, model, thinking, nil
 }
 

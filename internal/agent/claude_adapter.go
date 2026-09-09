@@ -120,7 +120,9 @@ func (a *ClaudeCodeAdapter) Availability(ctx context.Context) (string, error) {
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(probeCtx, path, "--version").Output()
+	cmd := exec.CommandContext(probeCtx, path, "--version")
+	node.ConfigureBackgroundCommand(cmd)
+	output, err := cmd.Output()
 	if err != nil {
 		err = fmt.Errorf("%w: claude --version failed", node.ErrAgentProviderUnavailable)
 		a.versionCache.set("version", versionProbe{err: err})
@@ -150,7 +152,9 @@ func (a *ClaudeCodeAdapter) AuthConfiguration(ctx context.Context) map[string]an
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
 	defer cancel()
-	raw, err := exec.CommandContext(probeCtx, path, "auth", "status", "--json").Output()
+	cmd := exec.CommandContext(probeCtx, path, "auth", "status", "--json")
+	node.ConfigureBackgroundCommand(cmd)
+	raw, err := cmd.Output()
 	if err != nil || len(raw) > 64<<10 {
 		out["reason"] = "Claude auth configuration could not be read"
 		out["errorClass"] = ErrorUnknown

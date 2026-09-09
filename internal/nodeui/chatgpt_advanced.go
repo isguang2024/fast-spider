@@ -10,14 +10,15 @@ import (
 )
 
 type chatGPTAdvancedResponse struct {
-	Version         int                           `json:"version"`
-	Models          []agent.ChatGPTAdvancedModel  `json:"models"`
-	LiveModels      []map[string]any              `json:"liveModels"`
-	ModelPresets    []map[string]any              `json:"modelPresets"`
-	CreationModes   []map[string]any              `json:"creationModes"`
-	DefaultModel    string                        `json:"defaultModel"`
-	ThinkingOptions []agent.ChatGPTThinkingOption `json:"thinkingOptions"`
-	ConfigFile      string                        `json:"configFile"`
+	RequestDefaults agent.ChatGPTCloudRequestDefaults `json:"requestDefaults"`
+	Version         int                               `json:"version"`
+	Models          []agent.ChatGPTAdvancedModel      `json:"models"`
+	LiveModels      []map[string]any                  `json:"liveModels"`
+	ModelPresets    []map[string]any                  `json:"modelPresets"`
+	CreationModes   []map[string]any                  `json:"creationModes"`
+	DefaultModel    string                            `json:"defaultModel"`
+	ThinkingOptions []agent.ChatGPTThinkingOption     `json:"thinkingOptions"`
+	ConfigFile      string                            `json:"configFile"`
 }
 
 func (a *App) handleChatGPTAdvancedModels(w http.ResponseWriter, r *http.Request) {
@@ -35,7 +36,7 @@ func (a *App) handleChatGPTAdvancedModels(w http.ResponseWriter, r *http.Request
 		}
 		writeJSON(w, http.StatusOK, buildChatGPTAdvancedResponse(a.opts.DataDir, cfg, catalog, options))
 	case http.MethodPost:
-		var cfg agent.ChatGPTAdvancedConfig
+		cfg := agent.DefaultChatGPTAdvancedConfig()
 		if err := decodeJSON(r, &cfg); err != nil {
 			writeAPIError(w, http.StatusBadRequest, err)
 			return
@@ -120,7 +121,8 @@ func buildChatGPTAdvancedResponse(dataDir string, cfg agent.ChatGPTAdvancedConfi
 	creationModes, _ := catalog["creationModes"].([]map[string]any)
 	defaultModel, _ := catalog["defaultModel"].(string)
 	return chatGPTAdvancedResponse{
-		Version: cfg.Version, Models: cfg.Models, LiveModels: liveModels, ModelPresets: modelPresets,
+		RequestDefaults: cfg.RequestDefaults,
+		Version:         cfg.Version, Models: cfg.Models, LiveModels: liveModels, ModelPresets: modelPresets,
 		CreationModes: creationModes, DefaultModel: defaultModel, ThinkingOptions: options,
 		ConfigFile: filepath.Join(dataDir, agent.ChatGPTAdvancedConfigFileName),
 	}

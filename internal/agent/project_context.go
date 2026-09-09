@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/isguang2024/fast-spider/internal/node"
 )
 
 type agentProjectContext struct {
@@ -51,7 +53,9 @@ func resolveAgentProjectContext(ctx context.Context, workingDirectory string) ag
 
 func runAgentGit(ctx context.Context, directory string, args ...string) (string, error) {
 	commandArgs := append([]string{"-C", directory}, args...)
-	output, err := exec.CommandContext(ctx, "git", commandArgs...).Output()
+	cmd := exec.CommandContext(ctx, "git", commandArgs...)
+	node.ConfigureBackgroundCommand(cmd)
+	output, err := cmd.Output()
 	return string(output), err
 }
 

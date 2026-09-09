@@ -27,6 +27,7 @@ func prepareExecutionPlatform(ctx context.Context, cwd string, argv []string, ru
 	}
 	mapArgs := append(append([]string{}, prefix...), "--exec", "wslpath", "-u", "--", cwd)
 	command := exec.CommandContext(ctx, "wsl.exe", mapArgs...)
+	configureBackgroundCommand(command)
 	command.Env = safeShellEnvironment()
 	stdout := &boundedCommandBuffer{limit: 8 << 10}
 	command.Stdout = stdout

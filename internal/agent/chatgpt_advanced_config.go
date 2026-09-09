@@ -27,9 +27,12 @@ type ChatGPTAdvancedConfig struct {
 }
 
 type ChatGPTCloudRequestDefaults struct {
-	EnableServiceTier                  bool `json:"enableServiceTier"`
-	EnableConsumerLockdownModeDisabled bool `json:"enableConsumerLockdownModeDisabled"`
-	EnableForceParallelSwitch          bool `json:"enableForceParallelSwitch"`
+	ServiceTier                        string `json:"serviceTier"`
+	ConsumerLockdownModeDisabled       bool   `json:"consumerLockdownModeDisabled"`
+	ForceParallelSwitch                string `json:"forceParallelSwitch"`
+	EnableServiceTier                  bool   `json:"enableServiceTier"`
+	EnableConsumerLockdownModeDisabled bool   `json:"enableConsumerLockdownModeDisabled"`
+	EnableForceParallelSwitch          bool   `json:"enableForceParallelSwitch"`
 }
 
 type ChatGPTAdvancedModel struct {
@@ -47,7 +50,7 @@ type ChatGPTThinkingOption struct {
 }
 
 func DefaultChatGPTAdvancedConfig() ChatGPTAdvancedConfig {
-	return ChatGPTAdvancedConfig{Version: chatGPTAdvancedConfigVersion, Models: []ChatGPTAdvancedModel{}, RequestDefaults: ChatGPTCloudRequestDefaults{EnableServiceTier: true, EnableConsumerLockdownModeDisabled: true, EnableForceParallelSwitch: true}}
+	return ChatGPTAdvancedConfig{Version: chatGPTAdvancedConfigVersion, Models: []ChatGPTAdvancedModel{}, RequestDefaults: ChatGPTCloudRequestDefaults{EnableServiceTier: true, EnableConsumerLockdownModeDisabled: true, EnableForceParallelSwitch: true, ServiceTier: "fast", ConsumerLockdownModeDisabled: true, ForceParallelSwitch: "off"}}
 }
 
 func LoadChatGPTAdvancedConfig(dataDir string) (ChatGPTAdvancedConfig, error) {
@@ -60,7 +63,7 @@ func LoadChatGPTAdvancedConfig(dataDir string) (ChatGPTAdvancedConfig, error) {
 		return ChatGPTAdvancedConfig{}, fmt.Errorf("read ChatGPT advanced model config: %w", err)
 	}
 	defer file.Close()
-	var cfg ChatGPTAdvancedConfig
+	cfg := DefaultChatGPTAdvancedConfig()
 	decoder := json.NewDecoder(io.LimitReader(file, 32<<10))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&cfg); err != nil {
@@ -120,6 +123,18 @@ func SaveChatGPTAdvancedConfig(dataDir string, cfg ChatGPTAdvancedConfig) error 
 }
 
 func normalizeAndValidateChatGPTAdvancedConfig(cfg *ChatGPTAdvancedConfig) error {
+	for _, field := range []struct {
+		name    string
+		value   string
+		enabled bool
+	}{
+		{"serviceTier", cfg.RequestDefaults.ServiceTier, cfg.RequestDefaults.EnableServiceTier},
+		{"forceParallelSwitch", cfg.RequestDefaults.ForceParallelSwitch, cfg.RequestDefaults.EnableForceParallelSwitch},
+	} {
+		if field.enabled && (strings.TrimSpace(field.value) == "" || len(field.value) > 64 || strings.ContainsAny(field.value, "\x00\r\n")) {
+			return fmt.Errorf("%s must be 1-64 characters without line breaks", field.name)
+		}
+	}
 	if cfg.Version == 0 {
 		cfg.Version = chatGPTAdvancedConfigVersion
 	}
@@ -175,6 +190,24 @@ func normalizeAndValidateChatGPTAdvancedConfig(cfg *ChatGPTAdvancedConfig) error
 		cfg.Models = []ChatGPTAdvancedModel{}
 	}
 	return nil
+}
+
+func (d ChatGPTCloudRequestDefaults) applyToBody(body map[string]any, serviceTier string) {
+	delete(body, "service_tier")
+	if d.EnableServiceTier {
+		if serviceTier == "" {
+			serviceTier = d.ServiceTier
+		}
+		chatgptApplyServiceTier(body, serviceTier)
+	}
+	delete(body, "consumer_lockdown_mode_disabled")
+	if d.EnableConsumerLockdownModeDisabled {
+		body["consumer_lockdown_mode_disabled"] = d.ConsumerLockdownModeDisabled
+	}
+	delete(body, "force_parallel_switch")
+	if d.EnableForceParallelSwitch {
+		body["force_parallel_switch"] = d.ForceParallelSwitch
+	}
 }
 
 // IsValidChatGPTThinkingValue reports whether a thinking value is safe to use

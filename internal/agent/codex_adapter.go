@@ -275,10 +275,14 @@ func codexCommand(ctx context.Context, path string, args ...string) (*exec.Cmd, 
 					return nil, fmt.Errorf("Node.js is required for the npm Codex CLI")
 				}
 			}
-			return exec.CommandContext(ctx, nodePath, append([]string{entry}, args...)...), nil
+			cmd := exec.CommandContext(ctx, nodePath, append([]string{entry}, args...)...)
+			node.ConfigureBackgroundCommand(cmd)
+			return cmd, nil
 		}
 	}
-	return exec.CommandContext(ctx, path, args...), nil
+	cmd := exec.CommandContext(ctx, path, args...)
+	node.ConfigureBackgroundCommand(cmd)
+	return cmd, nil
 }
 
 func codexAppServerEnvironment(base []string) []string {

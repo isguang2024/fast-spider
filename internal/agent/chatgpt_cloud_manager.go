@@ -181,8 +181,10 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 		return nil, err
 	}
 	selectedServiceTier := strings.TrimSpace(input.ServiceTier)
-	if selectedServiceTier == "" && advancedConfig.RequestDefaults.EnableServiceTier {
-		selectedServiceTier = chatgptCloudDefaultServiceTier
+	if !advancedConfig.RequestDefaults.EnableServiceTier {
+		selectedServiceTier = ""
+	} else if selectedServiceTier == "" {
+		selectedServiceTier = advancedConfig.RequestDefaults.ServiceTier
 	}
 	legacySpecValue := map[string]any{
 		"providerId": "codex", "backend": sessionBackendChatGPTCloud,
@@ -283,13 +285,7 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 		} else {
 			createBody = chatgptNewChatBodyWithThinking(input.Prompt, selectedModel, selectedThinking)
 		}
-		chatgptApplyServiceTier(createBody, selectedServiceTier)
-		if !advancedConfig.RequestDefaults.EnableConsumerLockdownModeDisabled {
-			delete(createBody, "consumer_lockdown_mode_disabled")
-		}
-		if !advancedConfig.RequestDefaults.EnableForceParallelSwitch {
-			delete(createBody, "force_parallel_switch")
-		}
+		advancedConfig.RequestDefaults.applyToBody(createBody, selectedServiceTier)
 		attempt := sessionCreateAttempt{
 			Backend: sessionBackendChatGPTCloud, RequestMessageID: chatgptCloudRequestMessageID(createBody), StartedAt: time.Now().UTC(),
 		}
@@ -434,9 +430,15 @@ func (m *AgentManager) chatgptCloudSend(ctx context.Context, input agentControlP
 	if idempotencyKey != "" && sendMode != "quick_chat" {
 		return nil, fmt.Errorf("idempotencyKey requires mode=quick_chat for backend=chatgpt_cloud session.send")
 	}
+	advancedConfig, err := LoadChatGPTAdvancedConfig(m.dataDir)
+	if err != nil {
+		return nil, err
+	}
 	selectedServiceTier := strings.TrimSpace(input.ServiceTier)
-	if selectedServiceTier == "" {
-		selectedServiceTier = chatgptCloudDefaultServiceTier
+	if !advancedConfig.RequestDefaults.EnableServiceTier {
+		selectedServiceTier = ""
+	} else if selectedServiceTier == "" {
+		selectedServiceTier = advancedConfig.RequestDefaults.ServiceTier
 	}
 	if m.callbackStore != nil {
 		route, exists, routeErr := m.callbackStore.registrationFor(input.SessionID)
@@ -453,11 +455,11 @@ func (m *AgentManager) chatgptCloudSend(ctx context.Context, input agentControlP
 	}
 	var result chatgptCloudTurnResult
 	if sendMode == "quick_chat" && idempotencyKey != "" {
-		result, err = m.chatgptCloud.SendQuickIdempotentWithThinkingAndServiceTier(ctx, input.SessionID, "", input.Prompt, input.Model, selectedThinking, selectedServiceTier, chatgptCloudSendRequestMessageID(input.SessionID, idempotencyKey))
+		result, err = m.chatgptCloud.SendQuickIdempotentWithThinkingAndServiceTier(ctx, input.SessionID, "", input.Prompt, input.Model, selectedThinking, selectedServiceTier, chatgptCloudSendRequestMessageID(input.SessionID, idempotencyKey), advancedConfig.RequestDefaults)
 	} else if sendMode == "quick_chat" {
-		result, err = m.chatgptCloud.SendQuickWithThinkingAndServiceTier(ctx, input.SessionID, "", input.Prompt, input.Model, selectedThinking, selectedServiceTier)
+		result, err = m.chatgptCloud.SendQuickWithThinkingAndServiceTier(ctx, input.SessionID, "", input.Prompt, input.Model, selectedThinking, selectedServiceTier, advancedConfig.RequestDefaults)
 	} else {
-		result, err = m.chatgptCloud.SendWithThinkingAndServiceTier(ctx, input.SessionID, "", input.Prompt, input.Model, selectedThinking, selectedServiceTier)
+		result, err = m.chatgptCloud.SendWithThinkingAndServiceTier(ctx, input.SessionID, "", input.Prompt, input.Model, selectedThinking, selectedServiceTier, advancedConfig.RequestDefaults)
 	}
 	if err != nil {
 		return nil, err

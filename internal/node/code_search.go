@@ -412,6 +412,7 @@ func nativeSearchCandidates(ctx context.Context, searchRoot string, includes, ex
 func gitSearchCandidates(ctx context.Context, searchRoot string) ([]nativeSearchCandidate, bool) {
 	stdout := &boundedCommandBuffer{limit: 16 << 20}
 	command := exec.CommandContext(ctx, "git", "-c", "core.quotepath=false", "-C", searchRoot, "ls-files", "-co", "--exclude-standard", "-z", "--", ".")
+	configureBackgroundCommand(command)
 	command.Env = safeShellEnvironment()
 	command.Stdout = stdout
 	command.Stderr = &boundedCommandBuffer{limit: 16 << 10}
@@ -515,6 +516,7 @@ func (c *Client) searchWithManagedRipgrep(ctx context.Context, searchRoot string
 	}
 	args := buildRipgrepArgs(input, searchRoot)
 	command := exec.CommandContext(ctx, executablePath, args...)
+	configureBackgroundCommand(command)
 	command.Dir = searchRoot
 	command.Env = ripgrepEnvironment(os.Environ())
 	stdout := &boundedCommandBuffer{limit: maxRipgrepOutputBytes}

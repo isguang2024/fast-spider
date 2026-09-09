@@ -303,6 +303,7 @@ func (s *BrowserSidecar) probeAvailability() error {
 	probeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	probe := exec.CommandContext(probeCtx, nodePath, "--input-type=module", "-e", `import fs from 'node:fs'; import { chromium } from 'playwright'; process.exit(fs.existsSync(chromium.executablePath()) ? 0 : 2)`)
+	configureBackgroundCommand(probe)
 	probe.Dir = s.dir
 	probe.Env = browserSidecarEnvironment(s.dir)
 	if err := probe.Run(); err != nil {

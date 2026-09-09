@@ -271,6 +271,7 @@ func runGitCommandCapture(ctx context.Context, root string, args []string, spool
 	}
 	base := []string{"-C", root, "-c", "color.ui=false", "-c", "core.pager=cat", "-c", "core.fsmonitor=false", "-c", "diff.external=", "-c", "interactive.diffFilter="}
 	cmd := exec.CommandContext(ctx, gitPath, append(base, args...)...)
+	configureBackgroundCommand(cmd)
 	cmd.Env = append(safeShellEnvironment(), "GIT_TERMINAL_PROMPT=0")
 	var stdout, stderr bytes.Buffer
 	stdoutWriter := &gitOutputWriter{preview: &limitedBuffer{buf: &stdout, limit: maxGitOutputBytes}, spool: spool, fullLimit: maxArtifactUploadBytes}
@@ -300,6 +301,7 @@ func ensureGitRepository(ctx context.Context, root string) error {
 	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(checkCtx, gitPath, "-C", root, "rev-parse", "--show-toplevel")
+	configureBackgroundCommand(cmd)
 	cmd.Env = append(safeShellEnvironment(), "GIT_TERMINAL_PROMPT=0")
 	out, err := cmd.Output()
 	if err != nil {
@@ -518,6 +520,7 @@ func hasExecutableGitNetworkConfig(ctx context.Context, root, remote string) (bo
 		"remote." + remote + ".vcs",
 	} {
 		cmd := exec.CommandContext(checkCtx, gitPath, "-C", root, "config", "--get", key)
+		configureBackgroundCommand(cmd)
 		cmd.Env = safeShellEnvironment()
 		out, err := cmd.Output()
 		if err == nil {
@@ -547,6 +550,7 @@ func hasExecutableGitNetworkConfig(ctx context.Context, root, remote string) (bo
 
 func hasRepositoryCredentialHelper(ctx context.Context, gitPath, root string) (bool, error) {
 	cmd := exec.CommandContext(ctx, gitPath, "-C", root, "config", "--show-scope", "--get-regexp", `^credential(\..*)?\.helper$`)
+	configureBackgroundCommand(cmd)
 	cmd.Env = safeShellEnvironment()
 	out, err := cmd.Output()
 	if err != nil {
@@ -607,6 +611,7 @@ func hasExecutableGitFilters(ctx context.Context, root string) (bool, error) {
 	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(checkCtx, gitPath, "-C", root, "config", "--show-scope", "--get-regexp", `^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$`)
+	configureBackgroundCommand(cmd)
 	cmd.Env = safeShellEnvironment()
 	out, err := cmd.Output()
 	if err == nil {

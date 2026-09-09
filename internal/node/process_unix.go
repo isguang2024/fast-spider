@@ -8,6 +8,8 @@ import (
 	"syscall"
 )
 
+func configureBackgroundCommand(cmd *exec.Cmd) {}
+
 func configureProcessTree(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }

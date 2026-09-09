@@ -14,12 +14,17 @@ import (
 )
 
 func configureProcessTree(cmd *exec.Cmd) {
+	configureBackgroundCommand(cmd)
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP
+}
+
+func configureBackgroundCommand(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	// Node children communicate through pipes, not interactive console windows.
 	cmd.SysProcAttr.HideWindow = true
-	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_NO_WINDOW
+	cmd.SysProcAttr.CreationFlags |= windows.CREATE_NO_WINDOW
 }
 
 func killProcessTree(cmd *exec.Cmd) error {

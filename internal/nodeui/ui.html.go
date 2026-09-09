@@ -171,12 +171,22 @@ const localUIHTML = `<!doctype html>
 	            </form>
 	          </div>
 	          <div class="panel">
-				<h2>ChatGPT Cloud Advanced</h2>
-				<p class="copy">Preset 继续使用 ChatGPT 实时模型预设。这里只维护本机 Advanced 模型列表；Quick chat 与等待首个回答仍可分别搭配 Preset 或 Advanced。</p>
+				<h2>ChatGPT Cloud 模型与请求配置</h2>
+				<p class="copy">Preset 继续使用 ChatGPT 实时模型预设。这里维护本机 Advanced 模型列表和 CHAT 云端请求参数；Quick chat 与等待首个回答仍可分别搭配 Preset 或 Advanced。</p>
 				<div class="notice">思考程度可勾选 ChatGPT Cloud 实时预设，也可以填写自定义值；自定义值会按模型原样发送。Auto 表示不发送 thinking_effort；模型别名最终可能被服务端解析为其他 resolved model。</div>
 				<form id="chatgpt-advanced-form">
+                  <div class="config-subsection"><strong>CHAT 云端请求参数</strong><small class="hint">仅用于 ChatGPT Cloud 的创建与续聊，适用于 Preset 和 Advanced。关闭开关后不发送对应字段；开启后使用配置值。service_tier 可由单次请求覆盖。</small></div>
+                  <div class="grid">
+                    <label class="switch"><input id="chatgpt-enable-service-tier" type="checkbox"><span>加入 service_tier</span></label>
+                    <label class="field"><span>service_tier 值</span><input id="chatgpt-service-tier" maxlength="64" placeholder="fast"></label>
+                    <label class="switch"><input id="chatgpt-enable-consumer-lockdown" type="checkbox"><span>加入 consumer_lockdown_mode_disabled</span></label>
+                    <label class="field"><span>consumer_lockdown_mode_disabled 值</span><select id="chatgpt-consumer-lockdown"><option value="true">true</option><option value="false">false</option></select></label>
+                    <label class="switch"><input id="chatgpt-enable-force-parallel" type="checkbox"><span>加入 force_parallel_switch</span></label>
+                    <label class="field"><span>force_parallel_switch 值</span><input id="chatgpt-force-parallel" maxlength="64" placeholder="off"></label>
+                  </div>
+                  <h3>ChatGPT Cloud Advanced</h3>
 				  <div id="chatgpt-advanced-list" class="advanced-model-list"><span class="empty">切换到本页后读取</span></div>
-				  <div class="actions"><button id="chatgpt-advanced-add" class="secondary" type="button">新增模型</button><button class="primary" type="submit">保存 Advanced 列表</button><span id="chatgpt-advanced-file" class="hint mono"></span></div>
+				  <div class="actions"><button id="chatgpt-advanced-add" class="secondary" type="button">新增模型</button><button class="primary" type="submit">保存 CHAT 云端配置</button><span id="chatgpt-advanced-file" class="hint mono"></span></div>
 				</form>
 	          </div>
 	          <div class="panel">
@@ -431,6 +441,13 @@ const localUIHTML = `<!doctype html>
 		  renderChatGPTThinkingChoices(data,selectedThinking);
 		}
 	function renderChatGPTAdvanced(data) {
+          const defaults=data.requestDefaults;
+          $('chatgpt-enable-service-tier').checked=defaults.enableServiceTier;
+          $('chatgpt-service-tier').value=defaults.serviceTier;
+          $('chatgpt-enable-consumer-lockdown').checked=defaults.enableConsumerLockdownModeDisabled;
+          $('chatgpt-consumer-lockdown').value=String(defaults.consumerLockdownModeDisabled);
+          $('chatgpt-enable-force-parallel').checked=defaults.enableForceParallelSwitch;
+          $('chatgpt-force-parallel').value=defaults.forceParallelSwitch;
 		  chatGPTThinkingOptions=Array.isArray(data.thinkingOptions)?data.thinkingOptions:[]; chatGPTCatalogData=data; const box=$('chatgpt-advanced-list'); box.textContent='';
 	  const models=Array.isArray(data.models)?data.models:[]; models.forEach(model=>box.appendChild(advancedModelRow(model)));
 	  if(!models.length){const empty=document.createElement('span');empty.className='empty';empty.textContent='尚未配置 Advanced 模型，可点击“新增模型”。';box.appendChild(empty);}
@@ -613,7 +630,7 @@ const localUIHTML = `<!doctype html>
 	$('chatgpt-advanced-add').addEventListener('click',()=>{const box=$('chatgpt-advanced-list');const empty=box.querySelector('.empty');if(empty)empty.remove();box.appendChild(advancedModelRow({thinking:chatGPTThinkingOptions.map(option=>option.id)}));});
 		$('chatgpt-advanced-form').addEventListener('submit',async event=>{
 		  event.preventDefault();if(chatGPTAdvancedBusy)return;chatGPTAdvancedBusy=true;const submit=event.currentTarget.querySelector('button[type="submit"]');submit.disabled=true;
-		  try{const models=Array.from(document.querySelectorAll('.advanced-model-row')).map(row=>({id:row.querySelector('.advanced-model-id').value.trim(),title:row.querySelector('.advanced-model-title').value.trim(),thinking:Array.from(row.querySelectorAll('.advanced-thinking:checked')).map(input=>input.value),customThinking:splitCustomThinking(row.querySelector('.advanced-custom-thinking').value)}));const data=await api('/api/chatgpt-advanced-models',{method:'POST',body:JSON.stringify({version:1,models})});renderChatGPTAdvanced(data);message('ChatGPT Advanced 模型列表已保存到本机 Node。');}catch(e){message(e.message,true);}finally{chatGPTAdvancedBusy=false;submit.disabled=false;}
+		  try{const models=Array.from(document.querySelectorAll('.advanced-model-row')).map(row=>({id:row.querySelector('.advanced-model-id').value.trim(),title:row.querySelector('.advanced-model-title').value.trim(),thinking:Array.from(row.querySelectorAll('.advanced-thinking:checked')).map(input=>input.value),customThinking:splitCustomThinking(row.querySelector('.advanced-custom-thinking').value)}));const data=await api('/api/chatgpt-advanced-models',{method:'POST',body:JSON.stringify({version:1,models,requestDefaults:{enableServiceTier:$('chatgpt-enable-service-tier').checked,serviceTier:$('chatgpt-service-tier').value.trim(),enableConsumerLockdownModeDisabled:$('chatgpt-enable-consumer-lockdown').checked,consumerLockdownModeDisabled:$('chatgpt-consumer-lockdown').value==='true',enableForceParallelSwitch:$('chatgpt-enable-force-parallel').checked,forceParallelSwitch:$('chatgpt-force-parallel').value.trim()}})});renderChatGPTAdvanced(data);message('CHAT 云端模型与请求配置已保存到本机 Node。');}catch(e){message(e.message,true);}finally{chatGPTAdvancedBusy=false;submit.disabled=false;}
 	});
 
   $('update-check').addEventListener('click', async () => {
