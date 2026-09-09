@@ -75,7 +75,6 @@ func applyCollaborationModelParams(packet, params map[string]any) {
 	for _, key := range []string{"model", "thinking"} {
 		if value, ok := packet[key]; ok {
 			params[key] = value
-			params["configurationMode"] = "advanced"
 		}
 	}
 }

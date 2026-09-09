@@ -345,7 +345,7 @@ func TestCollaborationAnalysisDispatchPassesModelAndThinkingToCreateAndSend(t *t
 					break
 				}
 			}
-			if got == nil || got["model"] != packet["model"] || got["thinking"] != packet["thinking"] || got["configurationMode"] != "advanced" {
+			if got == nil || got["model"] != packet["model"] || got["thinking"] != packet["thinking"] || got["configurationMode"] != nil {
 				t.Fatalf("%s model forwarding=%#v calls=%v", tc.action, got, agent.calls)
 			}
 		})

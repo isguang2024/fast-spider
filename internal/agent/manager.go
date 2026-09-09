@@ -310,6 +310,14 @@ func (m *AgentManager) chatGPTCloudCreateDefaults() chatGPTCloudCreateDefaults {
 	return defaults
 }
 
+type agentControlInputError struct{ cause error }
+
+func (e *agentControlInputError) Error() string { return fmt.Sprintf("invalid params: %v", e.cause) }
+func (e *agentControlInputError) Unwrap() error { return e.cause }
+func (e *agentControlInputError) CapabilityError() (string, string, bool) {
+	return "INVALID_REQUEST", e.Error(), false
+}
+
 func (m *AgentManager) Control(ctx context.Context, action string, params map[string]any) (map[string]any, error) {
 	if m == nil {
 		return nil, node.ErrAgentProviderUnavailable
@@ -319,7 +327,7 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 	}
 	var input agentControlParams
 	if err := decodeParams(params, &input); err != nil {
-		return nil, fmt.Errorf("invalid params: %w", err)
+		return nil, &agentControlInputError{cause: err}
 	}
 	_, input.modelProvided = params["model"]
 	_, input.thinkingProvided = params["thinking"]
