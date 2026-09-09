@@ -3,6 +3,29 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.76 - 2026-09-09
+
+- Return native Codex child-task lookup and terminal handoff hints for local execution
+  and validation checks, without querying local tasks through Fast Spider.
+- Make full-audit completion a single action and explain obsolete audit recovery;
+  callback notifications preserve unfinished validation and business work.
+
+## 0.4.75 - 2026-09-09
+
+- Return executable, exact-binding Cloud metadata checks and complete check-record
+  arguments from local collaboration next-actions, instead of ledger-only polling.
+- Honor Cloud metadata-only reads without exposing transcripts, suppress dependent
+  preparation noise, and keep unchanged Cloud recovery checks at least 30 minutes apart.
+
+## 0.4.74 - 2026-09-08
+
+- Add local collaboration v3 task trees, durable callback inboxes and atomic
+  result resolution; transport acknowledgement no longer hides unresolved work.
+- Keep stable task identities across retries and bound unchanged recovery checks
+  with backoff, without automatically resuming user-canceled Cloud turns.
+- Explicitly upgrade paused missions in place with a verified database backup
+  and bind existing Cloud callbacks without recreating sessions or completed work.
+
 ## 0.4.73 - 2026-09-08
 
 - Persist terminal callbacks when a ChatGPT Cloud turn fails or is canceled, so

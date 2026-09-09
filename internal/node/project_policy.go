@@ -92,10 +92,16 @@ func (p *projectPolicy) validate(capability, action string, params map[string]an
 	case "working.context":
 		return p.validatePathParam(params, "projectPath", false)
 	case "collaboration.control":
+		if action == "upgrade" {
+			if err := p.validatePathParam(params, "dbPath", false); err != nil {
+				return err
+			}
+			return p.validatePathParam(params, "backupPath", true)
+		}
 		if action == "init" {
 			return p.validatePathParam(params, "dbPath", true)
 		}
-		if action == "brief" || action == "get" || action == "next_actions" || action == "record_action" || action == "apply" || action == "transfer_control" || action == "claim" || action == "recover" || action == "dispatch" || action == "dispatch_recover" || action == "observe" || action == "observation" || action == "close" || action == "compact" || action == "cleanup" {
+		if action == "upgrade" || action == "tree" || action == "tree_update" || action == "archive" || action == "retry" || action == "inbox" || action == "resolve" || action == "record_check" || action == "brief" || action == "get" || action == "next_actions" || action == "record_action" || action == "apply" || action == "transfer_control" || action == "claim" || action == "recover" || action == "dispatch" || action == "dispatch_recover" || action == "observe" || action == "observation" || action == "close" || action == "compact" || action == "cleanup" {
 			if (action == "dispatch" || action == "dispatch_recover") && params != nil {
 				if token, ok := params["dispatchToken"].(string); ok && strings.TrimSpace(token) != "" {
 					return nil

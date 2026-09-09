@@ -10,8 +10,8 @@ import (
 )
 
 type collaborationControlInput struct {
-	Action string         `json:"action" jsonschema:"collaboration.control v2 action such as init, brief, next_actions, apply, dispatch, callback_claim, close, or cleanup"`
-	Params map[string]any `json:"params,omitempty" jsonschema:"action-specific structured task ledger, dispatch, or callback parameters; never a JSON input file path and never Cloud credentials"`
+	Action string         `json:"action" jsonschema:"collaboration.control v3: init, upgrade, tree/tree_update, apply, dispatch/dispatch_recover, inbox, resolve, retry, next_actions/record_check, archive, close; upgrade requires paused mission, controller, expectedRevision, new backupPath and evidenceRef; legacy v2 actions remain available"`
+	Params map[string]any `json:"params,omitempty" jsonschema:"structured action parameters, not a file path. next_actions returns executionCheck and recordCheck call parameters. record_check requires dbPath,missionId,actorSessionId,expectedRevision,expectedObservationRevision,actionId,outcome,evidenceRef; optional retryAt; no itemId or evidence. get/brief/tree are ledger-only, not execution checks. Local execution_ref: codex-thread:<threadId> or codex-agent:<parentThreadId>#<canonicalPath>; local_scope: {machineId,workingDirectory,accessMode:read_only|write,writeScope?:string[]}. Cloud packet.writeScope is one string. Never Cloud credentials."`
 }
 
 type collaborationControlOutput struct {

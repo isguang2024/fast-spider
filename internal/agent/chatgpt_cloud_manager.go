@@ -105,9 +105,9 @@ func (m *AgentManager) controlChatGPTCloud(ctx context.Context, action string, i
 	case "session.callback.list":
 		return m.sessionCallbackList(input)
 	case "session.callback.claim":
-		return m.sessionCallbackClaim(input)
+		return m.sessionCallbackClaimContext(ctx, input)
 	case "session.callback.ack":
-		return m.sessionCallbackAck(input)
+		return m.sessionCallbackAckContext(ctx, input)
 	case "session.steer":
 		return m.chatgptCloudSteer(ctx, input)
 	default:
@@ -238,7 +238,7 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 							"idempotencyStatus": "created", "workingDirectory": workingDirectory,
 						}
 						if selectedServiceTier != "" {
-								stored["service_tier"] = selectedServiceTier
+							stored["service_tier"] = selectedServiceTier
 						}
 						spec.applyToResult(stored, sessionID)
 						if visibilityErr := m.persistSessionVisibility(spec.recordForDirectory("codex", sessionID, workingDirectory, time.Now().UTC())); visibilityErr != nil {
@@ -283,13 +283,13 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 		} else {
 			createBody = chatgptNewChatBodyWithThinking(input.Prompt, selectedModel, selectedThinking)
 		}
-			chatgptApplyServiceTier(createBody, selectedServiceTier)
-			if !advancedConfig.RequestDefaults.EnableConsumerLockdownModeDisabled {
-				delete(createBody, "consumer_lockdown_mode_disabled")
-			}
-			if !advancedConfig.RequestDefaults.EnableForceParallelSwitch {
-				delete(createBody, "force_parallel_switch")
-			}
+		chatgptApplyServiceTier(createBody, selectedServiceTier)
+		if !advancedConfig.RequestDefaults.EnableConsumerLockdownModeDisabled {
+			delete(createBody, "consumer_lockdown_mode_disabled")
+		}
+		if !advancedConfig.RequestDefaults.EnableForceParallelSwitch {
+			delete(createBody, "force_parallel_switch")
+		}
 		attempt := sessionCreateAttempt{
 			Backend: sessionBackendChatGPTCloud, RequestMessageID: chatgptCloudRequestMessageID(createBody), StartedAt: time.Now().UTC(),
 		}
@@ -323,7 +323,7 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 			"workingDirectory":     workingDirectory,
 		}
 		if selectedServiceTier != "" {
-				partial["service_tier"] = selectedServiceTier
+			partial["service_tier"] = selectedServiceTier
 		}
 		spec.applyToResult(partial, sessionID)
 		if err := m.createStore.update(storeKey, "thread_created", partial); err != nil {
@@ -438,6 +438,19 @@ func (m *AgentManager) chatgptCloudSend(ctx context.Context, input agentControlP
 	if selectedServiceTier == "" {
 		selectedServiceTier = chatgptCloudDefaultServiceTier
 	}
+	if m.callbackStore != nil {
+		route, exists, routeErr := m.callbackStore.registrationFor(input.SessionID)
+		if routeErr != nil {
+			return nil, routeErr
+		}
+		// Reused CHAT dispatch registers before send and arms after acceptance.
+		// Capture even that unarmed route; confirmation itself requires it armed.
+		if exists && route.CompletionAckedAt.IsZero() {
+			ctx = context.WithValue(ctx, chatgptCloudStreamEndKey{}, func() {
+				m.startCloudCallbackConfirmation(route.SourceSessionID, route.Generation)
+			})
+		}
+	}
 	var result chatgptCloudTurnResult
 	if sendMode == "quick_chat" && idempotencyKey != "" {
 		result, err = m.chatgptCloud.SendQuickIdempotentWithThinkingAndServiceTier(ctx, input.SessionID, "", input.Prompt, input.Model, selectedThinking, selectedServiceTier, chatgptCloudSendRequestMessageID(input.SessionID, idempotencyKey))
@@ -450,6 +463,10 @@ func (m *AgentManager) chatgptCloudSend(ctx context.Context, input agentControlP
 		return nil, err
 	}
 	m.invalidateChatGPTCloudRead(input.SessionID)
+	if result.Replayed {
+		// The original stream may have belonged to a prior Node process.
+		notifyChatGPTCloudStreamEnd(ctx, result)
+	}
 	out := map[string]any{
 		"sessionId": result.ConversationID,
 		"phase":     "running",
@@ -546,6 +563,21 @@ func (m *AgentManager) chatgptCloudGet(ctx context.Context, input agentControlPa
 	} else {
 		defaultChatGPTCloudVisibilityRecord(input.SessionID).applyToResult(detail)
 	}
+	if input.MetadataOnly {
+		// Keep transcripts and provider-specific fields inside the Node. A ledger
+		// phase is not an observation of the current Cloud execution.
+		status := chatgptCloudConversationStatus(detail)
+		session := map[string]any{
+			"sessionId": input.SessionID, "providerId": "codex", "backend": sessionBackendChatGPTCloud,
+			"status": status, "metadataOnly": true,
+		}
+		return map[string]any{
+			"session": session, "source": "chatgpt_cloud", "providerStatus": status,
+			"observedAt":    time.Now().UTC().Format(time.RFC3339Nano),
+			"authoritative": status != "unknown", "activity": chatgptCloudActivity(detail),
+			"pendingRequestsKnown": false,
+		}, nil
+	}
 	session, messages, nextCursor, hasMore, hasEarlier, err := chatgptCloudBoundedSessionView(detail, input.PageCursor, limit)
 	if err != nil {
 		return nil, err
@@ -557,7 +589,7 @@ func (m *AgentManager) chatgptCloudGet(ctx context.Context, input agentControlPa
 	session["historyHasEarlier"] = hasEarlier
 	session["historyMessageLimit"] = limit
 	session["fullMappingOmitted"] = true
-	return map[string]any{"session": session, "nextCursor": nextCursor, "pendingRequests": []map[string]any{}}, nil
+	return map[string]any{"session": session, "nextCursor": nextCursor, "pendingRequestsKnown": false}, nil
 }
 
 // chatgptCloudBoundedSessionView keeps the provider's full mapping inside the

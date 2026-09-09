@@ -38,6 +38,7 @@ var collaborationItemFields = map[string]bool{
 	"validation_started_at": true, "next_check_at": true, "started_at": true,
 	"priority": true, "contract_refs": true, "acceptance_ref": true,
 	"execution_ref": true, "local_scope": true,
+	"title": true, "workstream_id": true, "archived": true, "current_attempt": true,
 }
 
 var collaborationTransitions = map[string]map[string]bool{
@@ -63,7 +64,7 @@ CREATE TABLE items(id TEXT PRIMARY KEY, phase TEXT NOT NULL, kind TEXT NOT NULL,
 CREATE INDEX current_phase ON items(phase,id);
 CREATE TABLE events(revision INTEGER PRIMARY KEY, object_id TEXT NOT NULL, phase TEXT NOT NULL);
 CREATE TABLE observation(singleton INTEGER PRIMARY KEY CHECK(singleton=1), data TEXT NOT NULL);
-`
+` + collaborationInboxSchema + collaborationAttemptSchema + collaborationTreeSchema + collaborationTreeItemSchema
 
 type collaborationIdentityParams struct {
 	DBPath         string `json:"dbPath"`
@@ -115,6 +116,9 @@ type collaborationRecordActionParams struct {
 	EvidenceRef                 string `json:"evidenceRef"`
 	Notified                    bool   `json:"notified,omitempty"`
 	Now                         *int64 `json:"now,omitempty"`
+	Outcome                     string `json:"outcome,omitempty"`
+	ProgressToken               string `json:"progressToken,omitempty"`
+	completeCheck               bool
 }
 
 type collaborationApplyParams struct {
@@ -197,7 +201,18 @@ func (c *Client) collaborationStateControl(ctx context.Context, action string, p
 			return nil, err
 		}
 		return c.collaborationNextActions(ctx, input)
-	case "record_action":
+	case "record_action", "record_check":
+		if action == "record_check" {
+			if err := requireCollaborationParams(params, "expectedRevision", "expectedObservationRevision", "actionId", "outcome", "evidenceRef"); err != nil {
+				return nil, collaborationRecordCheckParamError(err)
+			}
+			var input collaborationRecordActionParams
+			if err := decodeCollaborationIdentityParams(params, &input); err != nil {
+				return nil, collaborationRecordCheckParamError(err)
+			}
+			input.completeCheck = true
+			return c.collaborationRecordAction(ctx, input)
+		}
 		if err := requireCollaborationParams(params, "dbPath", "missionId", "actorSessionId", "expectedRevision", "expectedObservationRevision", "actionId", "retryAt", "evidenceRef"); err != nil {
 			return nil, err
 		}
@@ -520,6 +535,27 @@ func validateCollaborationMapKeys(value map[string]any, allowed map[string]bool,
 }
 
 func validateCollaborationItem(item, mission map[string]any) error {
+	for _, key := range []string{"title", "workstream_id"} {
+		if value := item[key]; value != nil && value != "" {
+			if err := validateCollaborationText(value, key, 2048); err != nil {
+				return err
+			}
+		}
+	}
+	if value, exists := item["archived"]; exists {
+		archived, ok := value.(bool)
+		if !ok {
+			return errors.New("archived must be boolean")
+		}
+		if archived && !collaborationFinalPhases[mapStringValue(item, "phase")] {
+			return errors.New("only settled tasks can be archived")
+		}
+	}
+	if value, exists := item["current_attempt"]; exists {
+		if attempt, ok := collaborationInt64(value); !ok || attempt < 1 {
+			return errors.New("current_attempt must be positive")
+		}
+	}
 	if err := validateCollaborationMapKeys(item, collaborationItemFields, "item"); err != nil {
 		return err
 	}
@@ -890,6 +926,13 @@ func (c *Client) collaborationApply(ctx context.Context, input collaborationAppl
 	if err := validateCollaborationMissionPatch(missionPatch); err != nil {
 		return nil, err
 	}
+	if ledger.hasInbox(ctx) {
+		for _, key := range []string{"goal", "authority_ref"} {
+			if value, exists := missionPatch[key]; exists && !collaborationValueEqual(value, ledger.mission[key]) {
+				return nil, errors.New("use tree_update with authorityRef to change the user target")
+			}
+		}
+	}
 	missionChanged := false
 	for key, value := range missionPatch {
 		if !collaborationValueEqual(ledger.mission[key], value) {
@@ -1015,6 +1058,9 @@ func validateCollaborationMissionPatch(patch map[string]any) error {
 }
 
 func validateCollaborationItemUpdate(old, item map[string]any) error {
+	if !collaborationValueEqual(old["current_attempt"], item["current_attempt"]) {
+		return errors.New("use retry to advance an execution attempt")
+	}
 	oldPhase := mapStringValue(old, "phase")
 	newPhase := mapStringValue(item, "phase")
 	if collaborationFinalPhases[oldPhase] {
@@ -1157,6 +1203,15 @@ func (c *Client) collaborationClose(ctx context.Context, input collaborationClos
 	if unsettled != 0 {
 		return nil, errors.New("unsettled work remains")
 	}
+	if ledger.hasInbox(ctx) {
+		var pending int
+		if err := ledger.conn.QueryRowContext(ctx, "SELECT count(*) FROM callback_inbox WHERE resolved_at IS NULL").Scan(&pending); err != nil {
+			return nil, err
+		}
+		if pending != 0 {
+			return nil, errors.New("unresolved inbox results remain")
+		}
+	}
 	continuation := collaborationOptionalMap(ledger.mission["continuation"])
 	if collaborationBoolDefault(continuation, "enabled", false) {
 		return nil, errors.New("authorized continuation is still enabled")
@@ -1277,6 +1332,36 @@ func (l *collaborationLedger) storeObservation(ctx context.Context, observation 
 	_, err = l.conn.ExecContext(ctx, `INSERT INTO observation(singleton,data) VALUES(1,?)
 		ON CONFLICT(singleton) DO UPDATE SET data=excluded.data`, raw)
 	return err
+}
+
+// Convert still-current revision-based check IDs before an item changes. This
+// is an internal identity migration, not a new check or a business-state write.
+func (l *collaborationLedger) migrateLegacyExecutionChecks(ctx context.Context) error {
+	observation, err := l.readObservation(ctx)
+	if err != nil {
+		return err
+	}
+	checks, _ := observation["action_checks"].(map[string]any)
+	for key, raw := range checks {
+		var parts []string
+		if json.Unmarshal([]byte(key), &parts) != nil || len(parts) != 3 || !collaborationExecutionCheckKind(parts[1]) {
+			continue
+		}
+		if check, ok := raw.(map[string]any); ok && !strings.HasPrefix(mapStringValue(check, "action_id"), "check-v2-") {
+			// actionCandidates adopts only an exact live legacy ID; stale checks
+			// are pruned as before. Counters and observation CAS remain intact.
+			return l.storeObservation(ctx, observation)
+		}
+	}
+	return nil
+}
+
+func collaborationExecutionCheckKind(kind string) bool {
+	switch kind {
+	case "check_execution", "reconcile_dispatch", "check_validation", "notify_validation_due":
+		return true
+	}
+	return false
 }
 
 func (l *collaborationLedger) role(view string) (string, error) {
@@ -1400,10 +1485,10 @@ func (c *Client) collaborationBrief(ctx context.Context, input collaborationBrie
 		}
 		view := selectCollaborationFields(item, fields...)
 		view["holdsExecution"] = collaborationHoldsExecution(item)
+		scope := collaborationScopePacket(item)
+		view["scope"] = selectCollaborationFields(scope, "machineId", "workingDirectory", "accessMode", "writeScope")
 		if role == "coordinator" {
 			view["binding"] = item["binding"]
-			scope := collaborationScopePacket(item)
-			view["scope"] = selectCollaborationFields(scope, "machineId", "workingDirectory", "accessMode", "writeScope")
 		}
 		if mapStringValue(item, "phase") == "verifying" {
 			view["validationOwner"] = item["validation_owner"]
@@ -1602,7 +1687,37 @@ func (l *collaborationLedger) actionCandidates(ctx context.Context, observation 
 		id := mapStringValue(item, "id")
 		priority := collaborationIntDefault(item, "priority", 100)
 		task := func(kind, role string, due int64) error {
-			return add(kind, role, id, value.revision, due, priority, mapStringValue(item, "owner"))
+			if err := add(kind, role, id, value.revision, due, priority, mapStringValue(item, "owner")); err != nil {
+				return err
+			}
+			if !collaborationExecutionCheckKind(kind) {
+				return nil
+			}
+			action := &actions[len(actions)-1]
+			// Scheduling and descriptive edits do not start a new execution.
+			// Keep the budget/notification identity separate from dueAt and CAS.
+			identity := []any{collaborationIntDefault(item, "current_attempt", 1), item["executor"]}
+			if kind == "check_validation" || kind == "notify_validation_due" {
+				identity = append(identity, item["validation_owner"], item["validation_started_at"])
+			} else if mapStringValue(item, "executor") == "cloud" {
+				identity = append(identity, item["claim"], collaborationDispatchKey(item))
+				if ref := mapStringValue(item, "execution_ref"); ref != "" {
+					identity = append(identity, ref)
+				}
+			} else {
+				identity = append(identity, item["execution_ref"], item["started_at"])
+			}
+			hash, err := collaborationActionHash([]any{mapStringValue(l.mission, "id"), action.Key, identity})
+			if err != nil {
+				return err
+			}
+			stableID := "check-v2-" + hash
+			checks, _ := observation["action_checks"].(map[string]any)
+			if prior, ok := checks[action.Key].(map[string]any); ok && mapStringValue(prior, "action_id") == action.ActionID {
+				prior["action_id"] = stableID
+			}
+			action.ActionID = stableID
+			return nil
 		}
 		if phase == "ready" && canDispatch && (!hasCloudLimit || cloudHeld < cloudLimit) {
 			if dependenciesErr := l.checkDependencies(ctx, item); dependenciesErr == nil {
@@ -1613,7 +1728,7 @@ func (l *collaborationLedger) actionCandidates(ctx context.Context, observation 
 				}
 			}
 		}
-		if phase == "planned" && canDispatch {
+		if phase == "planned" && canDispatch && l.checkDependencies(ctx, item) == nil {
 			if err := task("prepare_task", "controller", 0); err != nil {
 				return nil, err
 			}
@@ -1630,7 +1745,11 @@ func (l *collaborationLedger) actionCandidates(ctx context.Context, observation 
 		if active && (phase == "dispatching" || phase == "in_doubt" || collaborationHoldsExecution(item)) {
 			due := collaborationIntDefault(item, "next_check_at", 0)
 			if due == 0 {
-				due = collaborationIntDefault(item, "started_at", 0) + 900
+				interval := int64(900)
+				if mapStringValue(item, "executor") == "cloud" {
+					interval = 1800
+				}
+				due = collaborationIntDefault(item, "started_at", 0) + interval
 			}
 			kind := "check_execution"
 			if phase == "dispatching" || phase == "in_doubt" {
@@ -1712,6 +1831,17 @@ func (l *collaborationLedger) actionCandidates(ctx context.Context, observation 
 			}
 		}
 	}
+	if active {
+		checks, _ := observation["action_checks"].(map[string]any)
+		for _, action := range actions {
+			record, _ := checks[action.Key].(map[string]any)
+			if mapStringValue(record, "action_id") == action.ActionID && collaborationBoolDefault(record, "exhausted", false) {
+				if err := add("decide_stalled_check", "controller", action.ItemID, action.ActionID, 0, 0, action.SubjectOwner); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
 	return actions, nil
 }
 
@@ -1758,6 +1888,9 @@ func (c *Client) collaborationNextActions(ctx context.Context, input collaborati
 		if mapStringValue(record, "action_id") != action.ActionID {
 			record = nil
 		}
+		if collaborationBoolDefault(record, "exhausted", false) {
+			continue // Only the controller decision below remains actionable.
+		}
 		at := action.DueAt
 		if retry := collaborationIntDefault(record, "retry_at", 0); retry > at {
 			at = retry
@@ -1773,6 +1906,9 @@ func (c *Client) collaborationNextActions(ctx context.Context, input collaborati
 		}
 		if action.SubjectOwner != "" {
 			entry["subjectOwner"] = action.SubjectOwner
+		}
+		if err := ledger.addCollaborationCheckCalls(ctx, input, action, observation, entry); err != nil {
+			return nil, err
 		}
 		due = append(due, entry)
 	}
@@ -1870,9 +2006,9 @@ func (c *Client) collaborationRecordAction(ctx context.Context, input collaborat
 		}
 	}
 	if selected == nil || selected.DueAt > now {
-		return nil, errors.New("action stale, not due, or owned by another role")
+		return nil, errors.New("action stale, not due, or owned by another role; refresh local next_actions once and continue remaining due actions. Do not retry an absent action or repeat executor checks. A successful observe(full=true) already closes its prior consistency audit")
 	}
-	if input.RetryAt <= now {
+	if !input.completeCheck && input.RetryAt <= now {
 		return nil, errors.New("record a finite future retry time, not permanent suppression")
 	}
 	if err := validateCollaborationText(input.EvidenceRef, "action evidence", 1024); err != nil {
@@ -1883,10 +2019,104 @@ func (c *Client) collaborationRecordAction(ctx context.Context, input collaborat
 		checks = map[string]any{}
 	}
 	prior, _ := checks[selected.Key].(map[string]any)
+	if mapStringValue(prior, "action_id") != selected.ActionID {
+		prior = nil
+	}
+	var count int64
+	budget := int64(3)
+	progressState := ""
+	if input.ProgressToken != "" {
+		if err := validateCollaborationText(input.ProgressToken, "progressToken", 256); err != nil {
+			return nil, err
+		}
+	}
+	if input.completeCheck {
+		if mapStringValue(prior, "outcome") == input.Outcome && mapStringValue(prior, "evidence_ref") == input.EvidenceRef && mapStringValue(prior, "progress_token") == input.ProgressToken && (collaborationIntDefault(prior, "retry_at", 0) > now || collaborationBoolDefault(prior, "exhausted", false)) {
+			return map[string]any{"revision": ledger.revision, "observationRevision": observation["revision"], "duplicate": true}, nil
+		}
+		if selected.Kind == "consistency_audit" {
+			if input.Outcome != "completed" {
+				return nil, errors.New("consistency audit requires outcome completed")
+			}
+			observation["last_full_at"], observation["light_rounds"], observation["checked_revision"] = now, int64(0), ledger.revision
+			input.RetryAt = now + 3600
+		} else {
+			switch selected.Kind {
+			case "check_execution", "reconcile_dispatch", "check_validation", "notify_validation_due", "recheck_blocker":
+			default:
+				return nil, errors.New("record_check only closes due checks; use resolve/apply for business decisions")
+			}
+			cloudExecution := false
+			if selected.Kind == "check_execution" {
+				item, err := ledger.item(ctx, fmt.Sprint(selected.ItemID))
+				if err != nil {
+					return nil, err
+				}
+				cloudExecution = mapStringValue(item, "executor") == "cloud"
+			}
+			if input.Outcome != "unchanged" && input.Outcome != "unavailable" && !(cloudExecution && input.Outcome == "observed") {
+				return nil, errors.New("check outcome must be unchanged or unavailable; Cloud execution also accepts observed with progressToken. Terminal business facts use resolve/apply")
+			}
+			count = collaborationIntDefault(prior, "attempts", 0) + 1
+			if cloudExecution {
+				budget = 2
+				progressState = "unavailable"
+				if input.Outcome == "observed" {
+					if input.ProgressToken == "" {
+						return nil, errors.New("observed requires progressToken from real executor activity, not a running status label")
+					}
+					progressState = "unchanged"
+					if input.ProgressToken != mapStringValue(prior, "progress_token") {
+						count, progressState = 0, "progressed"
+						if mapStringValue(prior, "progress_token") == "" {
+							progressState = "baseline"
+						}
+					}
+				}
+			}
+			if count > budget {
+				return nil, errors.New("check budget exhausted; controller must arrange bounded recovery or an explicit actionable external blocker, not silent indefinite waiting")
+			}
+			var backoff int64
+			if cloudExecution {
+				backoff = now + 600 // Real progress keeps the next bounded check ten minutes away.
+			} else {
+				backoff = now + 900*(1<<(count-1))
+			}
+			if input.RetryAt < backoff {
+				input.RetryAt = backoff
+			}
+		}
+	}
 	notified := input.Notified || mapStringValue(prior, "action_id") == selected.ActionID && collaborationBoolDefault(prior, "notified", false)
+	if progressState == "progressed" {
+		notified = input.Notified
+	}
 	checks[selected.Key] = map[string]any{
 		"action_id": selected.ActionID, "retry_at": input.RetryAt, "checked_at": now,
 		"evidence_ref": input.EvidenceRef, "notified": notified,
+	}
+	if input.completeCheck {
+		record := checks[selected.Key].(map[string]any)
+		record["attempts"], record["outcome"], record["exhausted"] = count, input.Outcome, count >= budget
+		if progressState != "" {
+			record["progress_token"], record["last_progress_at"] = prior["progress_token"], prior["last_progress_at"]
+			record["progress_state"] = progressState
+			if input.Outcome == "observed" {
+				record["progress_token"] = input.ProgressToken
+				if count == 0 {
+					record["last_progress_at"] = now
+				}
+			}
+		}
+	} else {
+		// Legacy scheduling calls must not erase a record_check budget.
+		record := checks[selected.Key].(map[string]any)
+		for _, key := range []string{"attempts", "outcome", "exhausted", "progress_token", "last_progress_at", "progress_state"} {
+			if value, ok := prior[key]; ok {
+				record[key] = value
+			}
+		}
 	}
 	observation["action_checks"] = checks
 	observation["revision"] = collaborationIntDefault(observation, "revision", 0) + 1
@@ -1896,7 +2126,7 @@ func (c *Client) collaborationRecordAction(ctx context.Context, input collaborat
 	if err := ledger.commit(ctx); err != nil {
 		return nil, err
 	}
-	return map[string]any{"revision": ledger.revision, "observationRevision": observation["revision"], "retryAt": input.RetryAt}, nil
+	return map[string]any{"revision": ledger.revision, "observationRevision": observation["revision"], "retryAt": input.RetryAt, "progressState": progressState, "stalled": input.completeCheck && count >= budget}, nil
 }
 
 func (c *Client) collaborationObserve(ctx context.Context, input collaborationObserveParams) (map[string]any, error) {
@@ -1948,7 +2178,14 @@ func (c *Client) collaborationObserve(ctx context.Context, input collaborationOb
 	if err := ledger.commit(ctx); err != nil {
 		return nil, err
 	}
-	return collaborationObservationOutput(newObservation), nil
+	result := collaborationObservationOutput(newObservation)
+	if input.Full {
+		result["auditRecorded"] = true
+		result["recordCheckRequired"] = false
+		result["nextAction"] = "refresh_next_actions"
+		result["completionRule"] = "Full audit is already recorded. Do not record_check the old consistency action; continue other current due actions. For v3 use record_check(completed) alone on future audits."
+	}
+	return result, nil
 }
 
 func (c *Client) collaborationObservation(ctx context.Context, input collaborationIdentityParams) (map[string]any, error) {

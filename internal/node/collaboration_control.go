@@ -100,8 +100,37 @@ func (c *Client) collaborationControl(ctx context.Context, action string, params
 		params = map[string]any{}
 	}
 	switch action {
-	case "init", "brief", "get", "next_actions", "record_action", "apply", "transfer_control", "observe", "observation", "close", "compact", "cleanup":
+	case "upgrade":
+		if err := requireCollaborationParams(params, "dbPath", "missionId", "actorSessionId", "expectedRevision", "backupPath", "evidenceRef"); err != nil {
+			return nil, err
+		}
+		var input collaborationUpgradeParams
+		if err := decodeCollaborationIdentityParams(params, &input); err != nil {
+			return nil, err
+		}
+		return c.collaborationUpgrade(ctx, input)
+	case "tree", "tree_update", "archive":
+		return c.collaborationTreeControl(ctx, action, params)
+	case "retry":
+		var input collaborationRetryParams
+		if err := decodeCollaborationIdentityParams(params, &input); err != nil {
+			return nil, err
+		}
+		return c.collaborationRetry(ctx, input)
+	case "init", "brief", "get", "next_actions", "record_action", "record_check", "apply", "transfer_control", "observe", "observation", "close", "compact", "cleanup":
 		return c.collaborationStateControl(ctx, action, params)
+	case "inbox":
+		var input collaborationInboxParams
+		if err := decodeCollaborationIdentityParams(params, &input); err != nil {
+			return nil, err
+		}
+		return c.collaborationInbox(ctx, input)
+	case "resolve":
+		var input collaborationResolveParams
+		if err := decodeCollaborationIdentityParams(params, &input); err != nil {
+			return nil, err
+		}
+		return c.collaborationResolve(ctx, input)
 	case "claim":
 		if err := requireCollaborationParams(params, "dbPath", "missionId", "actorSessionId", "expectedRevision", "itemId"); err != nil {
 			return nil, err
@@ -454,6 +483,14 @@ func (c *Client) collaborationDispatchToken(ctx context.Context, dispatchToken s
 	}
 	registerNeeded := phase == "" || phase == "prepared" || phase == "created"
 	if registerNeeded {
+		ledger, err := openCollaborationLedger(ctx, token.DBPath, token.MissionID, token.ActorSessionID, false)
+		if err != nil {
+			return nil, err
+		}
+		if ledger.hasInbox(ctx) {
+			registerParams["callbackInboxRoute"] = map[string]any{"dbPath": token.DBPath, "missionId": token.MissionID, "itemId": token.ItemID, "claim": token.Claim}
+		}
+		ledger.rollback()
 		if _, err := c.agent.Control(ctx, "session.callback.register", registerParams); err != nil {
 			// Register may have committed before a transport or persistence error.
 			// Keep the prepared/created identity and recover the exact route rather
@@ -860,8 +897,15 @@ func localCollaborationBootstrap(packet map[string]any, token collaborationToken
 		writeScope = "(read-only)"
 	}
 	callbackType := mapStringValue(packet, "callbackType")
-	return fmt.Sprintf("FAST_SPIDER_LOCAL_COLLABORATION_V1\nMACHINE_ID: %s\nWORKING_DIRECTORY: %s\nACCESS_MODE: %s\nWRITE_SCOPE: %s\nCALLBACK_TYPE: %s\nDELIVERABLE_PATH: %s\n\nTASK:\n%s\n\nComplete only this round within the frozen scope. The Node will register and deliver the callback automatically. Do not call remote task_result_submit or create another CHAT. In your final response report completed work, blockers, and validation evidence.",
-		mapStringValue(packet, "machineId"), mapStringValue(packet, "workingDirectory"), mapStringValue(packet, "accessMode"), writeScope, callbackType, deliverable, mapStringValue(packet, "prompt"))
+	deliveryRule := ""
+	if callbackType == "local_file" {
+		deliveryRule = " Before ending this turn, save the final report as a UTF-8 file at the exact DELIVERABLE_PATH above and verify that it exists and is readable. The Node delivers the callback but does not write this report for you. A final chat response alone is not a local_file deliverable. If saving fails, report the exact failure; do not claim successful delivery."
+		if mapStringValue(packet, "accessMode") == "read_only" {
+			deliveryRule += " In read_only mode, writing only this Node-assigned report file is permitted; business source and all other files remain read-only."
+		}
+	}
+	return fmt.Sprintf("FAST_SPIDER_LOCAL_COLLABORATION_V1\nMACHINE_ID: %s\nWORKING_DIRECTORY: %s\nACCESS_MODE: %s\nWRITE_SCOPE: %s\nCALLBACK_TYPE: %s\nDELIVERABLE_PATH: %s\n\nTASK:\n%s\n\nComplete only this round within the frozen scope. The Node will register and deliver the callback automatically. Do not call remote task_result_submit or create another CHAT. In your final response report completed work, blockers, and validation evidence.%s",
+		mapStringValue(packet, "machineId"), mapStringValue(packet, "workingDirectory"), mapStringValue(packet, "accessMode"), writeScope, callbackType, deliverable, mapStringValue(packet, "prompt"), deliveryRule)
 }
 
 func stableCollaborationDigest(value string) string {
@@ -929,7 +973,7 @@ func (c *Client) collaborationClaim(ctx context.Context, input collaborationClai
 	item["claim"] = claim
 	item["started_at"] = now
 	if _, ok := item["next_check_at"]; !ok || item["next_check_at"] == nil {
-		item["next_check_at"] = now + 900
+		item["next_check_at"] = now + 1800
 	}
 	item["next_action"] = "Await dispatch receipt; uncertainty requires original-key reconciliation"
 	if err := ledger.saveItem(ctx, item); err != nil {
@@ -1288,6 +1332,10 @@ func openCollaborationLedger(ctx context.Context, dbPath, missionID, actorSessio
 }
 
 func openCollaborationLedgerMode(ctx context.Context, dbPath, missionID, actorSessionID string, writable, allowClosed bool) (*collaborationLedger, error) {
+	return openCollaborationLedgerAccess(ctx, dbPath, missionID, actorSessionID, writable, allowClosed, false)
+}
+
+func openCollaborationLedgerAccess(ctx context.Context, dbPath, missionID, actorSessionID string, writable, allowClosed, callbackOnly bool) (*collaborationLedger, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open collaboration database: %w", err)
@@ -1332,7 +1380,15 @@ func openCollaborationLedgerMode(ctx context.Context, dbPath, missionID, actorSe
 	}
 	controller := mapStringValue(ledger.mission, "controller")
 	coordinator := mapStringValue(ledger.mission, "coordinator")
-	if actorSessionID != controller && actorSessionID != coordinator {
+	legacyCallback := false
+	if callbackOnly {
+		for _, old := range collaborationStringList(ledger.mission["legacy_callback_sessions"]) {
+			if old == actorSessionID {
+				legacyCallback = true
+			}
+		}
+	}
+	if actorSessionID != controller && actorSessionID != coordinator && !legacyCallback {
 		ledger.rollback()
 		return nil, errors.New("actor not bound to this task")
 	}
@@ -1382,6 +1438,9 @@ func (l *collaborationLedger) item(ctx context.Context, itemID string) (map[stri
 }
 
 func (l *collaborationLedger) saveItem(ctx context.Context, item map[string]any) error {
+	if err := l.migrateLegacyExecutionChecks(ctx); err != nil {
+		return err
+	}
 	item = cloneParams(item)
 	if collaborationFinalPhases[mapStringValue(item, "phase")] {
 		packet, _ := item["packet"].(map[string]any)
@@ -1419,6 +1478,22 @@ func (l *collaborationLedger) saveItem(ctx context.Context, item map[string]any)
 		ON CONFLICT(id) DO UPDATE SET phase=excluded.phase,kind=excluded.kind,revision=excluded.revision,data=excluded.data,dispatch_key=excluded.dispatch_key,task_ref=excluded.task_ref`,
 		itemID, phase, kind, l.revision, string(raw), nullableCollaborationString(dispatchKey), nullableCollaborationString(taskRef)); err != nil {
 		return err
+	}
+	var hasTree int
+	if err := l.conn.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='workstreams'").Scan(&hasTree); err != nil {
+		return err
+	}
+	if hasTree != 0 {
+		stream := mapStringValue(item, "workstream_id")
+		if stream != "" {
+			var found int
+			if err := l.conn.QueryRowContext(ctx, "SELECT 1 FROM workstreams WHERE id=?", stream).Scan(&found); err != nil {
+				return errors.New("unknown task workstream")
+			}
+		}
+		if _, err := l.conn.ExecContext(ctx, "UPDATE items SET title=?,workstream_id=?,archived=? WHERE id=?", mapStringValue(item, "title"), stream, boolInt(collaborationBoolDefault(item, "archived", false)), itemID); err != nil {
+			return err
+		}
 	}
 	if _, err := l.conn.ExecContext(ctx, "INSERT INTO events(revision,object_id,phase) VALUES(?,?,?)", l.revision, itemID, phase); err != nil {
 		return err
@@ -1484,6 +1559,16 @@ func (l *collaborationLedger) checkCloudCapacity(ctx context.Context) error {
 
 func (l *collaborationLedger) checkUnique(ctx context.Context, itemID string, item map[string]any) error {
 	key := collaborationDispatchKey(item)
+	if l.hasAttempts(ctx) && key != "" {
+		var found int
+		err := l.conn.QueryRowContext(ctx, "SELECT 1 FROM execution_attempts WHERE dispatch_key=? LIMIT 1", key).Scan(&found)
+		if err == nil {
+			return errors.New("idempotency key belongs to a historical execution attempt")
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+	}
 	if key != "" {
 		var found int
 		err := l.conn.QueryRowContext(ctx, "SELECT 1 FROM items WHERE id<>? AND dispatch_key=? LIMIT 1", itemID, key).Scan(&found)
@@ -1538,7 +1623,7 @@ func (l *collaborationLedger) checkUnique(ctx context.Context, itemID string, it
 		for _, a := range collaborationScopeRoots(packet) {
 			for _, b := range collaborationScopeRoots(otherPacket) {
 				if lexicalPathWithin(a, b) || lexicalPathWithin(b, a) {
-					return errors.New("write scope held by active/uncertain round")
+					return fmt.Errorf("write scope held by active/uncertain round: item=%s scope=%s overlaps requested=%s; preserve the existing writer until terminal evidence", mapStringValue(other, "id"), b, a)
 				}
 			}
 		}
@@ -1729,7 +1814,9 @@ func collaborationScopeRoots(packet map[string]any) []string {
 		if absolute, err := filepath.Abs(root); err == nil {
 			root = filepath.Clean(absolute)
 		}
-		if resolved, err := ResolveMachinePath(root); err == nil {
+		// New target directories still share the identity of their existing
+		// ancestor (including Windows short names and directory junctions).
+		if resolved, err := resolveLocalCollaborationPath("", root, true); err == nil {
 			root = resolved
 		}
 		roots = append(roots, root)

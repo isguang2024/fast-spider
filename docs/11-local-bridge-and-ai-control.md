@@ -24,6 +24,35 @@ Provider Token、Codex/ChatGPT 本地认证和其他 Provider secret 只保留�
 
 该能力只在 `HandleLocalCapability` 路径开放，不属于 Node 上报 Hub 的能力目录。Provider 凭据仍只在本机 Node/Provider 中使用；Cloud create/send 不经过 Hub。Node 将正式结果放入按 transport 隔离的本机 callback 队列，原主控通过 `callback_claim` 领取并用 `callback_ack` 确认；ACK 会退役对应 route 和 watcher。公网 `FastSpider_FS` 的能力目录、远端 dispatch 和 Hub callback 契约保持兼容。
 
+### 1.2 轻量持久协作 v3：改造范围与运行契约
+
+本次改造沿用 Node 进程、Local Bridge 和总任务自己的 SQLite，不增加 Python、服务或 Markdown 状态镜像。新 `init` 建立 v3 所需表；旧库仍可使用 v2 动作，读取 v3 任务树/收件箱不会隐式迁移旧库。能力版本为 `collaboration.control/3.0`，仅本地 MCP 可见。源码升级、安装新版 Node、迁移活动任务是不同操作，不因测试通过自动迁移。
+
+实施分为四部分：
+
+1. **任务树**：`tree_update` 保存 mission 目标/不做事项/模式、workstream 任务线以及 task 的标题和归属。用户目标变更要求 `authorityRef`，执行计划可调整但不能静默改授权。`tree` 默认返回分页热工作集与完成汇总，不返回旧 prompt/日志；完成项用 `archive` 折叠，不删除身份。
+2. **结果闭环**：Agent 先持久保存 callback，再通过进程内 sink 写入任务 SQLite inbox，然后唤醒原主控。claim/ACK 也确保投影先成功。`inbox` 列出未处理结果；`resolve` 原子保存业务决定和结果处理标记，再做幂等 transport ACK。ACK 失败不会回退业务决定，重放同一 resolve 只补 ACK。结果正文仍在既有结果池/交付文件，inbox 保存引用。
+3. **稳定任务与执行轮次**：`items.id` 是稳定业务 ID；`retry` 仅由主控对已确认结束并处理过结果的执行发起，旧 claim/key/taskRef 写入 `execution_attempts`，当前 item 原子变成新 READY，后继依赖不需改 ID。新 READY 本身就是持久派发意图，沿用既有 dispatch 锁、CAS、唯一键和不确定恢复，不再造第二套 dispatcher。旧轮次迟到 callback 只归入历史，不能结束新轮次。人工取消必须带明确 `userDecisionRef` 才可重试。
+4. **有界检查**：`record_check` 对一致性审计的 `completed` 自动更新完整检查时间；执行/派发/验收/阻塞检查使用 `unchanged` 或 `unavailable`，自动退避 15/30/60 分钟并尊重更长 Retry-After。连续三次无新事实后停止该检查，产生一次主控裁决义务，不判失败、不重建 CHAT。暂停/关闭不做定时业务续跑。历史事件保留最近 100 条，检查指纹覆盖并剪除失效项，终态身份用于去重而不逐轮回读。
+
+正常流程为 **主控拆分和准备 → 协调 dispatch → Cloud 执行 → inbox 回调 → 主控 resolve → 协调继续已批准任务**。READY 写入后，主控应同轮通过原生 Codex 消息唤醒协调者；持久 READY/returned/rework 等状态保证消息中断后仍可恢复。Node 不作业务决定、不自动扫描项目、不为了填满槽位造任务。15 分钟协调和 1 小时主控兜底只补漏，不是正常推进的计时入口。
+
+执行/派发/验收检查按真实执行轮绑定稳定身份，普通文案、优先级及 `next_check_at` 更新不会清除检查次数、退避或通知去重；旧版仍有效的记录在更新前保留原预算并转换身份，CAS 仍独立校验。主控和协调的 `brief.scope` 都显示准确的精简写域，不包含任务正文；冲突错误指出占用任务与重叠路径，未创建目录也按现存祖先归一化，避免 Windows 短路径别名漏检。`local_file` bootstrap 明确要求执行者先保存并确认准确报告可读，read_only 只允许额外写入 Node 指定的报告文件；Node 不代写报告。`resolve` 已完成传输 ACK 时无需再调用 `callback_ack`。
+
+新动作使用原有 `dbPath/missionId/actorSessionId` 身份：
+
+- `upgrade`：仅主控在 mission paused 且 dispatch disabled 时使用，传 `expectedRevision/backupPath/evidenceRef`。先创建校验独立 SQLite 备份，再增补 v3 表/列并绑定既有 callback；保留任务、状态和 CHAT。每次尝试使用新的绝对 `.sqlite3` 备份路径。表提交后 callback 绑定失败仍保持暂停，修复明确原因后重试，不重建任务。旧 MCP 适配器可能缓存 v2 能力目录；后台 Node 升级后以新适配器能力与实际动作结果核对，不因此取消既有会话。
+- `tree`：`after/limit` 分页任务；`tree_update`：`expectedRevision` + `mission/workstreams/items`，目标改变另带 `authorityRef`。
+- `inbox`：`after/limit` 默认只返回待处理元数据；传 `resultId` 定向取该结果元数据。
+- `resolve`：`expectedRevision/resultId/decision/evidenceRef`；decision 为 `accept/verify/integrate/rework/block`。accept 明确传 `validation=passed|not_required` 和 `integration=done|not_required`；verify 传 `validationOwner`；block 传现有 blocker 契约。后续验证和集成仍按已有业务状态更新，不把 Cloud 完成当作交付。
+- `retry`：`expectedRevision/itemId/evidenceRef/item`；item 仅包含新执行者、packet、local_scope 等新执行参数。Cloud 必须新幂等键，`targetSessionId` 可复用同域原 CHAT。不确定派发只用 `dispatch_recover`，不能用 retry。
+- 本地 item 的 execution_ref：独立任务或原生记录提供真实子代理 agentThreadId 时用 `codex-thread:<真实ID>`；只有 canonical path 时用 `codex-agent:<parentThreadId>#<canonicalPath>`，不能把该路径当 threadId。Node 0.4.76 的本地/验收检查返回 nativeExecutionCheck 或 nativeBindingLookup，由调用者使用 Codex 原生工具定向读准确任务，或从父任务 subAgentActivity 匹配真实子任务 ID 后回填；FS 不查询本机 Codex。终态按 terminalHandoff 通知主控，由主控采纳，不把 completed 当 PASS。local_scope 是 `{machineId,workingDirectory,accessMode:"read_only"}` 对象，写任务再加 `accessMode:"write",writeScope:["<准确写域>"]`；本地数组与 Cloud 单字符串写域不是同一契约。
+- v3 一致性审计只用 record_check(completed) 原子收口，不先 observe；若 observe(full=true) 已成功，返回 auditRecorded=true/recordCheckRequired=false，旧审计动作已失效，刷新本地 next_actions 后继续其它动作即可。空/重复 callback 只结束该传输通知，不丢弃本轮尚未消费的本地验收和业务待办。
+- `record_check`：`expectedRevision/expectedObservationRevision/actionId/outcome/evidenceRef`，必要时传更长 `retryAt`；它不是业务 resolve，也不调用 provider。`next_actions` 的检查动作返回 `recordCheck.params`，调用方只补 outcome/evidenceRef，不传 itemId/evidence。Cloud 检查另返回精确 `executionCheck` 与仅终态使用的 `terminalRecovery`；只返回请求，不自动查询。`agent.control/session.get(metadataOnly=true)` 在 Node 0.4.75 起返回白名单执行状态/观察时间，不返回正文；unknown 不标权威。账本 active 不能作为 unchanged 证据，Cloud 检查按 30/60/120 分钟退避，普通检查保留 15/30/60 分钟。
+- `archive`：完成 task 的 `itemId/expectedRevision/archived`；`cleanup` 仍只在明确授权且 mission 关闭后删除准确数据库，不影响其它任务。
+
+快速验证对应受影响 Agent/Node/LocalMCP/协议包，以及重复回调、ACK 后重启、resolve 后 ACK 中断、旧 attempt 回调、幂等创建、人工取消、暂停、检查收口与任务树分页。Local Bridge + fake Agent 测试属于本机协议集成证据，不等同真实 Cloud 或生产升级。
+
 ## 2. 多 AI Harness 与 CC Switch Routing
 
 当前内置两个 AI Harness：

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 )
@@ -131,6 +130,14 @@ func (m *AgentManager) sessionCallbackContinue(ctx context.Context, input agentC
 	if !allowed {
 		return map[string]any{"continueSent": false, "recoveryAction": "controller_decision"}, nil
 	}
+	if strings.TrimSpace(input.Prompt) == "" || len(input.Prompt) > 200 || strings.ContainsAny(input.Prompt, "\x00\r\n") {
+		return nil, &sessionCallbackError{code: "INVALID_REQUEST", message: "session.callback.continue prompt must be a single line of at most 200 UTF-8 bytes; reuse the existing task context, do not repeat the full packet"}
+	}
+	key := strings.TrimSpace(input.IdempotencyKey)
+	if len(key) < 12 || len(key) > 128 || strings.ContainsAny(key, "\x00\r\n") {
+		return nil, &sessionCallbackError{code: "INVALID_REQUEST", message: "session.callback.continue requires a stable idempotencyKey of 12..128 safe characters; retry an uncertain send only with the same key and prompt"}
+	}
+	input.IdempotencyKey, input.Mode = key, "quick_chat"
 	detail, err := m.readChatGPTCloud(withChatGPTCloudReadSource(ctx, "callback_continue"), r.SourceSessionID, chatgptCloudReadCacheTTL)
 	if err != nil {
 		return nil, err
@@ -140,12 +147,15 @@ func (m *AgentManager) sessionCallbackContinue(ctx context.Context, input agentC
 	if status != "running" && status != "unknown" {
 		out["recoveryAction"] = "controller_decision"
 		if status == "completed" {
-			out["recoveryAction"] = "status_poll"
+			// Already-completed work needs delivery, never another continuation
+			// or an instruction to keep polling its known terminal status.
+			recovered, recoverErr := m.sessionCallbackRecover(ctx, input)
+			if recoverErr != nil {
+				return nil, recoverErr
+			}
+			out["recoveryAction"], out["callbackRecovery"] = "wait_callback", recovered
 		}
 		return out, nil
-	}
-	if strings.TrimSpace(input.Prompt) == "" || len(input.Prompt) > 200 || strings.ContainsAny(input.Prompt, "\x00\r\n") {
-		return nil, fmt.Errorf("continuation prompt must be a single line of at most 200 bytes")
 	}
 	if _, err := m.ownedCloudCallback(input); err != nil {
 		return nil, err
@@ -161,7 +171,11 @@ func (m *AgentManager) sessionCallbackContinue(ctx context.Context, input agentC
 	if err != nil {
 		return nil, err
 	}
-	out["continueSent"], out["recoveryAction"] = true, "poll_status"
+	out["continueSent"], out["recoveryAction"] = true, "wait_callback"
+	out["executionRef"] = "cloud-continuation:" + chatgptCloudSendRequestMessageID(r.SourceSessionID, key)
+	out["nextCheckAt"] = time.Now().Unix() + 1800
+	out["idempotencyStatus"] = result["idempotencyStatus"]
+	out["recordRule"] = "Controller records executionRef and nextCheckAt on the same item after continueSent=true. If executionRef is already recorded, do not extend its deadline. An uncertain call is retried only with this same key and prompt; no bare send or new CHAT."
 	if id := mapString(result, "asyncTaskId"); id != "" {
 		out["asyncTaskId"] = id
 	}
