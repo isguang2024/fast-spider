@@ -88,6 +88,7 @@ type agentControlParams struct {
 	CallbackText             string              `json:"callbackText,omitempty"`
 	CallbackClaimID          string              `json:"callbackClaimId,omitempty"`
 	CallbackClaimLimit       int                 `json:"callbackClaimLimit,omitempty"`
+	CallbackClaimTransport   string              `json:"callbackClaimTransport,omitempty"`
 	modelProvided            bool
 	thinkingProvided         bool
 }

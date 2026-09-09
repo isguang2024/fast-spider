@@ -3,6 +3,35 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.73 - 2026-09-08
+
+- Persist terminal callbacks when a ChatGPT Cloud turn fails or is canceled, so
+  the owning controller can distinguish the outcome and decide whether to resume
+  without the Node automatically continuing a stopped task.
+
+## 0.4.72 - 2026-09-08
+
+- Return the concrete local `collaboration.control` validation error instead of
+  collapsing state-transition failures into a generic `INVALID_REQUEST`.
+
+## 0.4.71 - 2026-09-08
+
+- Complete the structured `collaboration.control` 2.0 lifecycle in task-local
+  SQLite without Python or JSON intermediary state, including local atomic
+  dispatch/recovery and project/write-scope boundaries.
+- Revalidate `local_file` callback metadata during claim and acknowledgement;
+  invalid batches remain pending instead of retiring their routes.
+- Keep this local-only capability out of the Hub-routable catalog.
+
+## 0.4.70 - 2026-09-08
+
+- Let `FastSpider_Local.collaboration_control` atomically claim and dispatch a
+  frozen Cloud CHAT round through the co-located Node, without routing the
+  create/send operation through the Hub.
+- Persist create, reuse and callback activation phases for same-key recovery,
+  and add a local callback claim/ack transport that retires completed routes
+  while preserving the existing Hub callback contract.
+
 ## 0.4.69 - 2026-09-08
 
 - Add a local-only collaboration control bridge that performs deterministic

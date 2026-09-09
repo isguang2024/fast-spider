@@ -64,6 +64,73 @@ func TestCloudCallbackPrepareKeepsBaselineAndHistoryOnNode(t *testing.T) {
 	}
 }
 
+func TestCloudCallbackRecoveryPersistsTerminalFailureWithoutAutoContinue(t *testing.T) {
+	tests := []struct {
+		name          string
+		providerState string
+		wantCode      string
+	}{
+		{name: "failed", providerState: "failed", wantCode: "CLOUD_CHAT_FAILED"},
+		{name: "canceled", providerState: "stopped", wantCode: "CLOUD_CHAT_CANCELED"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			var reads atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reads.Add(1)
+				writeChatGPTCloudTestJSON(t, w, map[string]any{
+					"conversation_id": "terminal-chat", "async_status": test.providerState,
+				})
+			}))
+			defer server.Close()
+
+			m := New(dataDir, nil)
+			if err := m.chatgptCloud.Close(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			m.chatgptCloud = NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "token", nil })
+			m.chatgptCloud.baseURL, m.chatgptCloud.http = server.URL, server.Client()
+			var sends atomic.Int32
+			m.chatgptCloud.sendOverride = func(context.Context, string, string, string, string, string) (chatgptCloudTurnResult, error) {
+				sends.Add(1)
+				return chatgptCloudTurnResult{}, nil
+			}
+			r := testCallbackRegistration("terminal-chat", "terminal-target", "terminal-task", 2)
+			r.CallbackType = "status"
+			if _, _, err := m.callbackStore.register(r); err != nil {
+				t.Fatal(err)
+			}
+
+			settled, err := m.recoverCompletedCloudCallbackState(context.Background(), r.SourceSessionID, r.Generation, false)
+			if err != nil || !settled {
+				t.Fatalf("terminal recovery settled=%v err=%v", settled, err)
+			}
+			pending, err := m.callbackStore.pendingSnapshot(r.SourceSessionID, r.TargetSessionID)
+			if err != nil || len(pending) != 1 || pending[0].CallbackOutcome != "failed" || pending[0].CallbackErrorCode != test.wantCode {
+				t.Fatalf("terminal callback pending=%#v err=%v", pending, err)
+			}
+			continued, err := m.sessionCallbackContinue(context.Background(), agentControlParams{
+				SessionID: r.SourceSessionID, CallbackTargetSessionID: r.TargetSessionID,
+				CallbackMissionID: r.MissionID, CallbackTaskID: r.TaskID, CallbackGeneration: r.Generation,
+				Prompt: "continue",
+			})
+			if err != nil || continued["continueSent"] != false || continued["recoveryAction"] != "controller_decision" || sends.Load() != 0 || reads.Load() != 1 {
+				t.Fatalf("continue=%#v err=%v sends=%d reads=%d", continued, err, sends.Load(), reads.Load())
+			}
+			if err := m.Close(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+
+			reloaded := newSessionCallbackStore(dataDir)
+			_, claimed, err := reloaded.claim(r.TargetSessionID, "terminal-claim", 64, time.Now().UTC())
+			if err != nil || len(claimed) != 1 || claimed[0].CallbackOutcome != "failed" || claimed[0].CallbackErrorCode != test.wantCode {
+				t.Fatalf("persisted terminal callback=%#v err=%v", claimed, err)
+			}
+		})
+	}
+}
+
 func TestCloudCallbackPrepareRejectsBusyAndLocalSessions(t *testing.T) {
 	var reads atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

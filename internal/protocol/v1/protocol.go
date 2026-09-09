@@ -44,8 +44,12 @@ var ResultPoolCapability = CapabilityDescriptor{
 // Local Bridge. It is intentionally excluded from NodeCapabilities so the Hub
 // cannot route task-local ledger mutations to it.
 var CollaborationControlCapability = CapabilityDescriptor{
-	CapabilityId: "collaboration.control", Version: "1.0",
-	Actions: []string{"claim", "recover", "receipt", "uncertain", "not_created", "verify"},
+	CapabilityId: "collaboration.control", Version: "2.0",
+	Actions: []string{
+		"init", "brief", "get", "next_actions", "record_action", "apply", "transfer_control",
+		"claim", "recover", "receipt", "uncertain", "not_created", "verify", "dispatch", "dispatch_recover",
+		"observe", "observation", "callback_claim", "callback_ack", "close", "compact", "cleanup",
+	},
 }
 
 const (

@@ -1,10 +1,47 @@
 package agent
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestCallbackStoreSchema3DefaultsTransportToHubAndSchema4PersistsLocal(t *testing.T) {
+	dir := t.TempDir()
+	seed := newSessionCallbackStore(dir)
+	reg := testCallbackRegistration("legacy-source", "legacy-target", "legacy-task", 1)
+	registered, _, err := seed.register(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered.CallbackClaimTransport = ""
+	legacy, err := json.Marshal(sessionCallbackIndex{SchemaVersion: 3, Registrations: []sessionCallbackRegistration{registered}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "agent", "session-callbacks.json")
+	if err := os.WriteFile(path, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded := newSessionCallbackStore(dir)
+	legacyLoaded, exists, err := loaded.registrationFor("legacy-source")
+	if err != nil || !exists || callbackTransportForRegistration(legacyLoaded) != callbackClaimTransportHub {
+		t.Fatalf("schema3 legacy transport=%q exists=%v err=%v", legacyLoaded.CallbackClaimTransport, exists, err)
+	}
+	local := testCallbackRegistration("local-schema4", "local-target", "local-task", 1)
+	local.CallbackClaimTransport = callbackClaimTransportLocal
+	if _, _, err := loaded.register(local); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := newSessionCallbackStore(dir)
+	localLoaded, exists, err := reloaded.registrationFor("local-schema4")
+	if err != nil || !exists || callbackTransportForRegistration(localLoaded) != callbackClaimTransportLocal {
+		t.Fatalf("schema4 local transport=%q exists=%v err=%v", localLoaded.CallbackClaimTransport, exists, err)
+	}
+}
 
 func TestSubmittedCallbackNudgeHasOneDirectReceiveCall(t *testing.T) {
 	event := sessionCallbackEvent{CompletionSource: "submission"}
@@ -16,6 +53,341 @@ func TestSubmittedCallbackNudgeHasOneDirectReceiveCall(t *testing.T) {
 	event.CompletionSource = "recovery"
 	if prompt := buildSessionCallbackNudge("codex-target", "callback-envelope", event); !strings.Contains(prompt, "cloud-callback-recovery") {
 		t.Fatalf("missing on-demand recovery entry: %s", prompt)
+	}
+}
+
+func TestLocalCallbackNudgeUsesLocalControlPlane(t *testing.T) {
+	event := sessionCallbackEvent{CompletionSource: "submission"}
+	prompt := buildSessionCallbackNudgeForTransport("codex-target", "callback-envelope", callbackClaimTransportLocal, event)
+	if !strings.Contains(prompt, "FastSpider_Local collaboration_control") || !strings.Contains(prompt, "callback_claim") || !strings.Contains(prompt, "callback_ack") || strings.Contains(prompt, "FastSpider_FS") {
+		t.Fatalf("local callback must stay on the local control plane: %s", prompt)
+	}
+}
+
+func TestLocalCallbackNudgeJSONDrivesClaimAndAck(t *testing.T) {
+	s := newSessionCallbackStore(t.TempDir())
+	reg := testCallbackRegistration("local-json-source", "local-json-target", "local-json-task", 1)
+	reg.CallbackClaimTransport = callbackClaimTransportLocal
+	if _, _, err := s.register(reg); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := s.enqueue(testCallbackEvent("local-json-source", 1)); err != nil || !queued {
+		t.Fatalf("enqueue queued=%v err=%v", queued, err)
+	}
+	grouped, err := s.pendingForNudgeByTransport()
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := sessionCallbackNudgeGroup{TargetSessionID: "local-json-target", Transport: callbackClaimTransportLocal}
+	envelope := sessionCallbackEnvelopeIDForTransport(group.TargetSessionID, group.Transport, grouped[group])
+	prompt := buildSessionCallbackNudgeForTransport(group.TargetSessionID, envelope, group.Transport, grouped[group]...)
+	parts := strings.Split(prompt, "FastSpider_Local collaboration_control(")
+	if len(parts) != 3 {
+		t.Fatalf("expected claim and ack calls, prompt=%q", prompt)
+	}
+	manager := &AgentManager{callbackStore: s}
+	for i, raw := range parts[1:] {
+		end := strings.Index(raw, "})")
+		if end < 0 {
+			t.Fatalf("call %d has no JSON terminator: %q", i, raw)
+		}
+		var call struct {
+			Action string         `json:"action"`
+			Params map[string]any `json:"params"`
+		}
+		if err := json.Unmarshal([]byte(raw[:end+1]), &call); err != nil {
+			t.Fatalf("call %d JSON decode: %v", i, err)
+		}
+		if call.Action != []string{"callback_claim", "callback_ack"}[i] {
+			t.Fatalf("call %d action=%q", i, call.Action)
+		}
+		if call.Params["callbackTargetSessionId"] != group.TargetSessionID || call.Params["callbackClaimId"] != envelope || call.Params["callbackClaimTransport"] != callbackClaimTransportLocal {
+			t.Fatalf("call %d params=%#v", i, call.Params)
+		}
+		paramsJSON, err := json.Marshal(call.Params)
+		if err != nil {
+			t.Fatalf("call %d params encode: %v", i, err)
+		}
+		var decoded agentControlParams
+		if err := json.Unmarshal(paramsJSON, &decoded); err != nil {
+			t.Fatalf("call %d params decode: %v", i, err)
+		}
+		if i == 0 {
+			if _, err := manager.sessionCallbackClaim(decoded); err != nil {
+				t.Fatalf("claim from decoded JSON failed: %v", err)
+			}
+		} else {
+			if _, err := manager.sessionCallbackAck(decoded); err != nil {
+				t.Fatalf("ack from decoded JSON failed: %v", err)
+			}
+		}
+	}
+	if pending, _ := s.pendingSnapshot("local-json-source", group.TargetSessionID); len(pending) != 0 {
+		t.Fatalf("local callback remained pending after decoded claim/ack: %+v", pending)
+	}
+	if _, exists, _ := s.registrationFor("local-json-source"); exists {
+		t.Fatal("local callback route remained after decoded ack")
+	}
+}
+
+func TestCallbackClaimTransportIsolatedAndLocalAckRetiresRoute(t *testing.T) {
+	s := newSessionCallbackStore(t.TempDir())
+	hub := testCallbackRegistration("hub-source", "same-target", "hub-task", 1)
+	local := testCallbackRegistration("local-source", "same-target", "local-task", 1)
+	local.CallbackClaimTransport = callbackClaimTransportLocal
+	if _, _, err := s.register(hub); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.register(local); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"hub-source", "local-source"} {
+		if queued, err := s.enqueue(testCallbackEvent(source, 1)); err != nil || !queued {
+			t.Fatalf("enqueue %s queued=%v err=%v", source, queued, err)
+		}
+	}
+	localClaim, localEvents, err := s.claim("same-target", "local-claim", 10, time.Now(), callbackClaimTransportLocal)
+	if err != nil || localClaim != "local-claim" || len(localEvents) != 1 || localEvents[0].SourceSessionID != "local-source" {
+		t.Fatalf("local claim=%q events=%+v err=%v", localClaim, localEvents, err)
+	}
+	hubClaim, hubEvents, err := s.claim("same-target", "hub-claim", 10, time.Now(), callbackClaimTransportHub)
+	if err != nil || hubClaim != "hub-claim" || len(hubEvents) != 1 || hubEvents[0].SourceSessionID != "hub-source" {
+		t.Fatalf("hub claim=%q events=%+v err=%v", hubClaim, hubEvents, err)
+	}
+	acked, retired, err := s.acknowledgeClaimAndRetire("same-target", localClaim, time.Now(), callbackClaimTransportLocal)
+	if err != nil || acked != 1 || len(retired) != 1 || retired[0].SourceSessionID != "local-source" {
+		t.Fatalf("local ack=%d retired=%+v err=%v", acked, retired, err)
+	}
+	if _, exists, err := s.registrationFor("local-source"); err != nil || exists {
+		t.Fatalf("local route remained after local ack: exists=%v err=%v", exists, err)
+	}
+	if _, exists, err := s.registrationFor("hub-source"); err != nil || !exists {
+		t.Fatalf("hub route was affected by local ack: exists=%v err=%v", exists, err)
+	}
+	if retryCount, _, retryErr := s.acknowledgeClaimAndRetire("same-target", localClaim, time.Now(), callbackClaimTransportLocal); retryErr != nil || retryCount != 0 {
+		t.Fatalf("local ack retry was not idempotent: count=%d err=%v", retryCount, retryErr)
+	}
+	reloaded := newSessionCallbackStore(filepath.Dir(filepath.Dir(s.path)))
+	if retryCount, _, retryErr := reloaded.acknowledgeClaimAndRetire("same-target", localClaim, time.Now(), callbackClaimTransportLocal); retryErr != nil || retryCount != 0 {
+		t.Fatalf("local ack retry after restart was not idempotent: count=%d err=%v", retryCount, retryErr)
+	}
+}
+
+func TestLocalAckValidatesWholeClaimBeforeMutation(t *testing.T) {
+	s := newSessionCallbackStore(t.TempDir())
+	for _, source := range []string{"local-atomic-a", "local-atomic-b"} {
+		reg := testCallbackRegistration(source, "local-atomic-target", source, 1)
+		reg.CallbackClaimTransport = callbackClaimTransportLocal
+		if _, _, err := s.register(reg); err != nil {
+			t.Fatal(err)
+		}
+		if queued, err := s.enqueue(testCallbackEvent(source, 1)); err != nil || !queued {
+			t.Fatalf("enqueue %s queued=%v err=%v", source, queued, err)
+		}
+	}
+	claimID, events, err := s.claim("local-atomic-target", "local-atomic-claim", 2, time.Now(), callbackClaimTransportLocal)
+	if err != nil || claimID != "local-atomic-claim" || len(events) != 2 {
+		t.Fatalf("claim=%q events=%d err=%v", claimID, len(events), err)
+	}
+	// Simulate a corrupted/missing route discovered during the all-or-nothing
+	// validation pass. The other claimed item must remain untouched.
+	s.mu.Lock()
+	delete(s.registrations, "local-atomic-b")
+	s.mu.Unlock()
+	if _, _, err := s.acknowledgeClaimAndRetire("local-atomic-target", claimID, time.Now(), callbackClaimTransportLocal); err == nil {
+		t.Fatal("accepted a claim with a missing route")
+	}
+	if pending, _ := s.pendingSnapshot("local-atomic-a", "local-atomic-target"); len(pending) != 1 || pending[0].ClaimID != claimID {
+		t.Fatalf("first claimed item was partially removed: %+v", pending)
+	}
+}
+
+func TestLocalFileClaimRefreshesDeliverableAndRejectsInvalidAck(t *testing.T) {
+	dataDir := t.TempDir()
+	store := newSessionCallbackStore(dataDir)
+	missingPath := filepath.Join(dataDir, "missing-report.md")
+	reg := testCallbackRegistration("local-file-missing", "local-file-target", "local-file-task", 1)
+	reg.CallbackClaimTransport = callbackClaimTransportLocal
+	reg.CallbackType = "local_file"
+	reg.DeliverablePath = missingPath
+	if _, _, err := store.register(reg); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := store.enqueue(testCallbackEvent(reg.SourceSessionID, 1)); err != nil || !queued {
+		t.Fatalf("enqueue queued=%v err=%v", queued, err)
+	}
+
+	manager := &AgentManager{callbackStore: store}
+	claimed, err := manager.sessionCallbackClaim(agentControlParams{
+		CallbackTargetSessionID: reg.TargetSessionID,
+		CallbackClaimID:         "local-file-missing-claim",
+		CallbackClaimLimit:      1,
+		CallbackClaimTransport:  callbackClaimTransportLocal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, ok := claimed["claimed"].([]map[string]any)
+	if !ok || len(items) != 1 {
+		t.Fatalf("claimed=%#v", claimed)
+	}
+	if items[0]["deliverableStatus"] != "missing" || items[0]["resultStatus"] != "failed" {
+		t.Fatalf("missing file was exposed as ready: %#v", items[0])
+	}
+
+	if _, err := manager.sessionCallbackAck(agentControlParams{
+		CallbackTargetSessionID: reg.TargetSessionID,
+		CallbackClaimID:         "local-file-missing-claim",
+		CallbackClaimTransport:  callbackClaimTransportLocal,
+	}); err == nil {
+		t.Fatal("missing local_file was successfully acknowledged")
+	}
+	if pending, err := store.pendingSnapshot(reg.SourceSessionID, reg.TargetSessionID); err != nil || len(pending) != 1 {
+		t.Fatalf("invalid local_file ACK removed pending event: pending=%#v err=%v", pending, err)
+	}
+	if _, exists, err := store.registrationFor(reg.SourceSessionID); err != nil || !exists {
+		t.Fatalf("invalid local_file ACK retired route: exists=%v err=%v", exists, err)
+	}
+}
+
+func TestLocalFileBatchAckValidatesAllDeliverablesBeforeRetire(t *testing.T) {
+	dataDir := t.TempDir()
+	store := newSessionCallbackStore(dataDir)
+	readyPath := filepath.Join(dataDir, "ready-report.md")
+	if err := os.WriteFile(readyPath, []byte("ready"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registrations := []sessionCallbackRegistration{
+		func() sessionCallbackRegistration {
+			reg := testCallbackRegistration("local-file-ready", "local-file-batch-target", "local-file-ready-task", 1)
+			reg.CallbackClaimTransport = callbackClaimTransportLocal
+			reg.CallbackType = "local_file"
+			reg.DeliverablePath = readyPath
+			return reg
+		}(),
+		func() sessionCallbackRegistration {
+			reg := testCallbackRegistration("local-file-missing-batch", "local-file-batch-target", "local-file-missing-task", 1)
+			reg.CallbackClaimTransport = callbackClaimTransportLocal
+			reg.CallbackType = "local_file"
+			reg.DeliverablePath = filepath.Join(dataDir, "missing-batch-report.md")
+			return reg
+		}(),
+	}
+	for i, reg := range registrations {
+		if _, _, err := store.register(reg); err != nil {
+			t.Fatal(err)
+		}
+		if queued, err := store.enqueue(testCallbackEvent(reg.SourceSessionID, int64(i+1))); err != nil || !queued {
+			t.Fatalf("enqueue %s queued=%v err=%v", reg.SourceSessionID, queued, err)
+		}
+	}
+
+	manager := &AgentManager{callbackStore: store}
+	claimed, err := manager.sessionCallbackClaim(agentControlParams{
+		CallbackTargetSessionID: "local-file-batch-target",
+		CallbackClaimID:         "local-file-batch-claim",
+		CallbackClaimLimit:      2,
+		CallbackClaimTransport:  callbackClaimTransportLocal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count, _ := claimed["claimedCount"].(int); count != 2 {
+		t.Fatalf("claimed=%#v", claimed)
+	}
+	if _, err := manager.sessionCallbackAck(agentControlParams{
+		CallbackTargetSessionID: "local-file-batch-target",
+		CallbackClaimID:         "local-file-batch-claim",
+		CallbackClaimTransport:  callbackClaimTransportLocal,
+	}); err == nil {
+		t.Fatal("mixed ready/missing local_file batch was partially acknowledged")
+	}
+	for _, reg := range registrations {
+		if pending, err := store.pendingSnapshot(reg.SourceSessionID, reg.TargetSessionID); err != nil || len(pending) != 1 {
+			t.Fatalf("batch ACK removed pending %s: pending=%#v err=%v", reg.SourceSessionID, pending, err)
+		}
+		if _, exists, err := store.registrationFor(reg.SourceSessionID); err != nil || !exists {
+			t.Fatalf("batch ACK retired route %s: exists=%v err=%v", reg.SourceSessionID, exists, err)
+		}
+	}
+}
+
+func TestLocalFileIdempotentClaimRefreshesChangedDeliverable(t *testing.T) {
+	dataDir := t.TempDir()
+	store := newSessionCallbackStore(dataDir)
+	path := filepath.Join(dataDir, "retry-report.md")
+	if err := os.WriteFile(path, []byte("ready"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reg := testCallbackRegistration("local-file-retry", "local-file-retry-target", "local-file-retry-task", 1)
+	reg.CallbackClaimTransport = callbackClaimTransportLocal
+	reg.CallbackType = "local_file"
+	reg.DeliverablePath = path
+	if _, _, err := store.register(reg); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := store.enqueue(testCallbackEvent(reg.SourceSessionID, 1)); err != nil || !queued {
+		t.Fatalf("enqueue queued=%v err=%v", queued, err)
+	}
+	manager := &AgentManager{callbackStore: store}
+	first, err := manager.sessionCallbackClaim(agentControlParams{
+		CallbackTargetSessionID: reg.TargetSessionID,
+		CallbackClaimID:         "local-file-retry-claim",
+		CallbackClaimLimit:      1,
+		CallbackClaimTransport:  callbackClaimTransportLocal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstItems := first["claimed"].([]map[string]any)
+	if firstItems[0]["deliverableStatus"] != "ready" || firstItems[0]["resultStatus"] != "ready" {
+		t.Fatalf("initial claim=%#v", first)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.sessionCallbackClaim(agentControlParams{
+		CallbackTargetSessionID: reg.TargetSessionID,
+		CallbackClaimID:         "local-file-retry-claim",
+		CallbackClaimLimit:      1,
+		CallbackClaimTransport:  callbackClaimTransportLocal,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondItems := second["claimed"].([]map[string]any)
+	if secondItems[0]["deliverableStatus"] != "missing" || secondItems[0]["resultStatus"] != "failed" {
+		t.Fatalf("idempotent claim returned stale metadata=%#v", second)
+	}
+}
+
+func TestLocalProviderCompletionIsFormalWhileHubRecoveryRemainsRecovery(t *testing.T) {
+	s := newSessionCallbackStore(t.TempDir())
+	local := testCallbackRegistration("local-provider-source", "local-provider-target", "local-provider-task", 1)
+	local.CallbackClaimTransport = callbackClaimTransportLocal
+	if _, _, err := s.register(local); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := s.enqueue(testCallbackEvent("local-provider-source", 1)); err != nil || !queued {
+		t.Fatalf("local enqueue queued=%v err=%v", queued, err)
+	}
+	localPending, err := s.pendingSnapshot("local-provider-source", "local-provider-target")
+	if err != nil || len(localPending) != 1 || localPending[0].CompletionSource != "local-submission" {
+		t.Fatalf("local provider source=%+v err=%v", localPending, err)
+	}
+	if mapped := sessionCallbackEventMap(localPending[0], time.Now().UTC(), false); mapped["recoveryOnly"] != false {
+		t.Fatalf("local provider completion incorrectly marked recovery-only: %#v", mapped)
+	}
+	hub := testCallbackRegistration("hub-provider-source", "hub-provider-target", "hub-provider-task", 1)
+	if _, _, err := s.register(hub); err != nil {
+		t.Fatal(err)
+	}
+	if queued, err := s.enqueue(testCallbackEvent("hub-provider-source", 1)); err != nil || !queued {
+		t.Fatalf("hub enqueue queued=%v err=%v", queued, err)
+	}
+	hubPending, err := s.pendingSnapshot("hub-provider-source", "hub-provider-target")
+	if err != nil || len(hubPending) != 1 || hubPending[0].CompletionSource != "recovery" {
+		t.Fatalf("hub provider source=%+v err=%v", hubPending, err)
 	}
 }
 

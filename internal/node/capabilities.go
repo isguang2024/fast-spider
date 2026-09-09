@@ -139,6 +139,10 @@ func (c *Client) handleCapabilityRequestFrom(ctx context.Context, req protocolv1
 		ctx, cancel = context.WithDeadline(deadlineParent, deadline)
 		defer cancel()
 	}
+	if c.projectPolicyErr != nil {
+		response.Error = capabilityError(c.projectPolicyErr)
+		return response
+	}
 	if err := c.projectPolicy.validate(req.Capability, req.Action, req.Params); err != nil {
 		response.Error = capabilityError(err)
 		return response
@@ -177,7 +181,7 @@ func (c *Client) handleCapabilityRequestFrom(ctx context.Context, req protocolv1
 		result, err = c.operationLogQuery(ctx, req.Params)
 	case "working.context/get", "working.context/set", "working.context/clear":
 		result, err = c.workingContextControl(ctx, req.Action, req.Params)
-	case "collaboration.control/claim", "collaboration.control/recover", "collaboration.control/receipt", "collaboration.control/uncertain", "collaboration.control/not_created", "collaboration.control/verify":
+	case "collaboration.control/init", "collaboration.control/brief", "collaboration.control/get", "collaboration.control/next_actions", "collaboration.control/record_action", "collaboration.control/apply", "collaboration.control/transfer_control", "collaboration.control/claim", "collaboration.control/recover", "collaboration.control/receipt", "collaboration.control/uncertain", "collaboration.control/not_created", "collaboration.control/verify", "collaboration.control/dispatch", "collaboration.control/dispatch_recover", "collaboration.control/observe", "collaboration.control/observation", "collaboration.control/callback_claim", "collaboration.control/callback_ack", "collaboration.control/close", "collaboration.control/compact", "collaboration.control/cleanup":
 		if !local {
 			response.Error = protocolError("UNSUPPORTED_CAPABILITY", "capability or action is not available", false)
 			return response
@@ -198,7 +202,7 @@ func (c *Client) handleCapabilityRequestFrom(ctx context.Context, req protocolv1
 		return response
 	}
 	if err != nil {
-		response.Error = capabilityError(err)
+		response.Error = capabilityErrorFor(req.Capability, err)
 		return response
 	}
 	raw, err := json.Marshal(result)
@@ -403,6 +407,24 @@ func capabilityError(err error) *protocolv1.ProtocolError {
 	default:
 		return protocolError("INVALID_REQUEST", "capability request could not be completed", false)
 	}
+}
+
+func capabilityErrorFor(capability string, err error) *protocolv1.ProtocolError {
+	result := capabilityError(err)
+	if capability != protocolv1.CollaborationControlCapability.CapabilityId || result.Code != "INVALID_REQUEST" || result.Message != "capability request could not be completed" {
+		return result
+	}
+	message := strings.TrimSpace(err.Error())
+	if message == "" {
+		return result
+	}
+	const maxCollaborationErrorRunes = 512
+	runes := []rune(message)
+	if len(runes) > maxCollaborationErrorRunes {
+		message = string(runes[:maxCollaborationErrorRunes])
+	}
+	result.Message = message
+	return result
 }
 
 func protocolError(code, message string, retryable bool) *protocolv1.ProtocolError {
