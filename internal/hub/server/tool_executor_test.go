@@ -10,9 +10,34 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/isguang2024/fast-spider/internal/agent"
 	"github.com/isguang2024/fast-spider/internal/hub/core"
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 )
+
+func TestAIControlParamsReachNativeRunnerSubmit(t *testing.T) {
+	manager := agent.New(t.TempDir(), nil)
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
+	for _, tier := range []string{"", "fast", "priority"} {
+		t.Run("tier="+tier, func(t *testing.T) {
+			params := aiControlCapabilityParams(aiControlInput{Action: "runner.submit", ServiceTier: tier})
+			// Exercise the same complete Hub parameter map against Node's strict decoder.
+			// A missing result must reach the submit handler, not fail on unrelated fields.
+			_, err := manager.Control(context.Background(), "runner.submit", params)
+			if err == nil || err.Error() != "runner.submit requires responseContent" {
+				t.Fatalf("submit did not reach its handler: %v", err)
+			}
+			if params["service_tier"] != tier {
+				t.Fatalf("Node service tier lost: %#v", params["service_tier"])
+			}
+			params["unsupportedField"] = true
+			_, err = manager.Control(context.Background(), "runner.submit", params)
+			if err == nil || !strings.Contains(err.Error(), `unknown field "unsupportedField"`) {
+				t.Fatalf("strict input validation lost: %v", err)
+			}
+		})
+	}
+}
 
 func TestValidateCloudCompletionToolInputReturnsRequestErrors(t *testing.T) {
 	tests := []cloudCompletionInput{

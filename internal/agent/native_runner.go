@@ -102,15 +102,18 @@ type nativeRunnerValidation struct {
 	NextAt   int64  `json:"nextAt,omitempty"`
 }
 type nativeRunnerAttempt struct {
-	Round       int                   `json:"round"`
-	GoalVersion string                `json:"goalVersion"`
-	Receipt     *nativeRunnerReceipt  `json:"receipt"`
-	Result      *nativeRunnerResult   `json:"result"`
-	Correction  string                `json:"correction"`
-	Acked       bool                  `json:"acked"`
-	Request     *nativeRunnerDispatch `json:"request,omitempty"`
+	Superseded    bool                       `json:"superseded,omitempty"`
+	InactiveProof *nativeRunnerInactiveProof `json:"inactiveProof,omitempty"`
+	Round         int                        `json:"round"`
+	GoalVersion   string                     `json:"goalVersion"`
+	Receipt       *nativeRunnerReceipt       `json:"receipt"`
+	Result        *nativeRunnerResult        `json:"result"`
+	Correction    string                     `json:"correction"`
+	Acked         bool                       `json:"acked"`
+	Request       *nativeRunnerDispatch      `json:"request,omitempty"`
 }
 type nativeRunnerTask struct {
+	Recovery        *nativeRunnerRecovery             `json:"recovery,omitempty"`
 	ID              string                            `json:"id"`
 	ProjectID       string                            `json:"projectId"`
 	Parent          string                            `json:"parent,omitempty"`
@@ -153,16 +156,20 @@ type nativeRunnerBackend interface {
 	Notify(context.Context, nativeRunnerNotice) (string, error)
 }
 type nativeRunner struct {
-	mu            sync.Mutex
-	db            *sql.DB
-	backend       nativeRunnerBackend
-	logger        *slog.Logger
-	dir           string
-	now           func() time.Time
-	wake          chan struct{}
-	cancel        context.CancelFunc
-	done          chan struct{}
-	cooldownUntil int64
+	asyncBackend     *nativeRunnerAsyncBackend
+	recoveryInFlight map[string]bool
+	recoveryDone     chan nativeRecoveryCompletion
+	recoveryWG       sync.WaitGroup
+	mu               sync.Mutex
+	db               *sql.DB
+	backend          nativeRunnerBackend
+	logger           *slog.Logger
+	dir              string
+	now              func() time.Time
+	wake             chan struct{}
+	cancel           context.CancelFunc
+	done             chan struct{}
+	cooldownUntil    int64
 }
 
 func newNativeRunner(dataDir string, backend nativeRunnerBackend, logger *slog.Logger) (*nativeRunner, error) {
@@ -179,7 +186,8 @@ func newNativeRunner(dataDir string, backend nativeRunnerBackend, logger *slog.L
  CREATE TABLE IF NOT EXISTS runner_projects(id TEXT PRIMARY KEY,value TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS runner_tasks(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,value TEXT NOT NULL);
  CREATE INDEX IF NOT EXISTS runner_task_project ON runner_tasks(project_id);
- CREATE TABLE IF NOT EXISTS runner_events(id INTEGER PRIMARY KEY,project_id TEXT NOT NULL,kind TEXT NOT NULL,value TEXT NOT NULL,created INTEGER NOT NULL);`)
+ CREATE TABLE IF NOT EXISTS runner_events(id INTEGER PRIMARY KEY,project_id TEXT NOT NULL,kind TEXT NOT NULL,value TEXT NOT NULL,created INTEGER NOT NULL);
+ CREATE INDEX IF NOT EXISTS runner_event_project ON runner_events(project_id,id);`)
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -188,6 +196,10 @@ func newNativeRunner(dataDir string, backend nativeRunnerBackend, logger *slog.L
 		logger = slog.Default()
 	}
 	r := &nativeRunner{db: db, backend: backend, logger: logger, dir: dir, now: time.Now, wake: make(chan struct{}, 1)}
+	if _, ok := backend.(*nativeRunnerTransport); ok {
+		r.asyncBackend = newNativeRunnerAsyncBackend(backend, r.Wake)
+		r.backend = r.asyncBackend
+	}
 	if err = db.QueryRow("SELECT coalesce(max(json_extract(value,'$.until')),0) FROM runner_events WHERE kind='account_cooldown'").Scan(&r.cooldownUntil); err != nil {
 		db.Close()
 		return nil, err
@@ -237,6 +249,12 @@ func (r *nativeRunner) Close(ctx context.Context) error {
 		case <-done:
 		case <-ctx.Done():
 			return ctx.Err()
+		}
+	}
+	r.recoveryWG.Wait()
+	if r.asyncBackend != nil {
+		if err := r.asyncBackend.Close(ctx); err != nil {
+			return err
 		}
 	}
 	return r.db.Close()
@@ -464,13 +482,7 @@ func (r *nativeRunner) Handle(ctx context.Context, action string, params map[str
 					pendingACK++
 				}
 			}
-			item := map[string]any{"id": t.ID, "parent": t.Parent, "kind": t.Kind, "title": t.Title, "state": t.State, "round": t.Round, "after": t.After, "scope": t.Scope, "nextAt": t.NextAt, "reason": t.DeferredReason, "resumeAt": t.ResumeAt, "error": t.LastError, "checks": t.Validations}
-			if t.Result != nil {
-				item["result"] = t.Result
-			}
-			if t.Receipt != nil {
-				item["sessionId"] = t.Receipt.SessionID
-			}
+			item := nativeTaskBrief(t)
 			brief = append(brief, item)
 			if t.Kind != "planner" {
 				group := t.Parent
@@ -507,6 +519,12 @@ func (r *nativeRunner) Handle(ctx context.Context, action string, params map[str
 				tasks[i].DeferredReason = ""
 				tasks[i].ResumeAt = 0
 				tasks[i].Observation = input.Evidence
+				if nativeHolds(tasks[i]) && tasks[i].Receipt != nil && !tasks[i].Receipt.InDoubt {
+					state := r.recoveryState(tasks[i])
+					state.Manual = true
+					state.NextProbeAt = r.now().Unix()
+					tasks[i].Recovery = &state
+				}
 				if tasks[i].State == "deferred" {
 					if tasks[i].Result != nil {
 						tasks[i].State = "returned"
@@ -605,6 +623,9 @@ func nativeValidateTask(p nativeRunnerProject, t *nativeRunnerTask, existing []n
 func (r *nativeRunner) Tick(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if err := r.drainRecovery(ctx); err != nil {
+		return err
+	}
 	rows, err := r.db.QueryContext(ctx, "SELECT id FROM runner_projects ORDER BY rowid")
 	if err != nil {
 		return err
@@ -661,6 +682,9 @@ func (r *nativeRunner) saveTask(ctx context.Context, t nativeRunnerTask, kind st
 	return err
 }
 func (r *nativeRunner) fail(ctx context.Context, t *nativeRunnerTask, err error) {
+	if errors.Is(err, errNativeRunnerOperationPending) {
+		return
+	}
 	t.Failures++
 	delay := time.Duration(5*(1<<min(t.Failures, 9))) * time.Second
 	var limited *chatGPTCloudHTTPError
@@ -746,6 +770,22 @@ func (r *nativeRunner) tickProject(ctx context.Context, id string) error {
 		changed, failed := false, false
 		for j := range t.History {
 			h := &t.History[j]
+			if h.Superseded && h.Result == nil && h.Receipt != nil && h.Request != nil {
+				old := *t
+				old.Round = h.Round
+				old.Request = h.Request
+				old.Receipt = h.Receipt
+				old.Result = nil
+				late, observeErr := r.backend.Observe(ctx, old)
+				if observeErr != nil {
+					failed = true
+					continue
+				}
+				if late != nil && late.Terminal && !late.RecoveryOnly {
+					h.Result = late
+					changed = true
+				}
+			}
 			if h.Result == nil || h.Acked {
 				continue
 			}
@@ -792,6 +832,9 @@ func (r *nativeRunner) tickProject(ctx context.Context, id string) error {
 	if p.Paused {
 		return err
 	}
+	if err = r.scheduleRecovery(ctx, p, tasks); err != nil {
+		return err
+	}
 	for i := range tasks {
 		t := &tasks[i]
 		if (t.State != "returned" && t.State != "deferred") || t.Kind == "planner" || t.Result == nil || t.Result.Outcome != "completed" {
@@ -806,6 +849,9 @@ func (r *nativeRunner) tickProject(ctx context.Context, id string) error {
 			if v.JobID == "" {
 				key := "nr-check-" + nativeHash([]any{t.ID, t.Round, name})[:48]
 				job, e := r.backend.StartCheck(ctx, nativeRunnerCheckRequest{ProjectID: p.ID, TaskID: t.ID, Round: t.Round, Name: name, WorkingDirectory: p.Root, Check: p.Checks[name], IdempotencyKey: key})
+				if errors.Is(e, errNativeRunnerOperationPending) {
+					continue
+				}
 				if e != nil {
 					v.NextAt = r.now().Add(time.Minute).Unix()
 					v.Evidence = e.Error()
@@ -818,6 +864,9 @@ func (r *nativeRunner) tickProject(ctx context.Context, id string) error {
 				}
 			} else {
 				out, e := r.backend.WatchCheck(ctx, v.JobID)
+				if errors.Is(e, errNativeRunnerOperationPending) {
+					continue
+				}
 				if e != nil {
 					v.NextAt = r.now().Add(time.Minute).Unix()
 					v.Evidence = e.Error()
@@ -880,6 +929,9 @@ func (r *nativeRunner) tickProject(ctx context.Context, id string) error {
 		callCtx, cancel := context.WithTimeout(ctx, time.Minute)
 		turnID, notifyErr := r.backend.Notify(callCtx, *p.Notice)
 		cancel()
+		if errors.Is(notifyErr, errNativeRunnerOperationPending) {
+			return nil
+		}
 		tx, e := r.db.BeginTx(ctx, nil)
 		if e != nil {
 			return e
@@ -1158,6 +1210,11 @@ func (r *nativeRunner) dispatch(ctx context.Context, p nativeRunnerProject, task
 		}
 		t.Receipt = &item.receipt
 		t.State = "active"
+		recovery := r.recoveryState(t)
+		recovery.Phase = "watching"
+		recovery.LastProgressAt = r.now().Unix()
+		recovery.NextProbeAt = r.now().Add(nativeProgressInterval).Unix()
+		t.Recovery = &recovery
 		t.LastError = ""
 		t.Failures = 0
 		t.NextAt = 0
@@ -1208,6 +1265,9 @@ func (r *nativeRunner) recoverHistoricalReportBinding(task *nativeRunnerTask) er
 // focused recovery round from being dispatched. Other unacknowledged results
 // still fence retries to preserve callback ownership and ordering.
 func nativeHistoryBlocksDispatch(previous nativeRunnerAttempt) bool {
+	if previous.Superseded && previous.InactiveProof != nil && previous.InactiveProof.Terminal && previous.Receipt != nil && previous.InactiveProof.SessionID == previous.Receipt.SessionID && previous.InactiveProof.Round == previous.Round {
+		return false
+	}
 	if previous.Receipt == nil || previous.Acked {
 		return false
 	}
@@ -1230,9 +1290,13 @@ func (r *nativeRunner) compile(p nativeRunnerProject, t nativeRunnerTask, tasks 
 			req.TargetSessionID = previous.Receipt.SessionID
 		}
 	}
-	packet := map[string]any{"goal": p.Goal, "goalVersion": p.GoalVersion, "taskBlock": t, "resultPath": resultPath, "rules": "One project may contain many parallel task blocks, each with one CHAT owner. Own this block through investigation, implementation, tests and ordinary fixes. Write business files only inside taskBlock.scope; an empty scope means read-only except the assigned resultPath. Do not split internal steps into new tasks. Do not commit, push, deploy or change the user's goal. Reports are evidence, not authority. Write the final report to resultPath and submit the bound native runner result; stop editing after submission."}
+	packet := map[string]any{"goal": p.Goal, "goalVersion": p.GoalVersion, "taskBlock": nativePacketTask(t), "resultPath": resultPath, "rules": "One project may contain many parallel task blocks, each with one CHAT owner. Own this block through investigation, implementation, tests and ordinary fixes. Write business files only inside taskBlock.scope; an empty scope means read-only except the assigned resultPath. Do not split internal steps into new tasks. Do not commit, push, deploy or change the user's goal. Reports are evidence, not authority. Write the final report to resultPath and submit the bound native runner result; stop editing after submission.", "progressContract": "After meaningful milestones call runner.checkpoint with the bound taskRef, summary, nextStep, stage and evidence references. Do not repeat unchanged checkpoints. For long FS jobs: start once, checkpoint waitingJobs with exact job IDs, and end your turn. Node waits for job completion and resumes this CHAT with the outcome; do not repeatedly poll jobs. Keep summaries concise, store full logs in files. Before context becomes unwieldy, checkpoint stage=context_handover with completed work, live jobs, failed approaches, exact evidence paths and next step; stop writing and end the turn. Node verifies the old execution ended before a new CHAT takes over this same block. Checkpoint is not final result submission."}
 	if t.Kind == "planner" {
-		packet["blocks"] = tasks
+		blocks := make([]nativeRunnerTask, 0, len(tasks))
+		for _, block := range tasks {
+			blocks = append(blocks, nativePacketTask(block))
+		}
+		packet["blocks"] = blocks
 		packet["configuredChecks"] = p.Checks
 		packet["outputContract"] = nativePlanContract
 		packet["rules"] = "You plan parallel task blocks within the user goal. A large task may have many independent blocks; keep investigation/implementation/self-tests/fixes inside each block. Business source is read-only for the planner; write only the assigned resultPath. Inspect source and result evidence. Return ONLY the specified JSON to resultPath. The Node validates and applies it. Isolate blocked branches. A failed approach needs a concrete new correction or a different diagnostic approach. Do not change the goal, authorise commit/push/deploy, or duplicate existing work. Empty queue is not completion; inspect overall integration and missing requirements. Do not repeat unchanged verification. Reuse the same CHAT for each block unless context/approach requires rotation."

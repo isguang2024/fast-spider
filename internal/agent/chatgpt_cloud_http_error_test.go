@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -45,5 +46,22 @@ func TestChatGPTCloudHTTPErrorRetryAfterDoesNotEchoArbitraryHeaders(t *testing.T
 	code, message, retryable := e.CapabilityError()
 	if code != "CHATGPT_CLOUD_FORBIDDEN" || retryable || strings.Contains(message, "PRIVATE_HEADER") {
 		t.Fatalf("%s %s %v", code, message, retryable)
+	}
+}
+
+func TestChatGPTCloudHTTPErrorRecognizesOnlyStructuredContextLimitCode(t *testing.T) {
+	contextErr := newChatGPTCloudHTTPError("conversation stream", &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"code":"context_length_exceeded"}}`)),
+	})
+	if !chatgptCloudContextExhaustedError(contextErr) {
+		t.Fatal("structured context limit code was not classified")
+	}
+	unknownErr := newChatGPTCloudHTTPError("conversation stream", &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"context length exceeded"}}`)),
+	})
+	if chatgptCloudContextExhaustedError(unknownErr) {
+		t.Fatal("free-form provider text was misclassified as context exhaustion")
 	}
 }

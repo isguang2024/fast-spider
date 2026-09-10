@@ -3,6 +3,19 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.95 - 2026-09-11
+
+- Add a local task center with controller areas, expandable task trees, read-only
+  WAL snapshots, recovery status, activity and exact CHAT links.
+- Translate public AI serviceTier parameters to the Node service_tier contract,
+  fixing native result submission rejected before reaching its handler.
+- Persist bounded progress checkpoints, wait for registered jobs in Go, probe
+  silent cloud tasks independently of realtime health, and resume the same CHAT
+  with durable idempotency keys. Preserve unknown writer bindings and require
+  terminal evidence before context handover; retain old-generation callbacks.
+- Keep cloud and job operations outside the scheduler lock and compact prior
+  prompts into checkpoint and evidence references for task handover.
+
 ## 0.4.94 - 2026-09-10
 
 - Keep existing Cloud CHAT creation and ordinary follow-up behavior unchanged;

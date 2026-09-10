@@ -1,5 +1,7 @@
 # Fast Spider
 
+本机 Node UI 的 `/tasks` 是持续开发任务中心：按主控分区选择任务区，展开任务树查看任务块、依赖、检查结果、最近活动与对应 CHAT。页面通过现有 UI 令牌读取 Go runner 的 SQLite 已提交快照，不启动调度器，也不等待主控回复或调度锁。可见页面每 10 秒刷新，读取失败保留旧快照并提示；桌面通知需浏览器授权且页面仍在采集变化，关闭页面后不提供系统推送。任务区的完成状态以 runner 的目标验收记录为准。
+
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 **让 MCP 或 AI 编程 Agent 安全地操作你自己的 Windows、Linux 和 macOS

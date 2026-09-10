@@ -23,6 +23,17 @@ type disconnectedCreateTestAgent struct {
 	hasDeadline  bool
 }
 
+type runnerCapabilityTestAgent struct {
+	actions []string
+}
+
+func (a *runnerCapabilityTestAgent) Control(_ context.Context, action string, _ map[string]any) (map[string]any, error) {
+	a.actions = append(a.actions, action)
+	return map[string]any{"accepted": true}, nil
+}
+
+func (*runnerCapabilityTestAgent) Close(context.Context) error { return nil }
+
 func (a *disconnectedCreateTestAgent) Control(ctx context.Context, _ string, _ map[string]any) (map[string]any, error) {
 	a.contextError = ctx.Err()
 	_, a.hasDeadline = ctx.Deadline()
@@ -59,6 +70,37 @@ func TestSessionCreateSurvivesTransportCancellationWithinOperationDeadline(t *te
 	}
 	if agent.contextError != nil || !agent.hasDeadline {
 		t.Fatalf("agent context error=%v hasDeadline=%v", agent.contextError, agent.hasDeadline)
+	}
+}
+
+func TestCloudRunnerCapabilityAllowsSubmitAndCheckpointOnly(t *testing.T) {
+	agent := &runnerCapabilityTestAgent{}
+	client, err := New(Config{DataDir: t.TempDir(), Version: "runner-capability-test", Agent: agent, AgentCallerOwned: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func(action string) protocolv1.CapabilityResponse {
+		return client.handleCapabilityRequest(context.Background(), protocolv1.CapabilityRequest{
+			MessageType: protocolv1.MessageCapabilityRequest,
+			RequestId:   "runner_capability_123456",
+			Capability:  "agent.control",
+			Action:      action,
+			Params:      map[string]any{},
+			Deadline:    protocolv1.Timestamp(time.Now().Add(time.Second)),
+		})
+	}
+	for _, action := range []string{"runner.submit", "runner.checkpoint"} {
+		response := call(action)
+		if response.Error != nil {
+			t.Fatalf("Cloud %s was rejected: %+v", action, response.Error)
+		}
+	}
+	denied := call("runner.status")
+	if denied.Error == nil || denied.Error.Code != "UNSUPPORTED_CAPABILITY" {
+		t.Fatalf("Cloud runner.status was not kept local-only: %+v", denied)
+	}
+	if len(agent.actions) != 2 || agent.actions[0] != "runner.submit" || agent.actions[1] != "runner.checkpoint" {
+		t.Fatalf("agent received actions=%v", agent.actions)
 	}
 }
 

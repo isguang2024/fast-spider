@@ -376,6 +376,12 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 			}
 			return m.nativeRunnerTransport.Submit(ctx, input.ResponseContent)
 		}
+		if action == "runner.checkpoint" {
+			if input.ResponseContent == nil {
+				return nil, errors.New("runner.checkpoint requires responseContent")
+			}
+			return m.nativeRunnerTransport.Checkpoint(ctx, input.ResponseContent)
+		}
 		return m.nativeRunner.Handle(ctx, action, params)
 	}
 

@@ -29,6 +29,51 @@ func newToolExecutor(service *core.Service) *toolExecutor {
 	return &toolExecutor{service: service}
 }
 
+func aiControlCapabilityParams(input aiControlInput) map[string]any {
+	callbackClaimID := input.CallbackClaimID
+	if callbackClaimID == "" && (input.Action == "session.callback.claim" || input.Action == "session.callback.ack") {
+		callbackClaimID = input.IdempotencyKey
+	}
+	callbackClaimLimit := input.CallbackClaimLimit
+	if callbackClaimLimit == 0 && input.Action == "session.callback.claim" {
+		callbackClaimLimit = input.Limit
+	}
+	params := map[string]any{
+		"providerId": input.ProviderID, "appType": input.AppType, "sessionId": input.SessionID, "turnId": input.TurnID, "requestId": input.RequestID,
+		"idempotencyKey": input.IdempotencyKey, "mode": input.Mode, "metadataOnly": input.MetadataOnly,
+		"visibility": input.Visibility, "backend": input.Backend, "visibilityTarget": input.VisibilityTarget, "ephemeral": input.Ephemeral,
+		"prompt": input.Prompt, "workingDirectory": input.WorkingDirectory, "model": input.Model,
+		"thinking": input.Thinking, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds, "resultMode": input.ResultMode, "resultId": input.ResultID,
+		"limit": input.Limit, "pageCursor": input.PageCursor, "mcpDetail": input.MCPDetail, "name": input.Name, "forceReload": input.ForceReload,
+		"marketplaceKinds": input.MarketplaceKinds, "pluginName": input.PluginName, "marketplacePath": input.MarketplacePath,
+		"remoteMarketplaceName": input.RemoteMarketplaceName, "remotePluginId": input.RemotePluginID, "skillName": input.SkillName,
+		"numTurns": input.NumTurns, "objective": input.Objective, "goalStatus": input.GoalStatus, "tokenBudget": input.TokenBudget,
+		"skills": input.Skills, "images": input.Images, "localImages": input.LocalImages, "mentions": input.Mentions, "imageDetail": input.ImageDetail,
+		"outputSchema": input.OutputSchema, "decision": input.Decision, "answers": input.Answers, "responseContent": input.ResponseContent,
+		"effort": input.Effort, "permissions": input.Permissions, "personality": input.Personality, "service_tier": input.ServiceTier, "summary": input.Summary,
+		"reviewType": input.ReviewType, "reviewDelivery": input.ReviewDelivery, "reviewBranch": input.ReviewBranch,
+		"reviewSha": input.ReviewSHA, "reviewTitle": input.ReviewTitle, "reviewInstructions": input.ReviewInstructions,
+		"callbackTargetSessionId": input.CallbackTargetSessionID, "callbackMissionId": input.CallbackMissionID,
+		"callbackTaskId": input.CallbackTaskID, "callbackGeneration": input.CallbackGeneration, "callbackDeliverablePath": input.CallbackDeliverablePath,
+		"callbackClaimId": callbackClaimID, "callbackClaimLimit": callbackClaimLimit,
+	}
+	if len(input.Skills) > 0 {
+		converted := make([]map[string]any, len(input.Skills))
+		for i, item := range input.Skills {
+			converted[i] = map[string]any{"name": item["name"], "path": item["path"]}
+		}
+		params["skills"] = converted
+	}
+	if len(input.Mentions) > 0 {
+		converted := make([]map[string]any, len(input.Mentions))
+		for i, item := range input.Mentions {
+			converted[i] = map[string]any{"name": item["name"], "path": item["path"]}
+		}
+		params["mentions"] = converted
+	}
+	return params
+}
+
 func toolInput[T any](tool string, input any) (T, error) {
 	value, ok := input.(T)
 	if !ok {
@@ -483,47 +528,7 @@ func (e *toolExecutor) Execute(ctx context.Context, ownerID, tool string, rawInp
 		if input.Action == "session.callback.prepare" || input.Action == "session.callback.recover" || input.Action == "session.callback.continue" || input.Action == "session.callback.register" || input.Action == "session.callback.arm" || input.Action == "session.callback.enqueue" || input.Action == "session.callback.ack" && input.Mode == "completion" {
 			return nil, &core.CapabilityCallError{Code: "CALLBACK_ROUTE_MANAGED_ONLY", Message: "callback routes and active delivery are managed by codex_cloud_collaboration; use session.callback.list/claim/ack only for fallback recovery", Retryable: false}
 		}
-		callbackClaimID := input.CallbackClaimID
-		if callbackClaimID == "" && (input.Action == "session.callback.claim" || input.Action == "session.callback.ack") {
-			callbackClaimID = input.IdempotencyKey
-		}
-		callbackClaimLimit := input.CallbackClaimLimit
-		if callbackClaimLimit == 0 && input.Action == "session.callback.claim" {
-			callbackClaimLimit = input.Limit
-		}
-		params := map[string]any{
-			"providerId": input.ProviderID, "appType": input.AppType, "sessionId": input.SessionID, "turnId": input.TurnID, "requestId": input.RequestID,
-			"idempotencyKey": input.IdempotencyKey, "mode": input.Mode, "metadataOnly": input.MetadataOnly,
-			"visibility": input.Visibility, "backend": input.Backend, "visibilityTarget": input.VisibilityTarget, "ephemeral": input.Ephemeral,
-			"prompt": input.Prompt, "workingDirectory": input.WorkingDirectory, "model": input.Model,
-			"thinking": input.Thinking, "cursor": input.Cursor, "waitSeconds": input.WaitSeconds, "resultMode": input.ResultMode, "resultId": input.ResultID,
-			"limit": input.Limit, "pageCursor": input.PageCursor, "mcpDetail": input.MCPDetail, "name": input.Name, "forceReload": input.ForceReload,
-			"marketplaceKinds": input.MarketplaceKinds, "pluginName": input.PluginName, "marketplacePath": input.MarketplacePath,
-			"remoteMarketplaceName": input.RemoteMarketplaceName, "remotePluginId": input.RemotePluginID, "skillName": input.SkillName,
-			"numTurns": input.NumTurns, "objective": input.Objective, "goalStatus": input.GoalStatus, "tokenBudget": input.TokenBudget,
-			"skills": input.Skills, "images": input.Images, "localImages": input.LocalImages, "mentions": input.Mentions, "imageDetail": input.ImageDetail,
-			"outputSchema": input.OutputSchema, "decision": input.Decision, "answers": input.Answers, "responseContent": input.ResponseContent,
-			"effort": input.Effort, "permissions": input.Permissions, "personality": input.Personality, "serviceTier": input.ServiceTier, "summary": input.Summary,
-			"reviewType": input.ReviewType, "reviewDelivery": input.ReviewDelivery, "reviewBranch": input.ReviewBranch,
-			"reviewSha": input.ReviewSHA, "reviewTitle": input.ReviewTitle, "reviewInstructions": input.ReviewInstructions,
-			"callbackTargetSessionId": input.CallbackTargetSessionID, "callbackMissionId": input.CallbackMissionID,
-			"callbackTaskId": input.CallbackTaskID, "callbackGeneration": input.CallbackGeneration, "callbackDeliverablePath": input.CallbackDeliverablePath,
-			"callbackClaimId": callbackClaimID, "callbackClaimLimit": callbackClaimLimit,
-		}
-		if len(input.Skills) > 0 {
-			converted := make([]map[string]any, len(input.Skills))
-			for i, item := range input.Skills {
-				converted[i] = map[string]any{"name": item["name"], "path": item["path"]}
-			}
-			params["skills"] = converted
-		}
-		if len(input.Mentions) > 0 {
-			converted := make([]map[string]any, len(input.Mentions))
-			for i, item := range input.Mentions {
-				converted[i] = map[string]any{"name": item["name"], "path": item["path"]}
-			}
-			params["mentions"] = converted
-		}
+		params := aiControlCapabilityParams(input)
 		result, err := e.service.CallCapability(ctx, ownerID, input.MachineID, "agent.control", input.Action, params)
 		if err != nil {
 			return nil, err

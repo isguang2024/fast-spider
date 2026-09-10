@@ -33,6 +33,7 @@ const localUIHTML = `<!doctype html>
 		<button data-tab="diagnostics">诊断</button>
 		<button data-tab="components">组件</button>
 		<button data-tab="operation-logs">操作日志</button>
+		<a href="/tasks" style="display:block;margin:10px 0 2px;padding:14px 12px 10px;border-top:1px solid var(--line);color:#056dff;font-weight:650;text-decoration:none">任务中心</a>
         <button data-tab="config">本地配置</button>
       </nav>
       <main class="content">

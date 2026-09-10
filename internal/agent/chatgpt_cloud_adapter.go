@@ -1111,9 +1111,10 @@ func (a *ChatGPTCloudAdapter) Models(ctx context.Context) (map[string]any, error
 // Preserve provider HTTP failures through the Node capability boundary. Do not
 // turn throttling into an invalid caller request or expose provider response bodies.
 type chatGPTCloudHTTPError struct {
-	operation  string
-	status     int
-	retryAfter string
+	operation    string
+	status       int
+	retryAfter   string
+	providerCode string
 }
 
 func (a *ChatGPTCloudAdapter) providerHTTPError(operation string, resp *http.Response) *chatGPTCloudHTTPError {
@@ -1125,6 +1126,14 @@ func (a *ChatGPTCloudAdapter) providerHTTPError(operation string, resp *http.Res
 
 func newChatGPTCloudHTTPError(operation string, resp *http.Response) *chatGPTCloudHTTPError {
 	e := &chatGPTCloudHTTPError{operation: operation, status: resp.StatusCode}
+	if resp.Body != nil {
+		if raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10)); err == nil {
+			var payload any
+			if json.Unmarshal(raw, &payload) == nil {
+				e.providerCode = chatgptCloudProviderErrorCode(payload)
+			}
+		}
+	}
 	value := strings.TrimSpace(resp.Header.Get("Retry-After"))
 	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds >= 0 {
 		e.retryAfter = strconv.FormatInt(seconds, 10) + " seconds"
@@ -1132,6 +1141,49 @@ func newChatGPTCloudHTTPError(operation string, resp *http.Response) *chatGPTClo
 		e.retryAfter = deadline.UTC().Format(time.RFC3339)
 	}
 	return e
+}
+
+// chatgptCloudProviderErrorCode extracts only structured provider code fields;
+// free-form response text is deliberately ignored to avoid false context-limit
+// classification and leaking provider details through the runner error path.
+func chatgptCloudProviderErrorCode(value any) string {
+	var visit func(any) string
+	visit = func(current any) string {
+		switch item := current.(type) {
+		case map[string]any:
+			fallback := ""
+			for key, raw := range item {
+				normalized := strings.ToLower(strings.ReplaceAll(strings.TrimSpace(key), "-", "_"))
+				if normalized == "code" || normalized == "error_code" || normalized == "errorcode" || normalized == "type" || normalized == "reason" {
+					if code, ok := raw.(string); ok && code != "" {
+						if chatgptCloudContextCode(code) {
+							return code
+						}
+						if fallback == "" {
+							fallback = code
+						}
+					}
+				}
+				if nested := visit(raw); nested != "" {
+					if chatgptCloudContextCode(nested) {
+						return nested
+					}
+					if fallback == "" {
+						fallback = nested
+					}
+				}
+			}
+			return fallback
+		case []any:
+			for _, raw := range item {
+				if nested := visit(raw); nested != "" {
+					return nested
+				}
+			}
+		}
+		return ""
+	}
+	return visit(value)
 }
 
 func (e *chatGPTCloudHTTPError) Error() string {
