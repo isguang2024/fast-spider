@@ -314,6 +314,8 @@ The native Go runner also exposes local `agent.control` actions for continuous C
 
 Runner concurrency is a Node-wide pool of eight Cloud sessions by default, including planners. `runner.configure` with `{"concurrency":8}` changes that global limit; adding `projectId` sets an optional task-area cap, and a per-area value of zero removes the cap. Limits govern new dispatch and do not interrupt existing work. Ready demand and optional task `estimatedMinutes` drive fair allocation of free slots, while write-scope and dependency constraints still apply. Conversation-read 429 responses retain the shared read cooldown and delay the affected task without blocking unrelated session creation.
 
+Task-area `runner.pause` stops new dispatch and planner creation while existing execution, checks and callback handling continue; `runner.resume` re-enables scheduling. Cancellation is the operation that stops in-flight work. The task center exposes pause/resume alongside cancel/archive/unarchive. An explicit `continuous:true` at initialization keeps bounded discovery/implementation cycles running until paused or cancelled and rejects a planner's attempt to mark the entire continuous area complete.
+
 ## Documentation
 
 Start here:

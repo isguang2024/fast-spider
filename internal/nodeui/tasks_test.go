@@ -98,7 +98,7 @@ func TestTaskCenterPageRendersSchedulingAndOptionalEstimate(t *testing.T) {
 	w := httptest.NewRecorder()
 	a.handleTaskCenter(w, httptest.NewRequest(http.MethodGet, "/tasks", nil))
 	body := w.Body.String()
-	for _, want := range []string{"调度状态", "全局占用", "本区运行", "本区可新增", "任务区上限", "动态建议", "estimatedMinutes"} {
+	for _, want := range []string{"调度状态", "全局占用", "本区运行", "本区可新增", "任务区上限", "动态建议", "estimatedMinutes", "持续循环", "暂停任务区", "恢复任务区", "取消任务区", "归档任务区", "取消归档任务区", "只停止新派发"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("task page missing %q", want)
 		}
@@ -123,8 +123,17 @@ func TestTaskCenterActionsAllowlistAuthAndForwarding(t *testing.T) {
 	if got := call("/api/tasks/project/actions", "task-token", "https://untrusted.example", `{"action":"cancel"}`).Code; got != http.StatusForbidden {
 		t.Fatalf("invalid origin status=%d", got)
 	}
-	if got := call("/api/tasks/project/actions", "task-token", "", `{"action":"resume"}`).Code; got != http.StatusBadRequest {
+	if got := call("/api/tasks/project/actions", "task-token", "", `{"action":"restart"}`).Code; got != http.StatusBadRequest {
 		t.Fatalf("unsupported action status=%d", got)
+	}
+	if got := call("/api/tasks/project/actions", "task-token", "", `{"action":"pause"}`).Code; got != http.StatusAccepted {
+		t.Fatalf("project pause status=%d", got)
+	}
+	if got := call("/api/tasks/project/actions", "task-token", "", `{"action":"resume"}`).Code; got != http.StatusAccepted {
+		t.Fatalf("project resume status=%d", got)
+	}
+	if got := call("/api/tasks/project/actions", "task-token", "", `{"action":"pause","taskId":"task-1"}`).Code; got != http.StatusBadRequest {
+		t.Fatalf("task pause unexpectedly accepted status=%d", got)
 	}
 	if got := call("/api/tasks/project/actions", "task-token", "", `{"action":"cancel","taskId":"task-1","evidence":"user requested"}`).Code; got != http.StatusAccepted {
 		t.Fatalf("task action status=%d", got)
@@ -132,16 +141,20 @@ func TestTaskCenterActionsAllowlistAuthAndForwarding(t *testing.T) {
 	if got := call("/api/tasks/project/actions", "task-token", "", `{"action":"archive"}`).Code; got != http.StatusAccepted {
 		t.Fatalf("project action status=%d", got)
 	}
-	if len(agent.actions) != 2 || agent.actions[0] != "runner.cancel" || agent.actions[1] != "runner.archive" {
+	if len(agent.actions) != 4 || agent.actions[0] != "runner.pause" || agent.actions[1] != "runner.resume" || agent.actions[2] != "runner.cancel" || agent.actions[3] != "runner.archive" {
 		t.Fatalf("forwarded actions=%v", agent.actions)
 	}
-	if got := agent.params[0]; got["projectId"] != "project" || got["taskId"] != "task-1" || got["evidence"] != "user requested" {
+	if got := agent.params[2]; got["projectId"] != "project" || got["taskId"] != "task-1" || got["evidence"] != "user requested" {
 		t.Fatalf("task params=%#v", got)
 	}
-	if got := agent.params[1]; got["projectId"] != "project" {
-		t.Fatalf("project params=%#v", got)
+	for _, index := range []int{0, 1, 3} {
+		if got := agent.params[index]; got["projectId"] != "project" {
+			t.Fatalf("project params[%d]=%#v", index, got)
+		}
 	}
-	if _, ok := agent.params[1]["taskId"]; ok {
-		t.Fatalf("project action unexpectedly included taskId: %#v", agent.params[1])
+	for _, index := range []int{0, 1, 3} {
+		if _, ok := agent.params[index]["taskId"]; ok {
+			t.Fatalf("project action unexpectedly included taskId: %#v", agent.params[index])
+		}
 	}
 }

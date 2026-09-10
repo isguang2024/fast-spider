@@ -130,7 +130,7 @@ func nativeViewProject(p nativeRunnerProject, detail bool) map[string]any {
 	}
 	view := map[string]any{"id": p.ID, "title": clip(title, 80), "goalSummary": clip(goal, 240),
 		"root": p.Root, "controllerSessionId": p.ControllerSessionID, "concurrency": p.Concurrency, "maxConcurrency": p.MaxConcurrency,
-		"paused": p.Paused, "questions": p.Questions, "nextPlanAt": p.NextPlanAt,
+		"paused": p.Paused, "continuous": p.Continuous, "questions": p.Questions, "nextPlanAt": p.NextPlanAt,
 		"state": p.State, "archived": p.Archived, "revision": p.Revision, "plannedRevision": p.PlannedRevision, "pendingChanges": p.PendingChanges}
 	if detail {
 		view["goal"] = p.Goal

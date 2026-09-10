@@ -11,6 +11,8 @@ semantic versioning for public releases.
 - Keep conversation-read throttling separate from creation dispatch. Share eight
   Cloud slots globally across task areas, with demand-based fair allocation and
   optional per-area concurrency caps configurable by the controller.
+- Add task-area pause/resume controls that let in-flight work finish, and an
+  explicit continuous mode for bounded discovery/implementation cycles.
 
 ## 0.4.97 - 2026-09-11
 

@@ -59,8 +59,12 @@ func (a *App) handleTaskAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	action := strings.ToLower(strings.TrimSpace(req.Action))
-	if action != "cancel" && action != "archive" && action != "unarchive" {
+	if action != "cancel" && action != "archive" && action != "unarchive" && action != "pause" && action != "resume" {
 		writeAPIError(w, http.StatusBadRequest, errors.New("unsupported task action"))
+		return
+	}
+	if (action == "pause" || action == "resume") && strings.TrimSpace(req.TaskID) != "" {
+		writeAPIError(w, http.StatusBadRequest, errors.New("task area action cannot target a task"))
 		return
 	}
 	projectID := strings.TrimSpace(r.PathValue("projectID"))

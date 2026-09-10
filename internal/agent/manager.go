@@ -101,6 +101,7 @@ type agentControlParams struct {
 	Goal                string                       `json:"goal,omitempty"`
 	ControllerSessionID string                       `json:"controllerSessionId,omitempty"`
 	Concurrency         int                          `json:"concurrency,omitempty"`
+	Continuous          bool                         `json:"continuous,omitempty"`
 	Checks              map[string]nativeRunnerCheck `json:"checks,omitempty"`
 	Task                nativeRunnerTask             `json:"task,omitempty"`
 	TaskID              string                       `json:"taskId,omitempty"`

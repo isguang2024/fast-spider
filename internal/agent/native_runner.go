@@ -35,6 +35,7 @@ type nativeRunnerProject struct {
 	GoalVersion         string                       `json:"goalVersion"`
 	Concurrency         int                          `json:"concurrency"`
 	MaxConcurrency      int                          `json:"maxConcurrency,omitempty"`
+	Continuous          bool                         `json:"continuous,omitempty"`
 	Checks              map[string]nativeRunnerCheck `json:"checks"`
 	Paused              bool                         `json:"paused"`
 	CompleteVersion     string                       `json:"completeVersion,omitempty"`
@@ -454,6 +455,7 @@ func (r *nativeRunner) Handle(ctx context.Context, action string, params map[str
 		Goal                string                       `json:"goal"`
 		ControllerSessionID string                       `json:"controllerSessionId"`
 		Concurrency         int                          `json:"concurrency"`
+		Continuous          bool                         `json:"continuous"`
 		Checks              map[string]nativeRunnerCheck `json:"checks"`
 		Task                nativeRunnerTask             `json:"task"`
 		TaskID              string                       `json:"taskId"`
@@ -555,7 +557,7 @@ func (r *nativeRunner) Handle(ctx context.Context, action string, params map[str
 		if hasConcurrency {
 			maxConcurrency = input.Concurrency
 		}
-		p := nativeRunnerProject{ID: input.ProjectID, Root: root, Goal: input.Goal, GoalVersion: nativeHash(input.Goal), ControllerSessionID: input.ControllerSessionID, Concurrency: input.Concurrency, MaxConcurrency: maxConcurrency, Checks: input.Checks}
+		p := nativeRunnerProject{ID: input.ProjectID, Root: root, Goal: input.Goal, GoalVersion: nativeHash(input.Goal), ControllerSessionID: input.ControllerSessionID, Concurrency: input.Concurrency, MaxConcurrency: maxConcurrency, Continuous: input.Continuous, Checks: input.Checks}
 		if p.ID == "" {
 			p.ID = nativeID()
 		}
@@ -628,9 +630,18 @@ func (r *nativeRunner) Handle(ctx context.Context, action string, params map[str
 		}
 		return map[string]any{"project": p, "tasks": brief, "groups": groups, "cooldownUntil": r.cooldownUntil, "pendingAcknowledgements": pendingACK, "complete": p.CompleteVersion == p.GoalVersion, "scheduling": schedulingView}, nil
 	case "pause":
+		if input.TaskID != "" {
+			return nil, errors.New("pause applies to a task area, not a task block")
+		}
+		if p.Archived || p.State == "cancelled" || p.State == "canceling" {
+			return nil, errors.New("terminal or archived task area cannot be paused")
+		}
 		p.Paused = true
 	case "resume":
-		if p.State == "cancelled" || p.State == "canceling" {
+		if input.TaskID != "" {
+			return nil, errors.New("resume applies to a task area, not a task block")
+		}
+		if p.Archived || p.State == "cancelled" || p.State == "canceling" {
 			return nil, errors.New("cancelled project cannot resume; unarchive only changes visibility")
 		}
 		p.Paused = false
@@ -1239,9 +1250,6 @@ func (r *nativeRunner) tickProject(ctx context.Context, id string, global *[]nat
 	if p.Archived {
 		return nil
 	}
-	if p.Paused && p.State != "canceling" {
-		return err
-	}
 	if err = r.scheduleRecovery(ctx, p, tasks); err != nil {
 		return err
 	}
@@ -1545,6 +1553,9 @@ func (r *nativeRunner) dispatch(ctx context.Context, p nativeRunnerProject, task
 	if len(quota) > 0 {
 		newBudget = max(quota[0], 0)
 	}
+	if p.Paused {
+		newBudget = 0
+	}
 	held := []nativeRunnerTask{}
 	accepted := map[string]bool{}
 	for _, t := range tasks {
@@ -1825,6 +1836,10 @@ func (r *nativeRunner) compile(p nativeRunnerProject, t nativeRunnerTask, tasks 
 		packet["blocks"] = blocks
 		packet["configuredChecks"] = p.Checks
 		packet["outputContract"] = nativePlanContract
+		if p.Continuous {
+			packet["continuous"] = true
+			packet["cycleContract"] = "This task area runs bounded cycles until explicitly paused or cancelled. Follow the goal's batch size and phase boundaries. Finish and accept the current implementation/verification batch before starting the next discovery batch. Plan the next bounded cycle instead of setting goalComplete=true. Never invent findings or expand business behavior to fill a batch."
+		}
 		packet["rules"] = "You plan parallel task blocks within the user goal. A large task may have many independent blocks; keep investigation/implementation/self-tests/fixes inside each block. Business source is read-only for the planner; write only the assigned resultPath. Inspect source and result evidence. Return ONLY the specified JSON to resultPath. The Node validates and applies it. Isolate blocked branches. A failed approach needs a concrete new correction or a different diagnostic approach. Do not change the goal, authorise commit/push/deploy, or duplicate existing work. Empty queue is not completion; inspect overall integration and missing requirements. Do not repeat unchanged verification. Reuse the same CHAT for each block unless context/approach requires rotation."
 	}
 	raw, err := json.MarshalIndent(packet, "", "  ")
@@ -2020,6 +2035,9 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 	}
 	if plan.GoalVersion != p.GoalVersion || plan.Revision != p.Revision || strings.TrimSpace(plan.Summary) == "" {
 		return errors.New("plan needs the exact goal version and reasoning")
+	}
+	if p.Continuous && plan.GoalComplete {
+		return errors.New("continuous task area must plan the next bounded cycle; only explicit pause or cancellation stops the loop")
 	}
 	if len(plan.Actions) == 0 && len(plan.Blocks) == 0 && !plan.GoalComplete && len(plan.UserQuestions) == 0 {
 		return errors.New("empty plan cannot strand an unfinished project")
