@@ -38,6 +38,10 @@ type sessionCallbackDispatcher struct {
 	logger *slog.Logger
 	active func(string) bool
 	send   func(context.Context, string, string) (sessionCallbackDeliveryResult, error)
+	// localWake is used by Node-owned callback routes. Those events wake the
+	// native runner directly; they must never be turned into a prompt sent to
+	// the controller CHAT.
+	localWake func()
 
 	ensure  func(context.Context, string, int64) error
 	release func(string, int64)
@@ -440,6 +444,12 @@ func (d *sessionCallbackDispatcher) dispatchOnce() time.Time {
 		claimable := make([]sessionCallbackEvent, 0, len(events))
 		oldest := time.Time{}
 		for _, event := range events {
+			if event.NativeRunner {
+				if d.localWake != nil {
+					d.localWake()
+				}
+				continue
+			}
 			if callbackClaimActive(event, now) {
 				schedule(event.ClaimedAt.UTC().Add(sessionCallbackClaimLease))
 				continue
@@ -847,6 +857,7 @@ func (m *AgentManager) sessionCallbackRegister(ctx context.Context, input agentC
 		}
 	}
 	registration, replayed, err := m.callbackStore.register(sessionCallbackRegistration{
+		NativeRunner:           input.CallbackNativeRunner,
 		SourceSessionID:        sourceSessionID,
 		TargetSessionID:        targetSessionID,
 		MissionID:              input.CallbackMissionID,

@@ -42,6 +42,7 @@ var (
 	ErrJobLogUnavailable   = errors.New("job log is unavailable")
 	ErrIdempotencyConflict = errors.New("idempotency key conflicts with an existing job")
 	ErrJobManagerClosed    = errors.New("job manager is closed")
+	ErrJobPersistence      = errors.New("job persistence unavailable")
 )
 
 type JobEvent struct {
@@ -113,6 +114,7 @@ type Job struct {
 	logBytes        int64
 	logTruncated    bool
 	logErr          string
+	recovery        persistedProcessIdentity
 }
 
 type JobManager struct {
@@ -123,6 +125,8 @@ type JobManager struct {
 	starting    map[string]*jobStartReservation
 	semaphore   chan struct{}
 	logDir      string
+	store       *jobStore
+	storeErr    error
 	closed      bool
 	prepare     func(context.Context, string, []string, executionRuntime) (string, []string, string, error)
 	keepAlive   func([]string) error
@@ -140,6 +144,10 @@ func NewJobManager(dataDirs ...string) *JobManager {
 	if len(dataDirs) > 0 && strings.TrimSpace(dataDirs[0]) != "" {
 		manager.logDir = filepath.Join(dataDirs[0], "jobs")
 		_ = os.MkdirAll(manager.logDir, 0o700)
+		manager.store, manager.storeErr = newJobStore(dataDirs[0])
+		if manager.storeErr == nil {
+			manager.storeErr = manager.restorePersistedJobs()
+		}
 		manager.cleanupOldJobLogs(time.Now().UTC())
 	}
 	return manager
@@ -171,6 +179,10 @@ func (m *JobManager) StartExecution(ctx context.Context, cwd string, argv []stri
 			m.mu.Unlock()
 			return JobSnapshot{}, ErrJobManagerClosed
 		}
+		if m.storeErr != nil {
+			m.mu.Unlock()
+			return JobSnapshot{}, fmt.Errorf("%w: %v", ErrJobPersistence, m.storeErr)
+		}
 		if previous, ok := m.idempotency[idempotencyKey]; ok {
 			job := m.jobs[previous.JobID]
 			m.mu.Unlock()
@@ -199,6 +211,10 @@ func (m *JobManager) StartExecution(ctx context.Context, cwd string, argv []stri
 			}
 		}
 		m.cleanupLocked()
+		if m.storeErr != nil {
+			m.mu.Unlock()
+			return JobSnapshot{}, fmt.Errorf("%w: %v", ErrJobPersistence, m.storeErr)
+		}
 		if len(m.jobs)+len(m.starting) >= maxRetainedJobs {
 			m.mu.Unlock()
 			return JobSnapshot{}, ErrJobLimit
@@ -285,7 +301,15 @@ func (m *JobManager) StartExecution(ctx context.Context, cwd string, argv []stri
 		m.mu.Unlock()
 		return JobSnapshot{}, err
 	}
+	if err := m.persistStartingLocked(jobID, requestID, traceID, runtimeKind, idempotencyKey, specHash, receivedAt); err != nil {
+		m.storeErr = err
+		m.mu.Unlock()
+		return JobSnapshot{}, fmt.Errorf("%w: %v", ErrJobPersistence, err)
+	}
 	if err := cmd.Start(); err != nil {
+		if persistErr := m.persistLocked(); persistErr != nil {
+			m.storeErr = persistErr
+		}
 		m.mu.Unlock()
 		return JobSnapshot{}, err
 	}
@@ -299,6 +323,15 @@ func (m *JobManager) StartExecution(ctx context.Context, cwd string, argv []stri
 	m.jobs[jobID] = job
 	m.order = append(m.order, jobID)
 	m.idempotency[idempotencyKey] = idempotencyRecord{JobID: jobID, SpecHash: specHash}
+	if err := m.persistLocked(); err != nil {
+		m.storeErr = err
+		delete(m.jobs, jobID)
+		m.order = m.order[:len(m.order)-1]
+		delete(m.idempotency, idempotencyKey)
+		m.mu.Unlock()
+		_ = killProcessTree(cmd)
+		return JobSnapshot{}, fmt.Errorf("%w: %v", ErrJobPersistence, err)
+	}
 	delete(m.starting, idempotencyKey)
 	close(reservation.done)
 	m.mu.Unlock()
@@ -352,6 +385,11 @@ func (m *JobManager) runJob(job *Job, stdout, stderr interface{ Read([]byte) (in
 	close(job.done)
 	<-watchDone
 	job.finish(waitErr)
+	if persistErr := m.persistJob(job); persistErr != nil {
+		m.mu.Lock()
+		m.storeErr = persistErr
+		m.mu.Unlock()
+	}
 	<-m.semaphore
 }
 
@@ -376,8 +414,21 @@ func (m *JobManager) Watch(ctx context.Context, jobID string, cursor int64, wait
 	}
 	defer deadline.Stop()
 	for {
+		if recoverErr := m.recoverUnknownJob(job); recoverErr != nil {
+			m.mu.Lock()
+			m.storeErr = recoverErr
+			m.mu.Unlock()
+		}
 		snapshot, notify := job.snapshotAfter(cursor)
 		if len(snapshot.Events) > 0 || isTerminalJobState(snapshot.State) || wait == 0 {
+			if isTerminalJobState(snapshot.State) {
+				if persistErr := m.persistJob(job); persistErr != nil {
+					m.mu.Lock()
+					m.storeErr = persistErr
+					m.mu.Unlock()
+					return JobSnapshot{}, fmt.Errorf("%w: %v", ErrJobPersistence, persistErr)
+				}
+			}
 			return snapshot, nil
 		}
 		select {
@@ -456,6 +507,12 @@ func (m *JobManager) CancelAll(ctx context.Context) error {
 		for {
 			snapshot, notify := job.snapshotAfter(0)
 			if isTerminalJobState(snapshot.State) {
+				if persistErr := m.persistJob(job); persistErr != nil {
+					m.mu.Lock()
+					m.storeErr = persistErr
+					m.mu.Unlock()
+					return fmt.Errorf("%w: %v", ErrJobPersistence, persistErr)
+				}
 				break
 			}
 			select {
@@ -464,6 +521,9 @@ func (m *JobManager) CancelAll(ctx context.Context) error {
 			case <-notify:
 			}
 		}
+	}
+	if m.store != nil {
+		_ = m.store.close()
 	}
 	return nil
 }
@@ -547,6 +607,9 @@ func (m *JobManager) cleanupLocked() {
 		kept = append(kept, jobID)
 	}
 	m.order = kept
+	if persistErr := m.persistLocked(); persistErr != nil {
+		m.storeErr = persistErr
+	}
 }
 
 func (j *Job) captureStream(eventType string, reader interface{ Read([]byte) (int, error) }) {
@@ -732,7 +795,7 @@ func shellSpecHash(cwd string, argv []string, runtime executionRuntime, timeout 
 
 func isTerminalJobState(state string) bool {
 	switch state {
-	case "completed", "failed", "canceled", "expired":
+	case "completed", "failed", "canceled", "expired", "interrupted":
 		return true
 	default:
 		return false

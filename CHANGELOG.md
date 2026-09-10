@@ -3,6 +3,15 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.91 - 2026-09-10
+
+- Move native project runner execution and job lifecycle authority into the
+  Node JobManager, with durable idempotency, atomic persistence, process
+  identity checks and conservative restart recovery.
+- Keep the agent runner as a thin validation and state mapping adapter while
+  preserving callback and Cloud CHAT coordination through the existing Node
+  control plane.
+
 ## 0.4.76 - 2026-09-09
 
 - Return native Codex child-task lookup and terminal handoff hints for local execution

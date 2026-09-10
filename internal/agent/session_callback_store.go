@@ -76,6 +76,7 @@ func (e *sessionCallbackError) CapabilityError() (string, string, bool) {
 }
 
 type sessionCallbackRegistration struct {
+	NativeRunner           bool   `json:"nativeRunner,omitempty"`
 	SourceSessionID        string `json:"sourceSessionId"`
 	TargetSessionID        string `json:"targetSessionId"`
 	MissionID              string `json:"missionId"`
@@ -119,6 +120,7 @@ type sessionCallbackRegistration struct {
 }
 
 type sessionCallbackEvent struct {
+	NativeRunner           bool      `json:"nativeRunner,omitempty"`
 	SourceSessionID        string    `json:"sourceSessionId"`
 	TargetSessionID        string    `json:"targetSessionId"`
 	MissionID              string    `json:"missionId"`
@@ -985,6 +987,7 @@ func (s *sessionCallbackStore) enqueue(event chatgptCloudEvent) (bool, error) {
 		EventKey:               eventKey,
 		EventType:              event.Type,
 		CompletionSource:       source,
+		NativeRunner:           registration.NativeRunner,
 		OccurredAt:             event.Timestamp.UTC(),
 		CallbackType:           event.CallbackType,
 		CallbackClaimTransport: callbackTransportForRegistration(registration),
@@ -1181,6 +1184,20 @@ func (s *sessionCallbackStore) pendingSnapshot(sourceSessionID, targetSessionID 
 // idempotent while the lease is active and after it has been acknowledged;
 // omitting it allocates a fresh opaque ID.
 func (s *sessionCallbackStore) claim(targetSessionID, requestedClaimID string, limit int, now time.Time, transportArg ...string) (string, []sessionCallbackEvent, error) {
+	return s.claimWithFilter(targetSessionID, requestedClaimID, limit, now, func(event sessionCallbackEvent) bool { return !event.NativeRunner }, transportArg...)
+}
+
+// claimExact reserves only the callback event bound to the supplied immutable
+// source/task/generation identity. Native runner tasks share one controller
+// queue, so a generic target claim could otherwise consume a sibling block's
+// result before the runner has a chance to inspect it.
+func (s *sessionCallbackStore) claimExact(targetSessionID, sourceSessionID, missionID, taskID string, generation int64, requestedClaimID string, limit int, now time.Time, transportArg ...string) (string, []sessionCallbackEvent, error) {
+	return s.claimWithFilter(targetSessionID, requestedClaimID, limit, now, func(event sessionCallbackEvent) bool {
+		return event.SourceSessionID == sourceSessionID && event.MissionID == missionID && event.TaskID == taskID && event.Generation == generation
+	}, transportArg...)
+}
+
+func (s *sessionCallbackStore) claimWithFilter(targetSessionID, requestedClaimID string, limit int, now time.Time, filter func(sessionCallbackEvent) bool, transportArg ...string) (string, []sessionCallbackEvent, error) {
 	targetSessionID = strings.TrimSpace(targetSessionID)
 	if err := validateCallbackOpaqueID(targetSessionID, "callback target session ID", 256); err != nil {
 		return "", nil, &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
@@ -1293,6 +1310,9 @@ func (s *sessionCallbackStore) claim(targetSessionID, requestedClaimID string, l
 	available := make([]sessionCallbackEvent, 0, len(s.pending))
 	for _, event := range s.pending {
 		if event.TargetSessionID != targetSessionID || callbackTransportForEvent(event) != transport || event.ClaimID != "" {
+			continue
+		}
+		if filter != nil && !filter(event) {
 			continue
 		}
 		// A managed local event already owns a durable collaboration inbox

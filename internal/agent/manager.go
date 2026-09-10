@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -91,6 +92,7 @@ type agentControlParams struct {
 	CallbackClaimID        string `json:"callbackClaimId,omitempty"`
 	CallbackClaimLimit     int    `json:"callbackClaimLimit,omitempty"`
 	CallbackClaimTransport string `json:"callbackClaimTransport,omitempty"`
+	CallbackNativeRunner   bool   `json:"-"`
 	modelProvided          bool
 	thinkingProvided       bool
 }
@@ -105,19 +107,24 @@ type agentMentionInput struct {
 }
 
 type AgentManager struct {
-	codex              *CodexAdapter
-	claude             *ClaudeCodeAdapter
-	chatgptCloud       *ChatGPTCloudAdapter
-	ccswitch           *CCSwitchInspector
-	logger             *slog.Logger
-	dataDir            string
-	codexStatePath     string
-	registry           providerRegistry
-	createStore        *sessionCreateStore
-	visibilityStore    *sessionVisibilityStore
-	callbackStore      *sessionCallbackStore
-	callbackDispatcher *sessionCallbackDispatcher
-	resultPublisher    interface {
+	codex                 *CodexAdapter
+	claude                *ClaudeCodeAdapter
+	chatgptCloud          *ChatGPTCloudAdapter
+	ccswitch              *CCSwitchInspector
+	logger                *slog.Logger
+	dataDir               string
+	codexStatePath        string
+	registry              providerRegistry
+	createStore           *sessionCreateStore
+	visibilityStore       *sessionVisibilityStore
+	callbackStore         *sessionCallbackStore
+	callbackDispatcher    *sessionCallbackDispatcher
+	nativeRunner          *nativeRunner
+	nativeRunnerTransport *nativeRunnerTransport
+	nativeRunnerErr       error
+	nativeRunnerMu        sync.Mutex
+	nativeRunnerMachineID func() (string, error)
+	resultPublisher       interface {
 		PublishCloudResult(context.Context, string, string, string) (map[string]any, error)
 	}
 	chatgptDefaultsMu sync.RWMutex
@@ -140,6 +147,32 @@ func (m *AgentManager) SetCloudResultPublisher(p any) {
 	} else {
 		m.resultPublisher = nil
 	}
+}
+
+// SetNativeRunnerJobExecutor connects the native runner's check validation to
+// the owning Node JobManager. The any boundary avoids a node-to-agent import
+// cycle while keeping process lifecycle and output outside the agent package.
+func (m *AgentManager) SetNativeRunnerJobExecutor(value any) {
+	if m == nil || m.nativeRunnerTransport == nil {
+		return
+	}
+	if err := m.nativeRunnerTransport.setJobExecutor(value); err != nil {
+		m.nativeRunnerMu.Lock()
+		m.nativeRunnerErr = err
+		m.nativeRunnerMu.Unlock()
+	}
+}
+
+// SetNativeRunnerMachineIDProvider supplies the Node-owned machine identity
+// for the flattened FS ai_control envelope. The credential itself never
+// enters the runner prompt or callback payload.
+func (m *AgentManager) SetNativeRunnerMachineIDProvider(provider func() (string, error)) {
+	if m == nil {
+		return
+	}
+	m.nativeRunnerMu.Lock()
+	m.nativeRunnerMachineID = provider
+	m.nativeRunnerMu.Unlock()
 }
 
 type chatGPTCloudCreateDefaults struct {
@@ -199,6 +232,20 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 			manager.callbackDispatcher.requestProviderRecovery()
 		}
 	})
+	// The native runner opens a SQLite handle. Create it lazily when the local
+	// runner capability is first used so ordinary agent sessions do not retain
+	// a project database handle in short-lived tests or provider-only clients.
+	manager.nativeRunnerTransport = newNativeRunnerTransport(manager, dataDir)
+	manager.callbackDispatcher.localWake = func() {
+		if manager.nativeRunner != nil {
+			manager.nativeRunner.Wake()
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "native-runner", "projects.sqlite3")); err == nil {
+		// Existing runner state must resume after a Node restart. A new data
+		// directory stays lazy and does not acquire a SQLite handle.
+		_ = manager.ensureNativeRunner()
+	}
 	return manager
 }
 
@@ -207,6 +254,18 @@ func (m *AgentManager) Close(ctx context.Context) error {
 		return nil
 	}
 	var firstErr error
+	if m.nativeRunner != nil {
+		if err := m.nativeRunner.Close(ctx); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	} else if m.nativeRunnerErr != nil {
+		firstErr = m.nativeRunnerErr
+	}
+	if m.nativeRunnerTransport != nil {
+		if err := m.nativeRunnerTransport.closeJobs(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	if m.callbackDispatcher != nil {
 		if err := m.callbackDispatcher.close(ctx); err != nil && firstErr == nil {
 			firstErr = err
@@ -290,6 +349,22 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 	}
 	if action == "provider.readiness" {
 		return m.providerReadiness(ctx, input)
+	}
+	if strings.HasPrefix(action, "runner.") {
+		if err := m.ensureNativeRunner(); err != nil {
+			return nil, err
+		}
+		if action == "runner.wake" {
+			m.nativeRunner.Wake()
+			return map[string]any{"woken": true}, nil
+		}
+		if action == "runner.submit" {
+			if input.ResponseContent == nil {
+				return nil, errors.New("runner.submit requires responseContent")
+			}
+			return m.nativeRunnerTransport.Submit(ctx, input.ResponseContent)
+		}
+		return m.nativeRunner.Handle(ctx, action, params)
 	}
 
 	providerID := strings.TrimSpace(input.ProviderID)
@@ -634,6 +709,31 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 	default:
 		return nil, fmt.Errorf("unsupported agent action %q", action)
 	}
+}
+
+func (m *AgentManager) ensureNativeRunner() error {
+	m.nativeRunnerMu.Lock()
+	defer m.nativeRunnerMu.Unlock()
+	if m.nativeRunnerErr != nil {
+		return m.nativeRunnerErr
+	}
+	if m.nativeRunner != nil {
+		return nil
+	}
+	if m.nativeRunnerTransport == nil {
+		m.nativeRunnerTransport = newNativeRunnerTransport(m, m.dataDir)
+	}
+	runner, err := newNativeRunner(m.dataDir, m.nativeRunnerTransport, m.logger)
+	if err != nil {
+		m.nativeRunnerErr = err
+		return err
+	}
+	m.nativeRunner = runner
+	if m.callbackDispatcher != nil {
+		m.callbackDispatcher.start()
+	}
+	m.nativeRunner.Start()
+	return nil
 }
 
 func (m *AgentManager) controlClaude(ctx context.Context, action string, input agentControlParams) (map[string]any, error) {
