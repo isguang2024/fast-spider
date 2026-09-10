@@ -1863,6 +1863,9 @@ func (r *nativeRunner) ensurePlanner(ctx context.Context, p *nativeRunnerProject
 	if p.Paused || p.Archived || p.State == "canceling" || p.State == "cancelled" || p.NextPlanAt > r.now().Unix() {
 		return nil
 	}
+	if !p.Continuous && p.CompleteVersion == p.GoalVersion && p.PlanBasis != "" && p.Revision == p.PlannedRevision && len(p.PendingChanges) == 0 {
+		return nil
+	}
 	for _, t := range tasks {
 		if t.Kind == "planner" && t.State != "accepted" {
 			if t.PlanRevision != p.Revision {
@@ -2338,12 +2341,12 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 			unhandled = true
 		}
 	}
-	p.PlanBasis = nativeHash([]any{p.GoalVersion, p.Revision, postBasis})
+	p.PlannedRevision = plan.Revision
+	p.PendingChanges = nil
+	p.PlanBasis = nativeHash([]any{p.GoalVersion, p.Revision, postBasis, p.PendingChanges})
 	if (allAccepted && !plan.GoalComplete) || (unhandled && len(plan.UserQuestions) == 0) {
 		p.PlanBasis = ""
 	}
-	p.PlannedRevision = plan.Revision
-	p.PendingChanges = nil
 	for _, t := range byID {
 		if err = nativeSave(tx, "runner_tasks", t.ID, p.ID, t); err != nil {
 			return err

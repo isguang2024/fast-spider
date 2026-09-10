@@ -13,6 +13,8 @@ semantic versioning for public releases.
   optional per-area concurrency caps configurable by the controller.
 - Add task-area pause/resume controls that let in-flight work finish, and an
   explicit continuous mode for bounded discovery/implementation cycles.
+- Keep planner fingerprints consistent and stop redundant planning after an
+  ordinary task area's goal has already completed.
 
 ## 0.4.97 - 2026-09-11
 

@@ -81,3 +81,42 @@ func TestNativeRunnerContinuousAreaPlansNextCycleInsteadOfCompleting(t *testing.
 	}
 	t.Fatal("continuous area did not create the next planning round")
 }
+
+func TestNativeRunnerCompletedAreaDoesNotCreateRedundantPlanners(t *testing.T) {
+	r, b, p := newNativeRunnerForTest(t, "finite goal", nil)
+	ctx := context.Background()
+	addNativeTask(t, r, p.ID, "finished", "scope")
+	saveNativeTasks(t, r, p.ID, func(task *nativeRunnerTask) { task.State = "accepted"; task.AcceptedVersion = p.GoalVersion })
+	p, planner := plannerForTest(t, r, p.ID)
+	if err := r.applyPlan(ctx, p.ID, planner.ID, nativeRunnerPlan{GoalVersion: p.GoalVersion, Revision: p.Revision, Summary: "All evidence accepted", GoalComplete: true, CompletionEvidence: []string{"integration checked"}}); err != nil {
+		t.Fatal(err)
+	}
+	before := len(b.dispatches)
+	for i := 0; i < 3; i++ {
+		if err := r.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(b.dispatches) != before {
+		t.Fatal("completed area kept dispatching planners")
+	}
+	current, tasks := loadNativeProject(t, r, p.ID)
+	basis := map[string]string{}
+	for _, task := range tasks {
+		if task.Kind != "planner" {
+			basis[task.ID] = nativeBasis(task)
+		}
+	}
+	if current.PlanBasis != nativeHash([]any{current.GoalVersion, current.Revision, basis, current.PendingChanges}) {
+		t.Fatal("applied plan fingerprint differs from planner creation fingerprint")
+	}
+	if _, err := r.Handle(ctx, "runner.change", map[string]any{"projectId": p.ID, "evidence": "A new confirmed issue requires follow-up"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.dispatches) == before {
+		t.Fatal("explicit change did not reopen completed area planning")
+	}
+}
