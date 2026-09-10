@@ -31,11 +31,7 @@ func NewLocalCapabilityClient(cfg Config) *Client {
 	if setter, ok := cfg.Agent.(interface{ SetCloudResultPublisher(any) }); ok {
 		setter.SetCloudResultPublisher(client)
 	}
-	if setter, ok := cfg.Agent.(interface {
-		SetCollaborationResultSink(func(context.Context, map[string]any) error)
-	}); ok {
-		setter.SetCollaborationResultSink(client.PersistCollaborationCallback)
-	}
+
 	return client
 }
 

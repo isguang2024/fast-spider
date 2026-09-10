@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -77,41 +76,41 @@ func (e *sessionCallbackError) CapabilityError() (string, string, bool) {
 }
 
 type sessionCallbackRegistration struct {
-	SourceSessionID        string         `json:"sourceSessionId"`
-	TargetSessionID        string         `json:"targetSessionId"`
-	MissionID              string         `json:"missionId"`
-	TaskID                 string         `json:"taskId"`
-	Generation             int64          `json:"generation"`
-	CallbackType           string         `json:"callbackType"`
-	CallbackClaimTransport string         `json:"callbackClaimTransport,omitempty"`
-	CallbackInboxRoute     map[string]any `json:"callbackInboxRoute,omitempty"`
-	DeliverablePath        string         `json:"deliverablePath,omitempty"`
-	BaselineIdentity       string         `json:"baselineIdentity,omitempty"`
-	ImmediateWake          bool           `json:"immediateWake,omitempty"`
-	Armed                  bool           `json:"armed"`
-	ArmedAt                time.Time      `json:"armedAt,omitempty"`
-	LastEventSequence      int64          `json:"lastEventSequence,omitempty"`
-	LastEventKey           string         `json:"lastEventKey,omitempty"`
-	RecentEventKeys        []string       `json:"recentEventKeys,omitempty"`
-	LastFallbackEventKey   string         `json:"lastFallbackEventKey,omitempty"`
-	LastFallbackEventAt    time.Time      `json:"lastFallbackEventAt,omitempty"`
-	LastDeliveredAt        time.Time      `json:"lastDeliveredAt,omitempty"`
-	LastDeliveredEnvelope  string         `json:"lastDeliveredEnvelope,omitempty"`
-	LastNudgeAt            time.Time      `json:"lastNudgeAt,omitempty"`
-	LastNudgeEnvelope      string         `json:"lastNudgeEnvelope,omitempty"`
-	LastNudgeEventKey      string         `json:"lastNudgeEventKey,omitempty"`
-	LastNudgeExecutionMode string         `json:"lastNudgeExecutionMode,omitempty"`
-	LastNudgeOwner         string         `json:"lastNudgeOwner,omitempty"`
-	LastNudgeTurnID        string         `json:"lastNudgeTurnId,omitempty"`
-	NudgeFailureEnvelope   string         `json:"nudgeFailureEnvelope,omitempty"`
-	NudgeFailureCount      int            `json:"nudgeFailureCount,omitempty"`
-	NudgeRetryAt           time.Time      `json:"nudgeRetryAt,omitempty"`
-	NudgeErrorClass        string         `json:"nudgeErrorClass,omitempty"`
-	LastResultID           string         `json:"lastResultId,omitempty"`
-	LastResultStatus       string         `json:"lastResultStatus,omitempty"`
-	LastResultBytes        int64          `json:"lastResultBytes,omitempty"`
-	LastResultSHA256       string         `json:"lastResultSHA256,omitempty"`
-	LastResultPageCount    int            `json:"lastResultPageCount,omitempty"`
+	SourceSessionID        string `json:"sourceSessionId"`
+	TargetSessionID        string `json:"targetSessionId"`
+	MissionID              string `json:"missionId"`
+	TaskID                 string `json:"taskId"`
+	Generation             int64  `json:"generation"`
+	CallbackType           string `json:"callbackType"`
+	CallbackClaimTransport string `json:"callbackClaimTransport,omitempty"`
+
+	DeliverablePath        string    `json:"deliverablePath,omitempty"`
+	BaselineIdentity       string    `json:"baselineIdentity,omitempty"`
+	ImmediateWake          bool      `json:"immediateWake,omitempty"`
+	Armed                  bool      `json:"armed"`
+	ArmedAt                time.Time `json:"armedAt,omitempty"`
+	LastEventSequence      int64     `json:"lastEventSequence,omitempty"`
+	LastEventKey           string    `json:"lastEventKey,omitempty"`
+	RecentEventKeys        []string  `json:"recentEventKeys,omitempty"`
+	LastFallbackEventKey   string    `json:"lastFallbackEventKey,omitempty"`
+	LastFallbackEventAt    time.Time `json:"lastFallbackEventAt,omitempty"`
+	LastDeliveredAt        time.Time `json:"lastDeliveredAt,omitempty"`
+	LastDeliveredEnvelope  string    `json:"lastDeliveredEnvelope,omitempty"`
+	LastNudgeAt            time.Time `json:"lastNudgeAt,omitempty"`
+	LastNudgeEnvelope      string    `json:"lastNudgeEnvelope,omitempty"`
+	LastNudgeEventKey      string    `json:"lastNudgeEventKey,omitempty"`
+	LastNudgeExecutionMode string    `json:"lastNudgeExecutionMode,omitempty"`
+	LastNudgeOwner         string    `json:"lastNudgeOwner,omitempty"`
+	LastNudgeTurnID        string    `json:"lastNudgeTurnId,omitempty"`
+	NudgeFailureEnvelope   string    `json:"nudgeFailureEnvelope,omitempty"`
+	NudgeFailureCount      int       `json:"nudgeFailureCount,omitempty"`
+	NudgeRetryAt           time.Time `json:"nudgeRetryAt,omitempty"`
+	NudgeErrorClass        string    `json:"nudgeErrorClass,omitempty"`
+	LastResultID           string    `json:"lastResultId,omitempty"`
+	LastResultStatus       string    `json:"lastResultStatus,omitempty"`
+	LastResultBytes        int64     `json:"lastResultBytes,omitempty"`
+	LastResultSHA256       string    `json:"lastResultSHA256,omitempty"`
+	LastResultPageCount    int       `json:"lastResultPageCount,omitempty"`
 	// CompletionAckedAt is retained only for loading schema-3 files written by
 	// older Nodes. Current formal ACKs retire the active registration entirely.
 	CompletionAckedAt time.Time `json:"completionAckedAt,omitempty"`
@@ -120,36 +119,33 @@ type sessionCallbackRegistration struct {
 }
 
 type sessionCallbackEvent struct {
-	SourceSessionID        string         `json:"sourceSessionId"`
-	TargetSessionID        string         `json:"targetSessionId"`
-	MissionID              string         `json:"missionId"`
-	TaskID                 string         `json:"taskId"`
-	Generation             int64          `json:"generation"`
-	EventSequence          int64          `json:"eventSequence"`
-	EventKey               string         `json:"eventKey"`
-	EventType              string         `json:"eventType"`
-	CompletionSource       string         `json:"completionSource,omitempty"`
-	OccurredAt             time.Time      `json:"occurredAt"`
-	CallbackType           string         `json:"callbackType"`
-	CallbackClaimTransport string         `json:"callbackClaimTransport,omitempty"`
-	CallbackInboxRoute     map[string]any `json:"callbackInboxRoute,omitempty"`
-	ResultText             string         `json:"resultText,omitempty"`
-	CallbackOutcome        string         `json:"callbackOutcome"`
-	CallbackErrorCode      string         `json:"callbackErrorCode,omitempty"`
-	// CollaborationInboxProjectedAt records successful projection into the
-	// Node-owned collaboration inbox. It is separate from claim and ACK state:
-	// projection wakes the coordinator but does not consume the callback.
-	CollaborationInboxProjectedAt time.Time `json:"collaborationInboxProjectedAt,omitempty"`
-	ResultID                      string    `json:"resultId,omitempty"`
-	ResultStatus                  string    `json:"resultStatus,omitempty"`
-	ResultBytes                   int64     `json:"resultBytes,omitempty"`
-	ResultSHA256                  string    `json:"resultSHA256,omitempty"`
-	ResultPageCount               int       `json:"resultPageCount,omitempty"`
-	DeliverablePath               string    `json:"deliverablePath,omitempty"`
-	DeliverableStatus             string    `json:"deliverableStatus,omitempty"`
-	ImmediateWake                 bool      `json:"immediateWake,omitempty"`
-	ClaimID                       string    `json:"claimId,omitempty"`
-	ClaimedAt                     time.Time `json:"claimedAt,omitempty"`
+	SourceSessionID        string    `json:"sourceSessionId"`
+	TargetSessionID        string    `json:"targetSessionId"`
+	MissionID              string    `json:"missionId"`
+	TaskID                 string    `json:"taskId"`
+	Generation             int64     `json:"generation"`
+	EventSequence          int64     `json:"eventSequence"`
+	EventKey               string    `json:"eventKey"`
+	EventType              string    `json:"eventType"`
+	CompletionSource       string    `json:"completionSource,omitempty"`
+	OccurredAt             time.Time `json:"occurredAt"`
+	CallbackType           string    `json:"callbackType"`
+	CallbackClaimTransport string    `json:"callbackClaimTransport,omitempty"`
+
+	ResultText        string `json:"resultText,omitempty"`
+	CallbackOutcome   string `json:"callbackOutcome"`
+	CallbackErrorCode string `json:"callbackErrorCode,omitempty"`
+
+	ResultID          string    `json:"resultId,omitempty"`
+	ResultStatus      string    `json:"resultStatus,omitempty"`
+	ResultBytes       int64     `json:"resultBytes,omitempty"`
+	ResultSHA256      string    `json:"resultSHA256,omitempty"`
+	ResultPageCount   int       `json:"resultPageCount,omitempty"`
+	DeliverablePath   string    `json:"deliverablePath,omitempty"`
+	DeliverableStatus string    `json:"deliverableStatus,omitempty"`
+	ImmediateWake     bool      `json:"immediateWake,omitempty"`
+	ClaimID           string    `json:"claimId,omitempty"`
+	ClaimedAt         time.Time `json:"claimedAt,omitempty"`
 }
 
 type callbackResultMetadata struct {
@@ -313,7 +309,7 @@ func (s *sessionCallbackStore) load() error {
 			return fmt.Errorf("invalid session callback index: %w", err)
 		}
 		registration, exists := s.registrations[event.SourceSessionID]
-		if !exists || registration.TargetSessionID != event.TargetSessionID || registration.MissionID != event.MissionID || registration.TaskID != event.TaskID || registration.Generation != event.Generation || registration.CallbackType != event.CallbackType || callbackTransportForRegistration(registration) != callbackTransportForEvent(event) || registration.DeliverablePath != event.DeliverablePath || registration.ImmediateWake != event.ImmediateWake || !callbackInboxRoutesEqual(registration.CallbackInboxRoute, event.CallbackInboxRoute) {
+		if !exists || registration.TargetSessionID != event.TargetSessionID || registration.MissionID != event.MissionID || registration.TaskID != event.TaskID || registration.Generation != event.Generation || registration.CallbackType != event.CallbackType || callbackTransportForRegistration(registration) != callbackTransportForEvent(event) || registration.DeliverablePath != event.DeliverablePath || registration.ImmediateWake != event.ImmediateWake {
 			return fmt.Errorf("invalid session callback index: pending event has no matching registration")
 		}
 		if event.EventSequence != registration.LastEventSequence {
@@ -358,14 +354,7 @@ func validateSessionCallbackRegistration(registration sessionCallbackRegistratio
 	if _, err := normalizeCallbackClaimTransport(registration.CallbackClaimTransport); err != nil {
 		return err
 	}
-	if registration.CallbackInboxRoute != nil {
-		if callbackTransportForRegistration(registration) != callbackClaimTransportLocal {
-			return fmt.Errorf("callback inbox route requires local callback transport")
-		}
-		if err := validateCallbackInboxRoute(registration.CallbackInboxRoute); err != nil {
-			return err
-		}
-	}
+
 	if registration.DeliverablePath != "" {
 		if !filepath.IsAbs(registration.DeliverablePath) || len(registration.DeliverablePath) > 4096 || strings.ContainsAny(registration.DeliverablePath, "\x00\r\n") {
 			return fmt.Errorf("deliverable path must be an absolute local path")
@@ -445,174 +434,6 @@ func validateSessionCallbackRegistration(registration sessionCallbackRegistratio
 	return nil
 }
 
-func validateCallbackInboxRoute(route map[string]any) error {
-	if route == nil {
-		return nil
-	}
-	if len(route) != 4 {
-		return fmt.Errorf("callback inbox route must contain dbPath, missionId, itemId, and claim")
-	}
-	for key := range route {
-		if key != "dbPath" && key != "missionId" && key != "itemId" && key != "claim" {
-			return fmt.Errorf("invalid callback inbox route field %q", key)
-		}
-	}
-	dbPath, ok := route["dbPath"].(string)
-	if !ok || strings.TrimSpace(dbPath) == "" || len(dbPath) > 4096 || strings.ContainsAny(dbPath, "\x00\r\n") || !filepath.IsAbs(dbPath) || !strings.EqualFold(filepath.Ext(dbPath), ".sqlite3") {
-		return fmt.Errorf("callback inbox route dbPath must be an absolute .sqlite3 path")
-	}
-	for _, key := range []string{"missionId", "itemId", "claim"} {
-		value, ok := route[key].(string)
-		if !ok {
-			return fmt.Errorf("callback inbox route %s is required", key)
-		}
-		if err := validateCallbackOpaqueID(value, "callback inbox route "+key, 256); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func cloneCallbackInboxRoute(route map[string]any) map[string]any {
-	if route == nil {
-		return nil
-	}
-	clone := make(map[string]any, len(route))
-	for key, value := range route {
-		clone[key] = value
-	}
-	return clone
-}
-
-func callbackInboxRoutesEqual(left, right map[string]any) bool {
-	if len(left) == 0 || len(right) == 0 {
-		return len(left) == len(right)
-	}
-	leftRaw, leftErr := json.Marshal(left)
-	rightRaw, rightErr := json.Marshal(right)
-	return leftErr == nil && rightErr == nil && string(leftRaw) == string(rightRaw)
-}
-
-type collaborationInboxBinding struct {
-	SourceSessionID    string         `json:"sourceSessionId"`
-	TargetSessionID    string         `json:"targetSessionId"`
-	MissionID          string         `json:"missionId"`
-	TaskID             string         `json:"taskId"`
-	Generation         int64          `json:"generation"`
-	CallbackInboxRoute map[string]any `json:"callbackInboxRoute"`
-}
-
-func decodeCollaborationInboxBinding(raw map[string]any) (collaborationInboxBinding, error) {
-	if len(raw) != 6 {
-		return collaborationInboxBinding{}, fmt.Errorf("collaboration inbox binding must contain sourceSessionId, targetSessionId, missionId, taskId, generation, and callbackInboxRoute")
-	}
-	for key := range raw {
-		switch key {
-		case "sourceSessionId", "targetSessionId", "missionId", "taskId", "generation", "callbackInboxRoute":
-		default:
-			return collaborationInboxBinding{}, fmt.Errorf("invalid collaboration inbox binding field %q", key)
-		}
-	}
-	encoded, err := json.Marshal(raw)
-	if err != nil {
-		return collaborationInboxBinding{}, fmt.Errorf("encode collaboration inbox binding: %w", err)
-	}
-	var binding collaborationInboxBinding
-	if err := json.Unmarshal(encoded, &binding); err != nil {
-		return collaborationInboxBinding{}, fmt.Errorf("decode collaboration inbox binding: %w", err)
-	}
-	binding.SourceSessionID = strings.TrimSpace(binding.SourceSessionID)
-	binding.TargetSessionID = strings.TrimSpace(binding.TargetSessionID)
-	binding.MissionID = strings.TrimSpace(binding.MissionID)
-	binding.TaskID = strings.TrimSpace(binding.TaskID)
-	if err := validateCallbackOpaqueID(binding.SourceSessionID, "source session ID", 256); err != nil {
-		return collaborationInboxBinding{}, err
-	}
-	if err := validateCallbackOpaqueID(binding.TargetSessionID, "target session ID", 256); err != nil {
-		return collaborationInboxBinding{}, err
-	}
-	if err := validateCallbackKey(binding.MissionID, "mission ID"); err != nil {
-		return collaborationInboxBinding{}, err
-	}
-	if err := validateCallbackKey(binding.TaskID, "task ID"); err != nil {
-		return collaborationInboxBinding{}, err
-	}
-	if binding.Generation <= 0 {
-		return collaborationInboxBinding{}, fmt.Errorf("generation must be positive")
-	}
-	if err := validateCallbackInboxRoute(binding.CallbackInboxRoute); err != nil {
-		return collaborationInboxBinding{}, err
-	}
-	return binding, nil
-}
-
-func (s *sessionCallbackStore) bindCollaborationInbox(_ context.Context, routes []map[string]any) error {
-	if len(routes) == 0 {
-		return nil
-	}
-	bindings := make([]collaborationInboxBinding, 0, len(routes))
-	seen := make(map[string]struct{}, len(routes))
-	for _, raw := range routes {
-		binding, err := decodeCollaborationInboxBinding(raw)
-		if err != nil {
-			return &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
-		}
-		if _, exists := seen[binding.SourceSessionID]; exists {
-			return &sessionCallbackError{code: "CALLBACK_ROUTE_CONFLICT", message: "duplicate source session in collaboration inbox bindings"}
-		}
-		seen[binding.SourceSessionID] = struct{}{}
-		bindings = append(bindings, binding)
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.loadErr != nil {
-		return callbackStoreUnavailableError()
-	}
-	previousRegistrations := cloneSessionCallbackRegistrations(s.registrations)
-	previousPending := cloneSessionCallbackEvents(s.pending)
-	for _, binding := range bindings {
-		registration, exists := s.registrations[binding.SourceSessionID]
-		if !exists || registration.TargetSessionID != binding.TargetSessionID || registration.MissionID != binding.MissionID || registration.TaskID != binding.TaskID || registration.Generation != binding.Generation || callbackTransportForRegistration(registration) != callbackClaimTransportLocal {
-			return &sessionCallbackError{code: "CALLBACK_ROUTE_NOT_FOUND", message: "collaboration inbox binding does not match an existing local callback route"}
-		}
-		if registration.CallbackInboxRoute != nil && !callbackInboxRoutesEqual(registration.CallbackInboxRoute, binding.CallbackInboxRoute) {
-			return &sessionCallbackError{code: "CALLBACK_ROUTE_CONFLICT", message: "callback inbox route conflicts with the existing registration"}
-		}
-		if pending, exists := s.pending[binding.SourceSessionID]; exists && pending.CallbackInboxRoute != nil && !callbackInboxRoutesEqual(pending.CallbackInboxRoute, binding.CallbackInboxRoute) {
-			return &sessionCallbackError{code: "CALLBACK_ROUTE_CONFLICT", message: "callback inbox route conflicts with the pending callback event"}
-		}
-	}
-
-	changed := false
-	for _, binding := range bindings {
-		registration := s.registrations[binding.SourceSessionID]
-		if registration.CallbackInboxRoute == nil {
-			registration.CallbackInboxRoute = cloneCallbackInboxRoute(binding.CallbackInboxRoute)
-			registration.UpdatedAt = time.Now().UTC()
-			s.registrations[binding.SourceSessionID] = registration
-			changed = true
-		}
-		if pending, exists := s.pending[binding.SourceSessionID]; exists && pending.CallbackInboxRoute == nil {
-			pending.CallbackInboxRoute = cloneCallbackInboxRoute(binding.CallbackInboxRoute)
-			s.pending[binding.SourceSessionID] = pending
-			changed = true
-		}
-	}
-	if !changed {
-		return nil
-	}
-	committed, err := s.saveLocked()
-	if err != nil {
-		if !committed {
-			s.registrations = previousRegistrations
-			s.pending = previousPending
-		}
-		return err
-	}
-	return nil
-}
-
 func validateSessionCallbackEvent(event sessionCallbackEvent) error {
 	registration := sessionCallbackRegistration{
 		SourceSessionID:        event.SourceSessionID,
@@ -622,7 +443,6 @@ func validateSessionCallbackEvent(event sessionCallbackEvent) error {
 		Generation:             event.Generation,
 		CallbackType:           event.CallbackType,
 		CallbackClaimTransport: event.CallbackClaimTransport,
-		CallbackInboxRoute:     event.CallbackInboxRoute,
 		DeliverablePath:        event.DeliverablePath,
 		RegisteredAt:           time.Unix(1, 0),
 		UpdatedAt:              time.Unix(1, 0),
@@ -859,7 +679,6 @@ func (s *sessionCallbackStore) register(request sessionCallbackRegistration) (se
 		return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "INVALID_REQUEST", message: transportErr.Error()}
 	}
 	request.CallbackClaimTransport = transport
-	request.CallbackInboxRoute = cloneCallbackInboxRoute(request.CallbackInboxRoute)
 	request.BaselineIdentity = strings.TrimSpace(request.BaselineIdentity)
 	request.RegisteredAt = now
 	request.UpdatedAt = now
@@ -878,7 +697,7 @@ func (s *sessionCallbackStore) register(request sessionCallbackRegistration) (se
 	}
 	current, exists := s.registrations[request.SourceSessionID]
 	if exists {
-		if current.TargetSessionID != request.TargetSessionID || current.MissionID != request.MissionID || current.TaskID != request.TaskID || current.CallbackType != request.CallbackType || callbackTransportForRegistration(current) != request.CallbackClaimTransport || current.ImmediateWake != request.ImmediateWake || !callbackDeliverablePathEqual(current.DeliverablePath, request.DeliverablePath) || current.CallbackInboxRoute != nil && !callbackInboxRoutesEqual(current.CallbackInboxRoute, request.CallbackInboxRoute) || request.CallbackInboxRoute != nil && !callbackInboxRoutesEqual(current.CallbackInboxRoute, request.CallbackInboxRoute) {
+		if current.TargetSessionID != request.TargetSessionID || current.MissionID != request.MissionID || current.TaskID != request.TaskID || current.CallbackType != request.CallbackType || callbackTransportForRegistration(current) != request.CallbackClaimTransport || current.ImmediateWake != request.ImmediateWake || !callbackDeliverablePathEqual(current.DeliverablePath, request.DeliverablePath) {
 			return sessionCallbackRegistration{}, false, &sessionCallbackError{code: "CALLBACK_OWNER_CONFLICT", message: "source session already has a different callback owner"}
 		}
 		if request.Generation < current.Generation {
@@ -1169,7 +988,6 @@ func (s *sessionCallbackStore) enqueue(event chatgptCloudEvent) (bool, error) {
 		OccurredAt:             event.Timestamp.UTC(),
 		CallbackType:           event.CallbackType,
 		CallbackClaimTransport: callbackTransportForRegistration(registration),
-		CallbackInboxRoute:     cloneCallbackInboxRoute(registration.CallbackInboxRoute),
 		ResultText:             event.ResultText,
 		CallbackOutcome:        event.CallbackOutcome,
 		CallbackErrorCode:      event.CallbackErrorCode,
@@ -1286,9 +1104,7 @@ func (s *sessionCallbackStore) pendingForNudgeByTransport() (map[sessionCallback
 	}
 	grouped := map[sessionCallbackNudgeGroup][]sessionCallbackEvent{}
 	for _, event := range s.pending {
-		if callbackEventHasSuccessfulCollaborationProjection(event) {
-			continue
-		}
+
 		if event.CompletionSource == "recovery" && s.registrations[event.SourceSessionID].LastNudgeEventKey == event.EventKey {
 			continue
 		}
@@ -1299,50 +1115,6 @@ func (s *sessionCallbackStore) pendingForNudgeByTransport() (map[sessionCallback
 		sortSessionCallbackEvents(grouped[key])
 	}
 	return grouped, nil
-}
-
-func callbackEventHasSuccessfulCollaborationProjection(event sessionCallbackEvent) bool {
-	return event.CallbackInboxRoute != nil && callbackTransportForEvent(event) == callbackClaimTransportLocal && !event.CollaborationInboxProjectedAt.IsZero()
-}
-
-// markCollaborationInboxProjected persists a successful managed local
-// projection without changing the callback's pending, claim, or ACK state.
-// Event identity is fenced so an in-flight sink result cannot mark a replaced
-// generation or a newer event for the same source session.
-func (s *sessionCallbackStore) markCollaborationInboxProjected(events []sessionCallbackEvent, projectedAt time.Time) error {
-	if len(events) == 0 {
-		return nil
-	}
-	projectedAt = projectedAt.UTC()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.loadErr != nil {
-		return callbackStoreUnavailableError()
-	}
-	previous := cloneSessionCallbackEvents(s.pending)
-	changed := false
-	for _, event := range events {
-		if event.CallbackInboxRoute == nil || callbackTransportForEvent(event) != callbackClaimTransportLocal {
-			continue
-		}
-		current, exists := s.pending[event.SourceSessionID]
-		if !exists || current.Generation != event.Generation || current.EventSequence != event.EventSequence || current.EventKey != event.EventKey {
-			continue
-		}
-		if current.CollaborationInboxProjectedAt.IsZero() {
-			current.CollaborationInboxProjectedAt = projectedAt
-			s.pending[event.SourceSessionID] = current
-			changed = true
-		}
-	}
-	if !changed {
-		return nil
-	}
-	if _, err := s.saveLocked(); err != nil {
-		s.pending = previous
-		return err
-	}
-	return nil
 }
 
 func (s *sessionCallbackStore) pendingByTargetMode(forNudge bool) (map[string][]sessionCallbackEvent, error) {
@@ -1527,9 +1299,7 @@ func (s *sessionCallbackStore) claim(targetSessionID, requestedClaimID string, l
 		// item. A fresh generic claim belongs only to the legacy callback
 		// transport; an active explicit claim was handled above and remains
 		// replayable as-is.
-		if callbackEventHasSuccessfulCollaborationProjection(event) {
-			continue
-		}
+
 		available = append(available, event)
 	}
 	sortSessionCallbackEvents(available)
@@ -2141,7 +1911,6 @@ func cloneSessionCallbackRegistrations(input map[string]sessionCallbackRegistrat
 	output := make(map[string]sessionCallbackRegistration, len(input))
 	for key, value := range input {
 		value.RecentEventKeys = append([]string(nil), value.RecentEventKeys...)
-		value.CallbackInboxRoute = cloneCallbackInboxRoute(value.CallbackInboxRoute)
 		output[key] = value
 	}
 	return output
@@ -2150,7 +1919,6 @@ func cloneSessionCallbackRegistrations(input map[string]sessionCallbackRegistrat
 func cloneSessionCallbackEvents(input map[string]sessionCallbackEvent) map[string]sessionCallbackEvent {
 	output := make(map[string]sessionCallbackEvent, len(input))
 	for key, value := range input {
-		value.CallbackInboxRoute = cloneCallbackInboxRoute(value.CallbackInboxRoute)
 		output[key] = value
 	}
 	return output

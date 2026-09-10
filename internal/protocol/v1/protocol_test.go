@@ -52,19 +52,6 @@ func TestWorkingContextCapabilityAdvertisesSimpleTextActions(t *testing.T) {
 	t.Fatal("working.context capability is missing")
 }
 
-func TestCollaborationControlCapabilityIsLocalOnly(t *testing.T) {
-	want := []string{"init", "brief", "get", "next_actions", "record_action", "apply", "transfer_control", "claim", "recover", "receipt", "uncertain", "not_created", "verify", "dispatch", "dispatch_recover", "observe", "observation", "callback_claim", "callback_ack", "close", "compact", "cleanup"}
-	want = append(want, "inbox", "resolve", "decision_batch", "analysis_prepare", "result_recover", "validation_claim", "validation_receipt", "record_check", "tree", "tree_update", "archive", "retry", "upgrade")
-	if CollaborationControlCapability.CapabilityId != "collaboration.control" || CollaborationControlCapability.Version != "3.0" || !reflect.DeepEqual(CollaborationControlCapability.Actions, want) {
-		t.Fatalf("collaboration control=%+v", CollaborationControlCapability)
-	}
-	for _, capability := range NodeCapabilities {
-		if capability.CapabilityId == CollaborationControlCapability.CapabilityId {
-			t.Fatal("local collaboration control must not be advertised to the Hub")
-		}
-	}
-}
-
 func TestCodeSearchCapabilityAdvertisesVersionTwoWithoutNewAction(t *testing.T) {
 	for _, capability := range NodeCapabilities {
 		if capability.CapabilityId == "code.search" {

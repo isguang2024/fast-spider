@@ -33,9 +33,9 @@ Current 不提供目录列表工具；`audit_log` 只读查询 Hub 本地 `audit
 
 ## 本机 MCP
 
-`FastSpider_Local` 通过当前用户 Local Bridge 提供 3 个工具：`local_machine`、`local_capability`、`collaboration_control`。前两个发现并调用现有 Node 能力；`collaboration_control` 1.1 保留 `claim/recover/receipt/uncertain/not_created/verify` 兼容动作，并增加 `dispatch/dispatch_recover/callback_claim/callback_ack`。`dispatch` 在已运行的 Node 进程中原子 claim 任务自己的 SQLite READY，使用冻结包和稳定幂等键创建或复用 Cloud CHAT，再注册本机 callback；`dispatch_recover` 按已持久化阶段恢复，不创建替代 CHAT。ledger-only 动作不联网，Cloud 动作使用 Node 已有 Provider 凭据，但不经过 Hub。
+`FastSpider_Local` 通过当前用户 Local Bridge 提供两个工具：`local_machine` 和 `local_capability`。前者发现本机 Node，后者调用已有的文件、命令、Git、浏览器、Agent 等能力。
 
-`collaboration.control` 是本机专属能力，不加入 Node 向 Hub 注册的 capability catalog，因此公网 MCP 和 Direct API 都不能路由调用。Local callback 按目标会话与 transport 隔离；原主控用 `callback_claim` 领取、用 `callback_ack` 确认并退役对应 route。公网 `FastSpider_FS.codex_cloud_collaboration`、`task_result_submit` 和 Hub callback 仍作为远端兼容路径，工具列表与既有参数不变。
+普通 Cloud CHAT 使用 `FastSpider_FS.codex_cloud_collaboration` 与 `task_result_submit` 创建任务和返回结果。本机 Provider callback 通过 `local_capability` 的 `agent.control/session.callback.claim`、`session.callback.ack` 领取与确认；Hub callback 保持原协议。FS 不管理调用方的项目业务账本或主控/协调角色。
 
 入口按交付方式选择，而不是按任务看起来“简单”还是“复杂”：
 
@@ -43,7 +43,6 @@ Current 不提供目录列表工具；`audit_log` 只读查询 Hub 本地 `audit
 |---|---|---|
 | 直接操作本地文件、命令、Git、浏览器 | 对应的 `file_*` / `shell_run` / `git_control` / `browser_control` | 在当前会话内完成 |
 | 直接查看、创建或续发 AI 会话，并由当前调用方交互式读取 | `ai_control` | 只有明确需要同步观察时才使用 `session.get/watch/result` |
-| 从本机任务状态库创建或续发 Cloud CHAT，结果回到原 Codex 主控 | `FastSpider_Local collaboration_control dispatch` | Node 原子 claim、创建/复用 CHAT、注册 callback 并落账；调用方收到 `callerShouldYield=true` 后结束本轮 |
 | 创建或续发 Cloud CHAT，结果稍后回到 Codex | `codex_cloud_collaboration action=dispatch` | 提供 `callbackSessionId`；FS 创建或复用一个 CHAT、发送任务并登记回调，成功后立即结束本轮 |
 | CHAT 提交结果 | `task_result_submit` | 汇报本轮做了什么、结果与验证、阻塞或下一步建议，状态为 completed/blocked/failed；需决策也要回报。长报告摘要放在本机文件开头，过程日志不塞进回调；FS 持久化结果后唤醒绑定的 Codex |
 | 展示或临时分享已有文件 | `artifact_get` | 只有明确需要展示或临时 URL 时才上传，不作为协作回调通道 |

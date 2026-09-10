@@ -34,14 +34,13 @@ const (
 )
 
 type sessionCallbackDispatcher struct {
-	store        *sessionCallbackStore
-	logger       *slog.Logger
-	active       func(string) bool
-	send         func(context.Context, string, string) (sessionCallbackDeliveryResult, error)
-	resultSinkMu sync.RWMutex
-	resultSink   CollaborationResultSink
-	ensure       func(context.Context, string, int64) error
-	release      func(string, int64)
+	store  *sessionCallbackStore
+	logger *slog.Logger
+	active func(string) bool
+	send   func(context.Context, string, string) (sessionCallbackDeliveryResult, error)
+
+	ensure  func(context.Context, string, int64) error
+	release func(string, int64)
 	// recoverStatus performs one bounded provider status read for a registered
 	// Cloud CHAT. It is intentionally separate from ensure so tests and callers
 	// can keep callback subscription recovery free of provider polling.
@@ -65,31 +64,6 @@ type sessionCallbackDispatcher struct {
 	recoveredRequests           uint64
 	recoveryCursor              int
 	recoveryBatchMore           bool
-}
-
-// CollaborationResultSink receives the durable callback event metadata before
-// the dispatcher wakes the target Codex session. The map intentionally carries
-// identifiers and bounded result/deliverable metadata only; callback text and
-// provider responses never cross this hook.
-type CollaborationResultSink func(context.Context, map[string]any) error
-
-func (d *sessionCallbackDispatcher) setCollaborationResultSink(sink CollaborationResultSink) {
-	if d == nil {
-		return
-	}
-	d.resultSinkMu.Lock()
-	d.resultSink = sink
-	d.resultSinkMu.Unlock()
-}
-
-func (d *sessionCallbackDispatcher) collaborationResultSink() CollaborationResultSink {
-	if d == nil {
-		return nil
-	}
-	d.resultSinkMu.RLock()
-	sink := d.resultSink
-	d.resultSinkMu.RUnlock()
-	return sink
 }
 
 type sessionCallbackDeliveryResult struct {
@@ -516,54 +490,7 @@ func (d *sessionCallbackDispatcher) dispatchOnce() time.Time {
 			schedule(nextNudgeAt)
 			continue
 		}
-		if sink := d.collaborationResultSink(); sink != nil {
-			sinkFailed := false
-			for _, event := range claimable {
-				ctx, cancel := context.WithTimeout(d.rootCtx, 2*time.Minute)
-				sinkErr := sink(ctx, collaborationResultMetadata(event))
-				cancel()
-				if sinkErr == nil && event.CallbackInboxRoute != nil && callbackTransportForEvent(event) == callbackClaimTransportLocal {
-					sinkErr = d.store.markCollaborationInboxProjected([]sessionCallbackEvent{event}, time.Now().UTC())
-				}
-				if sinkErr == nil {
-					continue
-				}
-				if errors.Is(sinkErr, context.Canceled) {
-					return nextWake
-				}
-				d.logger.Warn("persist collaboration callback result", "targetSessionId", target.TargetSessionID, "transport", target.Transport, "envelopeId", envelopeID, "error", sinkErr)
-				next, persistErr := d.store.recordNudgeFailure(target.TargetSessionID, envelopeID, classifyExecutionError(sinkErr), time.Now().UTC(), d.retryInterval, target.Transport)
-				if persistErr != nil {
-					d.logger.Warn("persist callback result retry deadline", "error", persistErr)
-					next = retryAt()
-				}
-				schedule(next)
-				sinkFailed = true
-				break
-			}
-			if sinkFailed {
-				continue
-			}
-			// A managed local callback has already been delivered to the
-			// coordinator's durable inbox by the sink. Keep its pending event
-			// for the controller's per-result resolve/ACK flow, but remove it from
-			// this raw controller nudge. Legacy events in the same target batch
-			// remain eligible and are sent below.
-			legacyClaimable := claimable[:0]
-			for _, event := range claimable {
-				if event.CallbackInboxRoute == nil || callbackTransportForEvent(event) != callbackClaimTransportLocal {
-					legacyClaimable = append(legacyClaimable, event)
-				}
-			}
-			claimable = legacyClaimable
-			if len(claimable) == 0 {
-				continue
-			}
-			// The managed events were removed from this notification, so the
-			// envelope must be recomputed before recording or retrying the
-			// legacy-only nudge.
-			envelopeID = sessionCallbackEnvelopeIDForTransport(target.TargetSessionID, target.Transport, claimable)
-		}
+
 		prompt := buildSessionCallbackNudgeForTransport(target.TargetSessionID, envelopeID, target.Transport, claimable...)
 		ctx, cancel := context.WithTimeout(d.rootCtx, 2*time.Minute)
 		delivery, sendErr := d.send(ctx, target.TargetSessionID, prompt)
@@ -673,10 +600,10 @@ func buildSessionCallbackNudgeForTransport(targetSessionID string, envelopeID st
 	var builder strings.Builder
 	transport, _ = normalizeCallbackClaimTransport(transport)
 	if transport == callbackClaimTransportLocal {
-		claimArgs, _ := json.Marshal(map[string]any{"action": "callback_claim", "params": map[string]any{"callbackTargetSessionId": targetSessionID, "callbackClaimId": envelopeID, "callbackClaimTransport": callbackClaimTransportLocal}})
-		ackArgs, _ := json.Marshal(map[string]any{"action": "callback_ack", "params": map[string]any{"callbackTargetSessionId": targetSessionID, "callbackClaimId": envelopeID, "callbackClaimTransport": callbackClaimTransportLocal}})
-		_, _ = fmt.Fprintf(&builder, "Call FastSpider_Local collaboration_control(%s), process the returned callback events, then call FastSpider_Local collaboration_control(%s).", claimArgs, ackArgs)
-		builder.WriteString(" This is a transport notification, not a replacement for pending business work. Empty or already-consumed events only close this notification; resume any unfinished authorized validation/next_actions from the current turn. ACK is not business acceptance; the controller retains that decision, then notifies the coordinator for READY work.")
+		claimArgs, _ := json.Marshal(map[string]any{"capability": "agent.control", "action": "session.callback.claim", "params": map[string]any{"callbackTargetSessionId": targetSessionID, "callbackClaimId": envelopeID, "callbackClaimTransport": callbackClaimTransportLocal}})
+		ackArgs, _ := json.Marshal(map[string]any{"capability": "agent.control", "action": "session.callback.ack", "params": map[string]any{"callbackTargetSessionId": targetSessionID, "callbackClaimId": envelopeID, "callbackClaimTransport": callbackClaimTransportLocal}})
+		_, _ = fmt.Fprintf(&builder, "Call FastSpider_Local local_capability(%s), process the returned callback events, then call FastSpider_Local local_capability(%s).", claimArgs, ackArgs)
+		builder.WriteString(" This is a transport notification, not a replacement for pending business work. Empty or already-consumed events only close this notification; resume the current authorized task. ACK confirms transport receipt only; it does not decide whether the task is complete.")
 		return builder.String()
 	}
 	args, _ := json.Marshal(map[string]any{"action": "completion.claim", "params": map[string]any{"actorSessionId": targetSessionID, "claimId": envelopeID}})
@@ -883,30 +810,6 @@ func (m *AgentManager) handleCodexCallbackEvent(event AgentEvent) {
 	}
 }
 
-func (m *AgentManager) persistCollaborationCallbackEvents(ctx context.Context, events []sessionCallbackEvent) error {
-	if m == nil || len(events) == 0 || m.callbackDispatcher == nil {
-		return nil
-	}
-	sink := m.callbackDispatcher.collaborationResultSink()
-	if sink == nil {
-		return nil
-	}
-	for _, event := range events {
-		if callbackEventHasSuccessfulCollaborationProjection(event) {
-			continue
-		}
-		if err := sink(ctx, collaborationResultMetadata(event)); err != nil {
-			return fmt.Errorf("persist collaboration callback result: %w", err)
-		}
-		if event.CallbackInboxRoute != nil && callbackTransportForEvent(event) == callbackClaimTransportLocal {
-			if err := m.callbackStore.markCollaborationInboxProjected([]sessionCallbackEvent{event}, time.Now().UTC()); err != nil {
-				return fmt.Errorf("persist collaboration callback projection state: %w", err)
-			}
-		}
-	}
-	return nil
-}
-
 func (m *AgentManager) sessionCallbackRegister(ctx context.Context, input agentControlParams) (map[string]any, error) {
 	if m.callbackStore == nil || m.callbackDispatcher == nil {
 		return nil, callbackStoreUnavailableError()
@@ -951,7 +854,6 @@ func (m *AgentManager) sessionCallbackRegister(ctx context.Context, input agentC
 		Generation:             input.CallbackGeneration,
 		CallbackType:           strings.TrimSpace(input.CallbackType),
 		CallbackClaimTransport: strings.TrimSpace(input.CallbackClaimTransport),
-		CallbackInboxRoute:     cloneCallbackInboxRoute(input.CallbackInboxRoute),
 		DeliverablePath:        strings.TrimSpace(input.CallbackDeliverablePath),
 		BaselineIdentity:       strings.TrimSpace(input.CallbackBaselineIdentity),
 		ImmediateWake:          input.CallbackImmediateWake,
@@ -1355,12 +1257,7 @@ func (m *AgentManager) sessionCallbackClaimContext(ctx context.Context, input ag
 	if err != nil {
 		return nil, err
 	}
-	if err := m.persistCollaborationCallbackEvents(ctx, events); err != nil {
-		if releaseErr := m.callbackStore.releaseClaim(targetSessionID, claimID, transport); releaseErr != nil {
-			return nil, errors.Join(err, releaseErr)
-		}
-		return nil, err
-	}
+
 	if m.callbackDispatcher != nil {
 		m.callbackDispatcher.signal()
 	}
@@ -1399,13 +1296,7 @@ func (m *AgentManager) sessionCallbackAckContext(ctx context.Context, input agen
 	var err error
 	var retired []sessionCallbackRegistration
 	if input.Mode == "completion" {
-		pending, pendingErr := m.callbackStore.pendingSnapshot(strings.TrimSpace(input.SessionID), targetSessionID)
-		if pendingErr != nil {
-			return nil, pendingErr
-		}
-		if err := m.persistCollaborationCallbackEvents(ctx, pending); err != nil {
-			return nil, err
-		}
+
 		acked, err = m.callbackStore.acknowledgeCompletion(sessionCallbackRegistration{
 			SourceSessionID: strings.TrimSpace(input.SessionID), TargetSessionID: targetSessionID,
 			MissionID: strings.TrimSpace(input.CallbackMissionID), TaskID: strings.TrimSpace(input.CallbackTaskID),
@@ -1418,13 +1309,7 @@ func (m *AgentManager) sessionCallbackAckContext(ctx context.Context, input agen
 			m.chatgptCloud.ReleaseCallbackRealtimeForGeneration(strings.TrimSpace(input.SessionID), input.CallbackGeneration)
 		}
 	} else if transport == callbackClaimTransportLocal {
-		claimed, claimedErr := m.callbackStore.pendingClaimSnapshot(targetSessionID, input.CallbackClaimID, transport)
-		if claimedErr != nil {
-			return nil, claimedErr
-		}
-		if err := m.persistCollaborationCallbackEvents(ctx, claimed); err != nil {
-			return nil, err
-		}
+
 		acked, retired, err = m.callbackStore.acknowledgeClaimAndRetire(targetSessionID, input.CallbackClaimID, time.Now().UTC(), transport)
 		if err == nil && m.chatgptCloud != nil {
 			for _, registration := range retired {
@@ -1432,13 +1317,7 @@ func (m *AgentManager) sessionCallbackAckContext(ctx context.Context, input agen
 			}
 		}
 	} else {
-		claimed, claimedErr := m.callbackStore.pendingClaimSnapshot(targetSessionID, input.CallbackClaimID, transport)
-		if claimedErr != nil {
-			return nil, claimedErr
-		}
-		if err := m.persistCollaborationCallbackEvents(ctx, claimed); err != nil {
-			return nil, err
-		}
+
 		acked, err = m.callbackStore.acknowledgeClaim(targetSessionID, input.CallbackClaimID, time.Now().UTC(), transport)
 	}
 	if err != nil {
@@ -1510,67 +1389,12 @@ func sessionCallbackEventMap(event sessionCallbackEvent, now time.Time, includeT
 		out["deliverablePath"] = event.DeliverablePath
 		out["deliverableStatus"] = event.DeliverableStatus
 	}
-	if event.CallbackInboxRoute != nil {
-		out["callbackInboxRoute"] = cloneCallbackInboxRoute(event.CallbackInboxRoute)
-	}
+
 	if event.ClaimID != "" && callbackClaimActive(event, now) {
 		out["claimId"] = event.ClaimID
 		out["claimedAt"] = event.ClaimedAt.UTC().Format(time.RFC3339Nano)
 		out["claimExpiresAt"] = event.ClaimedAt.UTC().Add(sessionCallbackClaimLease).Format(time.RFC3339Nano)
 		out["claimState"] = "claimed"
-	}
-	return out
-}
-
-func collaborationResultMetadata(event sessionCallbackEvent) map[string]any {
-	out := map[string]any{
-		"sourceSessionId": event.SourceSessionID,
-		"targetSessionId": event.TargetSessionID,
-		"missionId":       event.MissionID,
-		"taskId":          event.TaskID,
-		"generation":      event.Generation,
-		"callbackOutcome": event.CallbackOutcome,
-		// Keep the legacy event key while callbackOutcome is the durable sink
-		// contract. Existing local inbox consumers use outcome to classify the
-		// terminal result, and the alias carries no callback body.
-		"outcome":                event.CallbackOutcome,
-		"callbackType":           event.CallbackType,
-		"callbackClaimTransport": callbackTransportForEvent(event),
-		"completionSource":       event.CompletionSource,
-		"eventSequence":          event.EventSequence,
-		"eventKey":               event.EventKey,
-		"eventType":              event.EventType,
-		"occurredAt":             event.OccurredAt.UTC().Format(time.RFC3339Nano),
-	}
-	if event.CallbackErrorCode != "" {
-		out["callbackErrorCode"] = event.CallbackErrorCode
-	}
-	if event.ResultText != "" {
-		out["resultTextAvailable"] = true
-	}
-	if event.ResultID != "" {
-		out["resultId"] = event.ResultID
-	}
-	if event.ResultStatus != "" {
-		out["resultStatus"] = event.ResultStatus
-	}
-	if event.ResultBytes > 0 {
-		out["resultBytes"] = event.ResultBytes
-	}
-	if event.ResultSHA256 != "" {
-		out["resultSHA256"] = event.ResultSHA256
-	}
-	if event.ResultPageCount > 0 {
-		out["resultPageCount"] = event.ResultPageCount
-	}
-	if event.DeliverablePath != "" {
-		out["deliverablePath"] = event.DeliverablePath
-		if event.DeliverableStatus != "" {
-			out["deliverableStatus"] = event.DeliverableStatus
-		}
-	}
-	if event.CallbackInboxRoute != nil {
-		out["callbackInboxRoute"] = cloneCallbackInboxRoute(event.CallbackInboxRoute)
 	}
 	return out
 }
@@ -1630,9 +1454,7 @@ func callbackRegistrationMap(registration sessionCallbackRegistration, pendingCo
 		"registeredAt":           registration.RegisteredAt.UTC().Format(time.RFC3339Nano),
 		"updatedAt":              registration.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	}
-	if registration.CallbackInboxRoute != nil {
-		out["callbackInboxRoute"] = cloneCallbackInboxRoute(registration.CallbackInboxRoute)
-	}
+
 	if !registration.ArmedAt.IsZero() {
 		out["armedAt"] = registration.ArmedAt.UTC().Format(time.RFC3339Nano)
 	}

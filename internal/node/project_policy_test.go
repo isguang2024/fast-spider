@@ -42,8 +42,6 @@ func TestProjectModePathGuard(t *testing.T) {
 		{"shell.exec", "run", map[string]any{"cwd": insideDir}},
 		{"build.exec", "run", map[string]any{"cwd": projectRoot}},
 		{"working.context", "get", map[string]any{"projectPath": projectRoot}},
-		{"collaboration.control", "dispatch", map[string]any{"dbPath": insideFile}},
-		{"collaboration.control", "dispatch_recover", map[string]any{"dbPath": insideFile}},
 	}
 	for _, item := range insideCases {
 		if err := policy.validate(item.capability, item.action, item.params); err != nil {
@@ -62,8 +60,6 @@ func TestProjectModePathGuard(t *testing.T) {
 		{"shell.exec", "run", map[string]any{"cwd": outsideRoot}},
 		{"git.repository", "status", map[string]any{"repositoryPath": outsideRoot}},
 		{"working.context", "get", map[string]any{"projectPath": outsideRoot}},
-		{"collaboration.control", "dispatch", map[string]any{"dbPath": outsideFile}},
-		{"collaboration.control", "dispatch_recover", map[string]any{"dbPath": outsideFile}},
 	}
 	for _, item := range outsideCases {
 		if err := policy.validate(item.capability, item.action, item.params); !errors.Is(err, ErrProjectPathForbidden) {
@@ -147,25 +143,5 @@ func TestLocalCapabilityClientEnforcesConfiguredProjectRoot(t *testing.T) {
 	})
 	if invalidResponse.Error == nil {
 		t.Fatalf("invalid project root was ignored: %#v", invalidResponse)
-	}
-}
-
-func TestProjectModeCollaborationStateKeepsEachDatabaseInsideProject(t *testing.T) {
-	projectRoot := t.TempDir()
-	outsideRoot := t.TempDir()
-	client := NewLocalCapabilityClient(Config{DataDir: filepath.Join(projectRoot, "node-data"), ProjectRoot: projectRoot})
-	params := collaborationStateInitParams(filepath.Join(outsideRoot, "collaboration.sqlite3"), nil)
-	response := client.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{
-		RequestId: "outside-collaboration-state", Capability: "collaboration.control", Action: "init", Params: params,
-	})
-	if response.Error == nil || response.Error.Code != "PROJECT_PATH_FORBIDDEN" {
-		t.Fatalf("outside collaboration database response=%#v", response)
-	}
-	inside := collaborationStateInitParams(filepath.Join(projectRoot, "collaboration.sqlite3"), nil)
-	response = client.HandleLocalCapability(context.Background(), protocolv1.CapabilityRequest{
-		RequestId: "inside-collaboration-state", Capability: "collaboration.control", Action: "init", Params: inside,
-	})
-	if response.Error != nil {
-		t.Fatalf("inside collaboration database rejected: %#v", response.Error)
 	}
 }

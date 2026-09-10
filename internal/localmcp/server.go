@@ -18,7 +18,7 @@ import (
 
 const serverInstructions = `FastSpider_Local connects Codex directly to the Fast Spider Node running as the same OS user. It uses the current-user Local Bridge and never routes capability calls through the Hub.
 
-Call local_machine first when the local Node identity or capability catalog is needed. Use local_capability with one advertised capability/action and its normal Node parameters. Use collaboration_control for the complete task-local collaboration SQLite lifecycle and for local dispatch/callback actions. Pass state changes directly as structured params; do not create JSON input files. Ledger-only actions never contact the Hub or a provider; dispatch actions use the co-located Node AgentController to create or reuse a Cloud CHAT and register its local callback. Local transport does not make an underlying network-dependent action offline: remote Git, browser navigation, cloud AI, artifact publication, and provider authentication may still require network access.
+Call local_machine to discover the local Node, then use local_capability with an advertised capability/action. For an ordinary Cloud CHAT task with a result callback, use FastSpider_FS codex_cloud_collaboration action=dispatch. Local provider callback notifications use agent.control session.callback.claim and session.callback.ack through local_capability. Local routing does not make network-dependent provider, Git, or browser operations offline.
 
 Mutations keep their existing Node contracts. Preserve idempotency keys, use file read/SHA/preview/CAS for edits, drive every started job to a terminal state with job.control/watch, close caller-owned browser sessions, and do not retry an uncertain external create with a new key.`
 
@@ -74,7 +74,6 @@ func newServer(dataDir, version string, logger *slog.Logger, call bridgeCaller) 
 			return nil, machineOutput{}, err
 		}
 		capabilities := append([]protocolv1.CapabilityDescriptor(nil), protocolv1.NodeCapabilities...)
-		capabilities = append(capabilities, protocolv1.CollaborationControlCapability)
 		capabilities = append(capabilities, protocolv1.ScreenshotCapabilityForOS(runtime.GOOS), protocolv1.BrowserCapability)
 		return emptyResult(), machineOutput{
 			Transport:      "local",
@@ -121,18 +120,6 @@ func newServer(dataDir, version string, logger *slog.Logger, call bridgeCaller) 
 			return nil, capabilityCallOutput{}, fmt.Errorf("%s: %s", response.Error.Code, response.Error.Message)
 		}
 		return emptyResult(), capabilityCallOutput{RequestID: response.RequestId, TraceID: response.TraceId, Result: response.Result}, nil
-	})
-
-	mcp.AddTool(server, &mcp.Tool{
-		Name:        "collaboration_control",
-		Description: "Manage one isolated collaboration SQLite mission through the co-located Node, including state views, CAS updates, dispatch, callback receipt, handoff, closure, compaction, and exact cleanup. Params are structured objects; ledger-only actions never contact the Hub or a provider.",
-		Annotations: toolAnnotations(false, true, false, false),
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, input collaborationControlInput) (*mcp.CallToolResult, collaborationControlOutput, error) {
-		result, err := callCollaborationControl(ctx, dataDir, call, input)
-		if err != nil {
-			return nil, collaborationControlOutput{}, err
-		}
-		return emptyResult(), result, nil
 	})
 
 	return server

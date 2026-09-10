@@ -51,26 +51,24 @@ type Config struct {
 }
 
 type Client struct {
-	cfg                                   Config
-	http                                  *http.Client
-	publicKey                             ed25519.PublicKey
-	privateKey                            ed25519.PrivateKey
-	windowTokenKey                        [32]byte
-	statePath                             string
-	writeMu                               sync.Mutex
-	collaborationWakeMu                   sync.Mutex
-	collaborationWakeNotify               chan struct{}
-	activityMu                            sync.Mutex
-	releaseDrain                          bool
-	jobs                                  *JobManager
-	browser                               *BrowserManager
-	agent                                 AgentController
-	requestSem                            chan struct{}
-	screenshotSem                         chan struct{}
-	operationLog                          *operationlog.Store
-	projectPolicy                         *projectPolicy
-	projectPolicyErr                      error
-	beforeCollaborationTokenWriteOverride func(collaborationToken) error
+	cfg            Config
+	http           *http.Client
+	publicKey      ed25519.PublicKey
+	privateKey     ed25519.PrivateKey
+	windowTokenKey [32]byte
+	statePath      string
+	writeMu        sync.Mutex
+
+	activityMu       sync.Mutex
+	releaseDrain     bool
+	jobs             *JobManager
+	browser          *BrowserManager
+	agent            AgentController
+	requestSem       chan struct{}
+	screenshotSem    chan struct{}
+	operationLog     *operationlog.Store
+	projectPolicy    *projectPolicy
+	projectPolicyErr error
 }
 
 type machineRegistrationResponse struct {
@@ -129,11 +127,7 @@ func New(cfg Config) (*Client, error) {
 	if setter, ok := cfg.Agent.(interface{ SetCloudResultPublisher(any) }); ok {
 		setter.SetCloudResultPublisher(client)
 	}
-	if setter, ok := cfg.Agent.(interface {
-		SetCollaborationResultSink(func(context.Context, map[string]any) error)
-	}); ok {
-		setter.SetCollaborationResultSink(client.PersistCollaborationCallback)
-	}
+
 	return client, nil
 }
 

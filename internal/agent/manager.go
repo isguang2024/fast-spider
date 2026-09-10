@@ -87,12 +87,12 @@ type agentControlParams struct {
 	CallbackOutcome          string              `json:"callbackOutcome,omitempty"`
 	CallbackErrorCode        string              `json:"callbackErrorCode,omitempty"`
 	CallbackText             string              `json:"callbackText,omitempty"`
-	CallbackInboxRoute       map[string]any      `json:"callbackInboxRoute,omitempty"`
-	CallbackClaimID          string              `json:"callbackClaimId,omitempty"`
-	CallbackClaimLimit       int                 `json:"callbackClaimLimit,omitempty"`
-	CallbackClaimTransport   string              `json:"callbackClaimTransport,omitempty"`
-	modelProvided            bool
-	thinkingProvided         bool
+
+	CallbackClaimID        string `json:"callbackClaimId,omitempty"`
+	CallbackClaimLimit     int    `json:"callbackClaimLimit,omitempty"`
+	CallbackClaimTransport string `json:"callbackClaimTransport,omitempty"`
+	modelProvided          bool
+	thinkingProvided       bool
 }
 
 type agentSkillInput struct {
@@ -140,55 +140,6 @@ func (m *AgentManager) SetCloudResultPublisher(p any) {
 	} else {
 		m.resultPublisher = nil
 	}
-}
-
-// SetCollaborationResultSink installs the optional durable collaboration
-// projection used by the callback dispatcher. Registration is deliberately
-// explicit: Node wiring should install the sink before accepting callback
-// traffic, while callers that omit it retain the existing nudge-only behavior.
-func (m *AgentManager) SetCollaborationResultSink(sink func(context.Context, map[string]any) error) {
-	if m == nil || m.callbackDispatcher == nil {
-		return
-	}
-	m.callbackDispatcher.setCollaborationResultSink(CollaborationResultSink(sink))
-	m.callbackDispatcher.start()
-}
-
-// BindCollaborationInbox attaches the exact Node-owned inbox route to existing
-// local callback registrations. It is intentionally an in-process repair hook;
-// it does not create, arm, send, or inspect a Cloud session.
-func (m *AgentManager) BindCollaborationInbox(ctx context.Context, routes []map[string]any) error {
-	if m == nil || m.callbackStore == nil {
-		return callbackStoreUnavailableError()
-	}
-	if err := m.callbackStore.bindCollaborationInbox(ctx, routes); err != nil {
-		return err
-	}
-	if len(routes) == 0 || m.callbackDispatcher == nil {
-		return nil
-	}
-	events := make([]sessionCallbackEvent, 0, len(routes))
-	for _, raw := range routes {
-		binding, err := decodeCollaborationInboxBinding(raw)
-		if err != nil {
-			return &sessionCallbackError{code: "INVALID_REQUEST", message: err.Error()}
-		}
-		pending, err := m.callbackStore.pendingSnapshot(binding.SourceSessionID, binding.TargetSessionID)
-		if err != nil {
-			return err
-		}
-		events = append(events, pending...)
-	}
-	if err := m.persistCollaborationCallbackEvents(ctx, events); err != nil {
-		// The route binding remains durable by design. A caller can retry the
-		// same route after repairing the business inbox sink without touching the
-		// active claim or callback watcher.
-		return err
-	}
-	if len(events) > 0 {
-		m.callbackDispatcher.signal()
-	}
-	return nil
 }
 
 type chatGPTCloudCreateDefaults struct {
@@ -1461,8 +1412,8 @@ func (m *AgentManager) cleanupRejectedInitialTurn(sessionID string, idempotencyP
 	return nil
 }
 
-// DeliverLocalCodexTurn is shared by callback and role wake dispatchers. It
-// preserves the Desktop writer and requires its confirmed turn ID. Ordinary
+// DeliverLocalCodexTurn delivers callback notifications through the local owner.
+// It preserves the Desktop writer and requires its confirmed turn ID. Ordinary
 // external session.send keeps its existing policy.
 func (m *AgentManager) DeliverLocalCodexTurn(ctx context.Context, sessionID, prompt string) (map[string]any, error) {
 	return m.sessionSend(ctx, agentControlParams{SessionID: sessionID, Prompt: prompt, RequireConfirmedTurnID: true})

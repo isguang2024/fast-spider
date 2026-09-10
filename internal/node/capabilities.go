@@ -181,18 +181,7 @@ func (c *Client) handleCapabilityRequestFrom(ctx context.Context, req protocolv1
 		result, err = c.operationLogQuery(ctx, req.Params)
 	case "working.context/get", "working.context/set", "working.context/clear":
 		result, err = c.workingContextControl(ctx, req.Action, req.Params)
-	case "collaboration.control/decision_batch", "collaboration.control/analysis_prepare", "collaboration.control/result_recover":
-		if !local {
-			response.Error = protocolError("UNSUPPORTED_CAPABILITY", "capability or action is not available", false)
-			return response
-		}
-		result, err = c.collaborationControl(ctx, req.Action, req.Params)
-	case "collaboration.control/upgrade", "collaboration.control/tree", "collaboration.control/tree_update", "collaboration.control/archive", "collaboration.control/retry", "collaboration.control/inbox", "collaboration.control/resolve", "collaboration.control/validation_claim", "collaboration.control/validation_receipt", "collaboration.control/record_check", "collaboration.control/init", "collaboration.control/brief", "collaboration.control/get", "collaboration.control/next_actions", "collaboration.control/record_action", "collaboration.control/apply", "collaboration.control/transfer_control", "collaboration.control/claim", "collaboration.control/recover", "collaboration.control/receipt", "collaboration.control/uncertain", "collaboration.control/not_created", "collaboration.control/verify", "collaboration.control/dispatch", "collaboration.control/dispatch_recover", "collaboration.control/observe", "collaboration.control/observation", "collaboration.control/callback_claim", "collaboration.control/callback_ack", "collaboration.control/close", "collaboration.control/compact", "collaboration.control/cleanup":
-		if !local {
-			response.Error = protocolError("UNSUPPORTED_CAPABILITY", "capability or action is not available", false)
-			return response
-		}
-		result, err = c.collaborationControl(ctx, req.Action, req.Params)
+
 	case "browser.automation/readiness", "browser.automation/launch", "browser.automation/close", "browser.automation/page.open", "browser.automation/page.navigate", "browser.automation/page.close", "browser.automation/pages.list", "browser.automation/click", "browser.automation/type", "browser.automation/press", "browser.automation/wait", "browser.automation/batch", "browser.automation/snapshot", "browser.automation/screenshot", "browser.automation/events":
 		result, err = c.browserControl(ctx, req.Action, req.Params)
 	case "screenshot.capture/listDisplays", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/listWindows", "screenshot.capture/window":
@@ -212,7 +201,7 @@ func (c *Client) handleCapabilityRequestFrom(ctx context.Context, req protocolv1
 		return response
 	}
 	if err != nil {
-		response.Error = capabilityErrorFor(req.Capability, err)
+		response.Error = capabilityError(err)
 		return response
 	}
 	raw, err := json.Marshal(result)
@@ -417,24 +406,6 @@ func capabilityError(err error) *protocolv1.ProtocolError {
 	default:
 		return protocolError("INVALID_REQUEST", "capability request could not be completed", false)
 	}
-}
-
-func capabilityErrorFor(capability string, err error) *protocolv1.ProtocolError {
-	result := capabilityError(err)
-	if capability != protocolv1.CollaborationControlCapability.CapabilityId || result.Code != "INVALID_REQUEST" || result.Message != "capability request could not be completed" {
-		return result
-	}
-	message := strings.TrimSpace(err.Error())
-	if message == "" {
-		return result
-	}
-	const maxCollaborationErrorRunes = 512
-	runes := []rune(message)
-	if len(runes) > maxCollaborationErrorRunes {
-		message = string(runes[:maxCollaborationErrorRunes])
-	}
-	result.Message = message
-	return result
 }
 
 func protocolError(code, message string, retryable bool) *protocolv1.ProtocolError {

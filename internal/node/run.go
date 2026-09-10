@@ -29,7 +29,6 @@ func (c *Client) Run(ctx context.Context) error {
 	c.reportConnectionStatus("starting", nil)
 	defer c.reportConnectionStatus("stopped", ctx.Err())
 	go c.jobs.StartMaintenance(ctx)
-	go c.runCollaborationRoleWakeDispatcher(ctx)
 	if c.browser != nil {
 		go c.browser.StartMaintenance(ctx)
 	}
