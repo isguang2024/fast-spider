@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -290,8 +291,59 @@ func TestNativeRunnerTerminalMissingReportDoesNotHoldOtherBlocks(t *testing.T) {
 	if first.Result == nil || first.Result.Outcome != "blocked" || first.Result.ErrorCode != "RUNNER_REPORT_UNAVAILABLE" {
 		t.Fatalf("missing report not recorded as repairable: %+v", first.Result)
 	}
+	if first.Result.Path == "" || first.Result.Path != first.Request.ResultPath {
+		t.Fatalf("missing report lost its immutable binding: result=%+v request=%+v", first.Result, first.Request)
+	}
 	if loadNativeTask(t, runner, project.ID, "next").Receipt == nil {
 		t.Fatal("terminal missing report held independent writer")
+	}
+}
+
+func TestNativeRunnerPlannerMissingReportSchedulesRepairWithoutEmptyPath(t *testing.T) {
+	runner, _, project := newNativeRunnerForTest(t, "planner report recovery", nil)
+	project, planner := plannerForTest(t, runner, project.ID)
+	missingPath := filepath.Join(runner.dir, "planner-missing.result")
+	saveNativeTasks(t, runner, project.ID, func(task *nativeRunnerTask) {
+		if task.ID != planner.ID {
+			return
+		}
+		task.State = "returned"
+		task.Result = &nativeRunnerResult{
+			EventID: "planner-missing-report", Outcome: "blocked", ExecutionOutcome: "completed",
+			ErrorCode: "RUNNER_REPORT_UNAVAILABLE", Path: missingPath,
+			Summary: "Execution is terminal; recover the missing report",
+		}
+	})
+	if err := runner.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	updated := loadNativeTask(t, runner, project.ID, planner.ID)
+	if updated.State != "queued" || !strings.Contains(updated.Correction, "RUNNER_REPORT_UNAVAILABLE") {
+		t.Fatalf("planner was not scheduled for focused repair: %+v", updated)
+	}
+	if strings.Contains(updated.LastError, "open :") || strings.Contains(updated.Correction, "open :") {
+		t.Fatalf("planner attempted to read an empty report path: %+v", updated)
+	}
+}
+
+func TestNativeRunnerHistoryFenceAllowsOnlyReportRecoveryRounds(t *testing.T) {
+	receipt := &nativeRunnerReceipt{SessionID: "chat", TaskRef: "task", Generation: 1, ResultPath: "result"}
+	for _, tc := range []struct {
+		name    string
+		attempt nativeRunnerAttempt
+		blocks  bool
+	}{
+		{name: "ordinary unacked result", attempt: nativeRunnerAttempt{Receipt: receipt, Result: &nativeRunnerResult{ErrorCode: "WORKER_FAILED"}}, blocks: true},
+		{name: "missing report recovery", attempt: nativeRunnerAttempt{Receipt: receipt, Result: &nativeRunnerResult{ErrorCode: "RUNNER_REPORT_UNAVAILABLE"}}, blocks: false},
+		{name: "changed report recovery", attempt: nativeRunnerAttempt{Receipt: receipt, Result: &nativeRunnerResult{ErrorCode: "RUNNER_REPORT_CHANGED"}}, blocks: false},
+		{name: "unacked attempt without result", attempt: nativeRunnerAttempt{Receipt: receipt}, blocks: true},
+		{name: "acknowledged result", attempt: nativeRunnerAttempt{Receipt: receipt, Result: &nativeRunnerResult{ErrorCode: "WORKER_FAILED"}, Acked: true}, blocks: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nativeHistoryBlocksDispatch(tc.attempt); got != tc.blocks {
+				t.Fatalf("nativeHistoryBlocksDispatch=%v, want %v", got, tc.blocks)
+			}
+		})
 	}
 }
 

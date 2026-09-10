@@ -136,7 +136,7 @@ func (t *nativeRunnerTransport) Dispatch(ctx context.Context, request nativeRunn
 		return nativeRunnerReceipt{}, errors.New("native runner machine identity is not ready; preserve the request until Node is connected")
 	}
 	controlEnvelope, _ := json.Marshal(map[string]any{"machineId": machineID, "action": "runner.submit", "responseContent": json.RawMessage(responseContent)})
-	prompt := request.Prompt + "\n\nNative runner binding: taskRef=" + taskRef + ". After writing the final report, call Fast Spider FS ai_control with this exact object: " + string(controlEnvelope) + ". The Node resolves project, task, round and Cloud session from this immutable taskRef; do not create another CHAT or invent a session ID."
+	prompt := request.Prompt + "\n\nNative runner binding: taskRef=" + taskRef + ". This task requires the installed Fast Spider FS ai_control capability. If the capability is not visible in the current tool context, first use the normal Fast Spider FS capability discovery/bootstrap flow, then call Fast Spider FS ai_control with this exact object: " + string(controlEnvelope) + ". The Node resolves project, task, round and Cloud session from this immutable taskRef; do not create another CHAT or invent a session ID."
 
 	sessionID := strings.TrimSpace(request.TargetSessionID)
 	if sessionID != "" {
@@ -147,7 +147,14 @@ func (t *nativeRunnerTransport) Dispatch(ctx context.Context, request nativeRunn
 		if err := t.registerCallback(ctx, request, sessionID, "reuse"); err != nil {
 			return nativeRunnerReceipt{}, err
 		}
-		if _, err := t.manager.chatgptCloud.SendQuickIdempotentWithThinkingAndServiceTier(ctx, sessionID, "", prompt, "", "", "", request.IdempotencyKey); err != nil {
+		if _, err := t.manager.Control(ctx, "session.send", map[string]any{
+			"providerId":     "codex",
+			"backend":        sessionBackendChatGPTCloud,
+			"sessionId":      sessionID,
+			"mode":           "quick_chat",
+			"prompt":         prompt,
+			"idempotencyKey": request.IdempotencyKey,
+		}); err != nil {
 			return nativeRunnerReceipt{}, err
 		}
 	} else {
@@ -246,6 +253,22 @@ func (t *nativeRunnerTransport) Acknowledge(_ context.Context, task nativeRunner
 	if task.Request == nil || task.Receipt == nil {
 		return errors.New("runner task has no immutable callback binding")
 	}
+	evidencePath := ""
+	if task.Result != nil && task.Result.Path != "" {
+		status, _, digest := inspectCallbackDeliverable(task.Result.Path)
+		if status != "ready" && task.Result.ErrorCode == "" {
+			// Preserve the original transport error for an unprocessed missing
+			// report; nativeRunner.storeResult materializes explicit recovery
+			// evidence before retrying this ACK.
+			evidencePath = ""
+		} else if status != "ready" {
+			return fmt.Errorf("runner evidence snapshot is %s", status)
+		} else if task.Result.SHA256 != "" && task.Result.ErrorCode != "RUNNER_REPORT_CHANGED" && strings.TrimPrefix(task.Result.SHA256, "sha256:") != strings.TrimPrefix(digest, "sha256:") {
+			return errors.New("runner evidence snapshot digest changed; preserve the callback binding")
+		} else {
+			evidencePath = task.Result.Path
+		}
+	}
 	now := time.Now().UTC()
 	_, events, err := t.manager.callbackStore.claimExact(task.Request.ControllerSessionID, task.Receipt.SessionID, task.ProjectID, task.ID, task.Receipt.Generation, nativeRunnerClaimID(task), 1, now, callbackClaimTransportLocal)
 	if err != nil {
@@ -256,7 +279,7 @@ func (t *nativeRunnerTransport) Acknowledge(_ context.Context, task nativeRunner
 			return errors.New("callback changed after saved result; do not acknowledge another event")
 		}
 	}
-	_, retired, err := t.manager.callbackStore.acknowledgeClaimAndRetire(task.Request.ControllerSessionID, nativeRunnerClaimID(task), now, callbackClaimTransportLocal)
+	_, retired, err := t.manager.callbackStore.acknowledgeClaimAndRetireWithEvidence(task.Request.ControllerSessionID, nativeRunnerClaimID(task), now, evidencePath, callbackClaimTransportLocal)
 	if err == nil && t.manager.chatgptCloud != nil {
 		for _, registration := range retired {
 			t.manager.chatgptCloud.ReleaseCallbackRealtimeForGeneration(registration.SourceSessionID, registration.Generation)

@@ -1522,6 +1522,15 @@ func (s *sessionCallbackStore) acknowledgeClaim(targetSessionID, claimID string,
 // completion.ack phase, so retaining the route would leave a stale realtime
 // watcher and make a completed task appear active after restart.
 func (s *sessionCallbackStore) acknowledgeClaimAndRetire(targetSessionID, claimID string, now time.Time, transportArg ...string) (int, []sessionCallbackRegistration, error) {
+	return s.acknowledgeClaimAndRetireWithEvidence(targetSessionID, claimID, now, "", transportArg...)
+}
+
+// acknowledgeClaimAndRetireWithEvidence permits a native runner to retire a
+// local-file callback from a durable frozen snapshot when the original worker
+// path disappeared or changed after the result was observed. The caller must
+// validate the snapshot binding and digest; this store only verifies that the
+// snapshot is readable and that the route is a native local callback.
+func (s *sessionCallbackStore) acknowledgeClaimAndRetireWithEvidence(targetSessionID, claimID string, now time.Time, evidencePath string, transportArg ...string) (int, []sessionCallbackRegistration, error) {
 	targetSessionID = strings.TrimSpace(targetSessionID)
 	claimID = strings.TrimSpace(claimID)
 	if err := validateCallbackOpaqueID(targetSessionID, "callback target session ID", 256); err != nil {
@@ -1537,6 +1546,12 @@ func (s *sessionCallbackStore) acknowledgeClaimAndRetire(targetSessionID, claimI
 		if transportErr != nil {
 			return 0, nil, &sessionCallbackError{code: "INVALID_REQUEST", message: transportErr.Error()}
 		}
+	}
+	evidencePath = strings.TrimSpace(evidencePath)
+	evidenceReady := false
+	if evidencePath != "" {
+		status, _, _ := inspectCallbackDeliverable(evidencePath)
+		evidenceReady = status == "ready"
 	}
 	now = now.UTC()
 	s.mu.Lock()
@@ -1590,6 +1605,9 @@ func (s *sessionCallbackStore) acknowledgeClaimAndRetire(targetSessionID, claimI
 		s.pending[item.source] = item.event
 		s.registrations[item.source] = item.registration
 		if item.event.CallbackType == protocolv1.CloudCallbackTypeLocalFile && item.event.DeliverableStatus != "ready" {
+			if evidenceReady && item.registration.NativeRunner {
+				continue
+			}
 			if metadataChanged {
 				if _, err := s.saveLocked(); err != nil {
 					s.registrations = previousRegistrations

@@ -754,6 +754,14 @@ func (r *nativeRunner) tickProject(ctx context.Context, id string) error {
 			old.Request = h.Request
 			old.Receipt = h.Receipt
 			old.Result = h.Result
+			if old.Result != nil && (old.Result.ErrorCode == "RUNNER_REPORT_UNAVAILABLE" || old.Result.ErrorCode == "RUNNER_REPORT_CHANGED") && strings.TrimSpace(old.Result.Path) == "" {
+				if e := r.recoverHistoricalReportBinding(&old); e != nil {
+					failed = true
+					continue
+				}
+				h.Result = old.Result
+				changed = true
+			}
 			if e := r.backend.Acknowledge(ctx, old); e != nil {
 				failed = true
 			} else {
@@ -913,9 +921,11 @@ func (r *nativeRunner) storeResult(ctx context.Context, t *nativeRunnerTask, res
 			result.ExecutionOutcome = result.Outcome
 			result.Outcome = "blocked"
 			result.ErrorCode = "RUNNER_REPORT_UNAVAILABLE"
-			result.Summary = "Execution is terminal; recover or supply the missing report without redoing completed work: " + err.Error()
-			result.Path = ""
-			result.SHA256 = ""
+			result.Summary = "Execution is terminal; recover or supply the missing report at " + result.Path + " without redoing completed work: " + err.Error()
+			result.SHA256, err = r.materializeReportRecovery(result, err)
+			if err != nil {
+				return err
+			}
 			t.Result = &result
 			t.State = "returned"
 			t.NextAt = 0
@@ -928,8 +938,7 @@ func (r *nativeRunner) storeResult(ctx context.Context, t *nativeRunnerTask, res
 			result.ExecutionOutcome = result.Outcome
 			result.Outcome = "blocked"
 			result.ErrorCode = "RUNNER_REPORT_CHANGED"
-			result.Summary = "Execution is terminal but submitted report changed before snapshot; inspect and resubmit accurate evidence without repeating completed work"
-			result.Path = ""
+			result.Summary = "Execution is terminal but submitted report changed at " + result.Path + "; inspect and resubmit accurate evidence without repeating completed work"
 			t.Result = &result
 			t.State = "returned"
 			t.NextAt = 0
@@ -958,6 +967,67 @@ func (r *nativeRunner) storeResult(ctx context.Context, t *nativeRunnerTask, res
 	t.LastError = ""
 	return r.saveTask(ctx, *t, "result_saved")
 }
+
+// materializeReportRecovery writes a durable, explicitly blocked report at the
+// original binding so the old callback can be acknowledged without claiming
+// that the worker completed successfully. O_EXCL preserves a late real report
+// if it appears between observation and recovery materialization.
+func (r *nativeRunner) materializeReportRecovery(result nativeRunnerResult, observedErr error) (string, error) {
+	path := strings.TrimSpace(result.Path)
+	if path == "" {
+		return "", errors.New("cannot materialize report recovery without the bound report path")
+	}
+	recovery := map[string]any{
+		"kind":             "native_runner_report_recovery",
+		"status":           "blocked",
+		"errorCode":        result.ErrorCode,
+		"executionOutcome": result.ExecutionOutcome,
+		"eventId":          result.EventID,
+		"summary":          result.Summary,
+		"observedError":    observedErr.Error(),
+		"reportPath":       path,
+		"recoveryAt":       r.now().UTC().Format(time.RFC3339Nano),
+	}
+	raw, err := json.MarshalIndent(recovery, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return "", fmt.Errorf("materialize report recovery at %s: %w", path, err)
+		}
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			return "", fmt.Errorf("recheck recovered report at %s: %w", path, statErr)
+		}
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("recovered report at %s is not a regular file", path)
+		}
+		raw, err = os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read recovered report at %s: %w", path, err)
+		}
+		sum := sha256.Sum256(raw)
+		return hex.EncodeToString(sum[:]), nil
+	}
+	if _, err = file.Write(raw); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", fmt.Errorf("write report recovery at %s: %w", path, err)
+	}
+	if err = file.Sync(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return "", fmt.Errorf("sync report recovery at %s: %w", path, err)
+	}
+	if err = file.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("close report recovery at %s: %w", path, err)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
+}
 func (r *nativeRunner) dispatch(ctx context.Context, p nativeRunnerProject, tasks []nativeRunnerTask) error {
 	if r.cooldownUntil > r.now().Unix() {
 		return nil
@@ -981,7 +1051,7 @@ func (r *nativeRunner) dispatch(ctx context.Context, p nativeRunnerProject, task
 		}
 		if len(t.History) > 0 && !t.Rotate {
 			previous := t.History[len(t.History)-1]
-			if previous.Receipt != nil && !previous.Acked {
+			if nativeHistoryBlocksDispatch(previous) {
 				continue
 			}
 		}
@@ -1100,6 +1170,57 @@ func (r *nativeRunner) dispatch(ctx context.Context, p nativeRunnerProject, task
 	}
 	return nil
 }
+
+// recoverHistoricalReportBinding upgrades pre-recovery ledger entries that
+// lost Result.Path while retaining the immutable request/receipt path. This
+// makes restart recovery self-contained: the Node can materialize explicit
+// blocked evidence and ACK the original callback without manual file repair.
+func (r *nativeRunner) recoverHistoricalReportBinding(task *nativeRunnerTask) error {
+	if task == nil || task.Result == nil {
+		return errors.New("historical result has no terminal result")
+	}
+	path := ""
+	if task.Receipt != nil {
+		path = strings.TrimSpace(task.Receipt.ResultPath)
+	}
+	if path == "" && task.Request != nil {
+		path = strings.TrimSpace(task.Request.ResultPath)
+	}
+	if path == "" {
+		return errors.New("historical result has no immutable report path")
+	}
+	result := *task.Result
+	result.Path = path
+	if strings.TrimSpace(result.Summary) == "" {
+		result.Summary = "Execution reached a terminal state but the historical report binding was missing; preserve blocked evidence without redoing completed work"
+	}
+	digest, err := r.materializeReportRecovery(result, errors.New("historical result omitted its bound report path"))
+	if err != nil {
+		return err
+	}
+	result.SHA256 = digest
+	task.Result = &result
+	return nil
+}
+
+// A missing or changed report is a terminal execution with a transport defect.
+// Its exact callback remains pending for a later ACK, but it must not prevent a
+// focused recovery round from being dispatched. Other unacknowledged results
+// still fence retries to preserve callback ownership and ordering.
+func nativeHistoryBlocksDispatch(previous nativeRunnerAttempt) bool {
+	if previous.Receipt == nil || previous.Acked {
+		return false
+	}
+	if previous.Result == nil {
+		return true
+	}
+	switch previous.Result.ErrorCode {
+	case "RUNNER_REPORT_UNAVAILABLE", "RUNNER_REPORT_CHANGED":
+		return false
+	default:
+		return true
+	}
+}
 func (r *nativeRunner) compile(p nativeRunnerProject, t nativeRunnerTask, tasks []nativeRunnerTask) (nativeRunnerDispatch, error) {
 	resultPath := filepath.Join(r.dir, nativeHash(t.ID)+fmt.Sprintf("-r%d.result", t.Round))
 	req := nativeRunnerDispatch{ProjectID: p.ID, TaskID: t.ID, Round: t.Round, ControllerSessionID: p.ControllerSessionID, WorkingDirectory: p.Root, WriteScope: t.Scope, IdempotencyKey: "nr-" + nativeHash([]any{p.ID, t.ID, t.Round})[:48], ResultPath: resultPath}
@@ -1211,7 +1332,7 @@ func (r *nativeRunner) applyPlanner(ctx context.Context, p nativeRunnerProject, 
 		t.State = "accepted"
 		return r.saveTask(ctx, t, "obsolete_plan_retired")
 	}
-	raw, err := os.ReadFile(t.Result.Path)
+	raw, err := nativeReadPlannerReport(t.Result)
 	var plan nativeRunnerPlan
 	if err == nil {
 		sum := sha256.Sum256(raw)
@@ -1251,6 +1372,26 @@ func (r *nativeRunner) applyPlanner(ctx context.Context, p nativeRunnerProject, 
 	t.NextAt = r.now().Add(time.Duration(min(t.Round, 30)) * time.Minute).Unix()
 	t.LastError = err.Error()
 	return r.saveTask(ctx, t, "plan_repair_scheduled")
+}
+
+// nativeReadPlannerReport keeps report transport failures explicit. A terminal
+// worker with a missing report is a repairable result; it must not be turned
+// into os.ReadFile("") and lose the original binding.
+func nativeReadPlannerReport(result *nativeRunnerResult) ([]byte, error) {
+	if result == nil {
+		return nil, errors.New("planner has no terminal result")
+	}
+	path := strings.TrimSpace(result.Path)
+	if path == "" {
+		if result.ErrorCode != "" {
+			return nil, fmt.Errorf("planner report unavailable (%s): the bound report path is missing", result.ErrorCode)
+		}
+		return nil, errors.New("planner result has no durable report path")
+	}
+	if result.ErrorCode == "RUNNER_REPORT_UNAVAILABLE" || result.ErrorCode == "RUNNER_REPORT_CHANGED" {
+		return nil, fmt.Errorf("planner report requires recovery (%s) at %s", result.ErrorCode, path)
+	}
+	return os.ReadFile(path)
 }
 func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID string, plan nativeRunnerPlan) error {
 	tx, err := r.db.BeginTx(ctx, nil)

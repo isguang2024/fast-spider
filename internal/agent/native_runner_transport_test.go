@@ -95,6 +95,201 @@ func TestNativeRunnerTransportExactClaimAndExpiredAck(t *testing.T) {
 	}
 }
 
+func TestNativeRunnerTransportKeepsMissingReportPendingUntilFileRecovers(t *testing.T) {
+	store := newSessionCallbackStore(t.TempDir())
+	task := nativeCallbackFixture(t, store, "missing-report-chat", "missing-report-task", true)
+	if err := os.Remove(task.Receipt.ResultPath); err != nil {
+		t.Fatal(err)
+	}
+	transport := newNativeRunnerTransport(&AgentManager{callbackStore: store}, t.TempDir())
+	result, err := transport.Observe(context.Background(), task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || result.Path != task.Receipt.ResultPath || result.Outcome != "completed" {
+		t.Fatalf("missing report observation lost binding: %+v", result)
+	}
+	task.Result = result
+	if err = transport.Acknowledge(context.Background(), task); err == nil || !strings.Contains(err.Error(), "readable regular file") {
+		t.Fatalf("missing report was acknowledged: %v", err)
+	}
+	if _, exists, lookupErr := store.registrationFor(task.Receipt.SessionID); lookupErr != nil || !exists {
+		t.Fatalf("missing report route was retired: exists=%v err=%v", exists, lookupErr)
+	}
+	if err = os.WriteFile(task.Receipt.ResultPath, []byte("recovered report"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = transport.Acknowledge(context.Background(), task); err != nil {
+		t.Fatalf("recovered report ACK: %v", err)
+	}
+	if _, exists, lookupErr := store.registrationFor(task.Receipt.SessionID); lookupErr != nil || exists {
+		t.Fatalf("recovered report route was not retired: exists=%v err=%v", exists, lookupErr)
+	}
+}
+
+func TestNativeRunnerMissingReportMaterializesBlockedEvidenceAndAcksOriginalRoute(t *testing.T) {
+	store := newSessionCallbackStore(t.TempDir())
+	fixture := nativeCallbackFixture(t, store, "missing-report-recovery-chat", "missing-report-recovery-task", true)
+	if err := os.Remove(fixture.Receipt.ResultPath); err != nil {
+		t.Fatal(err)
+	}
+	transport := newNativeRunnerTransport(&AgentManager{callbackStore: store}, t.TempDir())
+	result, err := transport.Observe(context.Background(), fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || result.Path != fixture.Receipt.ResultPath || !result.Terminal {
+		t.Fatalf("missing report observation lost terminal binding: %+v", result)
+	}
+
+	backend := newFakeNativeRunnerBackend()
+	runner, err := newNativeRunner(t.TempDir(), backend, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close(context.Background())
+	root := t.TempDir()
+	if _, err = runner.Handle(context.Background(), "runner.init", map[string]any{
+		"projectId": "project", "root": root, "goal": "recover the bound report", "controllerSessionId": "controller",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runner.Handle(context.Background(), "runner.add", map[string]any{
+		"projectId": "project",
+		"task":      nativeRunnerTask{ID: fixture.ID, Key: fixture.ID, Title: fixture.ID, Objective: "recover report", Acceptance: "blocked evidence is durable"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	task := loadNativeTask(t, runner, "project", fixture.ID)
+	task.Request, task.Receipt = fixture.Request, fixture.Receipt
+	task.State = "active"
+	if err = runner.storeResult(context.Background(), &task, *result); err != nil {
+		t.Fatal(err)
+	}
+	if task.Result == nil || task.Result.ErrorCode != "RUNNER_REPORT_UNAVAILABLE" || task.Result.Outcome != "blocked" || task.Result.SHA256 == "" {
+		t.Fatalf("recovery result is not explicit blocked evidence: %+v", task.Result)
+	}
+	recovery, err := os.ReadFile(fixture.Receipt.ResultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(recovery), "native_runner_report_recovery") || !strings.Contains(string(recovery), "RUNNER_REPORT_UNAVAILABLE") || !strings.Contains(string(recovery), `"status": "blocked"`) {
+		t.Fatalf("recovery report does not preserve terminal failure evidence: %s", recovery)
+	}
+	if err = transport.Acknowledge(context.Background(), task); err != nil {
+		t.Fatalf("original missing-report callback was not acknowledged after Node recovery: %v", err)
+	}
+	if _, exists, lookupErr := store.registrationFor(fixture.Receipt.SessionID); lookupErr != nil || exists {
+		t.Fatalf("original callback route remains after recovery ACK: exists=%v err=%v", exists, lookupErr)
+	}
+}
+
+func TestNativeRunnerAcksFromFrozenSnapshotWhenSourceReportChanges(t *testing.T) {
+	store := newSessionCallbackStore(t.TempDir())
+	fixture := nativeCallbackFixture(t, store, "frozen-snapshot-chat", "frozen-snapshot-task", true)
+	transport := newNativeRunnerTransport(&AgentManager{callbackStore: store}, t.TempDir())
+	result, err := transport.Observe(context.Background(), fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	backend := newFakeNativeRunnerBackend()
+	runner, err := newNativeRunner(t.TempDir(), backend, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close(context.Background())
+	root := t.TempDir()
+	if _, err = runner.Handle(context.Background(), "runner.init", map[string]any{
+		"projectId": "project", "root": root, "goal": "ack frozen evidence", "controllerSessionId": "controller",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runner.Handle(context.Background(), "runner.add", map[string]any{
+		"projectId": "project",
+		"task":      nativeRunnerTask{ID: fixture.ID, Key: fixture.ID, Title: fixture.ID, Objective: "freeze report", Acceptance: "snapshot remains verifiable"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	task := loadNativeTask(t, runner, "project", fixture.ID)
+	task.Request, task.Receipt = fixture.Request, fixture.Receipt
+	task.State = "active"
+	if err = runner.storeResult(context.Background(), &task, *result); err != nil {
+		t.Fatal(err)
+	}
+	if task.Result == nil || task.Result.Path == fixture.Receipt.ResultPath || task.Result.SHA256 == "" {
+		t.Fatalf("successful result was not frozen: %+v", task.Result)
+	}
+	if err = os.Remove(fixture.Receipt.ResultPath); err != nil {
+		t.Fatal(err)
+	}
+	if err = transport.Acknowledge(context.Background(), task); err != nil {
+		t.Fatalf("frozen snapshot did not acknowledge original route: %v", err)
+	}
+	if _, exists, lookupErr := store.registrationFor(fixture.Receipt.SessionID); lookupErr != nil || exists {
+		t.Fatalf("callback route remains after frozen snapshot ACK: exists=%v err=%v", exists, lookupErr)
+	}
+}
+
+func TestNativeRunnerRecoversLegacyMissingHistoryBindingAfterRestart(t *testing.T) {
+	store := newSessionCallbackStore(t.TempDir())
+	fixture := nativeCallbackFixture(t, store, "legacy-missing-report-chat", "legacy-missing-report-task", true)
+	if err := os.Remove(fixture.Receipt.ResultPath); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.pendingSnapshot(fixture.Receipt.SessionID, fixture.Request.ControllerSessionID)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("legacy callback fixture pending=%+v err=%v", pending, err)
+	}
+	transport := newNativeRunnerTransport(&AgentManager{callbackStore: store}, t.TempDir())
+	backend := newFakeNativeRunnerBackend()
+	runner, err := newNativeRunner(t.TempDir(), backend, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close(context.Background())
+	runner.backend = transport
+	root := t.TempDir()
+	if _, err = runner.Handle(context.Background(), "runner.init", map[string]any{
+		"projectId": "project", "root": root, "goal": "recover legacy history", "controllerSessionId": "controller",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = runner.Handle(context.Background(), "runner.add", map[string]any{
+		"projectId": "project",
+		"task":      nativeRunnerTask{ID: fixture.ID, Key: fixture.ID, Title: fixture.ID, Objective: "recover old ledger", Acceptance: "legacy ACK closes"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	task := loadNativeTask(t, runner, "project", fixture.ID)
+	task.Round = 2
+	task.State = "accepted"
+	task.History = []nativeRunnerAttempt{{
+		Round: 1, GoalVersion: task.GoalVersion, Request: fixture.Request, Receipt: fixture.Receipt,
+		Result: &nativeRunnerResult{EventID: pending[0].EventKey, Outcome: "blocked", ExecutionOutcome: "completed", ErrorCode: "RUNNER_REPORT_UNAVAILABLE"},
+	}}
+	if err = runner.saveTask(context.Background(), task, "legacy_fixture"); err != nil {
+		t.Fatal(err)
+	}
+	if err = runner.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	recovered := loadNativeTask(t, runner, "project", fixture.ID)
+	if len(recovered.History) != 1 || !recovered.History[0].Acked || recovered.History[0].Result == nil || recovered.History[0].Result.Path != fixture.Receipt.ResultPath {
+		t.Fatalf("legacy history was not repaired and acknowledged: history=%+v result=%+v state=%s retry=%d error=%s", recovered.History, recovered.History[0].Result, recovered.State, recovered.AckRetryAt, recovered.LastError)
+	}
+	report, err := os.ReadFile(fixture.Receipt.ResultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(report), "native_runner_report_recovery") || !strings.Contains(string(report), "RUNNER_REPORT_UNAVAILABLE") {
+		t.Fatalf("legacy recovery evidence missing: %s", report)
+	}
+	if _, exists, lookupErr := store.registrationFor(fixture.Receipt.SessionID); lookupErr != nil || exists {
+		t.Fatalf("legacy callback route remains after restart recovery: exists=%v err=%v", exists, lookupErr)
+	}
+}
+
 func TestNativeRunnerDispatchWaitsForMachineIdentityBeforeProvider(t *testing.T) {
 	root := t.TempDir()
 	manager := &AgentManager{chatgptCloud: &ChatGPTCloudAdapter{}}
