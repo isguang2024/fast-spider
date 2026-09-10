@@ -1903,6 +1903,25 @@ func (l *collaborationLedger) actionCandidatesAt(ctx context.Context, observatio
 				}
 			}
 		}
+		if phase == "planned" && canDispatch {
+			for _, dependency := range collaborationStringList(item["depends_on"]) {
+				dep, err := l.item(ctx, dependency)
+				if err != nil {
+					return nil, err
+				}
+				if mapStringValue(dep, "phase") == "blocked" {
+					if err := task("review_blocked_dependency", "controller", 0); err != nil {
+						return nil, err
+					}
+					if mapStringValue(l.mission, "delivery_coordinator") != "" {
+						if err := task("prepare_dependency_review_packet", "delivery_coordinator", 0); err != nil {
+							return nil, err
+						}
+					}
+					break
+				}
+			}
+		}
 		controllerKinds := map[string]string{
 			"returned": "review_result", "rework": "prepare_rework",
 			"integrating": "review_integration", "dispatch_rejected": "close_rejected_round",
@@ -1971,6 +1990,24 @@ func (l *collaborationLedger) actionCandidatesAt(ctx context.Context, observatio
 		}
 		if active && phase == "blocked" {
 			blocker := collaborationOptionalMap(item["blocker"])
+			if canDispatch && mapStringValue(blocker, "kind") == "dependency" && collaborationExecutionEnded(item) && !analysisPendingSources[id] {
+				kind := ""
+				if mapStringValue(item, "validation") == "failed" && l.checkDependencies(ctx, item) == nil {
+					kind = "prepare_blocker_repair"
+				} else if mapStringValue(blocker, "kind") == "dependency" && len(collaborationStringList(item["depends_on"])) == 0 {
+					kind = "link_blocker_dependency"
+				}
+				if kind != "" {
+					if err := task(kind, "controller", 0); err != nil {
+						return nil, err
+					}
+					if mapStringValue(l.mission, "delivery_coordinator") != "" {
+						if err := task(kind+"_packet", "delivery_coordinator", 0); err != nil {
+							return nil, err
+						}
+					}
+				}
+			}
 			if mapStringValue(blocker, "kind") != "user" {
 				if err := task("recheck_blocker", "coordinator", collaborationIntDefault(blocker, "next_check_at", 0)); err != nil {
 					return nil, err

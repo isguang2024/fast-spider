@@ -13,7 +13,7 @@ const collaborationControllerWorkReminderSeconds int64 = 3600
 
 func collaborationDecisionWork(kind string) bool {
 	switch kind {
-	case "prepare_task", "prepare_task_packet", "prepare_followup", "review_result", "prepare_review_result_decision", "review_integration", "prepare_review_integration_decision", "prepare_rework", "decide_stalled_check":
+	case "prepare_task", "prepare_task_packet", "prepare_followup", "review_result", "prepare_review_result_decision", "review_integration", "prepare_review_integration_decision", "prepare_rework", "decide_stalled_check", "prepare_blocker_repair", "prepare_blocker_repair_packet", "link_blocker_dependency", "link_blocker_dependency_packet", "review_blocked_dependency", "prepare_dependency_review_packet":
 		return true
 	}
 	return false
@@ -137,6 +137,27 @@ func (l *collaborationLedger) addCollaborationWorkCall(ctx context.Context, inpu
 	call := map[string]any{"action": "apply", "params": params, "controllerOnly": true}
 	params["items"] = []any{map[string]any{"id": a.ItemID}}
 	switch a.Kind {
+	case "prepare_blocker_repair", "prepare_blocker_repair_packet":
+		call["action"] = "retry"
+		delete(params, "items")
+		params["itemId"] = a.ItemID
+		call["requiredInput"] = []string{"evidenceRef: exact failed validation", "item: bounded original-owner repair packet with new idempotency key, original CHAT and precise write scope; or propose apply creating a scoped repair successor and link depends_on"}
+		entry["completionRule"] = "A terminal execution with failed validation and no unresolved dependency is repair work, not an external wait. Delivery fills a bounded original-owner retry or a separately owned repair successor; controller approves now. A future blocker check time alone does not perform the repair."
+	case "link_blocker_dependency", "link_blocker_dependency_packet":
+		call["requiredInput"] = []string{"items[0].depends_on: exact existing or newly approved repair task IDs; keep reason/resume_when explicit. If no external dependency exists, prepare original-owner repair rather than waiting on a role name"}
+		entry["completionRule"] = "A dependency blocker with no linked task cannot progress by itself. Bind the exact executable repair dependency or prepare it under existing authority. Do not treat a named owner and future time as a repair assignment."
+	case "review_blocked_dependency", "prepare_dependency_review_packet":
+		facts := []any{}
+		for _, id := range collaborationStringList(item["depends_on"]) {
+			dep, err := l.item(ctx, id)
+			if err != nil {
+				return err
+			}
+			facts = append(facts, map[string]any{"itemId": id, "phase": dep["phase"], "result": dep["result"], "validation": dep["validation"], "executionEnded": collaborationExecutionEnded(dep), "holdsWriter": collaborationHoldsExecution(dep), "next_action": dep["next_action"], "blocker": dep["blocker"]})
+		}
+		entry["dependencyFacts"] = facts
+		call["requiredInput"] = []string{"items[0]: controller verifies each dependency is a real output/contract prerequisite or only writer ordering. Remove only proven obsolete writer-order dependencies and freeze a safe packet, or record an exact blocker with an executable repair dependency"}
+		entry["completionRule"] = "Execution ended is different from business accepted. A blocked predecessor may no longer hold a writer. Delivery checks actual shared contract and scope; controller alone removes a dependency that existed only to serialize writers. Never drop a real output dependency merely to fill slots. Ensure the blocked predecessor's internal repair is assigned, not an indefinite wait."
 	case "prepare_task", "prepare_task_packet", "prepare_followup", "prepare_rework":
 		call["requiredInput"] = []string{"items[0]: complete authorized goal/acceptance, dependencies, narrow scope and packet; phase=ready only after controller approval"}
 		entry["completionRule"] = "Delivery prepares complete controller apply params from current evidence; controller freezes safe READY now or records an exact dependency/scope/policy blocker. Existing authorization covers ordinary reversible technical work. Missing packet fields require preparation, not indefinite waiting. Do not copy a sibling's blocker."
@@ -155,7 +176,7 @@ func (l *collaborationLedger) addCollaborationWorkCall(ctx context.Context, inpu
 		entry["completionRule"] = "Controller must choose a concrete continue/replace/block disposition from actual native evidence. Merely postponing next_check_at does not settle this action. Continue other independent work."
 	}
 	entry["controllerCall"] = call
-	entry["sourceFacts"] = selectCollaborationFields(item, "id", "phase", "owner", "depends_on", "next_action", "terminal_ref", "execution_ref", "local_scope", "validation", "integration")
+	entry["sourceFacts"] = selectCollaborationFields(item, "id", "phase", "owner", "executor", "binding", "depends_on", "next_action", "terminal_ref", "execution_ref", "local_scope", "validation", "integration", "blocker")
 	entry["handoff"] = map[string]any{"tool": "send_message_to_thread", "params": map[string]any{"threadId": l.mission["controller"]}, "requiredInput": "Complete proposed action/params, current revision, decisive evidence and exact remaining constraints; controller alone executes the decision"}
 	return nil
 }
@@ -169,6 +190,7 @@ func (l *collaborationLedger) addCollaborationWorkDiagnostics(ctx context.Contex
 	blocked := []any{}
 	unverified := []any{}
 	work := []any{}
+	repairCount := 0
 	maxAge := int64(0)
 	observation, err := l.readObservation(ctx)
 	if err != nil {
@@ -227,6 +249,9 @@ func (l *collaborationLedger) addCollaborationWorkDiagnostics(ctx context.Contex
 		if a.Owner != mapStringValue(l.mission, "controller") || !collaborationDecisionWork(a.Kind) || a.DueAt > now {
 			continue
 		}
+		if a.Kind == "prepare_blocker_repair" || a.Kind == "link_blocker_dependency" || a.Kind == "review_blocked_dependency" {
+			repairCount++
+		}
 		entry := map[string]any{"actionId": a.ActionID, "itemId": a.ItemID, "kind": a.Kind, "owner": a.Owner}
 		if a.SourceKind != "" {
 			entry["sourceKind"] = a.SourceKind
@@ -263,14 +288,14 @@ func (l *collaborationLedger) addCollaborationWorkDiagnostics(ctx context.Contex
 		}
 		work = append(work, entry)
 	}
-	idle := refill.CloudFree > 0 && len(refill.DispatchItemIDs) == 0 && len(eligible) > 0
+	idle := refill.CloudFree > 0 && len(refill.DispatchItemIDs) == 0 && (len(eligible) > 0 || repairCount > 0)
 	bounded := func(values []any) []any {
 		if len(values) > 20 {
 			return values[:20]
 		}
 		return values
 	}
-	result["diagnostics"] = map[string]any{"controller_due_action_age": maxAge, "planned_eligible_not_ready": len(eligible), "coordinator_idle_with_capacity": idle, "active_without_verified_progress": len(unverified), "activeWithoutVerifiedProgress": bounded(unverified)}
+	result["diagnostics"] = map[string]any{"controller_due_action_age": maxAge, "planned_eligible_not_ready": len(eligible), "coordinator_idle_with_capacity": idle, "active_without_verified_progress": len(unverified), "activeWithoutVerifiedProgress": bounded(unverified), "blocked_dispositions_due": repairCount}
 	result["plannedPreparation"] = map[string]any{"eligible": bounded(eligible), "blocked": bounded(blocked), "hasMore": len(eligible) > 20 || len(blocked) > 20, "scopeRule": "eligible means dependencies permit preparation; missing scope is never permission to dispatch"}
 	sort.SliceStable(work, func(i, j int) bool {
 		rank := func(v any) int {
@@ -290,9 +315,9 @@ func (l *collaborationLedger) addCollaborationWorkDiagnostics(ctx context.Contex
 		work = work[:8]
 	}
 	result["controllerWorklist"] = work
-	result["boundedRefillInvariant"] = map[string]any{"required": refill.CloudFree > 0 && (len(eligible) > 0 || len(refill.DispatchItemIDs) > 0), "rule": "Complete at least one safe dispatch/READY preparation in this wake, or provide each candidate's actual dependency/write-scope/policy reason. Packet preparation is required before dispatch; one blocked chain does not freeze independent work. No invented business authorization."}
+	result["boundedRefillInvariant"] = map[string]any{"required": refill.CloudFree > 0 && (len(eligible) > 0 || len(refill.DispatchItemIDs) > 0 || repairCount > 0), "rule": "Complete at least one safe dispatch/READY preparation, internal repair assignment or blocked-dependency disposition in this wake; otherwise give concrete external/scope/policy reasons. Naming a blocked owner is not assigning repair. Packet preparation is required before dispatch; never invent business authorization or drop a real output dependency to fill slots."}
 	if idle && input.ActorSessionID == mapStringValue(l.mission, "coordinator") {
-		result["preparationHandoff"] = map[string]any{"tool": "send_message_to_thread", "params": map[string]any{"threadId": l.mission["controller"]}, "requiredInput": "Report exact controllerWorklist prepare_task IDs and missing packet/scope facts; ready=0 is not no work. Do not make controller decisions.", "coalescingRule": "Unchanged requests share persistent work wakes; report a newly observed gap once, then process other current actions"}
+		result["preparationHandoff"] = map[string]any{"tool": "send_message_to_thread", "params": map[string]any{"threadId": l.mission["controller"]}, "requiredInput": "Report exact controllerWorklist preparation, internal repair or blocked-dependency review IDs and missing packet/scope/link facts; ready=0 is not no work. Do not make controller decisions.", "coalescingRule": "Unchanged requests share persistent work wakes; report a newly observed gap once, then process other current actions"}
 	}
 	role := "controller"
 	if input.ActorSessionID == mapStringValue(l.mission, "delivery_coordinator") {
