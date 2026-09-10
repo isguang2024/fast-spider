@@ -310,6 +310,8 @@ Local Codex has one execution path: the Node owns one long-running `codex app-se
 
 `FastSpider_Local` exposes two current-user tools: `local_machine` and `local_capability`. They discover and call the existing Node capabilities through the current-user Local Bridge. Ordinary Cloud CHAT dispatch and durable result callbacks remain available through `FastSpider_FS.codex_cloud_collaboration` and `task_result_submit`. Local provider callbacks use `agent.control/session.callback.claim` and `session.callback.ack`. Project planning and controller/coordinator topology belong to the caller.
 
+The native Go runner also exposes local `agent.control` actions for continuous Cloud task blocks. `runner.add` queues impact planning; `runner.change` accepts `projectId`, optional `taskId`, and a concrete `evidence` change request. Revision checks prevent stale plans from overwriting newer requirements. `runner.cancel` targets a block or, without `taskId`, its entire task area; in-flight cancellation retains its write scope until the exact Cloud execution and associated checks stop. `runner.archive` and `runner.unarchive` change visibility of terminal work without restarting it. These controls share the task center's authenticated `POST /api/tasks/{projectID}/actions` route for cancel/archive/unarchive. Cloud callers retain only the existing runner result/checkpoint submission actions. Task areas on the same Node coordinate overlapping write scopes through the native runner ledger.
+
 ## Documentation
 
 Start here:

@@ -300,6 +300,7 @@ func (a *App) handler() http.Handler {
 	mux.HandleFunc("GET /api/tasks/{projectID}", a.apiOnly(a.handleTaskView))
 	mux.HandleFunc("GET /api/tasks/{projectID}/events", a.apiOnly(a.handleTaskView))
 	mux.HandleFunc("GET /api/tasks/{projectID}/tasks/{taskID}", a.apiOnly(a.handleTaskView))
+	mux.HandleFunc("POST /api/tasks/{projectID}/actions", a.apiOnly(a.handleTaskAction))
 	mux.HandleFunc("GET /api/status", a.apiOnly(a.handleStatus))
 	mux.HandleFunc("POST /api/connect", a.apiOnly(a.handleConnect))
 	mux.HandleFunc("POST /api/config", a.apiOnly(a.handleConfig))

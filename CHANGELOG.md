@@ -3,6 +3,17 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.97 - 2026-09-11
+
+- Automatically plan the impact of new blocks and requirement changes with
+  revision fencing, queued updates, priorities and in-flight redirection.
+- Add local controller and task-center cancellation, archive and unarchive
+  controls. Preserve exact Cloud bindings, wait for owned jobs to stop and retain
+  late callbacks without reviving cancelled work.
+- Coordinate overlapping write scopes across task areas while independent
+  blocks continue. Separate execution tasks from folded planning history and
+  expose cancellation progress and archived items in the task center.
+
 ## 0.4.96 - 2026-09-11
 
 - Restore task-center activity rendering after recovery panel integration so a

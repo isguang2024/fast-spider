@@ -155,7 +155,7 @@ func (r *nativeRunner) recoveryState(t nativeRunnerTask) nativeRunnerRecovery {
 // conversation cannot hold the tick loop, callback ingestion or other projects.
 func (r *nativeRunner) scheduleRecovery(ctx context.Context, p nativeRunnerProject, tasks []nativeRunnerTask) error {
 	backend, ok := r.backend.(nativeRunnerRecoveryBackend)
-	if !ok || p.Paused || r.cooldownUntil > r.now().Unix() {
+	if !ok || p.Paused || p.Archived || p.State == "canceling" || p.State == "cancelled" || r.cooldownUntil > r.now().Unix() {
 		return nil
 	}
 	if r.recoveryInFlight == nil {
@@ -163,7 +163,7 @@ func (r *nativeRunner) scheduleRecovery(ctx context.Context, p nativeRunnerProje
 		r.recoveryDone = make(chan nativeRecoveryCompletion, 8)
 	}
 	for _, t := range tasks {
-		if !nativeHolds(t) || t.Receipt == nil || t.Receipt.InDoubt || t.Request == nil {
+		if !nativeHolds(t) || t.Cancellation != nil || t.Archived || t.Receipt == nil || t.Receipt.InDoubt || t.Request == nil {
 			continue
 		}
 		if t.Recovery == nil {
@@ -238,7 +238,7 @@ func (r *nativeRunner) drainRecovery(ctx context.Context) error {
 				return err
 			}
 			for _, t := range tasks {
-				if t.ID != out.Task.ID || t.Round != out.Task.Round || !nativeHolds(t) || t.Receipt == nil || t.Receipt.SessionID != out.Task.Receipt.SessionID {
+				if t.ID != out.Task.ID || t.Round != out.Task.Round || t.Cancellation != nil || !nativeHolds(t) || t.Receipt == nil || t.Receipt.SessionID != out.Task.Receipt.SessionID {
 					continue
 				}
 				// A checkpoint received during a probe is newer authority.

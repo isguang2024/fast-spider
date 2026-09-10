@@ -137,7 +137,28 @@ func addNativeTask(t *testing.T, runner *nativeRunner, projectID, id, scope stri
 		ID: id, Key: id, Title: id, Objective: "Implement " + id,
 		Acceptance: "The complete block is evidenced", Scope: scope, Checks: checks,
 	}
-	if _, err := runner.Handle(context.Background(), "runner.add", map[string]any{"projectId": projectID, "task": task}); err != nil {
+	tx, err := runner.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, tasks, err := nativeLoad(tx, projectID)
+	if err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err = nativeValidateTask(p, &task, tasks); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	// Existing scheduling tests model post-planning validated work. Intake
+	// behavior is covered separately through runner.add.
+	task.State = "queued"
+	task.PlanRevision = 0
+	if err = nativeSave(tx, "runner_tasks", task.ID, projectID, task); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
 	return loadNativeTask(t, runner, projectID, id)

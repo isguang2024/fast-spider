@@ -45,3 +45,50 @@ func (a *App) handleTaskView(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, view)
 }
+
+type taskActionRequest struct {
+	Action   string `json:"action"`
+	TaskID   string `json:"taskId,omitempty"`
+	Evidence string `json:"evidence,omitempty"`
+}
+
+func (a *App) handleTaskAction(w http.ResponseWriter, r *http.Request) {
+	var req taskActionRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err)
+		return
+	}
+	action := strings.ToLower(strings.TrimSpace(req.Action))
+	if action != "cancel" && action != "archive" && action != "unarchive" {
+		writeAPIError(w, http.StatusBadRequest, errors.New("unsupported task action"))
+		return
+	}
+	projectID := strings.TrimSpace(r.PathValue("projectID"))
+	if projectID == "" {
+		writeAPIError(w, http.StatusBadRequest, errors.New("project id is required"))
+		return
+	}
+	if a.agentController == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, errors.New("agent controller unavailable"))
+		return
+	}
+	params := map[string]any{"projectId": projectID}
+	if taskID := strings.TrimSpace(req.TaskID); taskID != "" {
+		params["taskId"] = taskID
+	}
+	if evidence := strings.TrimSpace(req.Evidence); evidence != "" {
+		params["evidence"] = evidence
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	result, err := a.agentController.Control(ctx, "runner."+action, params)
+	if err != nil {
+		writeAPIError(w, http.StatusConflict, err)
+		return
+	}
+	if result == nil {
+		result = map[string]any{}
+	}
+	result["accepted"] = true
+	writeJSON(w, http.StatusAccepted, result)
+}

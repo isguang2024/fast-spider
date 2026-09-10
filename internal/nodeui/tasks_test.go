@@ -1,6 +1,7 @@
 package nodeui
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,19 @@ import (
 	"strings"
 	"testing"
 )
+
+type taskActionTestAgent struct {
+	actions []string
+	params  []map[string]any
+}
+
+func (a *taskActionTestAgent) Control(_ context.Context, action string, params map[string]any) (map[string]any, error) {
+	a.actions = append(a.actions, action)
+	a.params = append(a.params, params)
+	return map[string]any{"saved": true}, nil
+}
+
+func (*taskActionTestAgent) Close(context.Context) error { return nil }
 
 func TestTaskCenterRoutesKeepEventsIDsAndAreaIsolation(t *testing.T) {
 	dir := t.TempDir()
@@ -76,5 +90,46 @@ func TestTaskCenterPageSecurityAndToken(t *testing.T) {
 	}
 	if !strings.Contains(w.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'") {
 		t.Fatal("task page lost local CSP")
+	}
+}
+
+func TestTaskCenterActionsAllowlistAuthAndForwarding(t *testing.T) {
+	agent := &taskActionTestAgent{}
+	a := &App{opts: Options{DataDir: t.TempDir()}, uiToken: "task-token", agentController: agent}
+	call := func(path, token, origin, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("X-Fast-Spider-UI-Token", token)
+		r.Header.Set("Origin", origin)
+		w := httptest.NewRecorder()
+		a.handler().ServeHTTP(w, r)
+		return w
+	}
+	if got := call("/api/tasks/project/actions", "", "", `{"action":"cancel"}`).Code; got != http.StatusUnauthorized {
+		t.Fatalf("missing token status=%d", got)
+	}
+	if got := call("/api/tasks/project/actions", "task-token", "https://untrusted.example", `{"action":"cancel"}`).Code; got != http.StatusForbidden {
+		t.Fatalf("invalid origin status=%d", got)
+	}
+	if got := call("/api/tasks/project/actions", "task-token", "", `{"action":"resume"}`).Code; got != http.StatusBadRequest {
+		t.Fatalf("unsupported action status=%d", got)
+	}
+	if got := call("/api/tasks/project/actions", "task-token", "", `{"action":"cancel","taskId":"task-1","evidence":"user requested"}`).Code; got != http.StatusAccepted {
+		t.Fatalf("task action status=%d", got)
+	}
+	if got := call("/api/tasks/project/actions", "task-token", "", `{"action":"archive"}`).Code; got != http.StatusAccepted {
+		t.Fatalf("project action status=%d", got)
+	}
+	if len(agent.actions) != 2 || agent.actions[0] != "runner.cancel" || agent.actions[1] != "runner.archive" {
+		t.Fatalf("forwarded actions=%v", agent.actions)
+	}
+	if got := agent.params[0]; got["projectId"] != "project" || got["taskId"] != "task-1" || got["evidence"] != "user requested" {
+		t.Fatalf("task params=%#v", got)
+	}
+	if got := agent.params[1]; got["projectId"] != "project" {
+		t.Fatalf("project params=%#v", got)
+	}
+	if _, ok := agent.params[1]["taskId"]; ok {
+		t.Fatalf("project action unexpectedly included taskId: %#v", agent.params[1])
 	}
 }

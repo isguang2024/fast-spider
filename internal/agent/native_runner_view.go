@@ -111,6 +111,7 @@ func ReadNativeRunnerView(ctx context.Context, dataDir, projectID, taskID string
 		"receipt": task.Receipt, "result": task.Result, "lastError": task.LastError, "reason": task.DeferredReason,
 		"resumeAt": task.ResumeAt, "nextAt": task.NextAt,
 		"recovery": nativeRecoveryView(task),
+		"archived": task.Archived, "priority": task.Priority, "planRevision": task.PlanRevision, "cancellation": task.Cancellation,
 	}}, nil
 }
 
@@ -129,7 +130,8 @@ func nativeViewProject(p nativeRunnerProject, detail bool) map[string]any {
 	}
 	view := map[string]any{"id": p.ID, "title": clip(title, 80), "goalSummary": clip(goal, 240),
 		"root": p.Root, "controllerSessionId": p.ControllerSessionID, "concurrency": p.Concurrency,
-		"paused": p.Paused, "questions": p.Questions, "nextPlanAt": p.NextPlanAt}
+		"paused": p.Paused, "questions": p.Questions, "nextPlanAt": p.NextPlanAt,
+		"state": p.State, "archived": p.Archived, "revision": p.Revision, "plannedRevision": p.PlannedRevision, "pendingChanges": p.PendingChanges}
 	if detail {
 		view["goal"] = p.Goal
 	}
@@ -151,6 +153,12 @@ func nativeTaskBrief(t nativeRunnerTask) map[string]any {
 	}
 	if t.Recovery != nil {
 		item["recovery"] = nativeRecoveryView(t)
+	}
+	item["archived"] = t.Archived
+	item["priority"] = t.Priority
+	item["planRevision"] = t.PlanRevision
+	if t.Cancellation != nil {
+		item["cancellation"] = t.Cancellation
 	}
 	return item
 }
@@ -226,6 +234,31 @@ func nativeProjectView(ctx context.Context, tx *sql.Tx, p nativeRunnerProject, d
 		byID[t.ID] = t
 	}
 	brief := []map[string]any{}
+	otherTasks := []nativeRunnerTask{}
+	rows, err = tx.QueryContext(ctx, "SELECT json_remove(value,'$.history','$.request.prompt') FROM runner_tasks WHERE project_id<>?", p.ID)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var raw string
+		var other nativeRunnerTask
+		if err = rows.Scan(&raw); err == nil {
+			err = json.Unmarshal([]byte(raw), &other)
+		}
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if nativeHolds(other) || nativeChecking(other) {
+			otherTasks = append(otherTasks, other)
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	holds := append(append([]nativeRunnerTask{}, tasks...), otherTasks...)
 	groups := map[string]map[string]int{}
 	for _, t := range tasks {
 		item := nativeTaskBrief(t)
@@ -255,7 +288,7 @@ func nativeProjectView(ctx context.Context, tx *sql.Tx, p nativeRunnerProject, d
 			case t.NextAt > time.Now().Unix():
 				reason = "等待已安排的重试时间"
 			default:
-				for _, other := range tasks {
+				for _, other := range holds {
 					if other.ID != t.ID && (nativeHolds(other) || nativeChecking(other)) && nativeScopeOverlap(t.Scope, other.Scope) {
 						blocked = append(blocked, other.ID)
 					}
@@ -266,6 +299,12 @@ func nativeProjectView(ctx context.Context, tx *sql.Tx, p nativeRunnerProject, d
 			}
 			item["waitingReason"] = reason
 			item["blockedBy"] = blocked
+		}
+		if t.State == "pending_plan" {
+			item["waitingReason"] = "等待云端分析最新需求与当前任务的影响"
+		}
+		if t.State == "canceling" {
+			item["waitingReason"] = "正在确认云端会话和关联作业停止"
 		}
 		brief = append(brief, item)
 		if t.Kind != "planner" {
@@ -309,6 +348,13 @@ func nativeViewEvents(ctx context.Context, tx *sql.Tx, projectID, taskID string,
 	events := []map[string]any{}
 	cursor := after
 	labels := map[string]string{"dispatched": "任务已派发", "result_saved": "结果已保存", "check_progress": "检查状态更新", "callback_ack_progress": "回调确认已更新", "plan_applied": "规划已应用", "planner_created": "已安排后续规划", "pause": "任务区已暂停", "resume": "任务区已恢复", "goal": "目标已更新", "signal": "收到恢复信息", "report_recovery_needed": "结果报告需要恢复", "plan_repair_scheduled": "已安排规划修正", "dispatch_rejected": "派发未被接受", "preparation_error": "任务准备失败", "account_cooldown": "账号进入冷却", "prepared": "任务包已准备", "recovery_observation": "恢复状态已更新", "add": "任务已加入"}
+	for kind, label := range map[string]string{
+		"change": "已提交需求变更", "cancel": "已提交撤销请求", "archive": "已归档", "unarchive": "已取消归档",
+		"task_cancelled": "任务已撤销", "project_cancelled": "任务区已撤销", "cancellation_pending": "等待云端及关联作业停止",
+		"task_redirected": "任务已按新规划转向", "cancelled_result_received": "已保留撤销任务的迟到结果",
+	} {
+		labels[kind] = label
+	}
 	for rows.Next() {
 		var id, at int64
 		var kind, raw string

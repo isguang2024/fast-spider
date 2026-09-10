@@ -12,6 +12,53 @@ import (
 	"time"
 )
 
+func TestNativeRunnerViewCrossAreaCancellationHolds(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	r, err := newNativeRunner(root, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close(ctx)
+	tx, err := r.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	for _, id := range []string{"a", "b"} {
+		p := nativeRunnerProject{ID: id, Root: root, GoalVersion: "v1"}
+		if err = nativeSave(tx, "runner_projects", id, "", p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, task := range []nativeRunnerTask{
+		{ID: "queued", ProjectID: "a", Kind: "work", State: "queued", Scope: root},
+		{ID: "planning", ProjectID: "a", Kind: "work", State: "pending_plan"},
+		{ID: "stopping", ProjectID: "b", Kind: "work", State: "canceling", Scope: root, Request: &nativeRunnerDispatch{}},
+	} {
+		if err = nativeSave(tx, "runner_tasks", task.ID, task.ProjectID, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	view, err := ReadNativeRunnerView(ctx, root, "a", "", 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := view["tasks"].([]map[string]any)
+	if tasks[0]["waitingReason"] != "等待重叠写域释放" {
+		t.Fatalf("missing cross-area hold: %v", tasks[0])
+	}
+	if ids := tasks[0]["blockedBy"].([]string); len(ids) != 1 || ids[0] != "stopping" {
+		t.Fatalf("wrong blockers: %v", ids)
+	}
+	if tasks[1]["waitingReason"] != "等待云端分析最新需求与当前任务的影响" {
+		t.Fatal(tasks[1])
+	}
+}
+
 func TestNativeRunnerViewEmptyDoesNotInitialize(t *testing.T) {
 	root := t.TempDir()
 	view, err := ReadNativeRunnerView(context.Background(), root, "", "", 0, false)
