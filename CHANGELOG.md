@@ -3,6 +3,12 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.98 - 2026-09-11
+
+- Respect Cloud Retry-After deadlines without multiplying them by historical
+  task failures. Bound fallback rate-limit backoff to 30 seconds through two
+  minutes, while retaining shared read deduplication and provider cooldowns.
+
 ## 0.4.97 - 2026-09-11
 
 - Automatically plan the impact of new blocks and requirement changes with

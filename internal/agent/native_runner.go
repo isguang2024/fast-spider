@@ -957,8 +957,12 @@ func (r *nativeRunner) fail(ctx context.Context, t *nativeRunnerTask, err error)
 		if deadline, e := time.Parse(time.RFC3339, limited.retryAfter); e == nil && deadline.After(r.now()) {
 			retry = deadline.Sub(r.now())
 		}
-		if retry > delay {
+		// The provider's retry deadline already incorporates its read budget.
+		// Historical task failures must not multiply an account-wide cooldown.
+		if retry > 0 {
 			delay = retry
+		} else {
+			delay = min(max(delay, 30*time.Second), 2*time.Minute)
 		}
 		r.cooldownUntil = max(r.cooldownUntil, r.now().Add(delay).Unix())
 		tx, e := r.db.BeginTx(ctx, nil)
