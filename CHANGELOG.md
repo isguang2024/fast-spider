@@ -3,6 +3,11 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.96 - 2026-09-11
+
+- Restore task-center activity rendering after recovery panel integration so a
+  JavaScript scope error no longer incorrectly marks a healthy Node offline.
+
 ## 0.4.95 - 2026-09-11
 
 - Add a local task center with controller areas, expandable task trees, read-only
