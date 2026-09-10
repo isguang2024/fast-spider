@@ -30,12 +30,13 @@ func TestAgentCapabilityAdvertisesCurrentActionContract(t *testing.T) {
 		"plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list",
 		"session.list", "session.get", "session.create", "session.send", "session.steer", "session.respond", "session.watch", "session.callback.prepare", "session.callback.recover", "session.callback.continue", "session.callback.register", "session.callback.arm", "session.callback.enqueue", "session.callback.unregister", "session.callback.list", "session.callback.claim", "session.callback.ack", "session.cancel", "session.result", "session.rename", "session.archive",
 		"session.unarchive", "session.delete", "session.fork", "session.compact", "session.rollback", "session.goal.get", "session.goal.set", "session.goal.clear", "session.settings.update", "session.review",
+		"runner.init", "runner.status", "runner.pause", "runner.resume", "runner.goal", "runner.signal", "runner.add", "runner.wake", "runner.submit",
 	}
 	if !reflect.DeepEqual(AgentCapability.Actions, want) {
 		t.Fatalf("agent.control actions=%v want=%v", AgentCapability.Actions, want)
 	}
-	if AgentCapability.Version != "1.6" {
-		t.Fatalf("agent.control version=%q want 1.6", AgentCapability.Version)
+	if AgentCapability.Version != "1.7" {
+		t.Fatalf("agent.control version=%q want 1.7", AgentCapability.Version)
 	}
 }
 

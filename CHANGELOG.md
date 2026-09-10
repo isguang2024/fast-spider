@@ -7,6 +7,7 @@ semantic versioning for public releases.
 
 - Accept native project runner initialization, task, goal, signal and check
   parameters through the public `agent.control` boundary.
+- Advertise the `runner.*` actions in the Node capability catalog.
 - Add an AgentManager-level regression covering external `runner.init` and
   `runner.status` requests.
 
