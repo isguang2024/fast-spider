@@ -41,6 +41,7 @@ const (
 // /backend-api/f/conversation flow the official client uses, authenticating with
 // the Codex app-server's ChatGPT token and solving the Sentinel challenge itself.
 type ChatGPTCloudAdapter struct {
+	progress           *chatGPTCloudProgress
 	logger             *slog.Logger
 	baseURL            string
 	http               *http.Client
@@ -116,6 +117,11 @@ func (a *ChatGPTCloudAdapter) EnsureCallbackRealtime(ctx context.Context, conver
 }
 
 func (a *ChatGPTCloudAdapter) EnsureCallbackRealtimeForGeneration(ctx context.Context, conversationID string, generation int64) error {
+	if a != nil && a.progress != nil {
+		if err := a.progress.ensure(conversationID, generation, true); err != nil {
+			return err
+		}
+	}
 	if a == nil || a.realtime == nil {
 		return fmt.Errorf("chatgpt_cloud realtime is unavailable")
 	}
@@ -154,6 +160,9 @@ func (a *ChatGPTCloudAdapter) ReleaseCallbackRealtime(conversationID string) {
 }
 
 func (a *ChatGPTCloudAdapter) ReleaseCallbackRealtimeForGeneration(conversationID string, generation int64) {
+	if a != nil && a.progress != nil {
+		a.progress.release(conversationID, generation)
+	}
 	if a != nil && a.realtime != nil {
 		a.realtime.releasePersistentWatching(conversationID, generation)
 	}
@@ -161,6 +170,9 @@ func (a *ChatGPTCloudAdapter) ReleaseCallbackRealtimeForGeneration(conversationI
 
 // StopRealtime terminates the pubsub subscription for a conversation.
 func (a *ChatGPTCloudAdapter) StopRealtime(conversationID string) {
+	if a != nil && a.progress != nil {
+		a.progress.release(conversationID, 0)
+	}
 	if a != nil && a.realtime != nil {
 		a.realtime.stopWatching(conversationID)
 	}
@@ -172,6 +184,9 @@ func (a *ChatGPTCloudAdapter) Close(ctx context.Context) error {
 		return nil
 	}
 	var firstErr error
+	if a.progress != nil {
+		firstErr = a.progress.Close()
+	}
 	if a.realtime != nil {
 		if err := a.realtime.Close(ctx); err != nil {
 			firstErr = err

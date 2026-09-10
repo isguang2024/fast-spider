@@ -218,6 +218,12 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 		return manager.codex.AuthToken(ctx)
 	})
 	manager.chatgptCloud.SetRealtimeObserver(manager.handleChatGPTCloudCallbackEvent, callbackStore.maxEventSequence())
+	progress, progressErr := newChatGPTCloudProgress(manager.chatgptCloud, filepath.Join(dataDir, "agent", "cloud-progress.sqlite3"), manager.startCloudCallbackConfirmation)
+	if progressErr != nil {
+		logger.Error("open Cloud SSE progress cache", "error", progressErr)
+	} else {
+		manager.chatgptCloud.progress = progress
+	}
 	manager.codex.SetEventObserver(manager.handleCodexCallbackEvent)
 	manager.callbackDispatcher = newSessionCallbackDispatcher(
 		callbackStore,

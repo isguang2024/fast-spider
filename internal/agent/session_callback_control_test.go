@@ -163,6 +163,8 @@ func TestCloudCallbackPrepareRejectsBusyAndLocalSessions(t *testing.T) {
 func TestCloudCallbackRecoveryAndContinueRequireExactNodeRoute(t *testing.T) {
 	m := New(t.TempDir(), nil)
 	defer m.Close(context.Background())
+	// This test counts route-triggered reads, excluding background progress subscriptions.
+	m.chatgptCloud.progress = nil
 	var reads atomic.Int32
 	m.chatgptCloud.tokenSource = func(context.Context) (string, error) { reads.Add(1); return "", errors.New("must not access provider") }
 	r := testCallbackRegistration("route-chat", "route-target", "route-task", 3)

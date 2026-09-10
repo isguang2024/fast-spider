@@ -38,6 +38,11 @@ func (t *nativeRunnerTransport) Probe(ctx context.Context, task nativeRunnerTask
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, nativeRunnerProbeTimeout)
 	defer cancel()
+	if progress := t.manager.chatgptCloud.progress; progress != nil {
+		if key, at := progress.recent(sessionID, task.Receipt.Generation); key != "" {
+			return nativeRunnerProbe{ProgressKey: "sse:" + key, Running: true, Authoritative: false, ObservedAt: at.Unix(), Summary: "Recent Cloud SSE delta observed locally; not a completion receipt"}, nil
+		}
+	}
 	probeCtx = withChatGPTCloudReadSource(probeCtx, "native_runner_probe")
 	detail, err := t.manager.chatgptCloud.ReadFresh(probeCtx, sessionID)
 	if err != nil {

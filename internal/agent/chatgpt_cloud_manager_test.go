@@ -857,6 +857,8 @@ func TestChatGPTCloudSessionWatchValidatesProviderOnlyOnce(t *testing.T) {
 
 	manager := New(t.TempDir(), nil)
 	defer manager.Close(context.Background())
+	// Preserve coverage of the original pubsub/detail fallback.
+	manager.chatgptCloud.progress = nil
 	manager.chatgptCloud.baseURL, manager.chatgptCloud.http = server.URL, server.Client()
 	manager.chatgptCloud.realtime.baseURL, manager.chatgptCloud.realtime.http = server.URL, server.Client()
 	manager.chatgptCloud.tokenSource = func(context.Context) (string, error) { return "token", nil }
@@ -1136,6 +1138,8 @@ func TestChatGPTCloudWatchRejectsUnknownConversationBeforeSubscribing(t *testing
 	defer server.Close()
 	manager := New(t.TempDir(), nil)
 	defer manager.Close(context.Background())
+	// The legacy query path still validates detail before subscribing.
+	manager.chatgptCloud.progress = nil
 	manager.chatgptCloud.baseURL = server.URL
 	manager.chatgptCloud.http = server.Client()
 	manager.chatgptCloud.realtime.baseURL = server.URL

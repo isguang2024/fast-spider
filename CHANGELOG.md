@@ -3,6 +3,16 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.99 - 2026-09-11
+
+- Default Cloud progress watches to shared resume SSE connections and a local,
+  disposable SQLite event cache. Preserve conversation detail reads and the
+  existing formal callback submission, confirmation and acknowledgement chain.
+- Deduplicate replay independently of the bounded event window, redact credential
+  fields, expire cached progress, and back off unavailable or rate-limited streams.
+- Prefer recent local SSE activity during runner recovery probes without treating
+  stream EOF, handoff or incremental events as business completion.
+
 ## 0.4.98 - 2026-09-11
 
 - Respect Cloud Retry-After deadlines without multiplying them by historical

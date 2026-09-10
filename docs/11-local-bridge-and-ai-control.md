@@ -162,7 +162,9 @@ Cloud 只有一个创建入口 `session.create`，用 `mode=quick_chat|complete`
 | `session.rename` | `POST /conversation/id/{id}/rename` |
 | `session.delete` | `DELETE /conversation/id/{id}` |
 | `session.cancel` | `POST /stop_conversation`（无活动轮时幂等返回） |
-| `session.watch` | 每账号复用一条 `/celsius/ws/user` pubsub 长连接，动态订阅/退订 `conversations` + 当前 `conversation-{uuid}`；`conversation-turn-complete` 等事件 → `session.watch` 事件（提示 refetch `session.get` 取内容） |
+| `session.watch` | Cloud 默认读取 Node 的 SSE 本地 SQLite 进度缓存；后台按会话复用 `/backend-api/f/conversation/resume` 连接。`session.get` 保留原 conversation detail 查询；既有 pubsub 和正式回调链继续工作。 |
+
+Cloud SSE 进度响应包含 `source=sse_local`、`connectionState`、`events`、本地 `cursor` 和 `authoritative=false`。事件是增量帧，不是完整会话正文，也不是验收结果；长轮询只查询本地缓存。缓存位于 Node DataDir 的 `agent/cloud-progress.sqlite3`，每会话保留最近 200 帧，内容和独立去重记录保留 24 小时，过滤认证字段。重连使用已验证的 `offset:0` 并去重，不猜测未公开的 offset 单位。404/认证失败延迟重试，429 遵守共享读取预算和 Retry-After；断流、EOF、handoff 不表示完成。正式回调仍经过原 generation、提交、确认与 ACK 处理；Runner 在近期有 SSE 增量时使用本地活动观察，否则保留原查询恢复路径。
 | `session.callback.register` | Hub 内部先持久保存 mission/task/generation、发送前 completion 基线和可选本地交付路径；可保持未激活 |
 | `session.callback.arm` | Hub 在新任务已投递后持久激活 callback，并建立不会被普通 watch 空闲淘汰的订阅及一次基线围栏补漏 |
 | `session.callback.enqueue` | CHAT 已调用 `completion.notify` 后，Hub 主动把已持久化通知推入 Node 本地队列；目标 Codex 空闲立即唤醒，忙时在当前 Turn 结束后重试 |

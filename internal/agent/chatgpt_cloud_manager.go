@@ -877,6 +877,9 @@ func (m *AgentManager) chatgptCloudWatch(ctx context.Context, input agentControl
 	if wait < 0 || wait > 15*time.Second {
 		return nil, fmt.Errorf("waitSeconds must be between 0 and 15")
 	}
+	if m.chatgptCloud.progress != nil {
+		return m.chatgptCloud.progress.snapshot(ctx, input.SessionID, input.Cursor, wait)
+	}
 	if !m.chatgptCloud.IsWatchingRealtime(input.SessionID) {
 		if _, err := m.readChatGPTCloud(ctx, input.SessionID, chatgptCloudReadCacheTTL); err != nil {
 			return nil, fmt.Errorf("validate ChatGPT cloud conversation: %w", err)
