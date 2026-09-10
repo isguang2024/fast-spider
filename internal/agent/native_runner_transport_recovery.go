@@ -148,9 +148,9 @@ func (t *nativeRunnerTransport) Continue(ctx context.Context, task nativeRunnerT
 		return err
 	}
 	taskRef := nativeRunnerTaskRef(*task.Request)
-	prompt += fmt.Sprintf(" Continue protocol: call FastSpider_Local agent.control action=runner.checkpoint with responseContent.taskRef=%s using the same native provider machineId=%s; after waitingJobs or stage=context_handover, end this turn so Node can resume it.", taskRef, machineID)
-	if len(prompt) > 4096 {
-		return errors.New("runner continuation prompt exceeds 4096 UTF-8 bytes")
+	prompt += fmt.Sprintf(" Continue protocol: call FastSpider_FS ai_control action=runner.checkpoint with responseContent.taskRef=%s using the same native provider machineId=%s; after waitingJobs or stage=context_handover, end this turn so Node can resume it.", taskRef, machineID)
+	if len(prompt) > 32<<10 {
+		return errors.New("runner continuation prompt exceeds 32768 UTF-8 bytes")
 	}
 	readCtx, cancel := context.WithTimeout(ctx, nativeRunnerProbeTimeout)
 	readCtx = withChatGPTCloudReadSource(readCtx, "native_runner_continue_probe")

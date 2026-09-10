@@ -144,14 +144,18 @@ func TestNativeRunnerContinueSameKeySendsOnceWhenCloudIsUnknown(t *testing.T) {
 	}
 	transport := newNativeRunnerTransport(manager, manager.dataDir)
 	taskValue := nativeRecoveryTask(project, taskID, session, 1)
-	if err := transport.Continue(context.Background(), taskValue, "resume this same block", "continue-unknown-key"); err != nil {
+	prompt := strings.Repeat("进展", 1500)
+	if err := transport.Continue(context.Background(), taskValue, prompt, "continue-unknown-key"); err != nil {
 		t.Fatal(err)
 	}
-	if err := transport.Continue(context.Background(), taskValue, "resume this same block", "continue-unknown-key"); err != nil {
+	if err := transport.Continue(context.Background(), taskValue, prompt, "continue-unknown-key"); err != nil {
 		t.Fatal(err)
 	}
 	if sends != 1 || !strings.Contains(sentPrompt, taskValue.Receipt.TaskRef) {
 		t.Fatalf("same-key continuation sends=%d prompt=%q", sends, sentPrompt)
+	}
+	if !strings.Contains(sentPrompt, "FastSpider_FS ai_control") || strings.Contains(sentPrompt, "FastSpider_Local") {
+		t.Fatal("cloud continuation advertised an unavailable local-only tool")
 	}
 }
 
