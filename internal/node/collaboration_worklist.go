@@ -151,6 +151,7 @@ func (l *collaborationLedger) addCollaborationWorkCall(ctx context.Context, inpu
 		entry["completionRule"] = "Produce an actionable controller apply package. If integration waits on a known dependency, propose a concrete blocked disposition and its resume condition. A repeated message may be suppressed; the unsettled action must still be decided. Do not keep resending or silently waiting on integration=pending."
 	case "decide_stalled_check":
 		call["requiredInput"] = []string{"controller disposition: verified continuation with native evidence, confirmed stopped replacement binding, or explicit blocker owner/resume_when/next_check_at; preserve unknown writer scope"}
+		call["blockerFields"] = []string{"kind", "owner", "reason", "resume_when", "next_check_at"}
 		entry["completionRule"] = "Controller must choose a concrete continue/replace/block disposition from actual native evidence. Merely postponing next_check_at does not settle this action. Continue other independent work."
 	}
 	entry["controllerCall"] = call
@@ -210,7 +211,7 @@ func (l *collaborationLedger) addCollaborationWorkDiagnostics(ctx context.Contex
 				eligible = append(eligible, entry)
 			}
 		}
-		if mapStringValue(item, "executor") == "local" && collaborationHoldsExecution(item) {
+		if mapStringValue(item, "executor") == "local" && mapStringValue(item, "phase") == "active" {
 			key, _ := encodeCollaborationJSON([]any{"coordinator", "check_execution", id})
 			record := collaborationOptionalMap(checks[key])
 			if mapStringValue(record, "action_id") != checkIDs[id] || collaborationIntDefault(record, "last_progress_at", 0) == 0 || collaborationBoolDefault(record, "exhausted", false) || now-collaborationIntDefault(record, "last_progress_at", 0) > 1800 {

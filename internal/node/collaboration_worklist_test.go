@@ -212,4 +212,30 @@ func TestUnattendedLocalProgressBudgetAndNoTimeOnlyDeferral(t *testing.T) {
 	if got := c.HandleLocalCapability(context.Background(), collaborationCapabilityRequest("record_action", p)); got.Error == nil {
 		t.Fatal("stalled obligation suppressed by time alone")
 	}
+	decision := collaborationStateIdentity(db, "controller-1")
+	decision["expectedRevision"], decision["items"] = r["revision"], []any{map[string]any{"id": "AIASSIST-LOCAL-RUNTIME-CURRENT-SOURCE-EXECUTE-01", "phase": "blocked", "blocker": map[string]any{"kind": "execution_binding_unavailable", "owner": "owner-1", "reason": "exact child mapping unavailable", "resume_when": "native child returns bounded progress or terminal evidence", "next_check_at": int64(5000)}}}
+	callCollaborationTest(t, c, "apply", decision)
+	q["now"] = int64(2203)
+	after := callCollaborationTest(t, c, "next_actions", q)
+	if collaborationIntDefault(after["diagnostics"].(map[string]any), "active_without_verified_progress", -1) != 0 {
+		t.Fatal("explicit blocker still reported as undecided active execution")
+	}
+	for _, action := range collaborationTestActions(after) {
+		if action["itemId"] == "AIASSIST-LOCAL-RUNTIME-CURRENT-SOURCE-EXECUTE-01" {
+			t.Fatal("explicit blocked disposition retained immediate execution checks")
+		}
+	}
+	cp := collaborationStateIdentity(db, "controller-1")
+	cp["now"] = int64(2203)
+	if collaborationTestHasActionKind(callCollaborationTest(t, c, "next_actions", cp), "decide_stalled_check") {
+		t.Fatal("explicit blocked disposition did not settle stalled action")
+	}
+	item := callCollaborationTest(t, c, "get", map[string]any{"dbPath": db, "missionId": "mission-1", "actorSessionId": "controller-1", "itemId": "AIASSIST-LOCAL-RUNTIME-CURRENT-SOURCE-EXECUTE-01"})["item"].(map[string]any)
+	if !collaborationHoldsExecution(item) {
+		t.Fatal("blocked unknown writer lost its capacity/scope fence")
+	}
+	q["now"] = int64(5000)
+	if !collaborationTestHasActionKind(callCollaborationTest(t, c, "next_actions", q), "recheck_blocker") {
+		t.Fatal("explicit blocker lost its scheduled recovery")
+	}
 }

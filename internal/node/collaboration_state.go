@@ -1917,7 +1917,7 @@ func (l *collaborationLedger) actionCandidatesAt(ctx context.Context, observatio
 				}
 			}
 		}
-		if active && (phase == "dispatching" || phase == "in_doubt" || collaborationHoldsExecution(item)) {
+		if active && phase != "blocked" && (phase == "dispatching" || phase == "in_doubt" || collaborationHoldsExecution(item)) {
 			due := collaborationIntDefault(item, "next_check_at", 0)
 			if mapStringValue(item, "executor") == "local" {
 				first := collaborationIntDefault(item, "started_at", 0) + 900
