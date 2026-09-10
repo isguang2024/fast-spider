@@ -119,7 +119,7 @@ func (a *ChatGPTCloudAdapter) EnsureCallbackRealtime(ctx context.Context, conver
 func (a *ChatGPTCloudAdapter) EnsureCallbackRealtimeForGeneration(ctx context.Context, conversationID string, generation int64) error {
 	if a != nil && a.progress != nil {
 		if err := a.progress.ensure(conversationID, generation, true); err != nil {
-			return err
+			a.logger.Warn("Cloud SSE progress unavailable; preserving callback subscription", "error", err)
 		}
 	}
 	if a == nil || a.realtime == nil {
