@@ -35,7 +35,7 @@ func TestCollaborationCheckBudgetSurvivesEditsAndLegacyMigration(t *testing.T) {
 			}
 			apply(map[string]any{"phase": "active", "next_check_at": int64(1000)})
 			var actionID string
-			for index, now := range []int64{1000, 1900, 3700} {
+			for index, now := range []int64{1000, 1900} {
 				due := readDue("coordinator-1", now)
 				id := collaborationTestActionID(due, "check_execution")
 				if id == "" || index > 0 && id != actionID {

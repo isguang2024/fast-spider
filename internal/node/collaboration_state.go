@@ -1742,6 +1742,10 @@ func (l *collaborationLedger) dependencyPressure(ctx context.Context, items []ma
 }
 
 func (l *collaborationLedger) actionCandidates(ctx context.Context, observation map[string]any) ([]collaborationActionCandidate, error) {
+	return l.actionCandidatesAt(ctx, observation, time.Now().Unix())
+}
+
+func (l *collaborationLedger) actionCandidatesAt(ctx context.Context, observation map[string]any, now int64) ([]collaborationActionCandidate, error) {
 	// A durable, unresolved result needs a business decision, not another
 	// provider recovery. Read the existing inbox once, without a new state.
 	pendingResults := map[string]bool{}
@@ -1893,6 +1897,11 @@ func (l *collaborationLedger) actionCandidates(ctx context.Context, observation 
 			if err := task(kind, role, 0); err != nil {
 				return nil, err
 			}
+			if kind == "prepare_task" && mapStringValue(l.mission, "delivery_coordinator") != "" {
+				if err := task("prepare_task_packet", "delivery_coordinator", 0); err != nil {
+					return nil, err
+				}
+			}
 		}
 		controllerKinds := map[string]string{
 			"returned": "review_result", "rework": "prepare_rework",
@@ -1910,6 +1919,12 @@ func (l *collaborationLedger) actionCandidates(ctx context.Context, observation 
 		}
 		if active && (phase == "dispatching" || phase == "in_doubt" || collaborationHoldsExecution(item)) {
 			due := collaborationIntDefault(item, "next_check_at", 0)
+			if mapStringValue(item, "executor") == "local" {
+				first := collaborationIntDefault(item, "started_at", 0) + 900
+				if due == 0 || due > first {
+					due = first
+				}
+			}
 			if due == 0 {
 				interval := int64(900)
 				if mapStringValue(item, "executor") == "cloud" {
@@ -2018,7 +2033,15 @@ func (l *collaborationLedger) actionCandidates(ctx context.Context, observation 
 		checks, _ := observation["action_checks"].(map[string]any)
 		for _, action := range actions {
 			record, _ := checks[action.Key].(map[string]any)
-			if mapStringValue(record, "action_id") == action.ActionID && collaborationBoolDefault(record, "exhausted", false) {
+			unverifiedLocal := false
+			if action.Kind == "check_execution" && action.DueAt <= now {
+				item, err := l.item(ctx, fmt.Sprint(action.ItemID))
+				if err != nil {
+					return nil, err
+				}
+				unverifiedLocal = mapStringValue(item, "executor") == "local" && (mapStringValue(record, "action_id") != action.ActionID || collaborationIntDefault(record, "last_progress_at", 0) == 0)
+			}
+			if unverifiedLocal || mapStringValue(record, "action_id") == action.ActionID && collaborationBoolDefault(record, "exhausted", false) {
 				if err := add("decide_stalled_check", "controller", action.ItemID, action.ActionID, 0, 0, action.SubjectOwner); err != nil {
 					return nil, err
 				}
@@ -2057,7 +2080,7 @@ func (c *Client) collaborationNextActions(ctx context.Context, input collaborati
 	if err != nil {
 		return nil, err
 	}
-	actions, err := ledger.actionCandidates(ctx, observation)
+	actions, err := ledger.actionCandidatesAt(ctx, observation, now)
 	if err != nil {
 		return nil, err
 	}
@@ -2095,6 +2118,9 @@ func (c *Client) collaborationNextActions(ctx context.Context, input collaborati
 			entry["sourceKind"] = action.SourceKind
 		}
 		if err := ledger.addCollaborationCheckCalls(ctx, input, action, observation, entry); err != nil {
+			return nil, err
+		}
+		if err := ledger.addCollaborationWorkCall(ctx, input, action, entry); err != nil {
 			return nil, err
 		}
 		due = append(due, entry)
@@ -2185,6 +2211,9 @@ func (c *Client) collaborationNextActions(ctx context.Context, input collaborati
 	if input.ActorSessionID == mapStringValue(ledger.mission, collaborationDeliveryRole(ledger.mission)) && mapBoolValue(collaborationOptionalMap(ledger.mission["analysis_policy"]), "enabled") {
 		result["analysisPrepare"] = map[string]any{"action": "analysis_prepare", "params": map[string]any{"dbPath": input.DBPath, "missionId": input.MissionID, "actorSessionId": input.ActorSessionID, "expectedRevision": ledger.revision}, "requiredEvidenceFields": []string{"sourceItemIds", "reason", "question", "brief"}, "reasons": []string{"successor_planning", "conflicting_evidence", "repeated_rework", "cross_owner_design"}}
 	}
+	if err := ledger.addCollaborationWorkDiagnostics(ctx, input, now, actions, refillPlan, result); err != nil {
+		return nil, err
+	}
 	if err := ledger.commit(ctx); err != nil {
 		return nil, err
 	}
@@ -2215,7 +2244,7 @@ func (c *Client) collaborationRecordAction(ctx context.Context, input collaborat
 	if input.ExpectedObservationRevision != collaborationIntDefault(observation, "revision", 0) {
 		return nil, errors.New("observation CAS conflict")
 	}
-	actions, err := ledger.actionCandidates(ctx, observation)
+	actions, err := ledger.actionCandidatesAt(ctx, observation, now)
 	if err != nil {
 		return nil, err
 	}
@@ -2228,6 +2257,9 @@ func (c *Client) collaborationRecordAction(ctx context.Context, input collaborat
 	}
 	if selected == nil || selected.DueAt > now {
 		return nil, errors.New("action stale, not due, or owned by another role; refresh local next_actions once and continue remaining due actions. Do not retry an absent action or repeat executor checks. A successful observe(full=true) already closes its prior consistency audit")
+	}
+	if selected.Kind == "decide_stalled_check" {
+		return nil, errors.New("stalled execution requires controller apply/retry with a concrete continue, replace or blocker disposition; changing a check time is not a decision")
 	}
 	if !input.completeCheck && input.RetryAt <= now {
 		return nil, errors.New("record a finite future retry time, not permanent suppression")
@@ -2268,18 +2300,20 @@ func (c *Client) collaborationRecordAction(ctx context.Context, input collaborat
 				return nil, errors.New("record_check only closes due checks; use resolve/apply for business decisions")
 			}
 			cloudExecution := false
+			localExecution := false
 			if selected.Kind == "check_execution" {
 				item, err := ledger.item(ctx, fmt.Sprint(selected.ItemID))
 				if err != nil {
 					return nil, err
 				}
 				cloudExecution = mapStringValue(item, "executor") == "cloud"
+				localExecution = mapStringValue(item, "executor") == "local"
 			}
-			if input.Outcome != "unchanged" && input.Outcome != "unavailable" && !(cloudExecution && input.Outcome == "observed") {
+			if input.Outcome != "unchanged" && input.Outcome != "unavailable" && !((cloudExecution || localExecution) && input.Outcome == "observed") {
 				return nil, errors.New("check outcome must be unchanged or unavailable; Cloud execution also accepts observed with progressToken. Terminal business facts use resolve/apply")
 			}
 			count = collaborationIntDefault(prior, "attempts", 0) + 1
-			if cloudExecution {
+			if cloudExecution || localExecution {
 				budget = 2
 				progressState = "unavailable"
 				if input.Outcome == "observed" {
@@ -2299,7 +2333,7 @@ func (c *Client) collaborationRecordAction(ctx context.Context, input collaborat
 				return nil, errors.New("check budget exhausted; controller must arrange bounded recovery or an explicit actionable external blocker, not silent indefinite waiting")
 			}
 			var backoff int64
-			if cloudExecution {
+			if cloudExecution || localExecution {
 				backoff = now + 600 // Real progress keeps the next bounded check ten minutes away.
 			} else {
 				backoff = now + 900*(1<<(count-1))

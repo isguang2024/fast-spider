@@ -90,11 +90,15 @@ func (l *collaborationLedger) addCollaborationCheckCalls(ctx context.Context, in
 		return nil
 	}
 	if mapStringValue(item, "executor") != "cloud" {
+		l.addCollaborationNativeCheck(entry, mapStringValue(item, "execution_ref"))
 		if action.Kind == "decide_stalled_check" {
 			entry["recoveryRule"] = "Controller assigns one bounded recovery to the actual blocked owner or records an actionable external/user blocker. Do not turn exhausted checks into indefinite silent waiting."
 			return nil
 		}
-		l.addCollaborationNativeCheck(entry, mapStringValue(item, "execution_ref"))
+		if call, ok := entry["recordCheck"].(map[string]any); ok {
+			call["requiredInput"] = map[string]any{"outcome": []string{"observed", "unchanged", "unavailable"}, "progressToken": "Actual native turn/tool/output checkpoint; active status alone is not progress", "evidenceRef": "Exact native execution evidence"}
+		}
+		entry["firstCheckAfterSeconds"], entry["noProgressBudget"] = 900, 2
 		return nil
 	}
 	binding := collaborationOptionalMap(item["binding"])
@@ -185,6 +189,7 @@ func (l *collaborationLedger) addCollaborationNativeCheck(entry map[string]any, 
 		parent, path, ok := strings.Cut(parentPath, "#")
 		if ok && parent != "" && strings.HasPrefix(path, "/") {
 			entry["nativeBindingLookup"] = read(parent)
+			entry["nativeExecutionCheck"] = map[string]any{"lookup": read(parent), "canonicalPath": path, "requiredNext": "Read the exact mapped child with native read_thread; when caller owns this parent, native collaboration.list_agents may resolve the canonical path. No mapping means unavailable, never infer active from the ledger."}
 			entry["bindingRule"] = "Match the registered canonical path " + path + " to subAgentActivity.agentThreadId in the native parent result, then read that exact child once. Persist a verified codex-thread:<agentThreadId> through controller apply. Missing mapping is unavailable; never pass the canonical reference to read_thread or scan unrelated tasks."
 			return
 		}

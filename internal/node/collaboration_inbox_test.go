@@ -180,7 +180,7 @@ func TestCollaborationRecordCheckFinishesAuditAndExhaustsUnchangedBudget(t *test
 	if collaborationTestHasActionKind(readDue("coordinator-1", 1001), "consistency_audit") {
 		t.Fatal("completed audit remained due")
 	}
-	for _, now := range []int64{1000, 1900, 3700} {
+	for _, now := range []int64{1000, 1900} {
 		due = readDue("coordinator-1", now)
 		check["expectedRevision"], check["expectedObservationRevision"], check["actionId"], check["evidenceRef"], check["outcome"], check["now"] = due["revision"], due["observationRevision"], collaborationTestActionID(due, "check_execution"), "execution:unchanged", "unchanged", now
 		if check["actionId"] == "" {

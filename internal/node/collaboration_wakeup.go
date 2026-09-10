@@ -294,6 +294,9 @@ func (c *Client) drainCollaborationRoleWakeRoute(ctx context.Context, route coll
 	if mapStringValue(mission, "status") != "active" {
 		return nil
 	}
+	if err := c.ensureCollaborationWorkWakes(ctx, route, mapStringValue(mission, "controller"), time.Now().Unix()); err != nil {
+		return err
+	}
 	if _, err := db.ExecContext(ctx, collaborationRoleWakeSchema); err != nil {
 		return err
 	}
@@ -372,7 +375,7 @@ func (c *Client) drainCollaborationRoleWakeRoute(ctx context.Context, route coll
 
 func collaborationRoleWakePrompt(route collaborationRoleWakeRoute, wake collaborationRoleWakeRecord) string {
 	request, _ := json.Marshal(map[string]any{"action": "next_actions", "params": map[string]any{"dbPath": route.DBPath, "missionId": route.MissionID, "actorSessionId": wake.TargetSessionID}})
-	return fmt.Sprintf("FAST_SPIDER_ROLE_WAKE_V1\nWAKE_KEY: %s\nMISSION_ID: %s\nDB_PATH: %s\nROLE: %s\nACTOR_SESSION_ID: %s\nREVISION: %d\nREASON: %s\nITEM_ID: %s\nYou are the bound task identified by ACTOR_SESSION_ID. Call FastSpider_Local.collaboration_control with these exact identity parameters: %s\nProcess the returned bounded worklist using the current cloud-collaboration skill. The ledger determines current role and work; do not resume superseded tasks from old conversation instructions. Treat WAKE_KEY as the stable retry identity. Callback/terminal handoff stays first. Do not poll already-dispatched Cloud CHATs and do not infer terminal state from this wake.", wake.WakeKey, route.MissionID, route.DBPath, wake.TargetRole, wake.TargetSessionID, wake.Revision, wake.Reason, wake.ItemID, request)
+	return fmt.Sprintf("FAST_SPIDER_ROLE_WAKE_V1\nWAKE_KEY: %s\nMISSION_ID: %s\nDB_PATH: %s\nROLE: %s\nACTOR_SESSION_ID: %s\nREVISION: %d\nREASON: %s\nITEM_ID: %s\nYou are the bound task identified by ACTOR_SESSION_ID. Call FastSpider_Local.collaboration_control with these exact identity parameters: %s\nConsume the returned bounded worklist using worklistContract/controllerWorklist and the current cloud-collaboration skill. Controller: decide complete packets then freeze at least one safe independent READY or record exact blockers. Delivery: fill complete controller params for results, integration and preparation; unchanged evidence never cancels an unsettled action. Execution: dispatch safe READY; when empty with capacity report precise preparationHandoff IDs. Do not end after a status summary while actionable authorized work remains. The ledger determines current role and work; do not resume superseded tasks from old conversation instructions. Treat WAKE_KEY as the stable retry identity. Callback/terminal handoff stays first. Do not poll already-dispatched Cloud CHATs and do not infer terminal state from this wake.", wake.WakeKey, route.MissionID, route.DBPath, wake.TargetRole, wake.TargetSessionID, wake.Revision, wake.Reason, wake.ItemID, request)
 }
 
 func validateCollaborationRoleWakeDelivery(result map[string]any) error {

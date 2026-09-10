@@ -497,3 +497,9 @@ Node loopback UI 继续使用 Edge App Window，不引入 Electron/Wails。一�
 ### 0.4.86 本机角色唤醒
 
 持久 role-wakeup 与正式 callback 复用进程内 DeliverLocalCodexTurn 确认投递路径。Desktop 已持有目标任务 writer 时由已有 Desktop IPC 路径交给原 owner，仅在目标空闲且获得真实 turnId 后记录 delivered；忙碌目标保留现有退避与同目标合并，不抢占、不创建替代任务。普通对外 session.send 的策略保持原契约，不暴露内部确认标记。
+
+### 0.4.87 未结算工作清单与本地停滞
+
+next_actions返回controllerWorklist、worklistContract、plannedPreparation、preparationHandoff和boundedRefillInvariant。Controller消费结果/原生终态、完整决策包和独立READY准备；Delivery收到prepare_task_packet及controller-only参数草案，必须依据事实补齐后交主控。缺少冻结写域不构成派发授权；依赖/写域/策略阻塞逐项返回。诊断提供controller_due_action_age（秒）、planned_eligible_not_ready、coordinator_idle_with_capacity、active_without_verified_progress。
+
+Node在原role_wakeup_outbox保留未结算动作首见记录并按小时生成去重提醒；读next_actions不写业务状态，成功通知不结算工作，已有决定使过时待发提醒失效。重启复用同一动作身份，原主控仍唯一resolve/apply/retry/READY owner。Local active按准确native binding检查，首次窗口仍无可信进度或两次无进展进入decide_stalled_check；进度token必须来自真实native工具/输出，单改检查时间不能消除停滞。

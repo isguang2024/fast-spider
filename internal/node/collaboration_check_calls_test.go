@@ -140,7 +140,7 @@ func TestCollaborationLocalCheckUsesNativeBindingWithoutProviderCalls(t *testing
 				}
 			case "codex-agent:parent-1#/root/validator":
 				call := check["nativeBindingLookup"].(map[string]any)
-				if call["params"].(map[string]any)["threadId"] != "parent-1" || check["nativeExecutionCheck"] != nil {
+				if call["params"].(map[string]any)["threadId"] != "parent-1" || check["nativeExecutionCheck"].(map[string]any)["canonicalPath"] != "/root/validator" {
 					t.Fatalf("invented child binding: %#v", check)
 				}
 			default:
