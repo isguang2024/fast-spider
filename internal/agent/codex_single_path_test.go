@@ -113,6 +113,53 @@ func TestNormalCodexSessionSendDoesNotAutoUnarchive(t *testing.T) {
 	}
 }
 
+func TestLocalNotificationUsesConfirmedCallbackDelivery(t *testing.T) {
+	for _, confirmed := range []bool{false, true} {
+		t.Run(fmt.Sprint(confirmed), func(t *testing.T) {
+			manager := New(t.TempDir(), nil)
+			defer manager.Close(context.Background())
+			cwd := t.TempDir()
+			unarchived := false
+			manager.codex.requestOverride = func(_ context.Context, method string, p map[string]any) (map[string]any, error) {
+				switch method {
+				case "thread/read":
+					return map[string]any{"thread": map[string]any{"id": "notification-target", "cwd": cwd}}, nil
+				case "thread/resume":
+					if !unarchived {
+						return nil, errors.New("session notification-target is archived. Run `codex unarchive notification-target` to unarchive it first")
+					}
+					return map[string]any{"thread": map[string]any{"id": "notification-target"}}, nil
+				case "thread/unarchive":
+					unarchived = true
+					return map[string]any{}, nil
+				case "turn/start":
+					if p["model"] != nil || p["effort"] != nil {
+						t.Fatal("notification changed model configuration")
+					}
+					turn := map[string]any{}
+					if confirmed {
+						turn["id"] = "notification-turn"
+					}
+					return map[string]any{"turn": turn}, nil
+				default:
+					return nil, fmt.Errorf("unexpected method %s", method)
+				}
+			}
+			result, err := manager.DeliverLocalCodexTurn(context.Background(), "notification-target", "bounded wake")
+			if !unarchived {
+				t.Fatal("notification did not use confirmed callback policy")
+			}
+			if confirmed {
+				if err != nil || result["turnId"] != "notification-turn" {
+					t.Fatalf("result=%v err=%v", result, err)
+				}
+			} else if err == nil {
+				t.Fatal("unconfirmed delivery accepted")
+			}
+		})
+	}
+}
+
 func TestNormalizeCodexExecutionResultRemovesLegacyDesktopFields(t *testing.T) {
 	result := map[string]any{
 		"executionMode": "codex_desktop_ipc", "owner": "codex_desktop",

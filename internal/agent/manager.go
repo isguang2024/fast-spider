@@ -227,7 +227,7 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 		logger,
 		func(sessionID string) bool { return manager.codex.ActiveTurn(sessionID) != "" },
 		func(ctx context.Context, sessionID, prompt string) (sessionCallbackDeliveryResult, error) {
-			result, err := manager.sessionSend(ctx, agentControlParams{SessionID: sessionID, Prompt: prompt, RequireConfirmedTurnID: true})
+			result, err := manager.DeliverLocalCodexTurn(ctx, sessionID, prompt)
 			if err != nil {
 				return sessionCallbackDeliveryResult{}, err
 			}
@@ -1459,6 +1459,13 @@ func (m *AgentManager) cleanupRejectedInitialTurn(sessionID string, idempotencyP
 		return fmt.Errorf("release rejected Codex session visibility metadata: %w", err)
 	}
 	return nil
+}
+
+// DeliverLocalCodexTurn is shared by callback and role wake dispatchers. It
+// preserves the Desktop writer and requires its confirmed turn ID. Ordinary
+// external session.send keeps its existing policy.
+func (m *AgentManager) DeliverLocalCodexTurn(ctx context.Context, sessionID, prompt string) (map[string]any, error) {
+	return m.sessionSend(ctx, agentControlParams{SessionID: sessionID, Prompt: prompt, RequireConfirmedTurnID: true})
 }
 
 func (m *AgentManager) sessionSend(ctx context.Context, input agentControlParams) (map[string]any, error) {

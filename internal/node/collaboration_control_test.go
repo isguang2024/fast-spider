@@ -1052,11 +1052,19 @@ func (collaborationCreateInDoubtError) CapabilityError() (string, string, bool) 
 }
 
 type collaborationTestAgent struct {
-	mu      sync.Mutex
-	actions []string
-	calls   []collaborationTestCall
-	results map[string]map[string]any
-	errors  map[string]error
+	localTurnDeliveries int
+	mu                  sync.Mutex
+	actions             []string
+	calls               []collaborationTestCall
+	results             map[string]map[string]any
+	errors              map[string]error
+}
+
+func (a *collaborationTestAgent) DeliverLocalCodexTurn(ctx context.Context, sessionID, prompt string) (map[string]any, error) {
+	a.mu.Lock()
+	a.localTurnDeliveries++
+	a.mu.Unlock()
+	return a.Control(ctx, "session.send", map[string]any{"sessionId": sessionID, "prompt": prompt})
 }
 
 func (a *collaborationTestAgent) Control(_ context.Context, action string, params map[string]any) (map[string]any, error) {

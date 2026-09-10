@@ -54,6 +54,11 @@ type collaborationRoleWakeRecord struct {
 	Attempts        int64
 }
 
+// Durable notifications use the local owner's confirmed-turn delivery.
+type collaborationLocalTurnDeliverer interface {
+	DeliverLocalCodexTurn(context.Context, string, string) (map[string]any, error)
+}
+
 func (c *Client) collaborationRoleWakeChannel() chan struct{} {
 	c.collaborationWakeMu.Lock()
 	defer c.collaborationWakeMu.Unlock()
@@ -266,7 +271,8 @@ func (c *Client) drainCollaborationRoleWakes(ctx context.Context) {
 }
 
 func (c *Client) drainCollaborationRoleWakeRoute(ctx context.Context, route collaborationRoleWakeRoute) error {
-	if c.agent == nil {
+	deliverer, ok := c.agent.(collaborationLocalTurnDeliverer)
+	if !ok {
 		return ErrAgentProviderUnavailable
 	}
 	db, err := sql.Open("sqlite", route.DBPath)
@@ -332,7 +338,7 @@ func (c *Client) drainCollaborationRoleWakeRoute(ctx context.Context, route coll
 		}
 		prompt := collaborationRoleWakePrompt(route, wake)
 		turnCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		result, sendErr := c.agent.Control(turnCtx, "session.send", map[string]any{"sessionId": wake.TargetSessionID, "prompt": prompt})
+		result, sendErr := deliverer.DeliverLocalCodexTurn(turnCtx, wake.TargetSessionID, prompt)
 		cancel()
 		if sendErr == nil {
 			sendErr = validateCollaborationRoleWakeDelivery(result)

@@ -233,6 +233,9 @@ func TestCollaborationRoleWakeOutboxRetriesAcrossRestartAndRequiresConfirmedTurn
 	}}}
 	restarted := NewLocalCapabilityClient(Config{DataDir: dataDir, Agent: successAgent})
 	restarted.drainCollaborationRoleWakes(context.Background())
+	if successAgent.localTurnDeliveries != 1 || failedAgent.localTurnDeliveries != 1 {
+		t.Fatal("role wake bypassed the confirmed local notification path")
+	}
 	db, err = sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatal(err)

@@ -493,3 +493,7 @@ Node loopback UI 继续使用 Edge App Window，不引入 Electron/Wails。一�
 ### 0.4.85 分析完整结果与溢出恢复
 
 分析 READY 使用 status 回调避免将完整技术报告塞入短文本传输。inbox 的 resultFetch 提供原 CHAT、原幂等键和 session.result(manifest) 参数，协调取得完整报告后再准备决策。旧 text 回调的 CALLBACK_TEXT_TOO_LARGE 可由原主控调用 result_recover(expectedRevision,resultId)：Node 在事务外核验原 provider 的 completed/ready manifest，并以 revision CAS 更正同一 inbox/item 的传输结果事实，保留 resolution、ACK、phase、blocker、attempt 与后继。已决策结果仅支持保留 resolve(block) 的审计，不重复 resolve；后续业务采纳仍由主控 apply。不同错误、旧 attempt、非主控、无效 manifest 或过期 revision 均不能更正结果。动作幂等，不调用 create/send。
+
+### 0.4.86 本机角色唤醒
+
+持久 role-wakeup 与正式 callback 复用进程内 DeliverLocalCodexTurn 确认投递路径。Desktop 已持有目标任务 writer 时由已有 Desktop IPC 路径交给原 owner，仅在目标空闲且获得真实 turnId 后记录 delivered；忙碌目标保留现有退避与同目标合并，不抢占、不创建替代任务。普通对外 session.send 的策略保持原契约，不暴露内部确认标记。
