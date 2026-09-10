@@ -136,7 +136,7 @@ func (t *nativeRunnerTransport) Dispatch(ctx context.Context, request nativeRunn
 		return nativeRunnerReceipt{}, errors.New("native runner machine identity is not ready; preserve the request until Node is connected")
 	}
 	controlEnvelope, _ := json.Marshal(map[string]any{"machineId": machineID, "action": "runner.submit", "responseContent": json.RawMessage(responseContent)})
-	prompt := request.Prompt + "\n\nNative runner binding: taskRef=" + taskRef + ". This task requires the installed Fast Spider FS ai_control capability. If the capability is not visible in the current tool context, first use the normal Fast Spider FS capability discovery/bootstrap flow, then call Fast Spider FS ai_control with this exact object: " + string(controlEnvelope) + ". The Node resolves project, task, round and Cloud session from this immutable taskRef; do not create another CHAT or invent a session ID."
+	prompt := request.Prompt + "\n\nNative runner binding: taskRef=" + taskRef + ". Use the installed FastSpider_FS MCP tools file_read to read the packet, file_edit to create the assigned result file, and ai_control to submit. Low-level capability names such as file.read are not MCP tool names. Tools can be deferred: if file_read, file_edit or ai_control is absent from the current tool context, use api_tool.list_resources with paths=[\"FastSpider_FS\"] and query=\"file_read file_edit ai_control\" to load those tools; discovering only fsprobe/capability_list/machine_list does not load all tools. If needed load the exact tool guide with capability_list(view=\"tool\",name=\"file_read\") and the corresponding names. After writing the result, call FastSpider_FS ai_control with this exact object: " + string(controlEnvelope) + ". The Node resolves project, task, round and Cloud session from this immutable taskRef; do not create another CHAT or invent a session ID."
 
 	sessionID := strings.TrimSpace(request.TargetSessionID)
 	if sessionID != "" {
@@ -147,11 +147,14 @@ func (t *nativeRunnerTransport) Dispatch(ctx context.Context, request nativeRunn
 		if err := t.registerCallback(ctx, request, sessionID, "reuse"); err != nil {
 			return nativeRunnerReceipt{}, err
 		}
+		defaults := t.manager.chatGPTCloudCreateDefaults()
 		if _, err := t.manager.Control(ctx, "session.send", map[string]any{
 			"providerId":     "codex",
 			"backend":        sessionBackendChatGPTCloud,
 			"sessionId":      sessionID,
 			"mode":           "quick_chat",
+			"model":          defaults.Model,
+			"thinking":       defaults.Thinking,
 			"prompt":         prompt,
 			"idempotencyKey": request.IdempotencyKey,
 		}); err != nil {

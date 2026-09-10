@@ -4,12 +4,62 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestNativeRunnerReuseUsesConfiguredModelInsteadOfFailedInitialAuto(t *testing.T) {
+	const session = "native-reuse-auto"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/conversation/"+session {
+			http.NotFound(w, r)
+			return
+		}
+		writeChatGPTCloudTestJSON(t, w, map[string]any{
+			"conversation_id": session, "current_node": "assistant-1", "default_model_slug": "auto",
+			"mapping": map[string]any{"assistant-1": map[string]any{
+				"id": "assistant-1", "parent": nil,
+				"message": map[string]any{"id": "assistant-1", "author": map[string]any{"role": "assistant"}, "metadata": map[string]any{"model_slug": "auto"}},
+			}},
+		})
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	manager := New(root, nil)
+	defer manager.Close(context.Background())
+	manager.SetChatGPTCloudCreateDefaults("advanced", "quick_chat", "gpt-5-6-thinking", "max")
+	manager.nativeRunnerMachineID = func() (string, error) { return "machine", nil }
+	manager.chatgptCloud.baseURL = server.URL
+	manager.chatgptCloud.http = server.Client()
+	manager.chatgptCloud.tokenSource = func(context.Context) (string, error) { return "token", nil }
+	var model, thinking, sentPrompt string
+	manager.chatgptCloud.sendOverride = func(_ context.Context, _, _, prompt, selectedModel, selectedThinking string) (chatgptCloudTurnResult, error) {
+		model, thinking, sentPrompt = selectedModel, selectedThinking, prompt
+		return chatgptCloudTurnResult{ConversationID: session}, nil
+	}
+	transport := newNativeRunnerTransport(manager, root)
+	_, err := transport.Dispatch(context.Background(), nativeRunnerDispatch{
+		ProjectID: "project", TaskID: "planner", Round: 3, ControllerSessionID: "controller",
+		WorkingDirectory: root, TargetSessionID: session, Prompt: "Read assigned packet", IdempotencyKey: "native-model-recovery-round-3",
+		ResultPath: filepath.Join(root, "native-runner", "planner-r3.result"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "gpt-5-6-thinking" || thinking != "max" {
+		t.Fatalf("native retry inherited failed auto selection: model=%q thinking=%q", model, thinking)
+	}
+	for _, required := range []string{"file_read", "file_edit", "ai_control", "api_tool.list_resources", "Low-level capability names"} {
+		if !strings.Contains(sentPrompt, required) {
+			t.Fatalf("missing tool discovery contract %q", required)
+		}
+	}
+}
 
 func nativeCallbackFixture(t *testing.T, store *sessionCallbackStore, source, task string, native bool) nativeRunnerTask {
 	t.Helper()

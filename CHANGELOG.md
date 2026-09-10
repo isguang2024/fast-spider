@@ -3,6 +3,20 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.94 - 2026-09-10
+
+- Keep existing Cloud CHAT creation and ordinary follow-up behavior unchanged;
+  native runner retries explicitly use the configured model and thinking defaults.
+- Compile exact MCP tool discovery instructions for native task packets, including
+  deferred file_read, file_edit and ai_control tools.
+
+## 0.4.93 - 2026-09-10
+
+- Persist explicit blocked evidence for terminal missing reports and recover
+  legacy pending acknowledgements without fabricating successful task results.
+- Acknowledge native callbacks from frozen result evidence and avoid empty-path
+  planner errors while preserving ordinary callback behavior.
+
 ## 0.4.92 - 2026-09-10
 
 - Accept native project runner initialization, task, goal, signal and check
