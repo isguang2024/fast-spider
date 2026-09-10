@@ -346,6 +346,7 @@ func (r *nativeRunner) applyRecovery(ctx context.Context, t *nativeRunnerTask, o
 		state.Phase = "handover"
 		t.History = append(t.History, nativeRunnerAttempt{Round: t.Round, GoalVersion: t.GoalVersion, Request: t.Request, Receipt: t.Receipt, Result: t.Result, Correction: t.Correction, Acked: t.ResultAcked, Superseded: true, InactiveProof: &nativeRunnerInactiveProof{SessionID: t.Receipt.SessionID, Round: t.Round, ProgressKey: probe.ProgressKey, ObservedAt: probe.ObservedAt, Terminal: true}})
 		t.Round++
+		t.StartedAt = 0
 		t.State = "queued"
 		t.Rotate = true
 		t.Request = nil

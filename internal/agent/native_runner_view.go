@@ -111,7 +111,7 @@ func ReadNativeRunnerView(ctx context.Context, dataDir, projectID, taskID string
 		"receipt": task.Receipt, "result": task.Result, "lastError": task.LastError, "reason": task.DeferredReason,
 		"resumeAt": task.ResumeAt, "nextAt": task.NextAt,
 		"recovery": nativeRecoveryView(task),
-		"archived": task.Archived, "priority": task.Priority, "planRevision": task.PlanRevision, "cancellation": task.Cancellation,
+		"archived": task.Archived, "priority": task.Priority, "planRevision": task.PlanRevision, "cancellation": task.Cancellation, "estimatedMinutes": task.EstimatedMinutes,
 	}}, nil
 }
 
@@ -129,7 +129,7 @@ func nativeViewProject(p nativeRunnerProject, detail bool) map[string]any {
 		return s
 	}
 	view := map[string]any{"id": p.ID, "title": clip(title, 80), "goalSummary": clip(goal, 240),
-		"root": p.Root, "controllerSessionId": p.ControllerSessionID, "concurrency": p.Concurrency,
+		"root": p.Root, "controllerSessionId": p.ControllerSessionID, "concurrency": p.Concurrency, "maxConcurrency": p.MaxConcurrency,
 		"paused": p.Paused, "questions": p.Questions, "nextPlanAt": p.NextPlanAt,
 		"state": p.State, "archived": p.Archived, "revision": p.Revision, "plannedRevision": p.PlannedRevision, "pendingChanges": p.PendingChanges}
 	if detail {
@@ -157,6 +157,7 @@ func nativeTaskBrief(t nativeRunnerTask) map[string]any {
 	item["archived"] = t.Archived
 	item["priority"] = t.Priority
 	item["planRevision"] = t.PlanRevision
+	item["estimatedMinutes"] = t.EstimatedMinutes
 	if t.Cancellation != nil {
 		item["cancellation"] = t.Cancellation
 	}
@@ -249,9 +250,7 @@ func nativeProjectView(ctx context.Context, tx *sql.Tx, p nativeRunnerProject, d
 			rows.Close()
 			return nil, err
 		}
-		if nativeHolds(other) || nativeChecking(other) {
-			otherTasks = append(otherTasks, other)
-		}
+		otherTasks = append(otherTasks, other)
 	}
 	err = rows.Err()
 	rows.Close()
@@ -259,6 +258,34 @@ func nativeProjectView(ctx context.Context, tx *sql.Tx, p nativeRunnerProject, d
 		return nil, err
 	}
 	holds := append(append([]nativeRunnerTask{}, tasks...), otherTasks...)
+	limit, err := nativeLoadGlobalConcurrency(tx)
+	if err != nil {
+		return nil, err
+	}
+	projects := []nativeRunnerProject{}
+	rows, err = tx.QueryContext(ctx, "SELECT value FROM runner_projects ORDER BY rowid")
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var raw string
+		var project nativeRunnerProject
+		if err = rows.Scan(&raw); err == nil {
+			err = json.Unmarshal([]byte(raw), &project)
+		}
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		projects = append(projects, project)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	scheduling := nativeBuildSchedulingSnapshot(holds, projects, limit)
+	allocation := scheduling.Projects[p.ID]
 	groups := map[string]map[string]int{}
 	for _, t := range tasks {
 		item := nativeTaskBrief(t)
@@ -321,6 +348,7 @@ func nativeProjectView(ctx context.Context, tx *sql.Tx, p nativeRunnerProject, d
 	view := map[string]any{"project": nativeViewProject(p, detail), "tasks": brief, "groups": groups,
 		"pendingAcknowledgements": pendingACK, "cooldownUntil": cooldown, "complete": p.CompleteVersion == p.GoalVersion,
 		"refreshedAt": time.Now().UTC().Format(time.RFC3339)}
+	view["scheduling"] = map[string]any{"globalLimit": scheduling.GlobalLimit, "globalActive": scheduling.GlobalActive, "projectLimit": allocation.ProjectLimit, "projectActive": allocation.ProjectActive, "allocation": allocation.Allocation}
 	if updated != 0 {
 		view["updatedAt"] = time.Unix(updated, 0).UTC().Format(time.RFC3339)
 	}

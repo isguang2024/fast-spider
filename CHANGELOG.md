@@ -8,6 +8,9 @@ semantic versioning for public releases.
 - Respect Cloud Retry-After deadlines without multiplying them by historical
   task failures. Bound fallback rate-limit backoff to 30 seconds through two
   minutes, while retaining shared read deduplication and provider cooldowns.
+- Keep conversation-read throttling separate from creation dispatch. Share eight
+  Cloud slots globally across task areas, with demand-based fair allocation and
+  optional per-area concurrency caps configurable by the controller.
 
 ## 0.4.97 - 2026-09-11
 

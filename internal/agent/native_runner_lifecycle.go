@@ -236,6 +236,7 @@ func (r *nativeRunner) applyLifecycle(ctx context.Context, p nativeRunnerProject
 	t.History = append(t.History, nativeRunnerAttempt{Round: t.Round, GoalVersion: t.GoalVersion, Request: t.Request, Receipt: t.Receipt, Result: t.Result, Correction: t.Correction, Acked: t.ResultAcked, Superseded: true, InactiveProof: result.Proof})
 	target := cancel.Target
 	t.Round++
+	t.StartedAt = 0
 	t.Request = nil
 	t.Receipt = nil
 	t.Result = nil

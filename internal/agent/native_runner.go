@@ -34,6 +34,7 @@ type nativeRunnerProject struct {
 	Goal                string                       `json:"goal"`
 	GoalVersion         string                       `json:"goalVersion"`
 	Concurrency         int                          `json:"concurrency"`
+	MaxConcurrency      int                          `json:"maxConcurrency,omitempty"`
 	Checks              map[string]nativeRunnerCheck `json:"checks"`
 	Paused              bool                         `json:"paused"`
 	CompleteVersion     string                       `json:"completeVersion,omitempty"`
@@ -119,43 +120,46 @@ type nativeRunnerAttempt struct {
 	Request       *nativeRunnerDispatch      `json:"request,omitempty"`
 }
 type nativeRunnerTask struct {
-	Recovery        *nativeRunnerRecovery             `json:"recovery,omitempty"`
-	ID              string                            `json:"id"`
-	ProjectID       string                            `json:"projectId"`
-	Parent          string                            `json:"parent,omitempty"`
-	Key             string                            `json:"key"`
-	Kind            string                            `json:"kind"`
-	Title           string                            `json:"title"`
-	Objective       string                            `json:"objective"`
-	Acceptance      string                            `json:"acceptance"`
-	Scope           string                            `json:"scope,omitempty"`
-	Context         []string                          `json:"context,omitempty"`
-	After           []string                          `json:"after,omitempty"`
-	Checks          []string                          `json:"checks,omitempty"`
-	GoalVersion     string                            `json:"goalVersion"`
-	AcceptedVersion string                            `json:"acceptedVersion,omitempty"`
-	Round           int                               `json:"round"`
-	State           string                            `json:"state"`
-	Correction      string                            `json:"correction,omitempty"`
-	Rotate          bool                              `json:"rotate,omitempty"`
-	DeferredReason  string                            `json:"deferredReason,omitempty"`
-	ResumeAt        int64                             `json:"resumeAt,omitempty"`
-	NextAt          int64                             `json:"nextAt,omitempty"`
-	Failures        int                               `json:"failures,omitempty"`
-	LastError       string                            `json:"lastError,omitempty"`
-	Observation     string                            `json:"observation,omitempty"`
-	Request         *nativeRunnerDispatch             `json:"request,omitempty"`
-	Receipt         *nativeRunnerReceipt              `json:"receipt,omitempty"`
-	Result          *nativeRunnerResult               `json:"result,omitempty"`
-	ResultAcked     bool                              `json:"resultAcked"`
-	AckRetryAt      int64                             `json:"ackRetryAt,omitempty"`
-	History         []nativeRunnerAttempt             `json:"history,omitempty"`
-	Validations     map[string]nativeRunnerValidation `json:"validations,omitempty"`
-	Basis           map[string]string                 `json:"basis,omitempty"`
-	PlanRevision    int64                             `json:"planRevision"`
-	Priority        int                               `json:"priority"`
-	Archived        bool                              `json:"archived,omitempty"`
-	Cancellation    *nativeRunnerCancellation         `json:"cancellation,omitempty"`
+	Recovery         *nativeRunnerRecovery             `json:"recovery,omitempty"`
+	ID               string                            `json:"id"`
+	ProjectID        string                            `json:"projectId"`
+	Parent           string                            `json:"parent,omitempty"`
+	Key              string                            `json:"key"`
+	Kind             string                            `json:"kind"`
+	Title            string                            `json:"title"`
+	Objective        string                            `json:"objective"`
+	Acceptance       string                            `json:"acceptance"`
+	Scope            string                            `json:"scope,omitempty"`
+	Context          []string                          `json:"context,omitempty"`
+	After            []string                          `json:"after,omitempty"`
+	Checks           []string                          `json:"checks,omitempty"`
+	GoalVersion      string                            `json:"goalVersion"`
+	AcceptedVersion  string                            `json:"acceptedVersion,omitempty"`
+	Round            int                               `json:"round"`
+	State            string                            `json:"state"`
+	Correction       string                            `json:"correction,omitempty"`
+	Rotate           bool                              `json:"rotate,omitempty"`
+	DeferredReason   string                            `json:"deferredReason,omitempty"`
+	ResumeAt         int64                             `json:"resumeAt,omitempty"`
+	NextAt           int64                             `json:"nextAt,omitempty"`
+	Failures         int                               `json:"failures,omitempty"`
+	LastError        string                            `json:"lastError,omitempty"`
+	Observation      string                            `json:"observation,omitempty"`
+	Request          *nativeRunnerDispatch             `json:"request,omitempty"`
+	Receipt          *nativeRunnerReceipt              `json:"receipt,omitempty"`
+	Result           *nativeRunnerResult               `json:"result,omitempty"`
+	ResultAcked      bool                              `json:"resultAcked"`
+	AckRetryAt       int64                             `json:"ackRetryAt,omitempty"`
+	History          []nativeRunnerAttempt             `json:"history,omitempty"`
+	Validations      map[string]nativeRunnerValidation `json:"validations,omitempty"`
+	Basis            map[string]string                 `json:"basis,omitempty"`
+	PlanRevision     int64                             `json:"planRevision"`
+	Priority         int                               `json:"priority"`
+	EstimatedMinutes int                               `json:"estimatedMinutes,omitempty"`
+	StartedAt        int64                             `json:"startedAt,omitempty"`
+	DispatchOrdinal  int64                             `json:"dispatchOrdinal,omitempty"`
+	Archived         bool                              `json:"archived,omitempty"`
+	Cancellation     *nativeRunnerCancellation         `json:"cancellation,omitempty"`
 }
 type nativeRunnerBackend interface {
 	Dispatch(context.Context, nativeRunnerDispatch) (nativeRunnerReceipt, error)
@@ -183,6 +187,9 @@ type nativeRunner struct {
 	cancel            context.CancelFunc
 	done              chan struct{}
 	cooldownUntil     int64
+	globalConcurrency int
+	dispatchOrdinal   int64
+	dispatchSelection map[string]bool
 }
 
 func newNativeRunner(dataDir string, backend nativeRunnerBackend, logger *slog.Logger) (*nativeRunner, error) {
@@ -199,8 +206,9 @@ func newNativeRunner(dataDir string, backend nativeRunnerBackend, logger *slog.L
  CREATE TABLE IF NOT EXISTS runner_projects(id TEXT PRIMARY KEY,value TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS runner_tasks(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,value TEXT NOT NULL);
  CREATE INDEX IF NOT EXISTS runner_task_project ON runner_tasks(project_id);
- CREATE TABLE IF NOT EXISTS runner_events(id INTEGER PRIMARY KEY,project_id TEXT NOT NULL,kind TEXT NOT NULL,value TEXT NOT NULL,created INTEGER NOT NULL);
- CREATE INDEX IF NOT EXISTS runner_event_project ON runner_events(project_id,id);`)
+	 CREATE TABLE IF NOT EXISTS runner_events(id INTEGER PRIMARY KEY,project_id TEXT NOT NULL,kind TEXT NOT NULL,value TEXT NOT NULL,created INTEGER NOT NULL);
+	 CREATE INDEX IF NOT EXISTS runner_event_project ON runner_events(project_id,id);
+	 CREATE TABLE IF NOT EXISTS runner_settings(id TEXT PRIMARY KEY,value TEXT NOT NULL);`)
 	if err != nil {
 		db.Close()
 		return nil, err
@@ -208,12 +216,22 @@ func newNativeRunner(dataDir string, backend nativeRunnerBackend, logger *slog.L
 	if logger == nil {
 		logger = slog.Default()
 	}
-	r := &nativeRunner{db: db, backend: backend, logger: logger, dir: dir, now: time.Now, wake: make(chan struct{}, 1)}
+	r := &nativeRunner{db: db, backend: backend, logger: logger, dir: dir, now: time.Now, wake: make(chan struct{}, 1), globalConcurrency: defaultNativeRunnerGlobalConcurrency}
+	if configured, settingsErr := nativeLoadGlobalConcurrency(db); settingsErr != nil {
+		db.Close()
+		return nil, settingsErr
+	} else if configured > 0 {
+		r.globalConcurrency = configured
+	}
 	if _, ok := backend.(*nativeRunnerTransport); ok {
 		r.asyncBackend = newNativeRunnerAsyncBackend(backend, r.Wake)
 		r.backend = r.asyncBackend
 	}
 	if err = db.QueryRow("SELECT coalesce(max(json_extract(value,'$.until')),0) FROM runner_events WHERE kind='account_cooldown'").Scan(&r.cooldownUntil); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = db.QueryRow("SELECT coalesce(max(json_extract(value,'$.dispatchOrdinal')),0) FROM runner_tasks").Scan(&r.dispatchOrdinal); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -451,6 +469,55 @@ func (r *nativeRunner) Handle(ctx context.Context, action string, params map[str
 	}
 	defer tx.Rollback()
 	action = strings.TrimPrefix(action, "runner.")
+	if action == "configure" {
+		if input.ProjectID == "" {
+			limit := input.Concurrency
+			_, ok := params["concurrency"]
+			if !ok {
+				return nil, errors.New("concurrency is required")
+			}
+			if limit < 1 {
+				return nil, errors.New("globalConcurrency must be positive")
+			}
+			if err = nativeSaveGlobalConcurrency(tx, limit); err != nil {
+				return nil, err
+			}
+			if err = tx.Commit(); err != nil {
+				return nil, err
+			}
+			r.globalConcurrency = limit
+			r.Wake()
+			return map[string]any{"globalConcurrency": limit, "saved": true}, nil
+		}
+		p, tasks, loadErr := nativeLoad(tx, input.ProjectID)
+		if loadErr != nil {
+			return nil, loadErr
+		}
+		_ = tasks
+		if _, ok := params["concurrency"]; !ok {
+			return nil, errors.New("project concurrency is required; use 0 to clear the area limit")
+		}
+		if input.Concurrency < 0 {
+			return nil, errors.New("concurrency cannot be negative")
+		}
+		p.MaxConcurrency = input.Concurrency
+		if input.Concurrency > 0 {
+			p.Concurrency = input.Concurrency
+		} else {
+			p.Concurrency = defaultNativeRunnerGlobalConcurrency
+		}
+		if err = nativeSave(tx, "runner_projects", p.ID, "", p); err != nil {
+			return nil, err
+		}
+		if err = r.event(tx, p.ID, "configure", params); err != nil {
+			return nil, err
+		}
+		if err = tx.Commit(); err != nil {
+			return nil, err
+		}
+		r.Wake()
+		return map[string]any{"projectId": p.ID, "maxConcurrency": p.MaxConcurrency, "saved": true}, nil
+	}
 	if action == "init" {
 		if input.Goal == "" || input.Root == "" || input.ControllerSessionID == "" {
 			return nil, errors.New("root, goal and controllerSessionId are required")
@@ -463,8 +530,15 @@ func (r *nativeRunner) Handle(ctx context.Context, action string, params map[str
 		if err != nil || !info.IsDir() {
 			return nil, errors.New("root must be an existing project directory")
 		}
+		hasConcurrency := false
+		if rawConcurrency, ok := params["concurrency"]; ok && rawConcurrency != nil {
+			hasConcurrency = true
+		}
+		if input.Concurrency == 0 && hasConcurrency {
+			return nil, errors.New("concurrency must be positive")
+		}
 		if input.Concurrency == 0 {
-			input.Concurrency = 6
+			input.Concurrency = defaultNativeRunnerGlobalConcurrency
 		}
 		if input.Concurrency < 1 {
 			return nil, errors.New("concurrency must be positive")
@@ -477,7 +551,11 @@ func (r *nativeRunner) Handle(ctx context.Context, action string, params map[str
 				return nil, err
 			}
 		}
-		p := nativeRunnerProject{ID: input.ProjectID, Root: root, Goal: input.Goal, GoalVersion: nativeHash(input.Goal), ControllerSessionID: input.ControllerSessionID, Concurrency: input.Concurrency, Checks: input.Checks}
+		maxConcurrency := 0
+		if hasConcurrency {
+			maxConcurrency = input.Concurrency
+		}
+		p := nativeRunnerProject{ID: input.ProjectID, Root: root, Goal: input.Goal, GoalVersion: nativeHash(input.Goal), ControllerSessionID: input.ControllerSessionID, Concurrency: input.Concurrency, MaxConcurrency: maxConcurrency, Checks: input.Checks}
 		if p.ID == "" {
 			p.ID = nativeID()
 		}
@@ -503,10 +581,22 @@ func (r *nativeRunner) Handle(ctx context.Context, action string, params map[str
 	createdTaskID := ""
 	switch action {
 	case "status":
+		scheduling, schedulingErr := nativeLoadSchedulingSnapshot(ctx, tx, r.globalConcurrency)
+		if schedulingErr != nil {
+			return nil, schedulingErr
+		}
+		allocation := scheduling.Projects[p.ID]
+		schedulingView := map[string]any{
+			"globalLimit":   scheduling.GlobalLimit,
+			"globalActive":  scheduling.GlobalActive,
+			"projectLimit":  allocation.ProjectLimit,
+			"projectActive": allocation.ProjectActive,
+			"allocation":    allocation.Allocation,
+		}
 		if input.TaskID != "" {
 			for _, t := range tasks {
 				if t.ID == input.TaskID {
-					return map[string]any{"task": t}, nil
+					return map[string]any{"task": t, "scheduling": schedulingView}, nil
 				}
 			}
 			return nil, errors.New("task not found")
@@ -536,7 +626,7 @@ func (r *nativeRunner) Handle(ctx context.Context, action string, params map[str
 				groups[group][t.State]++
 			}
 		}
-		return map[string]any{"project": p, "tasks": brief, "groups": groups, "cooldownUntil": r.cooldownUntil, "pendingAcknowledgements": pendingACK, "complete": p.CompleteVersion == p.GoalVersion}, nil
+		return map[string]any{"project": p, "tasks": brief, "groups": groups, "cooldownUntil": r.cooldownUntil, "pendingAcknowledgements": pendingACK, "complete": p.CompleteVersion == p.GoalVersion, "scheduling": schedulingView}, nil
 	case "pause":
 		p.Paused = true
 	case "resume":
@@ -797,7 +887,7 @@ func nativeValidateTask(p nativeRunnerProject, t *nativeRunnerTask, existing []n
 			return fmt.Errorf("unknown dependency %s", dep)
 		}
 	}
-	*t = nativeRunnerTask{ID: t.ID, ProjectID: p.ID, Parent: t.Parent, Key: t.Key, Kind: "work", Title: t.Title, Objective: t.Objective, Acceptance: t.Acceptance, Scope: t.Scope, Context: t.Context, After: t.After, Checks: t.Checks, GoalVersion: p.GoalVersion, PlanRevision: t.PlanRevision, Priority: t.Priority, Round: 1, State: "queued", Validations: map[string]nativeRunnerValidation{}}
+	*t = nativeRunnerTask{ID: t.ID, ProjectID: p.ID, Parent: t.Parent, Key: t.Key, Kind: "work", Title: t.Title, Objective: t.Objective, Acceptance: t.Acceptance, Scope: t.Scope, Context: t.Context, After: t.After, Checks: t.Checks, GoalVersion: p.GoalVersion, PlanRevision: t.PlanRevision, Priority: t.Priority, EstimatedMinutes: t.EstimatedMinutes, Round: 1, State: "queued", Validations: map[string]nativeRunnerValidation{}}
 	return nil
 }
 
@@ -887,12 +977,45 @@ func (r *nativeRunner) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	projects := make([]nativeRunnerProject, 0, len(ids))
+	for _, id := range ids {
+		project, _, readErr := r.read(ctx, id)
+		if readErr != nil {
+			return readErr
+		}
+		projects = append(projects, project)
+	}
 	for _, id := range ids {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if err = r.tickProject(ctx, id, &allTasks); err != nil {
+		if err = r.tickProject(ctx, id, &allTasks, projects, -1); err != nil {
 			r.logger.Error("native runner project", "project", id, "error", err)
+		}
+	}
+	// Finish observations and planner creation for every area before allocating
+	// the shared pool. Dispatch the exact selected tasks, not a recomputed quota
+	// that could steal another area's selected write scope or leave slots idle.
+	allTasks, err = r.readAllTasks(ctx)
+	if err != nil {
+		return err
+	}
+	for i := range projects {
+		projects[i], _, err = r.read(ctx, projects[i].ID)
+		if err != nil {
+			return err
+		}
+	}
+	scheduling := nativeBuildSchedulingSnapshot(allTasks, projects, r.globalConcurrency, r.now())
+	r.dispatchSelection = scheduling.Selected
+	defer func() { r.dispatchSelection = nil }()
+	for _, p := range projects {
+		current, tasks, readErr := r.read(ctx, p.ID)
+		if readErr != nil {
+			return readErr
+		}
+		if err = r.dispatch(ctx, current, tasks, &allTasks, scheduling.Allocations[p.ID]); err != nil {
+			r.logger.Error("native runner dispatch", "project", p.ID, "error", err)
 		}
 	}
 	return nil
@@ -964,19 +1087,21 @@ func (r *nativeRunner) fail(ctx context.Context, t *nativeRunnerTask, err error)
 		} else {
 			delay = min(max(delay, 30*time.Second), 2*time.Minute)
 		}
-		r.cooldownUntil = max(r.cooldownUntil, r.now().Add(delay).Unix())
-		tx, e := r.db.BeginTx(ctx, nil)
-		if e == nil {
-			e = r.event(tx, t.ProjectID, "account_cooldown", map[string]int64{"until": r.cooldownUntil})
+		if limited.operation != "read conversation" {
+			r.cooldownUntil = max(r.cooldownUntil, r.now().Add(delay).Unix())
+			tx, e := r.db.BeginTx(ctx, nil)
 			if e == nil {
-				e = tx.Commit()
+				e = r.event(tx, t.ProjectID, "account_cooldown", map[string]int64{"until": r.cooldownUntil})
+				if e == nil {
+					e = tx.Commit()
+				}
+				if e != nil {
+					tx.Rollback()
+				}
 			}
 			if e != nil {
-				tx.Rollback()
+				r.logger.Error("persist runner cooldown", "error", e)
 			}
-		}
-		if e != nil {
-			r.logger.Error("persist runner cooldown", "error", e)
 		}
 	}
 	t.NextAt = r.now().Add(delay).Unix()
@@ -991,7 +1116,7 @@ func (r *nativeRunner) fail(ctx context.Context, t *nativeRunnerTask, err error)
 	}
 }
 
-func (r *nativeRunner) tickProject(ctx context.Context, id string, global ...*[]nativeRunnerTask) error {
+func (r *nativeRunner) tickProject(ctx context.Context, id string, global *[]nativeRunnerTask, projects []nativeRunnerProject, quota ...int) error {
 	p, tasks, err := r.read(ctx, id)
 	if err != nil {
 		return err
@@ -1003,9 +1128,9 @@ func (r *nativeRunner) tickProject(ctx context.Context, id string, global ...*[]
 	if err != nil {
 		return err
 	}
-	if len(global) > 0 {
+	if global != nil {
 		for _, task := range tasks {
-			mergeNativeGlobalTask(global[0], task)
+			mergeNativeGlobalTask(global, task)
 		}
 	}
 	// Observe only exact bindings. The backend consumes local durable callback
@@ -1222,8 +1347,31 @@ func (r *nativeRunner) tickProject(ctx context.Context, id string, global ...*[]
 	if err != nil {
 		return err
 	}
-	if len(global) > 0 {
-		if err = r.dispatch(ctx, p, tasks, global[0]); err != nil {
+	if len(quota) > 0 && quota[0] < 0 {
+		// Tick performs one global allocation after every project's ledger work.
+	} else if global != nil {
+		// Lifecycle, checks and planner creation above may have released or added
+		// Cloud holds during this project turn. Recompute from the current merged
+		// ledger so an idle slot can be borrowed in the same tick; the pure
+		// scheduler remains the single source of truth for the allocation.
+		for _, task := range tasks {
+			mergeNativeGlobalTask(global, task)
+		}
+		if len(projects) > 0 {
+			for i := range projects {
+				if projects[i].ID == p.ID {
+					projects[i] = p
+					break
+				}
+			}
+			scheduling := nativeBuildSchedulingSnapshot(*global, projects, r.globalConcurrency, r.now())
+			err = r.dispatch(ctx, p, tasks, global, scheduling.Allocations[p.ID])
+		} else if len(quota) > 0 {
+			err = r.dispatch(ctx, p, tasks, global, quota[0])
+		} else {
+			err = r.dispatch(ctx, p, tasks, global)
+		}
+		if err != nil {
 			return err
 		}
 	} else if err = r.dispatch(ctx, p, tasks, nil); err != nil {
@@ -1384,7 +1532,7 @@ func (r *nativeRunner) materializeReportRecovery(result nativeRunnerResult, obse
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:]), nil
 }
-func (r *nativeRunner) dispatch(ctx context.Context, p nativeRunnerProject, tasks []nativeRunnerTask, global *[]nativeRunnerTask) error {
+func (r *nativeRunner) dispatch(ctx context.Context, p nativeRunnerProject, tasks []nativeRunnerTask, global *[]nativeRunnerTask, quota ...int) error {
 	if p.Archived || p.State == "cancelled" {
 		return nil
 	}
@@ -1392,13 +1540,17 @@ func (r *nativeRunner) dispatch(ctx context.Context, p nativeRunnerProject, task
 		return nil
 	}
 	active := 0
+	globalActive := 0
+	newBudget := int(^uint(0) >> 1)
+	if len(quota) > 0 {
+		newBudget = max(quota[0], 0)
+	}
 	held := []nativeRunnerTask{}
 	accepted := map[string]bool{}
 	for _, t := range tasks {
 		if nativeHolds(t) {
-			if t.Kind != "planner" {
-				active++
-			}
+			globalActive++
+			active++
 			held = append(held, t)
 		} else if nativeChecking(t) {
 			held = append(held, t)
@@ -1411,14 +1563,16 @@ func (r *nativeRunner) dispatch(ctx context.Context, p nativeRunnerProject, task
 				continue
 			}
 			held = append(held, t)
-			if t.Kind != "planner" && nativeHolds(t) {
-				active++
+			if nativeHolds(t) {
+				globalActive++
 			}
 		}
 	}
 	selected := []nativeRunnerTask{}
 	candidates := append([]nativeRunnerTask(nil), tasks...)
-	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].Priority > candidates[j].Priority })
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return nativeRunnerTaskBefore(candidates[i], candidates[j])
+	})
 	for _, t := range candidates {
 		if t.State == "canceling" {
 			if t.Request != nil && t.Receipt == nil {
@@ -1441,7 +1595,13 @@ func (r *nativeRunner) dispatch(ctx context.Context, p nativeRunnerProject, task
 			}
 			continue
 		}
-		if active >= p.Concurrency {
+		if globalActive >= r.globalConcurrency || newBudget <= 0 {
+			continue
+		}
+		if r.dispatchSelection != nil && !r.dispatchSelection[t.ID] {
+			continue
+		}
+		if p.MaxConcurrency > 0 && active >= p.MaxConcurrency {
 			continue
 		}
 		blocked := false
@@ -1483,15 +1643,17 @@ func (r *nativeRunner) dispatch(ctx context.Context, p nativeRunnerProject, task
 			continue
 		}
 		t.Request = &req
+		r.dispatchOrdinal++
+		t.DispatchOrdinal = r.dispatchOrdinal
 		t.State = "prepared"
 		if err = r.saveTask(ctx, t, "prepared"); err != nil {
 			return err
 		}
 		selected = append(selected, t)
 		held = append(held, t)
-		if t.Kind != "planner" {
-			active++
-		}
+		active++
+		globalActive++
+		newBudget--
 		mergeNativeGlobalTask(global, t)
 	}
 	type result struct {
@@ -1554,6 +1716,9 @@ func (r *nativeRunner) dispatch(ctx context.Context, p nativeRunnerProject, task
 			continue
 		}
 		t.Receipt = &item.receipt
+		if t.StartedAt == 0 && !item.receipt.InDoubt {
+			t.StartedAt = r.now().Unix()
+		}
 		if t.State != "canceling" && t.State != "cancelled" {
 			t.State = "active"
 		}
@@ -1674,7 +1839,7 @@ func (r *nativeRunner) compile(p nativeRunnerProject, t nativeRunnerTask, tasks 
 	return req, nil
 }
 
-const nativePlanContract = `{"goalVersion":"exact current version","revision":0,"summary":"grounded reasoning","actions":[{"taskId":"existing ID","round":1,"action":"keep|accept|retry|defer|revise|revalidate|redirect|cancel|prioritize","reason":"new approach or evidence","evidence":["file/check reference"],"rotate":false,"resumeAt":0,"objective":"revise only","acceptance":"revise only","scope":"revise only","priority":0,"context":[],"after":[]}],"blocks":[{"key":"stable semantic key","parent":"large-task name or ID","title":"independent block","objective":"complete block including own tests and fixes","acceptance":"observable outcome","scope":"project-relative directory or empty for read-only","context":[],"after":["existing ID or new block key"],"checks":["configured check name"]}],"goalComplete":false,"completionEvidence":[],"userQuestions":[]}. Every plan must advance work, resolve a branch or identify a real external question. goalComplete requires all non-cancelled blocks accepted for this revision and final integration evidence. defer needs a precise external event or future Unix resumeAt; it never blocks independent work. revise only unsent blocks; redirect must carry a validated target; cancelled targets cannot be retried, revised or accepted.`
+const nativePlanContract = `{"goalVersion":"exact current version","revision":0,"summary":"grounded reasoning","actions":[{"taskId":"existing ID","round":1,"action":"keep|accept|retry|defer|revise|revalidate|redirect|cancel|prioritize","reason":"new approach or evidence","evidence":["file/check reference"],"rotate":false,"resumeAt":0,"objective":"revise only","acceptance":"revise only","scope":"revise only","priority":0,"context":[],"after":[]}],"blocks":[{"key":"stable semantic key","parent":"large-task name or ID","title":"independent block","objective":"complete block including own tests and fixes","acceptance":"observable outcome","scope":"project-relative directory or empty for read-only","context":[],"after":["existing ID or new block key"],"checks":["configured check name"],"estimatedMinutes":15}],"goalComplete":false,"completionEvidence":[],"userQuestions":[]}. Every plan must advance work, resolve a branch or identify a real external question. goalComplete requires all non-cancelled blocks accepted for this revision and final integration evidence. defer needs a precise external event or future Unix resumeAt; it never blocks independent work. revise only unsent blocks; redirect must carry a validated target; cancelled targets cannot be retried, revised or accepted.`
 
 func nativeBasis(t nativeRunnerTask) string {
 	return nativeHash([]any{t.Round, t.GoalVersion, t.PlanRevision, t.Priority, t.State, t.Objective, t.Acceptance, t.Scope, t.Context, t.After, t.AcceptedVersion, t.Result, t.Validations, t.Cancellation, t.DeferredReason, t.ResumeAt, t.Observation, t.LastError})
@@ -1811,6 +1976,7 @@ func (r *nativeRunner) applyPlanner(ctx context.Context, p nativeRunnerProject, 
 	}
 	t.History = append(t.History, nativeRunnerAttempt{Round: t.Round, GoalVersion: t.GoalVersion, Request: t.Request, Receipt: t.Receipt, Result: t.Result, Correction: previous, Acked: t.ResultAcked})
 	t.Round++
+	t.StartedAt = 0
 	t.Request = nil
 	t.Receipt = nil
 	t.Result = nil
@@ -1941,6 +2107,7 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 			}
 			t.History = append(t.History, nativeRunnerAttempt{Round: t.Round, GoalVersion: t.GoalVersion, Request: t.Request, Receipt: t.Receipt, Result: t.Result, Correction: t.Correction, Acked: t.ResultAcked})
 			t.Round++
+			t.StartedAt = 0
 			t.Request = nil
 			t.Receipt = nil
 			t.Result = nil

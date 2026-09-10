@@ -48,6 +48,10 @@ func TestNativeRunnerViewCrossAreaCancellationHolds(t *testing.T) {
 		t.Fatal(err)
 	}
 	tasks := view["tasks"].([]map[string]any)
+	scheduling := view["scheduling"].(map[string]any)
+	if scheduling["globalLimit"] != 8 || scheduling["globalActive"] != 1 || scheduling["projectLimit"] != 0 {
+		t.Fatalf("wrong global scheduling view: %v", scheduling)
+	}
 	if tasks[0]["waitingReason"] != "等待重叠写域释放" {
 		t.Fatalf("missing cross-area hold: %v", tasks[0])
 	}

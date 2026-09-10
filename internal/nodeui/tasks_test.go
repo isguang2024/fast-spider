@@ -93,6 +93,18 @@ func TestTaskCenterPageSecurityAndToken(t *testing.T) {
 	}
 }
 
+func TestTaskCenterPageRendersSchedulingAndOptionalEstimate(t *testing.T) {
+	a := &App{opts: Options{Version: "test"}, uiToken: "task-token"}
+	w := httptest.NewRecorder()
+	a.handleTaskCenter(w, httptest.NewRequest(http.MethodGet, "/tasks", nil))
+	body := w.Body.String()
+	for _, want := range []string{"调度状态", "全局占用", "本区运行", "本区可新增", "任务区上限", "动态建议", "estimatedMinutes"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("task page missing %q", want)
+		}
+	}
+}
+
 func TestTaskCenterActionsAllowlistAuthAndForwarding(t *testing.T) {
 	agent := &taskActionTestAgent{}
 	a := &App{opts: Options{DataDir: t.TempDir()}, uiToken: "task-token", agentController: agent}
