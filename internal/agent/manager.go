@@ -93,8 +93,20 @@ type agentControlParams struct {
 	CallbackClaimLimit     int    `json:"callbackClaimLimit,omitempty"`
 	CallbackClaimTransport string `json:"callbackClaimTransport,omitempty"`
 	CallbackNativeRunner   bool   `json:"-"`
-	modelProvided          bool
-	thinkingProvided       bool
+	// Native project runner inputs are decoded here before the runner receives
+	// the original parameter map. Keep these fields in the shared boundary so
+	// DisallowUnknownFields does not reject runner.init/add/signal requests.
+	ProjectID           string                       `json:"projectId,omitempty"`
+	Root                string                       `json:"root,omitempty"`
+	Goal                string                       `json:"goal,omitempty"`
+	ControllerSessionID string                       `json:"controllerSessionId,omitempty"`
+	Concurrency         int                          `json:"concurrency,omitempty"`
+	Checks              map[string]nativeRunnerCheck `json:"checks,omitempty"`
+	Task                nativeRunnerTask             `json:"task,omitempty"`
+	TaskID              string                       `json:"taskId,omitempty"`
+	Evidence            string                       `json:"evidence,omitempty"`
+	modelProvided       bool
+	thinkingProvided    bool
 }
 
 type agentSkillInput struct {

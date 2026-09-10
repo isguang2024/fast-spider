@@ -3,6 +3,13 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.92 - 2026-09-10
+
+- Accept native project runner initialization, task, goal, signal and check
+  parameters through the public `agent.control` boundary.
+- Add an AgentManager-level regression covering external `runner.init` and
+  `runner.status` requests.
+
 ## 0.4.91 - 2026-09-10
 
 - Move native project runner execution and job lifecycle authority into the
