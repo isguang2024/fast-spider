@@ -33,8 +33,7 @@ const localUIHTML = `<!doctype html>
 		<button data-tab="diagnostics">诊断</button>
 		<button data-tab="components">组件</button>
 		<button data-tab="operation-logs">操作日志</button>
-		<a href="/tasks" style="display:block;margin:10px 0 2px;padding:14px 12px 10px;border-top:1px solid var(--line);color:#056dff;font-weight:650;text-decoration:none">任务中心</a>
-        <button data-tab="config">本地配置</button>
+	        <button data-tab="config">本地配置</button>
       </nav>
       <main class="content">
         <section id="tab-connect" class="section active">
@@ -161,34 +160,10 @@ const localUIHTML = `<!doctype html>
                 <label class="switch"><input id="config-bridge" type="checkbox"><span><strong>Local Bridge</strong><br><small class="hint">允许当前系统用户的本地 AI 客户端调用 Node。</small></span></label>
                 <label class="switch"><input id="config-autostart" type="checkbox"><span><strong>登录 Windows 后自动启动</strong><br><small class="hint">登录后隐藏启动到系统托盘，不弹出配置页面；仍然是同一个 EXE。</small></span></label>
 	                <label class="switch"><input id="config-autoupdate" type="checkbox"><span><strong>自动更新</strong><br><small class="hint">后台检查并下载新版本；下次启动时自动完成替换。</small></span></label>
-					<div class="config-subsection"><strong>ChatGPT Cloud 默认创建</strong><small class="hint">仅在创建请求没有明确填写时使用；单次创建的选择优先，续聊仍继承原会话。</small></div>
-					<label class="field"><span>默认返回模式</span><select id="config-chatgpt-mode"><option value="quick_chat">Quick chat · 立即返回</option><option value="complete">Complete · 等待首个回答</option></select></label>
-					<label class="field"><span>默认配置方式</span><select id="config-chatgpt-configuration-mode"><option value="auto">自动 · 用户或 AI 决定</option><option value="preset">Preset · ChatGPT 官方</option><option value="advanced">Advanced · 本机配置</option></select><small class="hint">这是默认优先来源，不是限制；单次创建可选择另一种方式。</small></label>
-					<label class="field"><span>默认模型</span><select id="config-chatgpt-model"><option value="">不固定 · 用户或 AI 决定</option></select><small class="hint">官方 Preset 与本机 Advanced 分开显示，不再混为一列。</small></label>
-					<label class="field"><span>默认思考程度</span><select id="config-chatgpt-thinking"><option value="">Auto · 用户或 AI 决定</option></select><small class="hint">可用档位从 ChatGPT Cloud 实时目录读取；单次创建仍可覆盖。</small></label>
 	              </div>
               <details class="advanced"><summary>高级 / 开发环境选项</summary><div class="grid" style="margin-top:10px"><label class="field full"><span>浏览器 Sidecar 目录</span><input id="config-browser" maxlength="4096" placeholder="正常无需填写，Browser 组件安装后会自动配置"><small class="hint">只在本地开发或自定义 Sidecar 时手工设置。</small></label><label class="switch full"><input id="config-insecure" type="checkbox"><span><strong>允许本机开发 HTTP Hub</strong><br><small class="hint">正式环境保持关闭，只使用 HTTPS。</small></span></label></div></details>
               <div class="actions"><button class="primary" type="submit">保存本地配置</button><span id="data-dir" class="hint mono"></span></div>
 	            </form>
-	          </div>
-	          <div class="panel">
-				<h2>ChatGPT Cloud 模型与请求配置</h2>
-				<p class="copy">Preset 继续使用 ChatGPT 实时模型预设。这里维护本机 Advanced 模型列表和 CHAT 云端请求参数；Quick chat 与等待首个回答仍可分别搭配 Preset 或 Advanced。</p>
-				<div class="notice">思考程度可勾选 ChatGPT Cloud 实时预设，也可以填写自定义值；自定义值会按模型原样发送。Auto 表示不发送 thinking_effort；模型别名最终可能被服务端解析为其他 resolved model。</div>
-				<form id="chatgpt-advanced-form">
-                  <div class="config-subsection"><strong>CHAT 云端请求参数</strong><small class="hint">仅用于 ChatGPT Cloud 的创建与续聊，适用于 Preset 和 Advanced。关闭开关后不发送对应字段；开启后使用配置值。service_tier 可由单次请求覆盖。</small></div>
-                  <div class="grid">
-                    <label class="switch"><input id="chatgpt-enable-service-tier" type="checkbox"><span>加入 service_tier</span></label>
-                    <label class="field"><span>service_tier 值</span><input id="chatgpt-service-tier" maxlength="64" placeholder="fast"></label>
-                    <label class="switch"><input id="chatgpt-enable-consumer-lockdown" type="checkbox"><span>加入 consumer_lockdown_mode_disabled</span></label>
-                    <label class="field"><span>consumer_lockdown_mode_disabled 值</span><select id="chatgpt-consumer-lockdown"><option value="true">true</option><option value="false">false</option></select></label>
-                    <label class="switch"><input id="chatgpt-enable-force-parallel" type="checkbox"><span>加入 force_parallel_switch</span></label>
-                    <label class="field"><span>force_parallel_switch 值</span><input id="chatgpt-force-parallel" maxlength="64" placeholder="off"></label>
-                  </div>
-                  <h3>ChatGPT Cloud Advanced</h3>
-				  <div id="chatgpt-advanced-list" class="advanced-model-list"><span class="empty">切换到本页后读取</span></div>
-				  <div class="actions"><button id="chatgpt-advanced-add" class="secondary" type="button">新增模型</button><button class="primary" type="submit">保存 CHAT 云端配置</button><span id="chatgpt-advanced-file" class="hint mono"></span></div>
-				</form>
 	          </div>
 	          <div class="panel">
 			<h2>版本更新</h2>
@@ -250,9 +225,6 @@ const localUIHTML = `<!doctype html>
 	let oplogBusy = false;
 	let oplogOffset = 0;
 		let oplogTotal = 0;
-		let chatGPTAdvancedBusy = false;
-		let chatGPTThinkingOptions = [];
-		let chatGPTCatalogData = null;
 
   async function api(path, options = {}) {
     const headers = Object.assign({'X-Fast-Spider-UI-Token': token}, options.headers || {});
@@ -305,13 +277,6 @@ const localUIHTML = `<!doctype html>
       $('config-autostart').checked = !!status.autoStartEnabled;
       $('config-autoupdate').checked = !!cfg.autoUpdateEnabled;
       $('config-insecure').checked = !!cfg.allowInsecureLocalHub;
-				setSelectValueWithFallback($('config-chatgpt-mode'),cfg.chatgptDefaultCreateMode || 'complete','已保存的返回模式');
-				setSelectValueWithFallback($('config-chatgpt-configuration-mode'),cfg.chatgptDefaultConfigurationMode || 'auto','已保存的配置方式');
-				if (chatGPTCatalogData) renderChatGPTDefaultOptions(chatGPTCatalogData);
-				else {
-				  setSelectValueWithFallback($('config-chatgpt-model'),cfg.chatgptDefaultModel || '','已保存模型');
-				  setSelectValueWithFallback($('config-chatgpt-thinking'),cfg.chatgptDefaultThinking || '','已保存思考程度');
-				}
 		    }
 	    if (!workingDirty) {
 	      $('working-project').value = cfg.workingProjectPath || '';
@@ -361,103 +326,6 @@ const localUIHTML = `<!doctype html>
 	  const box=$(id); box.textContent='';
 	  if(!Array.isArray(values) || !values.length){const empty=document.createElement('span');empty.className='empty';empty.textContent='暂无';box.appendChild(empty);return;}
 	  values.forEach(value=>{const tag=document.createElement('span');tag.className='tag';tag.textContent=formatter ? formatter(value) : String(value);box.appendChild(tag);});
-	}
-		function splitCustomThinking(value) {
-		  const seen=new Set(); return String(value || '').split(/[,，\n]/).map(item=>item.trim().toLowerCase()).filter(item=>{if(!item || seen.has(item))return false;seen.add(item);return true;});
-		}
-		function advancedCustomThinkingValues(model) {
-		  const presetIDs=new Set(chatGPTThinkingOptions.map(option=>String(option.id || '').trim().toLowerCase())); const values=[];
-		  const add=value=>{value=String(value || '').trim().toLowerCase();if(value && !values.includes(value))values.push(value);};
-		  (Array.isArray(model.customThinking)?model.customThinking:[]).forEach(add);
-		  (Array.isArray(model.thinking)?model.thinking:[]).forEach(value=>{value=String(value || '').trim().toLowerCase();if(value && !presetIDs.has(value))add(value);});
-		  return values;
-		}
-		function advancedModelRow(model) {
-		  const row=document.createElement('div'); row.className='advanced-model-row';
-		  const fields=document.createElement('div'); fields.className='advanced-model-fields';
-		  const idLabel=document.createElement('label'); idLabel.className='field'; idLabel.innerHTML='<span>模型 ID</span><input class="advanced-model-id" maxlength="256" required placeholder="gpt-5.6-terra-wm">'; idLabel.querySelector('input').value=model.id || '';
-		  const titleLabel=document.createElement('label'); titleLabel.className='field'; titleLabel.innerHTML='<span>显示名称</span><input class="advanced-model-title" maxlength="128" required placeholder="GPT-5.6 Terra">'; titleLabel.querySelector('input').value=model.title || '';
-		  const remove=document.createElement('button'); remove.type='button'; remove.className='danger'; remove.textContent='删除'; remove.addEventListener('click',()=>row.remove());
-		  fields.append(idLabel,titleLabel,remove); row.appendChild(fields);
-		  const editor=document.createElement('div'); editor.className='thinking-editor';
-		  const presetGroup=document.createElement('div'); presetGroup.className='thinking-group'; const presetTitle=document.createElement('strong'); presetTitle.className='thinking-title'; presetTitle.textContent='预设值';
-		  const thinking=document.createElement('div'); thinking.className='thinking-list'; const selected=new Set((Array.isArray(model.thinking)?model.thinking:[]).map(value=>String(value || '').trim().toLowerCase()));
-		  chatGPTThinkingOptions.forEach(option=>{const label=document.createElement('label');label.className='switch';const input=document.createElement('input');input.type='checkbox';input.className='advanced-thinking';input.value=option.id;input.checked=selected.has(String(option.id || '').trim().toLowerCase());const text=document.createElement('span');text.textContent=option.title+(option.source==='chatgpt_cloud'?' · 官方':' · 默认');label.append(input,text);thinking.appendChild(label);});
-		  presetGroup.append(presetTitle,thinking);
-		  const custom=document.createElement('label'); custom.className='field custom-thinking-field'; custom.innerHTML='<span>自定义值</span><input class="advanced-custom-thinking" maxlength="1024" placeholder="例如 low,extended-custom"><small class="hint">可填写一个或多个值，多个值用英文逗号分隔。</small>'; custom.querySelector('input').value=advancedCustomThinkingValues(model).join(', ');
-		  editor.append(presetGroup,custom); row.appendChild(editor); return row;
-		}
-		function setSelectValueWithFallback(select,value,label) {
-		  value=value || ''; if(!Array.from(select.options).some(option=>option.value===value)){const option=document.createElement('option');option.value=value;option.textContent=label+' · '+value;select.appendChild(option);} select.value=value;
-		}
-		function chatGPTModelID(model) { return String((model && (model.id || model.slug || model.model)) || '').trim(); }
-		function chatGPTModelTitle(model) {
-		  const id=chatGPTModelID(model).toLowerCase();
-		  if(id==='gpt-5-6')return 'GPT-5.6';
-		  if(id==='gpt-5-6-instant')return 'GPT-5.6 Instant';
-		  if(id==='gpt-5-6-thinking')return 'GPT-5.6 Thinking';
-		  if(id==='gpt-5-6-pro')return 'GPT-5.6 Pro';
-		  return String((model && model.title) || chatGPTModelID(model));
-		}
-		function chatGPTModelsForConfiguration(data,configurationMode) {
-		  if(configurationMode==='advanced')return Array.isArray(data.models)?data.models:[];
-		  if(configurationMode!=='preset')return [];
-		  const liveByID=new Map((Array.isArray(data.liveModels)?data.liveModels:[]).map(model=>[chatGPTModelID(model),model]));
-		  const seen=new Set(); const result=[];
-		  (Array.isArray(data.modelPresets)?data.modelPresets:[]).forEach(preset=>{const id=chatGPTModelID(preset);if(!id||seen.has(id))return;seen.add(id);result.push(liveByID.get(id)||{id:id,title:id});});
-		  return result;
-		}
-		function renderChatGPTThinkingChoices(data,selectedThinking) {
-		  const configurationMode=$('config-chatgpt-configuration-mode').value;
-		  const selectedModel=$('config-chatgpt-model').value;
-		  const allOptions=Array.isArray(data.thinkingOptions)?data.thinkingOptions:[];
-		  let options=allOptions.slice();
-		  if(selectedModel && configurationMode==='preset') {
-		    const allowed=new Set((Array.isArray(data.modelPresets)?data.modelPresets:[]).filter(preset=>chatGPTModelID(preset)===selectedModel).map(preset=>String(preset.thinking || '')));
-		    options=allOptions.filter(option=>allowed.has(String(option.value || '')) || (!option.value && allowed.size===0));
-		  } else if(selectedModel && configurationMode==='advanced') {
-		    const model=(Array.isArray(data.models)?data.models:[]).find(item=>chatGPTModelID(item)===selectedModel);
-		    const allowed=new Set((model && Array.isArray(model.thinking)?model.thinking:[]).map(value=>String(value).trim().toLowerCase()));
-		    options=allOptions.filter(option=>allowed.has(String(option.id || '').trim().toLowerCase()));
-		    (model && Array.isArray(model.customThinking)?model.customThinking:[]).forEach(value=>{value=String(value || '').trim().toLowerCase();if(value && !options.some(option=>String(option.value || '').trim().toLowerCase()===value))options.push({id:value,title:value,value:value,source:'local_custom'});});
-		  }
-		  const select=$('config-chatgpt-thinking'); select.textContent=''; const seen=new Set();
-		  options.forEach(option=>{const value=String(option.value || '');if(seen.has(value))return;seen.add(value);const item=document.createElement('option');item.value=value;const suffix=option.source==='chatgpt_cloud'?' · 官方':option.source==='local_custom'?' · 自定义':' · Auto';item.textContent=(option.title || option.id || 'Auto')+suffix;select.appendChild(item);});
-		  if(!seen.has('')){const item=document.createElement('option');item.value='';item.textContent='Auto · 用户或 AI 决定';select.insertBefore(item,select.firstChild);}
-		  setSelectValueWithFallback(select,selectedThinking,'已保存思考程度（当前模型未提供）');
-		}
-		function renderChatGPTDefaultOptions(data) {
-		  chatGPTCatalogData=data;
-		  const cfg=(current && current.config) || {}; const keepDirty=configDirty;
-		  const configurationMode=keepDirty ? $('config-chatgpt-configuration-mode').value : (cfg.chatgptDefaultConfigurationMode || 'auto');
-		  const selectedModel=keepDirty ? $('config-chatgpt-model').value : (cfg.chatgptDefaultModel || '');
-		  const selectedThinking=keepDirty ? $('config-chatgpt-thinking').value : (cfg.chatgptDefaultThinking || '');
-		  setSelectValueWithFallback($('config-chatgpt-configuration-mode'),configurationMode,'已保存的配置方式');
-		  const modelSelect=$('config-chatgpt-model'); modelSelect.textContent=''; const seenModels=new Set();
-		  const addModel=(value,label)=>{value=value || '';if(seenModels.has(value))return;seenModels.add(value);const option=document.createElement('option');option.value=value;option.textContent=label;modelSelect.appendChild(option);};
-		  const emptyLabel=configurationMode==='preset'?'不固定 · 使用 ChatGPT 官方默认':configurationMode==='advanced'?'不固定 · 用户或 AI 从 Advanced 选择':'不固定 · 用户或 AI 决定';
-		  addModel('',emptyLabel);
-		  chatGPTModelsForConfiguration(data,configurationMode).forEach(model=>{const id=chatGPTModelID(model);const label=configurationMode==='advanced'?(chatGPTModelTitle(model)+' · '+id+' · Advanced'):(chatGPTModelTitle(model)+' · 官方');addModel(id,label);});
-		  setSelectValueWithFallback(modelSelect,selectedModel,'已保存模型（当前方式未列出）');
-		  renderChatGPTThinkingChoices(data,selectedThinking);
-		}
-	function renderChatGPTAdvanced(data) {
-          const defaults=data.requestDefaults;
-          $('chatgpt-enable-service-tier').checked=defaults.enableServiceTier;
-          $('chatgpt-service-tier').value=defaults.serviceTier;
-          $('chatgpt-enable-consumer-lockdown').checked=defaults.enableConsumerLockdownModeDisabled;
-          $('chatgpt-consumer-lockdown').value=String(defaults.consumerLockdownModeDisabled);
-          $('chatgpt-enable-force-parallel').checked=defaults.enableForceParallelSwitch;
-          $('chatgpt-force-parallel').value=defaults.forceParallelSwitch;
-		  chatGPTThinkingOptions=Array.isArray(data.thinkingOptions)?data.thinkingOptions:[]; chatGPTCatalogData=data; const box=$('chatgpt-advanced-list'); box.textContent='';
-	  const models=Array.isArray(data.models)?data.models:[]; models.forEach(model=>box.appendChild(advancedModelRow(model)));
-	  if(!models.length){const empty=document.createElement('span');empty.className='empty';empty.textContent='尚未配置 Advanced 模型，可点击“新增模型”。';box.appendChild(empty);}
-	  $('chatgpt-advanced-file').textContent=data.configFile ? '配置文件：'+data.configFile : '';
-	  renderChatGPTDefaultOptions(data);
-	}
-	async function refreshChatGPTAdvanced() {
-	  if(chatGPTAdvancedBusy)return; chatGPTAdvancedBusy=true;
-	  try{renderChatGPTAdvanced(await api('/api/chatgpt-advanced-models'));}catch(e){message(e.message,true);}finally{chatGPTAdvancedBusy=false;}
 	}
 	function renderData(id, rows) {
 	  const box=$(id); box.textContent='';
@@ -569,7 +437,6 @@ const localUIHTML = `<!doctype html>
 	if (button.dataset.tab === 'ai') refreshAI();
 	if (button.dataset.tab === 'diagnostics') refreshDiagnostics();
 		if (button.dataset.tab === 'components') refreshComponents();
-		if (button.dataset.tab === 'config') refreshChatGPTAdvanced();
 	  }));
 	$('ai-refresh').addEventListener('click',refreshAI);
 	$('diagnostics-refresh').addEventListener('click',refreshDiagnostics);
@@ -614,8 +481,6 @@ const localUIHTML = `<!doctype html>
 
   $('config-form').addEventListener('input', () => { configDirty = true; });
 	  $('config-form').addEventListener('change', () => { configDirty = true; });
-	  $('config-chatgpt-configuration-mode').addEventListener('change',()=>{if(!chatGPTCatalogData)return;$('config-chatgpt-model').value='';renderChatGPTDefaultOptions(chatGPTCatalogData);});
-	  $('config-chatgpt-model').addEventListener('change',()=>{if(chatGPTCatalogData)renderChatGPTThinkingChoices(chatGPTCatalogData,$('config-chatgpt-thinking').value);});
 
 	$('config-form').addEventListener('submit', async event => {
     event.preventDefault(); if (busy) return; busy=true; const submit = event.currentTarget.querySelector('button[type="submit"]'); submit.disabled=true;
@@ -626,13 +491,8 @@ const localUIHTML = `<!doctype html>
   });
 
 		function localConfigPayload() {
-					return {machineName:$('config-name').value,browserSidecarDir:$('config-browser').value,localBridgeEnabled:$('config-bridge').checked,autoStartEnabled:$('config-autostart').checked,autoUpdateEnabled:$('config-autoupdate').checked,allowInsecureLocalHub:$('config-insecure').checked,chatgptDefaultConfigurationMode:$('config-chatgpt-configuration-mode').value,chatgptDefaultCreateMode:$('config-chatgpt-mode').value,chatgptDefaultModel:$('config-chatgpt-model').value,chatgptDefaultThinking:$('config-chatgpt-thinking').value};
-			}
-	$('chatgpt-advanced-add').addEventListener('click',()=>{const box=$('chatgpt-advanced-list');const empty=box.querySelector('.empty');if(empty)empty.remove();box.appendChild(advancedModelRow({thinking:chatGPTThinkingOptions.map(option=>option.id)}));});
-		$('chatgpt-advanced-form').addEventListener('submit',async event=>{
-		  event.preventDefault();if(chatGPTAdvancedBusy)return;chatGPTAdvancedBusy=true;const submit=event.currentTarget.querySelector('button[type="submit"]');submit.disabled=true;
-		  try{const models=Array.from(document.querySelectorAll('.advanced-model-row')).map(row=>({id:row.querySelector('.advanced-model-id').value.trim(),title:row.querySelector('.advanced-model-title').value.trim(),thinking:Array.from(row.querySelectorAll('.advanced-thinking:checked')).map(input=>input.value),customThinking:splitCustomThinking(row.querySelector('.advanced-custom-thinking').value)}));const data=await api('/api/chatgpt-advanced-models',{method:'POST',body:JSON.stringify({version:1,models,requestDefaults:{enableServiceTier:$('chatgpt-enable-service-tier').checked,serviceTier:$('chatgpt-service-tier').value.trim(),enableConsumerLockdownModeDisabled:$('chatgpt-enable-consumer-lockdown').checked,consumerLockdownModeDisabled:$('chatgpt-consumer-lockdown').value==='true',enableForceParallelSwitch:$('chatgpt-enable-force-parallel').checked,forceParallelSwitch:$('chatgpt-force-parallel').value.trim()}})});renderChatGPTAdvanced(data);message('CHAT 云端模型与请求配置已保存到本机 Node。');}catch(e){message(e.message,true);}finally{chatGPTAdvancedBusy=false;submit.disabled=false;}
-	});
+					return {machineName:$('config-name').value,browserSidecarDir:$('config-browser').value,localBridgeEnabled:$('config-bridge').checked,autoStartEnabled:$('config-autostart').checked,autoUpdateEnabled:$('config-autoupdate').checked,allowInsecureLocalHub:$('config-insecure').checked};
+				}
 
   $('update-check').addEventListener('click', async () => {
     if (busy) return; busy=true; message('正在检查新版本…');

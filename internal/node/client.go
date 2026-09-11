@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/isguang2024/fast-spider/hostapi"
 	"github.com/isguang2024/fast-spider/internal/operationlog"
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
 	"github.com/isguang2024/fast-spider/internal/security"
@@ -152,8 +153,11 @@ func (c *Client) reportConnectionStatus(state string, err error) {
 }
 
 func (c *Client) Capabilities() []protocolv1.CapabilityDescriptor {
-	out := make([]protocolv1.CapabilityDescriptor, len(protocolv1.NodeCapabilities), len(protocolv1.NodeCapabilities)+2)
-	copy(out, protocolv1.NodeCapabilities)
+	var extraAgentActions []string
+	if source, ok := c.agent.(hostapi.AgentActionSource); ok {
+		extraAgentActions = source.AdditionalAgentActions()
+	}
+	out := protocolv1.NodeCapabilitiesWithAgentActions(extraAgentActions)
 	out = append(out, protocolv1.ScreenshotCapabilityForOS(runtime.GOOS))
 	if c.browser != nil {
 		out = append(out, protocolv1.BrowserCapability)

@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -94,24 +93,24 @@ type agentControlParams struct {
 	CallbackClaimLimit     int    `json:"callbackClaimLimit,omitempty"`
 	CallbackClaimTransport string `json:"callbackClaimTransport,omitempty"`
 	CallbackNativeRunner   bool   `json:"-"`
-	// Native project runner inputs are decoded here before the runner receives
-	// the original parameter map. Keep these fields in the shared boundary so
-	// DisallowUnknownFields does not reject runner.init/add/signal requests.
-	ProjectID           string                       `json:"projectId,omitempty"`
-	Root                string                       `json:"root,omitempty"`
-	Goal                string                       `json:"goal,omitempty"`
-	ControllerSessionID string                       `json:"controllerSessionId,omitempty"`
-	Concurrency         int                          `json:"concurrency,omitempty"`
-	Continuous          bool                         `json:"continuous,omitempty"`
-	Checks              map[string]nativeRunnerCheck `json:"checks,omitempty"`
-	Task                nativeRunnerTask             `json:"task,omitempty"`
-	TaskID              string                       `json:"taskId,omitempty"`
-	Evidence            string                       `json:"evidence,omitempty"`
-	Section             string                       `json:"section,omitempty"`
-	Offset              int                          `json:"offset,omitempty"`
-	EvidenceID          int64                        `json:"evidenceId,omitempty"`
-	Round               int                          `json:"round,omitempty"`
-	Fields              []string                     `json:"fields,omitempty"`
+	// Private runner inputs stay in the shared decode boundary so the public
+	// build can return its explicit private-build error instead of a JSON shape
+	// error when an older caller reaches it.
+	ProjectID           string         `json:"projectId,omitempty"`
+	Root                string         `json:"root,omitempty"`
+	Goal                string         `json:"goal,omitempty"`
+	ControllerSessionID string         `json:"controllerSessionId,omitempty"`
+	Concurrency         int            `json:"concurrency,omitempty"`
+	Continuous          bool           `json:"continuous,omitempty"`
+	Checks              map[string]any `json:"checks,omitempty"`
+	Task                map[string]any `json:"task,omitempty"`
+	TaskID              string         `json:"taskId,omitempty"`
+	Evidence            string         `json:"evidence,omitempty"`
+	Section             string         `json:"section,omitempty"`
+	Offset              int            `json:"offset,omitempty"`
+	EvidenceID          int64          `json:"evidenceId,omitempty"`
+	Round               int            `json:"round,omitempty"`
+	Fields              []string       `json:"fields,omitempty"`
 
 	modelProvided    bool
 	thinkingProvided bool
@@ -127,91 +126,30 @@ type agentMentionInput struct {
 }
 
 type AgentManager struct {
-	codex                 *CodexAdapter
-	claude                *ClaudeCodeAdapter
-	chatgptCloud          *ChatGPTCloudAdapter
-	ccswitch              *CCSwitchInspector
-	logger                *slog.Logger
-	dataDir               string
-	codexStatePath        string
-	registry              providerRegistry
-	createStore           *sessionCreateStore
-	visibilityStore       *sessionVisibilityStore
-	callbackStore         *sessionCallbackStore
-	callbackDispatcher    *sessionCallbackDispatcher
-	nativeRunner          *nativeRunner
-	nativeRunnerTransport *nativeRunnerTransport
-	nativeRunnerErr       error
-	nativeRunnerMu        sync.Mutex
-	nativeRunnerMachineID func() (string, error)
-	resultPublisher       interface {
-		PublishCloudResult(context.Context, string, string, string) (map[string]any, error)
-	}
-	chatgptDefaultsMu sync.RWMutex
-	chatgptDefaults   chatGPTCloudCreateDefaults
-	readinessMu       sync.Mutex
-	readinessCache    map[string]providerReadinessCacheEntry
+	codex           *CodexAdapter
+	claude          *ClaudeCodeAdapter
+	ccswitch        *CCSwitchInspector
+	logger          *slog.Logger
+	dataDir         string
+	codexStatePath  string
+	registry        providerRegistry
+	createStore     *sessionCreateStore
+	visibilityStore *sessionVisibilityStore
 }
 
 // BindHost is the typed public composition boundary used by an external Node
-// host. The legacy setters remain below so old in-repository assembly keeps the
-// same behavior while migration proceeds.
+// host. The generic public agent does not consume specialized host services.
 func (m *AgentManager) BindHost(bindings hostapi.HostBindings) {
-	if m == nil {
-		return
-	}
-	m.SetCloudResultPublisher(bindings.ResultPublisher)
-	m.SetNativeRunnerJobExecutor(bindings.JobExecutor)
-	m.SetNativeRunnerMachineIDProvider(bindings.MachineID)
+	_ = bindings
 }
 
-// SetCloudResultPublisher connects the Cloud callback path to the Node's
-// authenticated Result Pool client. It accepts any implementation of the
-// narrow method so the agent package remains independent of internal/node.
-func (m *AgentManager) SetCloudResultPublisher(p any) {
-	if m == nil {
-		return
+// ChatGPTAccessToken provides the private CHAT composition with the current
+// in-memory Codex app-server token. Callers must not persist or log it.
+func (m *AgentManager) ChatGPTAccessToken(ctx context.Context) (string, error) {
+	if m == nil || m.codex == nil {
+		return "", node.ErrAgentProviderUnavailable
 	}
-	if publisher, ok := p.(interface {
-		PublishCloudResult(context.Context, string, string, string) (map[string]any, error)
-	}); ok {
-		m.resultPublisher = publisher
-	} else {
-		m.resultPublisher = nil
-	}
-}
-
-// SetNativeRunnerJobExecutor connects the native runner's check validation to
-// the owning Node JobManager. The any boundary avoids a node-to-agent import
-// cycle while keeping process lifecycle and output outside the agent package.
-func (m *AgentManager) SetNativeRunnerJobExecutor(value any) {
-	if m == nil || m.nativeRunnerTransport == nil {
-		return
-	}
-	if err := m.nativeRunnerTransport.setJobExecutor(value); err != nil {
-		m.nativeRunnerMu.Lock()
-		m.nativeRunnerErr = err
-		m.nativeRunnerMu.Unlock()
-	}
-}
-
-// SetNativeRunnerMachineIDProvider supplies the Node-owned machine identity
-// for the flattened FS ai_control envelope. The credential itself never
-// enters the runner prompt or callback payload.
-func (m *AgentManager) SetNativeRunnerMachineIDProvider(provider func() (string, error)) {
-	if m == nil {
-		return
-	}
-	m.nativeRunnerMu.Lock()
-	m.nativeRunnerMachineID = provider
-	m.nativeRunnerMu.Unlock()
-}
-
-type chatGPTCloudCreateDefaults struct {
-	ConfigurationMode string
-	Mode              string
-	Model             string
-	Thinking          string
+	return m.codex.AuthToken(ctx)
 }
 
 func New(dataDir string, logger *slog.Logger) *AgentManager {
@@ -219,7 +157,6 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 		logger = slog.Default()
 	}
 	ccswitch := NewCCSwitchInspector(logger)
-	callbackStore := newSessionCallbackStore(dataDir)
 	manager := &AgentManager{
 		codex:           NewCodexAdapter(logger),
 		claude:          NewClaudeCodeAdapter(dataDir, ccswitch, logger),
@@ -230,59 +167,6 @@ func New(dataDir string, logger *slog.Logger) *AgentManager {
 		registry:        staticProviderRegistry(),
 		createStore:     newSessionCreateStore(dataDir),
 		visibilityStore: newSessionVisibilityStore(dataDir),
-		callbackStore:   callbackStore,
-		chatgptDefaults: chatGPTCloudCreateDefaults{ConfigurationMode: "auto", Mode: "complete"},
-	}
-	manager.chatgptCloud = NewChatGPTCloudAdapter(logger, func(ctx context.Context) (string, error) {
-		return manager.codex.AuthToken(ctx)
-	})
-	manager.chatgptCloud.SetRealtimeObserver(manager.handleChatGPTCloudCallbackEvent, callbackStore.maxEventSequence())
-	progress, progressErr := newChatGPTCloudProgress(manager.chatgptCloud, filepath.Join(dataDir, "agent", "cloud-progress.sqlite3"), manager.startCloudCallbackConfirmation)
-	if progressErr != nil {
-		logger.Error("open Cloud SSE progress cache", "error", progressErr)
-	} else {
-		manager.chatgptCloud.progress = progress
-	}
-	manager.codex.SetEventObserver(manager.handleCodexCallbackEvent)
-	manager.callbackDispatcher = newSessionCallbackDispatcher(
-		callbackStore,
-		logger,
-		func(sessionID string) bool { return manager.codex.ActiveTurn(sessionID) != "" },
-		func(ctx context.Context, sessionID, prompt string) (sessionCallbackDeliveryResult, error) {
-			result, err := manager.DeliverLocalCodexTurn(ctx, sessionID, prompt)
-			if err != nil {
-				return sessionCallbackDeliveryResult{}, err
-			}
-			return sessionCallbackDeliveryResultFromSessionSend(result), nil
-		},
-		func(ctx context.Context, sessionID string, generation int64) error {
-			return manager.chatgptCloud.EnsureCallbackRealtimeForGeneration(ctx, sessionID, generation)
-		},
-	)
-	manager.callbackDispatcher.release = manager.chatgptCloud.ReleaseCallbackRealtimeForGeneration
-	manager.callbackDispatcher.recoverStatus = manager.recoverCompletedCloudCallback
-	manager.callbackDispatcher.recoveryState = manager.chatgptCloud.CallbackRealtimeRecoveryState
-	manager.chatgptCloud.SetCallbackRealtimeRecoveryObserver(func(connected bool, disconnectEpoch uint64) {
-		// A completed CHAT may have been missed while the account socket was
-		// disconnected. Reconnect requests one coalesced recovery pass; healthy
-		// realtime operation never status-polls active CHATs.
-		if connected && disconnectEpoch > 0 && manager.callbackDispatcher != nil {
-			manager.callbackDispatcher.requestProviderRecovery()
-		}
-	})
-	// The native runner opens a SQLite handle. Create it lazily when the local
-	// runner capability is first used so ordinary agent sessions do not retain
-	// a project database handle in short-lived tests or provider-only clients.
-	manager.nativeRunnerTransport = newNativeRunnerTransport(manager, dataDir)
-	manager.callbackDispatcher.localWake = func() {
-		if manager.nativeRunner != nil {
-			manager.nativeRunner.Wake()
-		}
-	}
-	if _, err := os.Stat(filepath.Join(dataDir, "native-runner", "projects.sqlite3")); err == nil {
-		// Existing runner state must resume after a Node restart. A new data
-		// directory stays lazy and does not acquire a SQLite handle.
-		_ = manager.ensureNativeRunner()
 	}
 	return manager
 }
@@ -292,28 +176,6 @@ func (m *AgentManager) Close(ctx context.Context) error {
 		return nil
 	}
 	var firstErr error
-	if m.nativeRunner != nil {
-		if err := m.nativeRunner.Close(ctx); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	} else if m.nativeRunnerErr != nil {
-		firstErr = m.nativeRunnerErr
-	}
-	if m.nativeRunnerTransport != nil {
-		if err := m.nativeRunnerTransport.closeJobs(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	if m.callbackDispatcher != nil {
-		if err := m.callbackDispatcher.close(ctx); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
-	if m.chatgptCloud != nil {
-		if err := m.chatgptCloud.Close(ctx); err != nil && firstErr == nil {
-			firstErr = err
-		}
-	}
 	if m.codex != nil {
 		if err := m.codex.Close(ctx); err != nil && firstErr == nil {
 			firstErr = err
@@ -325,37 +187,6 @@ func (m *AgentManager) Close(ctx context.Context) error {
 		}
 	}
 	return firstErr
-}
-
-// SetChatGPTCloudCreateDefaults updates the local Node defaults used only when
-// a ChatGPT Cloud session.create request omits the corresponding field.
-func (m *AgentManager) SetChatGPTCloudCreateDefaults(configurationMode, mode, model, thinking string) {
-	if m == nil {
-		return
-	}
-	configurationMode = strings.ToLower(strings.TrimSpace(configurationMode))
-	if configurationMode == "" {
-		configurationMode = "auto"
-	}
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode == "" {
-		mode = "complete"
-	}
-	m.chatgptDefaultsMu.Lock()
-	m.chatgptDefaults = chatGPTCloudCreateDefaults{
-		ConfigurationMode: configurationMode, Mode: mode, Model: strings.TrimSpace(model), Thinking: strings.ToLower(strings.TrimSpace(thinking)),
-	}
-	m.chatgptDefaultsMu.Unlock()
-}
-
-func (m *AgentManager) chatGPTCloudCreateDefaults() chatGPTCloudCreateDefaults {
-	if m == nil {
-		return chatGPTCloudCreateDefaults{ConfigurationMode: "auto", Mode: "complete"}
-	}
-	m.chatgptDefaultsMu.RLock()
-	defaults := m.chatgptDefaults
-	m.chatgptDefaultsMu.RUnlock()
-	return defaults
 }
 
 type agentControlInputError struct{ cause error }
@@ -370,15 +201,15 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 	if m == nil {
 		return nil, node.ErrAgentProviderUnavailable
 	}
-	if m.callbackDispatcher != nil {
-		m.callbackDispatcher.start()
-	}
 	var input agentControlParams
 	if err := decodeParams(params, &input); err != nil {
 		return nil, &agentControlInputError{cause: err}
 	}
 	_, input.modelProvided = params["model"]
 	_, input.thinkingProvided = params["thinking"]
+	if strings.EqualFold(strings.TrimSpace(input.AppType), "chatgpt") || strings.EqualFold(strings.TrimSpace(input.Backend), sessionBackendChatGPTCloud) || strings.EqualFold(strings.TrimSpace(input.VisibilityTarget), sessionBackendChatGPTCloud) || strings.HasPrefix(action, "session.callback.") || strings.HasPrefix(action, "runner.") {
+		return nil, fmt.Errorf("CHAT capability is available only in the private fast-spider-chat Node build")
+	}
 	if action == "routing.status" {
 		return m.routingStatus(ctx, input)
 	}
@@ -388,78 +219,12 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 	if action == "provider.readiness" {
 		return m.providerReadiness(ctx, input)
 	}
-	if strings.HasPrefix(action, "runner.") {
-		if err := m.ensureNativeRunner(); err != nil {
-			return nil, err
-		}
-		if action == "runner.wake" {
-			m.nativeRunner.Wake()
-			return map[string]any{"woken": true}, nil
-		}
-		if action == "runner.submit" {
-			if input.ResponseContent == nil {
-				return nil, errors.New("runner.submit requires responseContent")
-			}
-			return m.nativeRunnerTransport.Submit(ctx, input.ResponseContent)
-		}
-		if action == "runner.context" {
-			if input.ResponseContent != nil {
-				return m.nativeRunnerTransport.Context(ctx, input.ResponseContent)
-			}
-			return m.nativeRunner.QueryContext(ctx, params)
-		}
-		if action == "runner.checkpoint" {
-			if input.ResponseContent == nil {
-				return nil, errors.New("runner.checkpoint requires responseContent")
-			}
-			return m.nativeRunnerTransport.Checkpoint(ctx, input.ResponseContent)
-		}
-		return m.nativeRunner.Handle(ctx, action, params)
-	}
-
 	providerID := strings.TrimSpace(input.ProviderID)
 	if providerID == "" {
 		providerID = "codex"
 	}
 	if _, ok := m.registry.get(providerID); !ok {
 		return nil, fmt.Errorf("unsupported providerId %q", providerID)
-	}
-	// appType=chatgpt is the user-facing selector for an ordinary visible
-	// ChatGPT conversation. Keep routing.status semantics unchanged, but make
-	// session actions select the cloud backend instead of silently falling back
-	// to a local Codex thread with the same opaque ID.
-	if strings.EqualFold(strings.TrimSpace(input.AppType), "chatgpt") {
-		if providerID != "codex" {
-			return nil, fmt.Errorf("appType=chatgpt requires providerId=codex")
-		}
-		if backend := strings.TrimSpace(input.Backend); backend != "" && !strings.EqualFold(backend, sessionBackendChatGPTCloud) {
-			return nil, fmt.Errorf("appType=chatgpt conflicts with backend=%s", backend)
-		}
-		input.Backend = sessionBackendChatGPTCloud
-	}
-	// Callback queue actions are Node-owned state operations. Route them through
-	// the Cloud callback manager even when the caller omits backend=chatgpt_cloud
-	// (the target session is normally a local Codex dispatcher).
-	if strings.HasPrefix(action, "session.callback.") {
-		return m.controlChatGPTCloud(ctx, action, input)
-	}
-	// chatgpt_cloud is a codex backend: cloud conversations created through the
-	// Codex app-server ChatGPT token + the official /f conversation flow.
-	if strings.EqualFold(strings.TrimSpace(input.Backend), sessionBackendChatGPTCloud) ||
-		strings.EqualFold(strings.TrimSpace(input.VisibilityTarget), sessionBackendChatGPTCloud) {
-		return m.controlChatGPTCloud(ctx, action, input)
-	}
-	// Once a cloud conversation has been created, callers should only need its
-	// sessionId. Recover the backend from the persisted visibility sidecar instead
-	// of silently falling back to codex_local.
-	if providerID == "codex" && strings.TrimSpace(input.SessionID) != "" && strings.TrimSpace(input.Backend) == "" && strings.TrimSpace(input.VisibilityTarget) == "" {
-		record, ok, err := m.storedSessionVisibilityRecord("codex", input.SessionID)
-		if err != nil {
-			return nil, err
-		}
-		if ok && record.Backend == sessionBackendChatGPTCloud {
-			return m.controlChatGPTCloud(ctx, action, input)
-		}
 	}
 	if providerID == "claude_code" {
 		if m.claude == nil {
@@ -526,7 +291,7 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 			return nil, err
 		}
 		if strings.TrimSpace(input.Backend) == "" && strings.TrimSpace(input.VisibilityTarget) == "" {
-			return m.sessionListWithManagedCloud(ctx, root, input.Limit)
+			return m.sessionList(ctx, root, input.Limit)
 		}
 		return m.sessionList(ctx, root, input.Limit)
 	case "session.get":
@@ -759,31 +524,6 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 	default:
 		return nil, fmt.Errorf("unsupported agent action %q", action)
 	}
-}
-
-func (m *AgentManager) ensureNativeRunner() error {
-	m.nativeRunnerMu.Lock()
-	defer m.nativeRunnerMu.Unlock()
-	if m.nativeRunnerErr != nil {
-		return m.nativeRunnerErr
-	}
-	if m.nativeRunner != nil {
-		return nil
-	}
-	if m.nativeRunnerTransport == nil {
-		m.nativeRunnerTransport = newNativeRunnerTransport(m, m.dataDir)
-	}
-	runner, err := newNativeRunner(m.dataDir, m.nativeRunnerTransport, m.logger)
-	if err != nil {
-		m.nativeRunnerErr = err
-		return err
-	}
-	m.nativeRunner = runner
-	if m.callbackDispatcher != nil {
-		m.callbackDispatcher.start()
-	}
-	m.nativeRunner.Start()
-	return nil
 }
 
 func (m *AgentManager) controlClaude(ctx context.Context, action string, input agentControlParams) (map[string]any, error) {

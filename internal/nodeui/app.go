@@ -103,17 +103,13 @@ type connectRequest struct {
 }
 
 type configRequest struct {
-	HubURL                          string  `json:"hubUrl"`
-	MachineName                     string  `json:"machineName"`
-	BrowserSidecarDir               string  `json:"browserSidecarDir"`
-	LocalBridgeEnabled              bool    `json:"localBridgeEnabled"`
-	AutoStartEnabled                bool    `json:"autoStartEnabled"`
-	AutoUpdateEnabled               bool    `json:"autoUpdateEnabled"`
-	AllowInsecureLocalHub           bool    `json:"allowInsecureLocalHub"`
-	ChatGPTDefaultConfigurationMode *string `json:"chatgptDefaultConfigurationMode"`
-	ChatGPTDefaultCreateMode        *string `json:"chatgptDefaultCreateMode"`
-	ChatGPTDefaultModel             *string `json:"chatgptDefaultModel"`
-	ChatGPTDefaultThinking          *string `json:"chatgptDefaultThinking"`
+	HubURL                string `json:"hubUrl"`
+	MachineName           string `json:"machineName"`
+	BrowserSidecarDir     string `json:"browserSidecarDir"`
+	LocalBridgeEnabled    bool   `json:"localBridgeEnabled"`
+	AutoStartEnabled      bool   `json:"autoStartEnabled"`
+	AutoUpdateEnabled     bool   `json:"autoUpdateEnabled"`
+	AllowInsecureLocalHub bool   `json:"allowInsecureLocalHub"`
 }
 
 type componentEnsureRequest struct {
@@ -155,9 +151,7 @@ func New(opts Options) (*App, error) {
 	if opts.Agent != nil {
 		agentController = opts.Agent
 	} else {
-		manager := agent.New(opts.DataDir, opts.Logger)
-		manager.SetChatGPTCloudCreateDefaults(cfg.ChatGPTDefaultConfigurationMode, cfg.ChatGPTDefaultCreateMode, cfg.ChatGPTDefaultModel, cfg.ChatGPTDefaultThinking)
-		agentController = manager
+		agentController = agent.New(opts.DataDir, opts.Logger)
 	}
 	return &App{
 		opts:             opts,
@@ -312,17 +306,9 @@ func (a *App) handler() http.Handler {
 		_, _ = io.WriteString(w, "fast-spider-node-ui\n")
 	})
 	mux.HandleFunc("GET /", a.handleIndex)
-	mux.HandleFunc("GET /tasks", a.handleTaskCenter)
-	mux.HandleFunc("GET /api/tasks", a.apiOnly(a.handleTaskView))
-	mux.HandleFunc("GET /api/tasks/{projectID}", a.apiOnly(a.handleTaskView))
-	mux.HandleFunc("GET /api/tasks/{projectID}/events", a.apiOnly(a.handleTaskView))
-	mux.HandleFunc("GET /api/tasks/{projectID}/tasks/{taskID}", a.apiOnly(a.handleTaskView))
-	mux.HandleFunc("POST /api/tasks/{projectID}/actions", a.apiOnly(a.handleTaskAction))
 	mux.HandleFunc("GET /api/status", a.apiOnly(a.handleStatus))
 	mux.HandleFunc("POST /api/connect", a.apiOnly(a.handleConnect))
 	mux.HandleFunc("POST /api/config", a.apiOnly(a.handleConfig))
-	mux.HandleFunc("GET /api/chatgpt-advanced-models", a.apiOnly(a.handleChatGPTAdvancedModels))
-	mux.HandleFunc("POST /api/chatgpt-advanced-models", a.apiOnly(a.handleChatGPTAdvancedModels))
 	mux.HandleFunc("POST /api/update/check", a.apiOnly(a.handleUpdateCheck))
 	mux.HandleFunc("POST /api/update/install", a.apiOnly(a.handleUpdateInstall))
 	mux.HandleFunc("GET /api/components", a.apiOnly(a.handleComponents))
@@ -347,7 +333,7 @@ func (a *App) handler() http.Handler {
 		if surface == nil {
 			continue
 		}
-		if err := surface.RegisterUI(mux, hostapi.UISurfaceContext{DataDir: a.opts.DataDir, Version: a.opts.Version, APIOnly: a.apiOnly}); err != nil {
+		if err := surface.RegisterUI(mux, hostapi.UISurfaceContext{DataDir: a.opts.DataDir, Version: a.opts.Version, UIToken: a.uiToken, APIOnly: a.apiOnly}); err != nil {
 			a.opts.Logger.Error("register Node UI extension surface failed", "error", err)
 		}
 	}
@@ -485,35 +471,15 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		hubURL = old.HubURL
 	}
 	next := LocalConfig{
-		Version:                         localConfigVersion,
-		HubURL:                          hubURL,
-		MachineName:                     strings.TrimSpace(req.MachineName),
-		BrowserSidecarDir:               strings.TrimSpace(req.BrowserSidecarDir),
-		LocalBridgeEnabled:              req.LocalBridgeEnabled,
-		AutoStartEnabled:                req.AutoStartEnabled,
-		AutoUpdateEnabled:               req.AutoUpdateEnabled,
-		AllowInsecureLocalHub:           req.AllowInsecureLocalHub,
-		ChatGPTDefaultConfigurationMode: old.ChatGPTDefaultConfigurationMode,
-		ChatGPTDefaultCreateMode:        old.ChatGPTDefaultCreateMode,
-		ChatGPTDefaultModel:             old.ChatGPTDefaultModel,
-		ChatGPTDefaultThinking:          old.ChatGPTDefaultThinking,
-		WorkingProjectPath:              old.WorkingProjectPath,
-	}
-	if req.ChatGPTDefaultConfigurationMode != nil {
-		next.ChatGPTDefaultConfigurationMode = *req.ChatGPTDefaultConfigurationMode
-	}
-	if req.ChatGPTDefaultCreateMode != nil {
-		next.ChatGPTDefaultCreateMode = *req.ChatGPTDefaultCreateMode
-	}
-	if req.ChatGPTDefaultModel != nil {
-		next.ChatGPTDefaultModel = *req.ChatGPTDefaultModel
-	}
-	if req.ChatGPTDefaultThinking != nil {
-		next.ChatGPTDefaultThinking = *req.ChatGPTDefaultThinking
-	}
-	if err := normalizeChatGPTDefaults(&next); err != nil {
-		writeAPIError(w, http.StatusBadRequest, err)
-		return
+		Version:               localConfigVersion,
+		HubURL:                hubURL,
+		MachineName:           strings.TrimSpace(req.MachineName),
+		BrowserSidecarDir:     strings.TrimSpace(req.BrowserSidecarDir),
+		LocalBridgeEnabled:    req.LocalBridgeEnabled,
+		AutoStartEnabled:      req.AutoStartEnabled,
+		AutoUpdateEnabled:     req.AutoUpdateEnabled,
+		AllowInsecureLocalHub: req.AllowInsecureLocalHub,
+		WorkingProjectPath:    old.WorkingProjectPath,
 	}
 	if next.MachineName == "" {
 		writeAPIError(w, http.StatusBadRequest, errors.New("设备名称不能为空"))
@@ -536,11 +502,6 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	a.config = next
 	a.mu.Unlock()
-	if controller, ok := a.agentController.(interface {
-		SetChatGPTCloudCreateDefaults(string, string, string, string)
-	}); ok {
-		controller.SetChatGPTCloudCreateDefaults(next.ChatGPTDefaultConfigurationMode, next.ChatGPTDefaultCreateMode, next.ChatGPTDefaultModel, next.ChatGPTDefaultThinking)
-	}
 	if old.BrowserSidecarDir != next.BrowserSidecarDir || old.LocalBridgeEnabled != next.LocalBridgeEnabled || old.AllowInsecureLocalHub != next.AllowInsecureLocalHub || old.MachineName != next.MachineName {
 		a.restartRuntime()
 	}

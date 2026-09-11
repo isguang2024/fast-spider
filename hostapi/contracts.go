@@ -16,6 +16,13 @@ type AgentController interface {
 	Close(context.Context) error
 }
 
+// AgentActionSource lets an external composition add specialized agent.control
+// actions to the Node's advertised capability without changing the public
+// baseline contract.
+type AgentActionSource interface {
+	AdditionalAgentActions() []string
+}
+
 // CapabilityError lets an injected agent return a bounded public capability
 // error without exposing provider-private implementation details.
 type CapabilityError interface {
@@ -88,6 +95,7 @@ type AgentHostBinder interface {
 type UISurfaceContext struct {
 	DataDir string
 	Version string
+	UIToken string
 	APIOnly func(http.HandlerFunc) http.HandlerFunc
 }
 

@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/isguang2024/fast-spider/internal/agent"
 )
 
 const localConfigVersion = 6
@@ -16,29 +14,23 @@ const localConfigVersion = 6
 const defaultHubURL = ""
 
 type LocalConfig struct {
-	Version                         int    `json:"version"`
-	HubURL                          string `json:"hubUrl"`
-	MachineName                     string `json:"machineName"`
-	BrowserSidecarDir               string `json:"browserSidecarDir,omitempty"`
-	LocalBridgeEnabled              bool   `json:"localBridgeEnabled"`
-	AutoStartEnabled                bool   `json:"autoStartEnabled"`
-	AutoUpdateEnabled               bool   `json:"autoUpdateEnabled"`
-	AllowInsecureLocalHub           bool   `json:"allowInsecureLocalHub"`
-	ChatGPTDefaultConfigurationMode string `json:"chatgptDefaultConfigurationMode"`
-	ChatGPTDefaultCreateMode        string `json:"chatgptDefaultCreateMode"`
-	ChatGPTDefaultModel             string `json:"chatgptDefaultModel"`
-	ChatGPTDefaultThinking          string `json:"chatgptDefaultThinking"`
-	WorkingProjectPath              string `json:"workingProjectPath,omitempty"`
+	Version               int    `json:"version"`
+	HubURL                string `json:"hubUrl"`
+	MachineName           string `json:"machineName"`
+	BrowserSidecarDir     string `json:"browserSidecarDir,omitempty"`
+	LocalBridgeEnabled    bool   `json:"localBridgeEnabled"`
+	AutoStartEnabled      bool   `json:"autoStartEnabled"`
+	AutoUpdateEnabled     bool   `json:"autoUpdateEnabled"`
+	AllowInsecureLocalHub bool   `json:"allowInsecureLocalHub"`
+	WorkingProjectPath    string `json:"workingProjectPath,omitempty"`
 }
 
 func defaultLocalConfig(machineName string) LocalConfig {
 	return LocalConfig{
-		Version:                         localConfigVersion,
-		HubURL:                          defaultHubURL,
-		MachineName:                     strings.TrimSpace(machineName),
-		LocalBridgeEnabled:              true,
-		ChatGPTDefaultConfigurationMode: "auto",
-		ChatGPTDefaultCreateMode:        "complete",
+		Version:            localConfigVersion,
+		HubURL:             defaultHubURL,
+		MachineName:        strings.TrimSpace(machineName),
+		LocalBridgeEnabled: true,
 	}
 }
 
@@ -66,9 +58,6 @@ func loadLocalConfig(dataDir, machineName string) (LocalConfig, error) {
 	if strings.TrimSpace(cfg.MachineName) == "" {
 		cfg.MachineName = strings.TrimSpace(machineName)
 	}
-	if err := normalizeChatGPTDefaults(&cfg); err != nil {
-		return LocalConfig{}, err
-	}
 	return cfg, nil
 }
 
@@ -77,11 +66,8 @@ func saveLocalConfig(dataDir string, cfg LocalConfig) error {
 	cfg.HubURL = strings.TrimSpace(cfg.HubURL)
 	cfg.MachineName = strings.TrimSpace(cfg.MachineName)
 	cfg.BrowserSidecarDir = strings.TrimSpace(cfg.BrowserSidecarDir)
-	if err := normalizeChatGPTDefaults(&cfg); err != nil {
-		return err
-	}
 	cfg.WorkingProjectPath = strings.TrimSpace(cfg.WorkingProjectPath)
-	if len(cfg.HubURL) > 2048 || len(cfg.MachineName) > 128 || len(cfg.BrowserSidecarDir) > 4096 || len(cfg.ChatGPTDefaultModel) > 256 || len(cfg.WorkingProjectPath) > 4096 {
+	if len(cfg.HubURL) > 2048 || len(cfg.MachineName) > 128 || len(cfg.BrowserSidecarDir) > 4096 || len(cfg.WorkingProjectPath) > 4096 {
 		return errors.New("local config field exceeds limit")
 	}
 	raw, err := json.MarshalIndent(cfg, "", "  ")
@@ -106,39 +92,4 @@ func saveLocalConfig(dataDir string, cfg LocalConfig) error {
 		return err
 	}
 	return nil
-}
-
-func normalizeChatGPTDefaults(cfg *LocalConfig) error {
-	cfg.ChatGPTDefaultConfigurationMode = strings.ToLower(strings.TrimSpace(cfg.ChatGPTDefaultConfigurationMode))
-	if cfg.ChatGPTDefaultConfigurationMode == "" {
-		cfg.ChatGPTDefaultConfigurationMode = "auto"
-	}
-	if !stringInLocalSet(cfg.ChatGPTDefaultConfigurationMode, "auto", "preset", "advanced") {
-		return errors.New("ChatGPT Cloud 默认配置方式必须是 auto、preset 或 advanced")
-	}
-	cfg.ChatGPTDefaultCreateMode = strings.ToLower(strings.TrimSpace(cfg.ChatGPTDefaultCreateMode))
-	if cfg.ChatGPTDefaultCreateMode == "" {
-		cfg.ChatGPTDefaultCreateMode = "complete"
-	}
-	if cfg.ChatGPTDefaultCreateMode != "complete" && cfg.ChatGPTDefaultCreateMode != "quick_chat" {
-		return errors.New("ChatGPT Cloud 默认返回模式必须是 complete 或 quick_chat")
-	}
-	cfg.ChatGPTDefaultModel = strings.TrimSpace(cfg.ChatGPTDefaultModel)
-	cfg.ChatGPTDefaultThinking = strings.ToLower(strings.TrimSpace(cfg.ChatGPTDefaultThinking))
-	if cfg.ChatGPTDefaultThinking == "auto" {
-		cfg.ChatGPTDefaultThinking = ""
-	}
-	if cfg.ChatGPTDefaultThinking != "" && !agent.IsValidChatGPTThinkingValue(cfg.ChatGPTDefaultThinking) {
-		return errors.New("ChatGPT Cloud 默认思考程度必须是合法的思考档位标识符")
-	}
-	return nil
-}
-
-func stringInLocalSet(value string, allowed ...string) bool {
-	for _, item := range allowed {
-		if value == item {
-			return true
-		}
-	}
-	return false
 }

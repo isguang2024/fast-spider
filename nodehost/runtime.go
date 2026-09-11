@@ -186,3 +186,9 @@ func (u *UI) Run(ctx context.Context) error {
 func RunLocalMCP(ctx context.Context, dataDir, version string, logger *slog.Logger, surfaces ...hostapi.MCPSurface) error {
 	return localmcp.RunWithSurfaces(ctx, dataDir, version, logger, surfaces)
 }
+
+// RunLocalMCPWithAgent advertises any specialized agent actions supplied by an
+// external composition while preserving the same Local Bridge transport.
+func RunLocalMCPWithAgent(ctx context.Context, dataDir, version string, logger *slog.Logger, agent hostapi.AgentController, surfaces ...hostapi.MCPSurface) error {
+	return localmcp.RunWithAgentAndSurfaces(ctx, dataDir, version, logger, agent, surfaces)
+}

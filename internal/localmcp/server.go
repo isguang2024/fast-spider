@@ -19,7 +19,7 @@ import (
 
 const serverInstructions = `FastSpider_Local connects Codex directly to the Fast Spider Node running as the same OS user. It uses the current-user Local Bridge and never routes capability calls through the Hub.
 
-Call local_machine to discover the local Node, then use local_capability with an advertised capability/action. For an ordinary Cloud CHAT task with a result callback, use FastSpider_FS codex_cloud_collaboration action=dispatch. Local provider callback notifications use agent.control session.callback.claim and session.callback.ack through local_capability. Local routing does not make network-dependent provider, Git, or browser operations offline.
+Call local_machine to discover the local Node, then use local_capability with an advertised capability/action. Local routing does not make network-dependent provider, Git, or browser operations offline.
 
 Mutations keep their existing Node contracts. Preserve idempotency keys, use file read/SHA/preview/CAS for edits, drive every started job to a terminal state with job.control/watch, close caller-owned browser sessions, and do not retry an uncertain external create with a new key.`
 
@@ -52,22 +52,22 @@ type bridgeCaller func(context.Context, string, protocolv1.CapabilityRequest) (p
 // current-user Local Bridge. It does not create another Node or capability
 // engine and does not connect to the Hub.
 func New(dataDir, version string, logger *slog.Logger) *mcp.Server {
-	server, _ := newServerWithSurfaces(dataDir, version, logger, localbridge.Call, nil)
+	server, _ := newServerWithSurfaces(dataDir, version, logger, localbridge.Call, nil, nil)
 	return server
 }
 
 // NewWithSurfaces registers optional cross-module MCP surfaces while keeping the
 // existing local Bridge as the only capability transport.
 func NewWithSurfaces(dataDir, version string, logger *slog.Logger, surfaces []hostapi.MCPSurface) (*mcp.Server, error) {
-	return newServerWithSurfaces(dataDir, version, logger, localbridge.Call, surfaces)
+	return newServerWithSurfaces(dataDir, version, logger, localbridge.Call, surfaces, nil)
 }
 
 func newServer(dataDir, version string, logger *slog.Logger, call bridgeCaller) *mcp.Server {
-	server, _ := newServerWithSurfaces(dataDir, version, logger, call, nil)
+	server, _ := newServerWithSurfaces(dataDir, version, logger, call, nil, nil)
 	return server
 }
 
-func newServerWithSurfaces(dataDir, version string, logger *slog.Logger, call bridgeCaller, surfaces []hostapi.MCPSurface) (*mcp.Server, error) {
+func newServerWithSurfaces(dataDir, version string, logger *slog.Logger, call bridgeCaller, surfaces []hostapi.MCPSurface, extraAgentActions []string) (*mcp.Server, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -86,7 +86,7 @@ func newServerWithSurfaces(dataDir, version string, logger *slog.Logger, call br
 		if err != nil && !errors.Is(err, node.ErrNotRegistered) {
 			return nil, machineOutput{}, err
 		}
-		capabilities := append([]protocolv1.CapabilityDescriptor(nil), protocolv1.NodeCapabilities...)
+		capabilities := protocolv1.NodeCapabilitiesWithAgentActions(extraAgentActions)
 		capabilities = append(capabilities, protocolv1.ScreenshotCapabilityForOS(runtime.GOOS), protocolv1.BrowserCapability)
 		return emptyResult(), machineOutput{
 			Transport:      "local",
@@ -165,7 +165,19 @@ func Run(ctx context.Context, dataDir, version string, logger *slog.Logger) erro
 // RunWithSurfaces serves the local MCP transport with optional specialized
 // tools registered into the same process.
 func RunWithSurfaces(ctx context.Context, dataDir, version string, logger *slog.Logger, surfaces []hostapi.MCPSurface) error {
-	server, err := NewWithSurfaces(dataDir, version, logger, surfaces)
+	server, err := newServerWithSurfaces(dataDir, version, logger, localbridge.Call, surfaces, nil)
+	if err != nil {
+		return err
+	}
+	return server.Run(ctx, &mcp.StdioTransport{})
+}
+
+func RunWithAgentAndSurfaces(ctx context.Context, dataDir, version string, logger *slog.Logger, agent hostapi.AgentController, surfaces []hostapi.MCPSurface) error {
+	var extraAgentActions []string
+	if source, ok := agent.(hostapi.AgentActionSource); ok {
+		extraAgentActions = source.AdditionalAgentActions()
+	}
+	server, err := newServerWithSurfaces(dataDir, version, logger, localbridge.Call, surfaces, extraAgentActions)
 	if err != nil {
 		return err
 	}

@@ -1,10 +1,6 @@
 package agent
 
 import (
-	"context"
-	"errors"
-	"os"
-	"os/exec"
 	"testing"
 	"time"
 )
@@ -42,44 +38,6 @@ func TestReadinessResultDoesNotPublishDesktopBridgeMetadata(t *testing.T) {
 	}
 }
 
-func TestProviderReadinessReusesRecentSuccessForSameCodexGeneration(t *testing.T) {
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_ = reader.Close()
-		_ = writer.Close()
-	})
-	adapter := &CodexAdapter{
-		cmd:        &exec.Cmd{Process: &os.Process{Pid: 12345}},
-		stdin:      writer,
-		generation: 7,
-	}
-	manager := &AgentManager{codex: adapter}
-	result := map[string]any{
-		"providerId": "codex", "mode": "safe", "ready": true,
-		"readyForSessionCreate": true, "chatgptCloudAvailable": true,
-		"reasonCode": "READY", "checkedAt": time.Now().UTC().Format(time.RFC3339Nano),
-	}
-	manager.rememberProviderReadiness("codex", "safe", sessionBackendChatGPTCloud, result)
-
-	cached, err := manager.providerReadiness(t.Context(), agentControlParams{ProviderID: "codex", Backend: sessionBackendChatGPTCloud, Mode: "safe"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cached["cached"] != true || cached["ready"] != true || cached["reasonCode"] != "READY" {
-		t.Fatalf("cached readiness=%#v", cached)
-	}
-
-	adapter.mu.Lock()
-	adapter.generation++
-	adapter.mu.Unlock()
-	if _, ok := manager.cachedProviderReadiness("codex", "safe", sessionBackendChatGPTCloud, time.Now()); ok {
-		t.Fatal("readiness from an earlier Codex app-server generation was reused")
-	}
-}
-
 func TestProviderReadinessReportsFailingLayerReason(t *testing.T) {
 	layers := map[string]readinessLayer{
 		"routing":        {State: "ready", ReasonCode: "OK"},
@@ -89,42 +47,6 @@ func TestProviderReadinessReportsFailingLayerReason(t *testing.T) {
 	}
 	if reason := readinessBlockingReason(layers); reason != "SESSION_BACKEND_UNAVAILABLE" {
 		t.Fatalf("reason=%s", reason)
-	}
-}
-
-func TestChatGPTCloudReadinessDoesNotProbeLocalThreadList(t *testing.T) {
-	if requiresSessionBackendProbe(sessionBackendChatGPTCloud) {
-		t.Fatal("chatgpt_cloud readiness must not depend on the local thread/list backend")
-	}
-	if !requiresSessionBackendProbe("") || !requiresSessionBackendProbe("codex_local") {
-		t.Fatal("local Codex readiness must retain the thread/list backend probe")
-	}
-}
-
-func TestClassifyChatGPTCloudAuthError(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want string
-	}{
-		{name: "rpc timeout", err: context.DeadlineExceeded, want: "CHATGPT_CLOUD_AUTH_RPC_TIMEOUT"},
-		{name: "not authenticated", err: errCodexChatGPTNotAuthenticated, want: "CHATGPT_CLOUD_NOT_AUTHENTICATED"},
-		{name: "rpc failure", err: errors.New("connection closed"), want: "CHATGPT_CLOUD_AUTH_RPC_FAILED"},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := classifyChatGPTCloudAuthError(test.err); got != test.want {
-				t.Fatalf("reason=%q want %q", got, test.want)
-			}
-		})
-	}
-}
-
-func TestManagerSharesSingleAppServerForChatGPTAuth(t *testing.T) {
-	manager := New(t.TempDir(), nil)
-	defer manager.Close(t.Context())
-	if manager.codex == nil || manager.chatgptCloud == nil {
-		t.Fatal("manager did not initialize the shared Codex app-server and ChatGPT Cloud adapter")
 	}
 }
 

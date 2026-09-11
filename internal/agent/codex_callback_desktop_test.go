@@ -53,9 +53,6 @@ func TestDesktopCallbackRequiresIdleOwnerAndConfirmedTurn(t *testing.T) {
 				if err != nil || mapNestedString(result, "turn", "id") != "confirmed-turn" {
 					t.Fatalf("result=%v err=%v", result, err)
 				}
-				if err := validateSessionCallbackLocalCodexTurnDelivery(sessionCallbackDeliveryResult{ExecutionMode: "codex_desktop_ipc", Owner: "codex_desktop", TurnID: "confirmed-turn"}); err != nil {
-					t.Fatal(err)
-				}
 			} else {
 				if err == nil {
 					t.Fatal("non-idle owner accepted a callback")

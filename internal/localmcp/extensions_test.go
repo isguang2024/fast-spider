@@ -32,7 +32,7 @@ func TestMCPSurfaceReceivesExistingCapabilityTransport(t *testing.T) {
 		}
 		return protocolv1.CapabilityResponse{Result: map[string]any{"ok": true}}, nil
 	}
-	server, err := newServerWithSurfaces("test-data", "test", nil, call, []hostapi.MCPSurface{surface})
+	server, err := newServerWithSurfaces("test-data", "test", nil, call, []hostapi.MCPSurface{surface}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

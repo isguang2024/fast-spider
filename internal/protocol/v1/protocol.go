@@ -52,7 +52,7 @@ const (
 
 var AgentCapability = CapabilityDescriptor{
 	CapabilityId: "agent.control", Version: "1.10",
-	Actions: []string{"routing.status", "providers.list", "provider.readiness", "models.list", "provider.capabilities", "projects.list", "skills.list", "hooks.list", "permissions.list", "plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list", "session.list", "session.get", "session.create", "session.send", "session.steer", "session.respond", "session.watch", "session.callback.prepare", "session.callback.recover", "session.callback.continue", "session.callback.register", "session.callback.arm", "session.callback.enqueue", "session.callback.unregister", "session.callback.list", "session.callback.claim", "session.callback.ack", "session.cancel", "session.result", "session.rename", "session.archive", "session.unarchive", "session.delete", "session.fork", "session.compact", "session.rollback", "session.goal.get", "session.goal.set", "session.goal.clear", "session.settings.update", "session.review", "runner.init", "runner.status", "runner.pause", "runner.resume", "runner.goal", "runner.signal", "runner.add", "runner.wake", "runner.submit", "runner.checkpoint", "runner.context", "runner.change", "runner.cancel", "runner.archive", "runner.unarchive", "runner.configure"},
+	Actions: []string{"routing.status", "providers.list", "provider.readiness", "models.list", "provider.capabilities", "projects.list", "skills.list", "hooks.list", "permissions.list", "plugins.list", "plugins.installed", "plugins.get", "plugin.skill.read", "mcp.status.list", "session.list", "session.get", "session.create", "session.send", "session.steer", "session.respond", "session.watch", "session.cancel", "session.result", "session.rename", "session.archive", "session.unarchive", "session.delete", "session.fork", "session.compact", "session.rollback", "session.goal.get", "session.goal.set", "session.goal.clear", "session.settings.update", "session.review"},
 }
 
 func ScreenshotCapabilityForOS(goos string) CapabilityDescriptor {
@@ -78,6 +78,28 @@ var NodeCapabilities = []CapabilityDescriptor{
 	{CapabilityId: "operation.log", Version: "1.0", Actions: []string{"query"}},
 	{CapabilityId: "working.context", Version: "2.0", Actions: []string{"get", "set", "clear"}},
 	AgentCapability,
+}
+
+func NodeCapabilitiesWithAgentActions(extra []string) []CapabilityDescriptor {
+	out := make([]CapabilityDescriptor, len(NodeCapabilities))
+	for index, capability := range NodeCapabilities {
+		out[index] = capability
+		out[index].Actions = append([]string(nil), capability.Actions...)
+		if capability.CapabilityId != AgentCapability.CapabilityId {
+			continue
+		}
+		seen := make(map[string]bool, len(out[index].Actions)+len(extra))
+		for _, action := range out[index].Actions {
+			seen[action] = true
+		}
+		for _, action := range extra {
+			if action != "" && !seen[action] {
+				out[index].Actions = append(out[index].Actions, action)
+				seen[action] = true
+			}
+		}
+	}
+	return out
 }
 
 type messageHeader struct {

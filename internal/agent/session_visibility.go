@@ -552,18 +552,11 @@ func sessionVisibilityCapabilityMatrix() map[string]any {
 	return map[string]any{
 		"contractVersion":        visibilityContractVersion,
 		"visibilityValues":       []string{sessionVisibilityVisible, sessionVisibilityInternal},
-		"backendValues":          []string{sessionBackendCodexLocal, sessionBackendClaudeLocal, sessionBackendChatGPTCloud},
-		"visibilityTargetValues": []string{sessionVisibilityTargetNone, sessionBackendCodexLocal, sessionBackendClaudeLocal, sessionBackendChatGPTCloud},
+		"backendValues":          []string{sessionBackendCodexLocal, sessionBackendClaudeLocal},
+		"visibilityTargetValues": []string{sessionVisibilityTargetNone, sessionBackendCodexLocal, sessionBackendClaudeLocal},
 		"defaults": map[string]any{
 			"codex":       map[string]any{"visibility": sessionVisibilityVisible, "backend": sessionBackendCodexLocal, "visibilityTarget": sessionBackendCodexLocal, "ephemeral": false},
 			"claude_code": map[string]any{"visibility": sessionVisibilityVisible, "backend": sessionBackendClaudeLocal, "visibilityTarget": sessionBackendClaudeLocal, "ephemeral": false},
-		},
-		"chatgptCloud": map[string]any{
-			"state":      "supported",
-			"create":     true,
-			"requires":   "codex app-server authenticated with ChatGPT (getAuthStatus) + self-solved Sentinel",
-			"reasonCode": "",
-			"reason":     "Fast Spider creates cloud conversations through the same /backend-api/f/conversation flow the official client uses, authenticating with the Codex app-server ChatGPT token",
 		},
 		"targets": map[string]any{
 			"none": map[string]any{
@@ -576,10 +569,6 @@ func sessionVisibilityCapabilityMatrix() map[string]any {
 			"claude_local": map[string]any{
 				"visible":  map[string]any{"state": "supported", "externalIdType": "claude_session"},
 				"internal": map[string]any{"state": "best_effort", "ephemeralSupported": false, "persistentVisibility": "fast_spider_filtered_only"},
-			},
-			"chatgpt_cloud": map[string]any{
-				"visible":  map[string]any{"state": "supported", "externalIdType": "chatgpt_conversation"},
-				"internal": map[string]any{"state": "unsupported", "reasonCode": "CHATGPT_CLOUD_INTERNAL_UNSUPPORTED", "reason": "chatgpt_cloud conversations are externally visible by nature; use visibility=visible"},
 			},
 		},
 	}
