@@ -118,6 +118,62 @@ func TestNativeRecoveryPreservesUnknownWriterAndDeduplicatesContinuation(t *test
 	}
 }
 
+func TestNativeRecoveryRateLimitAndTransientErrorsRetrySoon(t *testing.T) {
+	r, task, _ := recoveryFixture(t)
+	now := r.now().Unix()
+	err := &chatGPTCloudHTTPError{status: 429, retryAfter: "30"}
+	if applyErr := r.applyRecovery(context.Background(), &task, nativeRecoveryCompletion{Err: err}); applyErr != nil {
+		t.Fatal(applyErr)
+	}
+	if got := task.Recovery.NextProbeAt - now; got < 30 || got > 45 {
+		t.Fatalf("rate limit retry delay=%d", got)
+	}
+	task.Recovery.NextProbeAt = 0
+	if applyErr := r.applyRecovery(context.Background(), &task, nativeRecoveryCompletion{Err: &chatGPTCloudHTTPError{status: 429, retryAfter: "600"}}); applyErr != nil {
+		t.Fatal(applyErr)
+	}
+	if got := task.Recovery.NextProbeAt - r.now().Unix(); got < 595 || got > 605 {
+		t.Fatalf("long rate limit retry delay=%d", got)
+	}
+	task.Recovery.NextProbeAt = 0
+	task.Recovery.ConsecutiveProbeFailures = 0
+	if applyErr := r.applyRecovery(context.Background(), &task, nativeRecoveryCompletion{Err: errors.New("temporary network timeout")}); applyErr != nil {
+		t.Fatal(applyErr)
+	}
+	if got := task.Recovery.NextProbeAt - r.now().Unix(); got < 30 || got > 45 {
+		t.Fatalf("transient retry delay=%d", got)
+	}
+	if task.Round != 1 || task.Receipt.SessionID != "chat" || task.Recovery.PendingKey != "" {
+		t.Fatal("error recovery changed writer binding")
+	}
+}
+
+func TestNativeRecoveryConsecutiveTransientFailuresBackoffAndPreserveBinding(t *testing.T) {
+	r, task, _ := recoveryFixture(t)
+	for attempt, want := range []int64{30, 60, 120} {
+		before := r.now().Unix()
+		if err := r.applyRecovery(context.Background(), &task, nativeRecoveryCompletion{Err: errors.New("temporary network timeout")}); err != nil {
+			t.Fatal(err)
+		}
+		got := task.Recovery.NextProbeAt - before
+		if got < want-1 || got > want+1 {
+			t.Fatalf("attempt %d delay=%d want=%d", attempt+1, got, want)
+		}
+		if task.Round != 1 || task.Receipt.SessionID != "chat" || task.Recovery.PendingKey != "" {
+			t.Fatal("transient recovery changed writer binding")
+		}
+	}
+	if task.Recovery.ConsecutiveProbeFailures != 3 {
+		t.Fatalf("failure count=%d", task.Recovery.ConsecutiveProbeFailures)
+	}
+	if err := r.applyRecovery(context.Background(), &task, nativeRecoveryCompletion{Probe: nativeRunnerProbe{Authoritative: true, Running: true, ObservedAt: r.now().Unix(), ProgressKey: "new"}}); err != nil {
+		t.Fatal(err)
+	}
+	if task.Recovery.ConsecutiveProbeFailures != 0 {
+		t.Fatal("successful probe did not reset failure count")
+	}
+}
+
 func TestNativeRecoveryHandoverPreservesOldBindingAndRequiresTerminal(t *testing.T) {
 	r, task, _ := recoveryFixture(t)
 	ctx := context.Background()

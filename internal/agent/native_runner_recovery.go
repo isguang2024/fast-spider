@@ -30,6 +30,7 @@ type nativeRunnerRecovery struct {
 	LastProgressAt           int64                  `json:"lastProgressAt"`
 	NextProbeAt              int64                  `json:"nextProbeAt"`
 	Attempts                 int                    `json:"attempts"`
+	ConsecutiveProbeFailures int                    `json:"consecutiveProbeFailures,omitempty"`
 	LastError                string                 `json:"lastError,omitempty"`
 	Checkpoint               nativeRunnerCheckpoint `json:"checkpoint"`
 	ProgressKey              string                 `json:"progressKey,omitempty"`
@@ -155,7 +156,7 @@ func (r *nativeRunner) recoveryState(t nativeRunnerTask) nativeRunnerRecovery {
 // conversation cannot hold the tick loop, callback ingestion or other projects.
 func (r *nativeRunner) scheduleRecovery(ctx context.Context, p nativeRunnerProject, tasks []nativeRunnerTask) error {
 	backend, ok := r.backend.(nativeRunnerRecoveryBackend)
-	if !ok || p.Paused || p.Archived || p.State == "canceling" || p.State == "cancelled" || r.cooldownUntil > r.now().Unix() {
+	if !ok || p.Archived || p.State == "canceling" || p.State == "cancelled" || r.cooldownUntil > r.now().Unix() {
 		return nil
 	}
 	if r.recoveryInFlight == nil {
@@ -281,11 +282,14 @@ func (r *nativeRunner) applyRecovery(ctx context.Context, t *nativeRunnerTask, o
 		}
 		state.LastError = out.Err.Error()
 		state.Phase = "uncertain"
+		state.ConsecutiveProbeFailures++
+		state.NextProbeAt = r.now().Add(nativeRecoveryErrorDelay(out.Err, state.ConsecutiveProbeFailures, r.now())).Unix()
 		// Preserve a frozen continuation key after an ambiguous send.
 		t.Recovery = &state
 		return r.saveTask(ctx, *t, "recovery_error")
 	}
 	if out.Continued {
+		state.ConsecutiveProbeFailures = 0
 		state.Attempts++
 		state.LastContinuedProgressKey = state.ProgressKey
 		state.Manual = false
@@ -311,6 +315,7 @@ func (r *nativeRunner) applyRecovery(ctx context.Context, t *nativeRunnerTask, o
 		jobEvidence = append(jobEvidence, fmt.Sprintf("%s: %s exit=%d %s", id, v.State, v.ExitCode, v.Evidence))
 	}
 	probe := out.Probe
+	state.ConsecutiveProbeFailures = 0
 	state.PendingInterrupt = false
 	if probe.ProgressKey != "" && probe.ProgressKey != state.ProgressKey {
 		state.ProgressKey = probe.ProgressKey
@@ -377,4 +382,30 @@ func (r *nativeRunner) applyRecovery(ctx context.Context, t *nativeRunnerTask, o
 	state.NextProbeAt = r.now().Unix()
 	t.Recovery = &state
 	return r.saveTask(ctx, *t, "continuation_scheduled")
+}
+
+func nativeRecoveryErrorDelay(err error, attempts int, now time.Time) time.Duration {
+	delay := 30 * time.Second
+	if attempts > 1 {
+		delay = time.Duration(30*(1<<min(attempts-1, 2))) * time.Second
+	}
+	if delay > 2*time.Minute {
+		delay = 2 * time.Minute
+	}
+	var limited *chatGPTCloudHTTPError
+	if errors.As(err, &limited) && limited.status == 429 {
+		retry := chatGPTCloudRetryAfterDuration(strings.TrimSuffix(limited.retryAfter, " seconds"), now)
+		if retry > 0 {
+			// A provider supplied deadline is authoritative. Never shorten it;
+			// the bounded fallback applies only when it is absent or invalid.
+			return retry
+		}
+	}
+	class := classifyExecutionError(err)
+	if class == ErrorRateLimited || class == ErrorNetworkFailed || class == ErrorProviderUnavailable {
+		return delay
+	}
+	// Deterministic auth/schema/request failures are retained for planner
+	// diagnosis and are not turned into a noisy retry loop.
+	return nativeProgressInterval
 }

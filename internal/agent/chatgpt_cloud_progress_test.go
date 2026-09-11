@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -11,6 +12,55 @@ import (
 	"testing"
 	"time"
 )
+
+type progressLifetimeTestTransport func(*http.Request) (*http.Response, error)
+
+func (f progressLifetimeTestTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return f(r)
+}
+
+func TestProgressPersistentStreamHasNoFixedTurnDeadline(t *testing.T) {
+	a := NewChatGPTCloudAdapter(nil, func(context.Context) (string, error) { return "test", nil })
+	deadlines := make(chan bool, 1)
+	a.http = &http.Client{Transport: progressLifetimeTestTransport(func(req *http.Request) (*http.Response, error) {
+		_, bounded := req.Context().Deadline()
+		deadlines <- bounded
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})}
+	p, err := newChatGPTCloudProgress(a, filepath.Join(t.TempDir(), "progress.sqlite3"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	if err := p.ensure("active", 1, true); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case bounded := <-deadlines:
+		if bounded {
+			t.Fatal("persistent body inherited an artificial turn timeout")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("stream did not connect")
+	}
+	p.release("active", 1)
+}
+
+func TestProgressConnectedThinkingTurnUsesLocalObservation(t *testing.T) {
+	p := &chatGPTCloudProgress{sessions: map[string]*chatGPTCloudProgressSession{"active": {generation: 1, state: "connected", lastProgress: time.Now().Add(-5 * time.Minute), progressKey: "observed-delta"}}}
+	if key, _ := p.recent("active", 1); key != "observed-delta" {
+		t.Fatal("quiet thinking turn needlessly fell back to detail polling")
+	}
+	p.sessions["active"].lastProgress = time.Now().Add(-2*nativeProgressInterval - time.Second)
+	if key, _ := p.recent("active", 1); key != "" {
+		t.Fatal("stale observation prevented bounded recovery verification")
+	}
+	p.sessions["active"].lastProgress = time.Now()
+	p.sessions["active"].state = "unavailable"
+	if key, _ := p.recent("active", 1); key != "" {
+		t.Fatal("disconnected stream counted as live progress")
+	}
+}
 
 func TestProgressFrames(t *testing.T) {
 	var got []string

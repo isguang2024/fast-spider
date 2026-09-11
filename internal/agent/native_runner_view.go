@@ -110,7 +110,7 @@ func ReadNativeRunnerView(ctx context.Context, dataDir, projectID, taskID string
 		"context": task.Context, "round": task.Round, "checks": task.Checks, "validations": task.Validations,
 		"receipt": task.Receipt, "result": task.Result, "lastError": task.LastError, "reason": task.DeferredReason,
 		"resumeAt": task.ResumeAt, "nextAt": task.NextAt,
-		"recovery": nativeRecoveryView(task),
+		"recovery": nativeRecoveryView(task), "waitFor": task.WaitFor, "waitReview": task.WaitReview,
 		"archived": task.Archived, "priority": task.Priority, "planRevision": task.PlanRevision, "cancellation": task.Cancellation, "estimatedMinutes": task.EstimatedMinutes,
 	}}, nil
 }
@@ -144,7 +144,7 @@ func nativeViewProject(p nativeRunnerProject, detail bool) map[string]any {
 func nativeTaskBrief(t nativeRunnerTask) map[string]any {
 	item := map[string]any{"id": t.ID, "parent": t.Parent, "kind": t.Kind, "title": t.Title,
 		"state": t.State, "round": t.Round, "after": t.After, "scope": t.Scope, "nextAt": t.NextAt,
-		"reason": t.DeferredReason, "resumeAt": t.ResumeAt, "error": t.LastError, "checks": t.Validations}
+		"reason": t.DeferredReason, "resumeAt": t.ResumeAt, "error": t.LastError, "checks": t.Validations, "waitFor": t.WaitFor, "waitReview": t.WaitReview}
 	if t.Result != nil {
 		item["result"] = t.Result
 	}
@@ -310,6 +310,14 @@ func nativeProjectView(ctx context.Context, tx *sql.Tx, p nativeRunnerProject, d
 				if reason == "" {
 					reason = "等待恢复条件"
 				}
+				if t.WaitReview != nil {
+					if t.WaitReview.NextAt > 0 {
+						reason += "；下一次自动复核：" + time.Unix(t.WaitReview.NextAt, 0).Local().Format(time.RFC3339)
+					} else if t.WaitReview.Evidence != "" {
+						reason += "；" + t.WaitReview.Evidence
+					}
+				}
+
 			case cooldown > time.Now().Unix():
 				reason = "等待账号冷却结束"
 			case t.NextAt > time.Now().Unix():

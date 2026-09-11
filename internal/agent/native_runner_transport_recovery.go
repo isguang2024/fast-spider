@@ -35,10 +35,18 @@ func (t *nativeRunnerTransport) Probe(ctx context.Context, task nativeRunnerTask
 		if !exists || registration.Generation != task.Receipt.Generation || registration.MissionID != task.ProjectID || registration.TaskID != task.ID {
 			return nativeRunnerProbe{}, errors.New("runner probe callback binding does not match the active task")
 		}
+		allowed, err := t.manager.callbackStore.providerRecoveryAllowed(sessionID, task.Receipt.Generation)
+		if err != nil {
+			return nativeRunnerProbe{}, err
+		}
+		if !allowed {
+			return nativeRunnerProbe{}, errors.New("runner probe deferred to local callback consumption; provider recovery is no longer needed")
+		}
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, nativeRunnerProbeTimeout)
 	defer cancel()
-	if progress := t.manager.chatgptCloud.progress; progress != nil {
+	cacheAllowed := task.Recovery == nil || (!task.Recovery.Manual && !task.Recovery.PendingInterrupt && !task.Recovery.ContextExhausted)
+	if progress := t.manager.chatgptCloud.progress; progress != nil && cacheAllowed {
 		if key, at := progress.recent(sessionID, task.Receipt.Generation); key != "" {
 			return nativeRunnerProbe{ProgressKey: "sse:" + key, Running: true, Authoritative: false, ObservedAt: at.Unix(), Summary: "Recent Cloud SSE delta observed locally; not a completion receipt"}, nil
 		}

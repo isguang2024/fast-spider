@@ -52,6 +52,24 @@ func registerNativeRecoveryRoute(t *testing.T, store *sessionCallbackStore, proj
 	}
 }
 
+func TestNativeRunnerProbeSkipsProviderWhenFormalCallbackIsPending(t *testing.T) {
+	manager := New(t.TempDir(), nil)
+	defer manager.Close(context.Background())
+	task := nativeCallbackFixture(t, manager.callbackStore, "callback-ready", "task", true)
+	manager.chatgptCloud.tokenSource = func(context.Context) (string, error) {
+		t.Error("formal callback must not request provider credentials or read conversation")
+		return "", nil
+	}
+	transport := newNativeRunnerTransport(manager, t.TempDir())
+	if _, err := transport.Probe(context.Background(), task); err == nil || !strings.Contains(err.Error(), "local callback consumption") {
+		t.Fatalf("expected local callback ownership, got %v", err)
+	}
+	result, err := transport.Observe(context.Background(), task)
+	if err != nil || result == nil || result.Path != task.Receipt.ResultPath {
+		t.Fatalf("formal result must remain consumable: result=%+v err=%v", result, err)
+	}
+}
+
 func TestNativeRunnerProbeUnknownPreservesActivityWithoutTerminalInference(t *testing.T) {
 	const session, project, task = "probe-unknown-chat", "project", "task"
 	manager := New(t.TempDir(), nil)

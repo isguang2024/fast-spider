@@ -3,6 +3,21 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.101 - 2026-09-11
+
+- Keep assigned-task SSE streams open until provider EOF or lifecycle release;
+  quiet connected thinking turns use local observations before bounded recovery
+  checks instead of falling back to detail reads after only one minute.
+- Recover transient Cloud probe failures with bounded backoff and honor complete
+  provider Retry-After deadlines instead of falling back to a 15-minute delay.
+- Observe structured deferred-task dependencies, file changes and actual writer
+  ownership locally; trigger a bounded planning review without auto-removing
+  dependencies or treating uncommitted changes as an active writer.
+- Guide planners to separate executable preparation from dependent integration,
+  keeping real final acceptance requirements and current revision coverage.
+- Distinguish report recovery and pending acceptance from running checks; allow
+  in-flight task recovery while a task area is paused.
+
 ## 0.4.100 - 2026-09-11
 
 - Replace growing planner histories in task packets with compact current work

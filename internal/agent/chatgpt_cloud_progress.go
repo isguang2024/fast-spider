@@ -97,7 +97,7 @@ func (p *chatGPTCloudProgress) Close() error {
 func (p *chatGPTCloudProgress) recent(id string, generation int64) (string, time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if s := p.sessions[id]; s != nil && s.generation == generation && s.state == "connected" && time.Since(s.lastProgress) < time.Minute {
+	if s := p.sessions[id]; s != nil && s.generation == generation && s.state == "connected" && time.Since(s.lastProgress) < 2*nativeProgressInterval {
 		return s.progressKey, s.lastProgress
 	}
 	return "", time.Time{}
@@ -166,15 +166,16 @@ func (p *chatGPTCloudProgress) run(ctx context.Context, id string, s *chatGPTClo
 		if expired || ctx.Err() != nil {
 			return
 		}
-		// A bounded stream also bounds idle watchers and shutdown. Successful data
-		// does not imply that the provider turn or business task has completed.
+		// Assigned tasks retain their stream until EOF or lifecycle release.
+		// Only ad-hoc watchers expire; a long thinking turn is not a timeout.
 		p.mu.Lock()
-		streamLimit := 2 * time.Minute
-		if s.persistent {
-			streamLimit = 30 * time.Minute
-		}
+		persistent := s.persistent
 		p.mu.Unlock()
-		streamCtx, cancel := context.WithTimeout(ctx, streamLimit)
+		streamCtx := ctx
+		cancel := func() {}
+		if !persistent {
+			streamCtx, cancel = context.WithTimeout(ctx, 2*time.Minute)
+		}
 		code, err := p.connect(streamCtx, id, s)
 		cancel()
 		if ctx.Err() != nil {
@@ -220,6 +221,11 @@ func (p *chatGPTCloudProgress) run(ctx context.Context, id string, s *chatGPTClo
 }
 
 func (p *chatGPTCloudProgress) connect(ctx context.Context, id string, s *chatGPTCloudProgressSession) (int, error) {
+	// Bound authentication/headers without imposing a lifetime on the body.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	connectionTimer := time.AfterFunc(45*time.Second, cancel)
+	defer connectionTimer.Stop()
 	a := p.adapter
 	if err := a.readBudget.acquire(ctx); err != nil {
 		return 429, err
@@ -244,6 +250,7 @@ func (p *chatGPTCloudProgress) connect(ctx context.Context, id string, s *chatGP
 		return 0, err
 	}
 	defer resp.Body.Close()
+	connectionTimer.Stop()
 	if resp.StatusCode != 200 {
 		if resp.StatusCode == 429 {
 			a.readBudget.noteRateLimit(resp.Header.Get("Retry-After"))

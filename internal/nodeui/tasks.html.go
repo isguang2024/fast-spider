@@ -57,13 +57,13 @@ const taskCenterHTML = `<!doctype html>
   function value(value,fallback) { return value === undefined || value === null || String(value).trim() === '' ? (fallback || '—') : String(value); }
   function statusText(raw) {
     const key=String(raw || '').toLowerCase();
-    return ({pending:'排队中',queued:'排队中',running:'执行中',in_progress:'执行中',working:'执行中',complete:'已完成',completed:'已完成',business_complete:'业务已完成',business_complete_pending:'业务已完成 · 待处理事项',success:'已完成',failed:'失败',failure:'失败',error:'错误',blocked:'已阻塞',waiting:'等待中',needs_decision:'需要决定',waiting_input:'等待输入',paused:'已暂停',canceling:'取消中',cancelled:'已取消',canceled:'已取消',planned:'规划中',planning:'规划中',idle:'待处理',ready:'待开始',prepared:'已准备',active:'执行中',dispatched:'已派发',returned:'已返回待验收',accepted:'已验收',deferred:'已延后',checking:'检查中',rejected:'派发被拒绝'})[key] || value(raw,'未知');
+    return ({pending:'排队中',queued:'排队中',running:'执行中',in_progress:'执行中',working:'执行中',complete:'已完成',completed:'已完成',business_complete:'业务已完成',business_complete_pending:'业务已完成 · 待处理事项',success:'已完成',failed:'失败',failure:'失败',error:'错误',blocked:'已阻塞',waiting:'等待中',needs_decision:'需要决定',waiting_input:'等待输入',needs_recovery:'待恢复',awaiting_review:'待验收',paused:'已暂停',canceling:'取消中',cancelled:'已取消',canceled:'已取消',planned:'规划中',planning:'规划中',idle:'待处理',ready:'待开始',prepared:'已准备',active:'执行中',dispatched:'已派发',returned:'已返回待验收',accepted:'已验收',deferred:'已延后',checking:'检查中',rejected:'派发被拒绝'})[key] || value(raw,'未知');
   }
   function statusClass(raw) {
     const key=String(raw || '').toLowerCase();
     if(['complete','completed','business_complete','success','accepted'].includes(key)) return 'state-ok';
     if(['failed','failure','error','blocked','rejected'].includes(key)) return 'state-bad';
-    if(['running','in_progress','working','active','prepared','returned','checking','needs_decision','waiting_input','waiting','paused','deferred','canceling','business_complete_pending'].includes(key)) return 'state-warn';
+    if(['running','in_progress','working','active','prepared','returned','checking','needs_decision','waiting_input','needs_recovery','awaiting_review','waiting','paused','deferred','canceling','business_complete_pending'].includes(key)) return 'state-warn';
     if(['planned','planning','planner','plan'].includes(key)) return 'state-planner';
     if(['pending','queued','ready','dispatched'].includes(key)) return 'state-info';
     return 'state-muted';
@@ -104,7 +104,8 @@ const taskCenterHTML = `<!doctype html>
     const tasks=item && Array.isArray(item.tasks) ? item.tasks : [];
     if(tasks.some(task => ['failed','failure','error','blocked','rejected'].includes(String(task.state || '').toLowerCase()))) return 'failed';
     if(tasks.some(task => ['active','prepared','running','in_progress','working'].includes(String(task.state || '').toLowerCase()))) return 'running';
-    if(tasks.some(task => ['returned','checking'].includes(String(task.state || '').toLowerCase()))) return 'checking';
+    if(tasks.some(task => String(task.state || '').toLowerCase() === 'checking')) return 'checking';
+    if(tasks.some(task => String(task.state || '').toLowerCase() === 'returned')) return 'awaiting_review';
     return tasks.length ? 'pending' : 'planned';
   }
   function progress(item) {

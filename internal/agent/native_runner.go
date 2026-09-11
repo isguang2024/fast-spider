@@ -123,6 +123,8 @@ type nativeRunnerAttempt struct {
 	Request       *nativeRunnerDispatch      `json:"request,omitempty"`
 }
 type nativeRunnerTask struct {
+	WaitFor          *nativeRunnerWaitFor              `json:"waitFor,omitempty"`
+	WaitReview       *nativeRunnerWaitReview           `json:"waitReview,omitempty"`
 	Recovery         *nativeRunnerRecovery             `json:"recovery,omitempty"`
 	ID               string                            `json:"id"`
 	ProjectID        string                            `json:"projectId"`
@@ -1365,6 +1367,17 @@ func (r *nativeRunner) tickProject(ctx context.Context, id string, global *[]nat
 	if err != nil {
 		return err
 	}
+	var waitGlobal []nativeRunnerTask
+	if global != nil {
+		waitGlobal = *global
+	}
+	if err = r.reviewDeferredWaits(ctx, &p, tasks, waitGlobal); err != nil {
+		return err
+	}
+	p, tasks, err = r.read(ctx, id)
+	if err != nil {
+		return err
+	}
 	if err = r.ensurePlanner(ctx, &p, tasks); err != nil {
 		return err
 	}
@@ -1870,10 +1883,17 @@ func (r *nativeRunner) compile(p nativeRunnerProject, t nativeRunnerTask, tasks 
 	return req, nil
 }
 
-const nativePlanContract = `{"goalVersion":"exact current version","revision":0,"summary":"grounded reasoning","actions":[{"taskId":"existing ID","round":1,"action":"keep|accept|retry|defer|revise|revalidate|redirect|cancel|prioritize","reason":"new approach or evidence","evidence":["file/check reference"],"rotate":false,"resumeAt":0,"objective":"revise only","acceptance":"revise only","scope":"revise only","priority":0,"context":[],"after":[]}],"blocks":[{"key":"stable semantic key","parent":"large-task name or ID","title":"independent block","objective":"complete block including own tests and fixes","acceptance":"observable outcome","scope":"project-relative directory or empty for read-only","context":[],"after":["existing ID or new block key"],"checks":["configured check name"],"estimatedMinutes":15}],"goalComplete":false,"completionEvidence":[],"userQuestions":[]}. Every plan must advance work, resolve a branch or identify a real external question. goalComplete requires all non-cancelled blocks accepted for this revision and final integration evidence. defer needs a precise external event or future Unix resumeAt; it never blocks independent work. revise only unsent blocks; redirect must carry a validated target; cancelled targets cannot be retried, revised or accepted.`
+const nativePlanContract = `{"goalVersion":"exact current version","revision":0,"summary":"grounded reasoning","actions":[{"taskId":"existing ID","round":1,"action":"keep|accept|retry|defer|revise|revalidate|redirect|cancel|prioritize","reason":"new approach or evidence","evidence":["file/check reference"],"rotate":false,"resumeAt":0,"waitFor":{"taskIds":[],"paths":[]},"objective":"revise only","acceptance":"revise only","scope":"revise only","priority":0,"context":[],"after":[]}],"blocks":[{"key":"stable semantic key","parent":"large-task name or ID","title":"independent block","objective":"complete block including own tests and fixes","acceptance":"observable outcome","scope":"project-relative directory or empty for read-only","context":[],"after":["existing ID or new block key"],"checks":["configured check name"],"estimatedMinutes":15}],"goalComplete":false,"completionEvidence":[],"userQuestions":[]}. Every plan must advance work, resolve a branch or identify a real external question. goalComplete requires all non-cancelled blocks accepted for this revision and final integration evidence. defer should provide machine-checkable waitFor.taskIds or waitFor.paths, or future Unix resumeAt; Git modified alone is not evidence of a live writer; it never blocks independent work. revise only unsent blocks; redirect must carry a validated target; cancelled targets cannot be retried, revised or accepted.`
 
 func nativeBasis(t nativeRunnerTask) string {
-	return nativeHash([]any{t.Round, t.GoalVersion, t.PlanRevision, t.Priority, t.State, t.Objective, t.Acceptance, t.Scope, t.Context, t.After, t.AcceptedVersion, t.Result, t.Validations, t.Cancellation, t.DeferredReason, t.ResumeAt, t.Observation, t.LastError})
+	basis := []any{t.Round, t.GoalVersion, t.PlanRevision, t.Priority, t.State, t.Objective, t.Acceptance, t.Scope, t.Context, t.After, t.AcceptedVersion, t.Result, t.Validations, t.Cancellation, t.DeferredReason, t.ResumeAt, t.Observation, t.LastError}
+	if t.WaitFor != nil {
+		basis = append(basis, t.WaitFor)
+	}
+	if t.WaitReview != nil && t.WaitReview.Reviewed {
+		basis = append(basis, t.WaitReview.Fingerprint)
+	}
+	return nativeHash(basis)
 }
 func (r *nativeRunner) ensurePlanner(ctx context.Context, p *nativeRunnerProject, tasks []nativeRunnerTask) error {
 	if p.Paused || p.Archived || p.State == "canceling" || p.State == "cancelled" || p.NextPlanAt > r.now().Unix() {
@@ -1909,7 +1929,7 @@ func (r *nativeRunner) ensurePlanner(ctx context.Context, p *nativeRunnerProject
 		count++
 		basis[t.ID] = nativeBasis(t)
 		allDone = allDone && t.State == "accepted"
-		if (t.State == "returned" && !nativeChecking(t)) || t.GoalVersion != p.GoalVersion || t.LastError != "" || t.Observation != "" || (t.State == "deferred" && t.ResumeAt > 0 && t.ResumeAt <= r.now().Unix()) {
+		if (t.State == "deferred" && t.WaitReview != nil && t.WaitReview.Reviewed) || (t.State == "returned" && !nativeChecking(t)) || t.GoalVersion != p.GoalVersion || t.LastError != "" || t.Observation != "" || (t.State == "deferred" && t.ResumeAt > 0 && t.ResumeAt <= r.now().Unix()) {
 			needed = true
 		}
 		if t.State == "deferred" && t.ResumeAt > 0 && t.ResumeAt <= r.now().Unix() {
@@ -1941,6 +1961,7 @@ func (r *nativeRunner) ensurePlanner(ctx context.Context, p *nativeRunnerProject
 }
 
 type nativeRunnerPlanAction struct {
+	WaitFor    *nativeRunnerWaitFor    `json:"waitFor,omitempty"`
 	TaskID     string                  `json:"taskId"`
 	Round      int                     `json:"round"`
 	Action     string                  `json:"action"`
@@ -2216,6 +2237,16 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 			}
 			if a.ResumeAt != 0 && a.ResumeAt <= r.now().Unix() {
 				return errors.New("resumeAt must be a future deadline")
+			}
+			if a.WaitFor != nil {
+				condition := *a.WaitFor
+				if err = nativeValidateWaitFor(p, &condition, keys); err != nil {
+					return err
+				}
+				if nativeHash(t.WaitFor) != nativeHash(&condition) {
+					t.WaitReview = nil
+				}
+				t.WaitFor = &condition
 			}
 			t.State = "deferred"
 			t.DeferredReason = a.Reason
