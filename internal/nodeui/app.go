@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/isguang2024/fast-spider/hostapi"
 	"github.com/isguang2024/fast-spider/internal/agent"
 	"github.com/isguang2024/fast-spider/internal/componentmgr"
 	"github.com/isguang2024/fast-spider/internal/localbridge"
@@ -34,11 +35,14 @@ const (
 )
 
 type Options struct {
-	DataDir      string
-	Version      string
-	MachineName  string
-	NoOpenWindow bool
-	Logger       *slog.Logger
+	DataDir          string
+	Version          string
+	MachineName      string
+	NoOpenWindow     bool
+	Logger           *slog.Logger
+	Agent            hostapi.AgentController
+	AgentCallerOwned bool
+	UISurfaces       []hostapi.UISurface
 }
 
 type App struct {
@@ -63,6 +67,8 @@ type App struct {
 	trayActive          bool
 	openFolder          func(string) error
 	agentController     node.AgentController
+	agentCallerOwned    bool
+	uiSurfaces          []hostapi.UISurface
 	componentEnsure     componentEnsureFunc
 	operationLog        *operationlog.Store
 }
@@ -145,22 +151,33 @@ func New(opts Options) (*App, error) {
 	if err != nil {
 		opts.Logger.Warn("operation log store unavailable", "error", err)
 	}
-	agentController := agent.New(opts.DataDir, opts.Logger)
-	agentController.SetChatGPTCloudCreateDefaults(cfg.ChatGPTDefaultConfigurationMode, cfg.ChatGPTDefaultCreateMode, cfg.ChatGPTDefaultModel, cfg.ChatGPTDefaultThinking)
+	var agentController node.AgentController
+	if opts.Agent != nil {
+		agentController = opts.Agent
+	} else {
+		manager := agent.New(opts.DataDir, opts.Logger)
+		manager.SetChatGPTCloudCreateDefaults(cfg.ChatGPTDefaultConfigurationMode, cfg.ChatGPTDefaultCreateMode, cfg.ChatGPTDefaultModel, cfg.ChatGPTDefaultThinking)
+		agentController = manager
+	}
 	return &App{
-		opts:            opts,
-		config:          cfg,
-		uiToken:         uiToken,
-		runtimeStatus:   "stopped",
-		openFolder:      openLocalFolder,
-		agentController: agentController,
-		componentEnsure: componentmgr.Ensure,
-		operationLog:    opLog,
+		opts:             opts,
+		config:           cfg,
+		uiToken:          uiToken,
+		runtimeStatus:    "stopped",
+		openFolder:       openLocalFolder,
+		agentController:  agentController,
+		agentCallerOwned: opts.AgentCallerOwned,
+		uiSurfaces:       append([]hostapi.UISurface(nil), opts.UISurfaces...),
+		componentEnsure:  componentmgr.Ensure,
+		operationLog:     opLog,
 	}, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
 	defer func() {
+		if a.agentCallerOwned {
+			return
+		}
 		closeCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		if a.agentController != nil {
@@ -326,6 +343,14 @@ func (a *App) handler() http.Handler {
 	mux.HandleFunc("GET /api/operation-logs/cleanup", a.apiOnly(methodNotAllowed))
 	mux.HandleFunc("GET /api/operation-logs/stats", a.apiOnly(a.handleOperationLogsStats))
 	mux.HandleFunc("POST /api/operation-logs/stats", a.apiOnly(methodNotAllowed))
+	for _, surface := range a.uiSurfaces {
+		if surface == nil {
+			continue
+		}
+		if err := surface.RegisterUI(mux, hostapi.UISurfaceContext{DataDir: a.opts.DataDir, Version: a.opts.Version, APIOnly: a.apiOnly}); err != nil {
+			a.opts.Logger.Error("register Node UI extension surface failed", "error", err)
+		}
+	}
 	var handler http.Handler = mux
 	handler = a.logOperation(handler)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

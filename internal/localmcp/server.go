@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/isguang2024/fast-spider/hostapi"
 	"github.com/isguang2024/fast-spider/internal/localbridge"
 	"github.com/isguang2024/fast-spider/internal/node"
 	protocolv1 "github.com/isguang2024/fast-spider/internal/protocol/v1"
@@ -51,10 +52,22 @@ type bridgeCaller func(context.Context, string, protocolv1.CapabilityRequest) (p
 // current-user Local Bridge. It does not create another Node or capability
 // engine and does not connect to the Hub.
 func New(dataDir, version string, logger *slog.Logger) *mcp.Server {
-	return newServer(dataDir, version, logger, localbridge.Call)
+	server, _ := newServerWithSurfaces(dataDir, version, logger, localbridge.Call, nil)
+	return server
+}
+
+// NewWithSurfaces registers optional cross-module MCP surfaces while keeping the
+// existing local Bridge as the only capability transport.
+func NewWithSurfaces(dataDir, version string, logger *slog.Logger, surfaces []hostapi.MCPSurface) (*mcp.Server, error) {
+	return newServerWithSurfaces(dataDir, version, logger, localbridge.Call, surfaces)
 }
 
 func newServer(dataDir, version string, logger *slog.Logger, call bridgeCaller) *mcp.Server {
+	server, _ := newServerWithSurfaces(dataDir, version, logger, call, nil)
+	return server
+}
+
+func newServerWithSurfaces(dataDir, version string, logger *slog.Logger, call bridgeCaller, surfaces []hostapi.MCPSurface) (*mcp.Server, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -122,13 +135,41 @@ func newServer(dataDir, version string, logger *slog.Logger, call bridgeCaller) 
 		return emptyResult(), capabilityCallOutput{RequestID: response.RequestId, TraceID: response.TraceId, Result: response.Result}, nil
 	})
 
-	return server
+	caller := hostapi.CapabilityCallFunc(func(ctx context.Context, capability, action string, params map[string]any) (map[string]any, error) {
+		response, err := call(ctx, dataDir, protocolv1.CapabilityRequest{Capability: capability, Action: action, Params: params})
+		if err != nil {
+			return nil, err
+		}
+		if response.Error != nil {
+			return nil, fmt.Errorf("%s: %s", response.Error.Code, response.Error.Message)
+		}
+		return response.Result, nil
+	})
+	for _, surface := range surfaces {
+		if surface == nil {
+			continue
+		}
+		if err := surface.RegisterMCP(server, hostapi.MCPSurfaceContext{DataDir: dataDir, Version: version, Capabilities: caller}); err != nil {
+			return nil, err
+		}
+	}
+	return server, nil
 }
 
 // Run serves the local MCP connection over stdin/stdout. All logs must use
 // stderr so stdout remains a valid MCP JSONL stream.
 func Run(ctx context.Context, dataDir, version string, logger *slog.Logger) error {
 	return New(dataDir, version, logger).Run(ctx, &mcp.StdioTransport{})
+}
+
+// RunWithSurfaces serves the local MCP transport with optional specialized
+// tools registered into the same process.
+func RunWithSurfaces(ctx context.Context, dataDir, version string, logger *slog.Logger, surfaces []hostapi.MCPSurface) error {
+	server, err := NewWithSurfaces(dataDir, version, logger, surfaces)
+	if err != nil {
+		return err
+	}
+	return server.Run(ctx, &mcp.StdioTransport{})
 }
 
 func emptyResult() *mcp.CallToolResult {

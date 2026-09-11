@@ -1,21 +1,17 @@
 package node
 
 import (
-	"context"
 	"errors"
+
+	"github.com/isguang2024/fast-spider/hostapi"
 )
 
-// AgentController is the narrow provider boundary used by the Node capability
-// dispatcher. The provider implementation lives outside this package.
-type AgentController interface {
-	Control(context.Context, string, map[string]any) (map[string]any, error)
-	Close(context.Context) error
-}
+// AgentController remains as an internal alias for source compatibility. The
+// cross-module contract lives in hostapi so a specialized module never imports
+// an internal package.
+type AgentController = hostapi.AgentController
 
-type AgentCapabilityError interface {
-	error
-	CapabilityError() (code, message string, retryable bool)
-}
+type AgentCapabilityError = hostapi.CapabilityError
 
 var (
 	ErrAgentProviderUnavailable = errors.New("agent provider unavailable")

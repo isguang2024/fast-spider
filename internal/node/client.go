@@ -124,23 +124,7 @@ func New(cfg Config) (*Client, error) {
 		projectPolicy:  projectPolicy,
 	}
 	client.browser = NewBrowserManager(cfg.DataDir, cfg.BrowserSidecarDir, cfg.Logger)
-	if setter, ok := cfg.Agent.(interface{ SetCloudResultPublisher(any) }); ok {
-		setter.SetCloudResultPublisher(client)
-	}
-	if setter, ok := cfg.Agent.(interface{ SetNativeRunnerJobExecutor(any) }); ok {
-		setter.SetNativeRunnerJobExecutor(NewNativeRunnerJobExecutor(client.jobs))
-	}
-	if setter, ok := cfg.Agent.(interface {
-		SetNativeRunnerMachineIDProvider(func() (string, error))
-	}); ok {
-		setter.SetNativeRunnerMachineIDProvider(func() (string, error) {
-			state, err := client.State()
-			if err != nil {
-				return "", err
-			}
-			return state.MachineID, nil
-		})
-	}
+	client.bindAgentHost()
 
 	return client, nil
 }

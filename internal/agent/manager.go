@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/isguang2024/fast-spider/hostapi"
 	"github.com/isguang2024/fast-spider/internal/node"
 )
 
@@ -150,6 +151,18 @@ type AgentManager struct {
 	chatgptDefaults   chatGPTCloudCreateDefaults
 	readinessMu       sync.Mutex
 	readinessCache    map[string]providerReadinessCacheEntry
+}
+
+// BindHost is the typed public composition boundary used by an external Node
+// host. The legacy setters remain below so old in-repository assembly keeps the
+// same behavior while migration proceeds.
+func (m *AgentManager) BindHost(bindings hostapi.HostBindings) {
+	if m == nil {
+		return
+	}
+	m.SetCloudResultPublisher(bindings.ResultPublisher)
+	m.SetNativeRunnerJobExecutor(bindings.JobExecutor)
+	m.SetNativeRunnerMachineIDProvider(bindings.MachineID)
 }
 
 // SetCloudResultPublisher connects the Cloud callback path to the Node's

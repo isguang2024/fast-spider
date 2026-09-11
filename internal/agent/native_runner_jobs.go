@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/isguang2024/fast-spider/internal/node"
+	"github.com/isguang2024/fast-spider/hostapi"
 )
 
 const (
@@ -20,16 +20,11 @@ const (
 	maxNativeRunnerJobArgTotal = 64 << 10
 )
 
-// The Node JobManager is the only durable authority for check jobs. These
-// aliases keep the agent validation contract source-compatible with the Node
-// executor without creating a second idempotency or process ledger.
-type nativeRunnerJobSpec = node.NativeRunnerJobSpec
-type nativeRunnerJobSnapshot = node.NativeRunnerJobSnapshot
-
-type nativeRunnerJobExecutor interface {
-	Start(context.Context, node.NativeRunnerJobSpec) (node.NativeRunnerJobSnapshot, error)
-	Watch(context.Context, string) (node.NativeRunnerJobSnapshot, error)
-}
+// The Node JobManager is the only durable authority for check jobs. The public
+// hostapi contract keeps the specialized runner independent of internal/node.
+type nativeRunnerJobSpec = hostapi.NativeRunnerJobSpec
+type nativeRunnerJobSnapshot = hostapi.NativeRunnerJobSnapshot
+type nativeRunnerJobExecutor = hostapi.NativeRunnerJobExecutor
 
 type nativeRunnerJobs struct {
 	executor nativeRunnerJobExecutor

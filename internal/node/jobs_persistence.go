@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/isguang2024/fast-spider/hostapi"
 )
 
 // persistedJobRecord is deliberately limited to data needed to reconstruct a
@@ -329,25 +331,10 @@ func (m *JobManager) persistJob(job *Job) error {
 	return m.store.replace(records)
 }
 
-// NativeRunnerJobSpec is the stable Node-facing execution contract used by
-// the agent adapter. It keeps executionRuntime private while allowing the
-// native runner to reuse JobManager's process and timeout implementation.
-type NativeRunnerJobSpec struct {
-	Cwd            string
-	Argv           []string
-	Runtime        string
-	Timeout        time.Duration
-	IdempotencyKey string
-}
-
-type NativeRunnerJobSnapshot struct {
-	JobID    string
-	Runtime  string
-	State    string
-	ExitCode *int
-	Error    string
-	Evidence string
-}
+// NativeRunnerJobSpec and NativeRunnerJobSnapshot remain as aliases for source
+// compatibility. Their cross-module definitions live in hostapi.
+type NativeRunnerJobSpec = hostapi.NativeRunnerJobSpec
+type NativeRunnerJobSnapshot = hostapi.NativeRunnerJobSnapshot
 
 type NativeRunnerJobExecutor struct{ manager *JobManager }
 
