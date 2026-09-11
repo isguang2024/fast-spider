@@ -131,6 +131,55 @@ func TestTaskCenterPageRendersQueueWorkspaceAndArtifactFields(t *testing.T) {
 	}
 }
 
+func TestTaskCenterPageRendersBackendPresentationStages(t *testing.T) {
+	a := &App{opts: Options{Version: "test"}, uiToken: "task-token"}
+	w := httptest.NewRecorder()
+	a.handleTaskCenter(w, httptest.NewRequest(http.MethodGet, "/tasks", nil))
+	body := w.Body.String()
+	for _, want := range []string{
+		"presentation",
+		"presentationLabel",
+		"presentationSummary",
+		"当前阶段",
+		"阶段开始",
+		"下一处理时间",
+		"负责验收任务",
+		"负责会话",
+		"waiting_dependency",
+		"waiting_artifact",
+		"waiting_scope",
+		"waiting_capacity",
+		"retry_wait",
+		"pending_plan",
+		"workspace_preparing",
+		"dispatching",
+		"executing",
+		"waiting_job",
+		"recovering",
+		"report_missing",
+		"checks_queued",
+		"checks_running",
+		"checks_failed",
+		"validating_commit",
+		"review_queued",
+		"reviewing",
+		"review_applying",
+		"review_retry",
+		"needs_fix",
+		"awaiting_integration",
+		"integrating",
+		"accepted",
+		"deferred",
+		"canceling",
+		"cancelled",
+		"returned:'已返回'",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("task page missing %q", want)
+		}
+	}
+}
+
 func TestTaskCenterActionsAllowlistAuthAndForwarding(t *testing.T) {
 	agent := &taskActionTestAgent{}
 	a := &App{opts: Options{DataDir: t.TempDir()}, uiToken: "task-token", agentController: agent}

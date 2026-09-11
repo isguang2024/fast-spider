@@ -84,6 +84,8 @@ func nativeCompilePacket(p nativeRunnerProject, t nativeRunnerTask, tasks []nati
 	packet["blocks"] = blocks
 	packet["configuredChecks"] = p.Checks
 	packet["outputContract"] = nativePlanContract
+	packet["reviewTargets"] = t.ReviewTargets
+	packet["reviewProtocol"] = "Review the assigned reviewTargets using their exact current result/check evidence. Each task record exposes reviewToken; include that token on its plan action. When rereading runner.context, use the newly returned token instead of an old packet snapshot. Ordinary parallel completion is not a reason to redo accepted work. The Node may apply unchanged actions of an acceptance-only batch and defer only changed tasks; structural changes remain atomic. Report concrete acceptance or repair actions promptly, without repeating passed checks unless new changes require them."
 	packet["parallelPlanning"] = "When slots are idle but queued blocks are blocked, review the concrete dependency and writer bottlenecks once per changed evidence set. Plan cohesive blocks, not mechanical steps. Blocks and unsent revise actions may specify requires:[{taskId: existing ID or new block key,key: artifact key,version: exact version}] separately from after (full acceptance). A requirement only makes the published snapshot available, not uncommitted code. Preserve actual final integration dependencies. Use workspace:{mode:worktree} only when isolation brings real parallel value; default shared for read-only/nonconflicting work. Worktrees are allocated lazily at dispatch and reused through repair. Do not move active writers. Worktrees start from committed main; check that needed code is committed or plan a contract-based preparation block. Do not approve a worktree as fully accepted before system integration checks. Integrate divergence is repaired by retrying this same task/branch with a focused rebase and affected checks, not by changing main. Do not ask the user to perform routine conflict resolution. Exact queue reasons and full workspace/output metadata are available via runner.context."
 	packet["historyPlannerCount"] = historyPlannerCount
 	if latestAcceptedPlanner != nil {
@@ -146,6 +148,7 @@ func nativePacketUnfinishedTask(t nativeRunnerTask) map[string]any {
 
 func nativePacketAcceptedIndex(t nativeRunnerTask) map[string]any {
 	item := map[string]any{
+		"reviewToken":     nativeBasis(t),
 		"id":              t.ID,
 		"title":           t.Title,
 		"state":           t.State,
@@ -186,6 +189,7 @@ func nativePacketTaskFields(t nativeRunnerTask) map[string]any {
 	// particular, objective, acceptance, scope, context and checks are never
 	// clipped because they define what the worker is allowed to do.
 	return map[string]any{
+		"reviewToken": nativeBasis(t), "reviewTargets": t.ReviewTargets,
 		"workspace": t.Workspace, "requires": t.Requires, "outputs": t.Outputs,
 		"id":              t.ID,
 		"projectId":       t.ProjectID,

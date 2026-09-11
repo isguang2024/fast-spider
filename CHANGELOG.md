@@ -3,6 +3,18 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.104 - 2026-09-11
+
+- Show evidence-based task phases: queued/running checks, assigned review,
+  review in progress/application/recovery, missing reports and integration.
+- Assign explicit result-review targets to planner sessions and hide normal
+  recovery observation badges on already returned or accepted work.
+- Include current review tokens in task queries and accept actions based on
+  freshly read evidence instead of requiring the original packet snapshot.
+- Apply independent valid actions in acceptance-only batches when another task
+  changes; retain atomic structural plans and refresh stale snapshots without
+  treating ordinary concurrent completion as a minutes-long retry failure.
+
 ## 0.4.103 - 2026-09-11
 
 - Preserve queue explanations when all global dispatch slots are occupied;

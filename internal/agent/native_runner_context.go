@@ -267,7 +267,7 @@ func (r *nativeRunner) queryTask(ctx context.Context, projectID, taskID string) 
 func selectTaskFields(item map[string]any, fields []string) (map[string]any, error) {
 	allowed := map[string]bool{"waitFor": true, "waitReview": true, "objective": true, "acceptance": true, "after": true, "parent": true, "priority": true, "observation": true, "correction": true, "recovery": true, "id": true, "projectId": true, "kind": true, "title": true, "state": true, "round": true, "scope": true, "context": true, "checks": true, "validations": true, "goalVersion": true, "result": true, "lastError": true}
 	out := map[string]any{}
-	for _, field := range []string{"workspace", "requires", "outputs", "queueReason"} {
+	for _, field := range []string{"workspace", "requires", "outputs", "queueReason", "reviewToken", "reviewTargets"} {
 		allowed[field] = true
 	}
 	for _, field := range fields {

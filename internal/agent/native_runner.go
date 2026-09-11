@@ -123,6 +123,7 @@ type nativeRunnerAttempt struct {
 	Request       *nativeRunnerDispatch      `json:"request,omitempty"`
 }
 type nativeRunnerTask struct {
+	ReviewTargets    []string                          `json:"reviewTargets,omitempty"`
 	Workspace        *nativeRunnerWorkspace            `json:"workspace,omitempty"`
 	Requires         []nativeRunnerRequirement         `json:"requires,omitempty"`
 	Outputs          []nativeRunnerOutput              `json:"outputs,omitempty"`
@@ -627,7 +628,7 @@ func (r *nativeRunner) Handle(ctx context.Context, action string, params map[str
 		if input.TaskID != "" {
 			for _, t := range tasks {
 				if t.ID == input.TaskID {
-					return map[string]any{"task": t, "scheduling": schedulingView}, nil
+					return map[string]any{"task": t, "scheduling": schedulingView, "presentation": nativeTaskPresentation(p, t, tasks, scheduling.QueueReasons[t.ID], r.now().Unix())}, nil
 				}
 			}
 			return nil, errors.New("task not found")
@@ -645,6 +646,7 @@ func (r *nativeRunner) Handle(ctx context.Context, action string, params map[str
 				}
 			}
 			item := nativeTaskBrief(t)
+			item["presentation"] = nativeTaskPresentation(p, t, tasks, scheduling.QueueReasons[t.ID], r.now().Unix())
 			brief = append(brief, item)
 			if t.Kind != "planner" {
 				group := t.Parent
@@ -1171,6 +1173,9 @@ func (r *nativeRunner) fail(ctx context.Context, t *nativeRunnerTask, err error)
 func (r *nativeRunner) tickProject(ctx context.Context, id string, global *[]nativeRunnerTask, projects []nativeRunnerProject, quota ...int) error {
 	p, tasks, err := r.read(ctx, id)
 	if err != nil {
+		return err
+	}
+	if err = r.refreshStalePlannerQueue(ctx, p, tasks); err != nil {
 		return err
 	}
 	if err = r.tickLifecycle(ctx, p, tasks); err != nil {
@@ -1742,6 +1747,18 @@ func (r *nativeRunner) dispatch(ctx context.Context, p nativeRunnerProject, task
 			}
 			continue
 		}
+		if t.Kind == "planner" {
+			t.Basis = map[string]string{}
+			for _, block := range tasks {
+				if block.Kind != "planner" {
+					t.Basis[block.ID] = nativeBasis(block)
+				}
+			}
+			t.ReviewTargets = nativePlannerReviewTargets(tasks)
+			if len(t.ReviewTargets) > 0 {
+				t.Title = "结果验收与后续规划"
+			}
+		}
 		req, err := r.compile(p, t, tasks)
 		if err != nil {
 			r.fail(ctx, &t, err)
@@ -1965,7 +1982,7 @@ func (r *nativeRunner) compile(p nativeRunnerProject, t nativeRunnerTask, tasks 
 	return req, nil
 }
 
-const nativePlanContract = `{"goalVersion":"exact current version","revision":0,"summary":"grounded reasoning","actions":[{"taskId":"existing ID","round":1,"action":"keep|accept|retry|defer|revise|revalidate|redirect|cancel|prioritize","reason":"new approach or evidence","evidence":["file/check reference"],"rotate":false,"resumeAt":0,"waitFor":{"taskIds":[],"paths":[]},"objective":"revise only","acceptance":"revise only","scope":"revise only","priority":0,"context":[],"after":[]}],"blocks":[{"key":"stable semantic key","parent":"large-task name or ID","title":"independent block","objective":"complete block including own tests and fixes","acceptance":"observable outcome","scope":"project-relative directory or empty for read-only","context":[],"after":["existing ID or new block key"],"checks":["configured check name"],"estimatedMinutes":15}],"goalComplete":false,"completionEvidence":[],"userQuestions":[]}. Every plan must advance work, resolve a branch or identify a real external question. goalComplete requires all non-cancelled blocks accepted for this revision and final integration evidence. defer should provide machine-checkable waitFor.taskIds or waitFor.paths, or future Unix resumeAt; Git modified alone is not evidence of a live writer; it never blocks independent work. revise only unsent blocks; redirect must carry a validated target; cancelled targets cannot be retried, revised or accepted.`
+const nativePlanContract = `{"goalVersion":"exact current version","revision":0,"summary":"grounded reasoning","actions":[{"taskId":"existing ID","round":1,"reviewToken":"current task record token","action":"keep|accept|retry|defer|revise|revalidate|redirect|cancel|prioritize","reason":"new approach or evidence","evidence":["file/check reference"],"rotate":false,"resumeAt":0,"waitFor":{"taskIds":[],"paths":[]},"objective":"revise only","acceptance":"revise only","scope":"revise only","priority":0,"context":[],"after":[]}],"blocks":[{"key":"stable semantic key","parent":"large-task name or ID","title":"independent block","objective":"complete block including own tests and fixes","acceptance":"observable outcome","scope":"project-relative directory or empty for read-only","context":[],"after":["existing ID or new block key"],"checks":["configured check name"],"estimatedMinutes":15}],"goalComplete":false,"completionEvidence":[],"userQuestions":[]}. Every plan must advance work, resolve a branch or identify a real external question. goalComplete requires all non-cancelled blocks accepted for this revision and final integration evidence. defer should provide machine-checkable waitFor.taskIds or waitFor.paths, or future Unix resumeAt; Git modified alone is not evidence of a live writer; it never blocks independent work. revise only unsent blocks; redirect must carry a validated target; cancelled targets cannot be retried, revised or accepted.`
 
 func nativeBasis(t nativeRunnerTask) string {
 	basis := []any{t.Round, t.GoalVersion, t.PlanRevision, t.Priority, t.State, t.Objective, t.Acceptance, t.Scope, t.Context, t.After, t.AcceptedVersion, t.Result, t.Validations, t.Cancellation, t.DeferredReason, t.ResumeAt, t.Observation, t.LastError}
@@ -2030,6 +2047,10 @@ func (r *nativeRunner) ensurePlanner(ctx context.Context, p *nativeRunnerProject
 		return nil
 	}
 	t := nativeRunnerTask{ID: nativeID(), ProjectID: p.ID, Key: "planner-" + signature, Kind: "planner", Title: "任务块规划与解锁", Objective: "推进整体目标，生成并行任务块、处理返回成果与实际阻塞", Acceptance: "A grounded, executable plan within the current goal", GoalVersion: p.GoalVersion, PlanRevision: p.Revision, Round: 1, State: "queued", Basis: basis, Validations: map[string]nativeRunnerValidation{}}
+	t.ReviewTargets = nativePlannerReviewTargets(tasks)
+	if len(t.ReviewTargets) > 0 {
+		t.Title = "结果验收与后续规划"
+	}
 	p.PlanBasis = signature
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2049,23 +2070,24 @@ func (r *nativeRunner) ensurePlanner(ctx context.Context, p *nativeRunnerProject
 }
 
 type nativeRunnerPlanAction struct {
-	Workspace  *nativeRunnerWorkspace     `json:"workspace,omitempty"`
-	Requires   *[]nativeRunnerRequirement `json:"requires,omitempty"`
-	WaitFor    *nativeRunnerWaitFor       `json:"waitFor,omitempty"`
-	TaskID     string                     `json:"taskId"`
-	Round      int                        `json:"round"`
-	Action     string                     `json:"action"`
-	Reason     string                     `json:"reason"`
-	Evidence   []string                   `json:"evidence"`
-	Rotate     bool                       `json:"rotate"`
-	ResumeAt   int64                      `json:"resumeAt"`
-	Objective  string                     `json:"objective"`
-	Acceptance string                     `json:"acceptance"`
-	Scope      string                     `json:"scope"`
-	Priority   int                        `json:"priority"`
-	Target     *nativeRunnerTaskUpdate    `json:"target,omitempty"`
-	Context    *[]string                  `json:"context,omitempty"`
-	After      *[]string                  `json:"after,omitempty"`
+	ReviewToken string                     `json:"reviewToken,omitempty"`
+	Workspace   *nativeRunnerWorkspace     `json:"workspace,omitempty"`
+	Requires    *[]nativeRunnerRequirement `json:"requires,omitempty"`
+	WaitFor     *nativeRunnerWaitFor       `json:"waitFor,omitempty"`
+	TaskID      string                     `json:"taskId"`
+	Round       int                        `json:"round"`
+	Action      string                     `json:"action"`
+	Reason      string                     `json:"reason"`
+	Evidence    []string                   `json:"evidence"`
+	Rotate      bool                       `json:"rotate"`
+	ResumeAt    int64                      `json:"resumeAt"`
+	Objective   string                     `json:"objective"`
+	Acceptance  string                     `json:"acceptance"`
+	Scope       string                     `json:"scope"`
+	Priority    int                        `json:"priority"`
+	Target      *nativeRunnerTaskUpdate    `json:"target,omitempty"`
+	Context     *[]string                  `json:"context,omitempty"`
+	After       *[]string                  `json:"after,omitempty"`
 }
 type nativeRunnerPlan struct {
 	GoalVersion        string                   `json:"goalVersion"`
@@ -2119,6 +2141,7 @@ func (r *nativeRunner) applyPlanner(ctx context.Context, p nativeRunnerProject, 
 			t.Basis[current.ID] = nativeBasis(current)
 		}
 	}
+	t.ReviewTargets = nativePlannerReviewTargets(currentTasks)
 	t.History = append(t.History, nativeRunnerAttempt{Round: t.Round, GoalVersion: t.GoalVersion, Request: t.Request, Receipt: t.Receipt, Result: t.Result, Correction: previous, Acked: t.ResultAcked})
 	t.Round++
 	t.StartedAt = 0
@@ -2131,6 +2154,12 @@ func (r *nativeRunner) applyPlanner(ctx context.Context, p nativeRunnerProject, 
 	t.Rotate = previous == t.Correction
 	t.NextAt = r.now().Add(time.Duration(min(t.Round, 30)) * time.Minute).Unix()
 	t.LastError = err.Error()
+	if errors.Is(err, errNativePlanEvidenceChanged) {
+		t.Rotate = false
+		t.NextAt = 0
+		t.LastError = ""
+		t.Correction = "Parallel evidence moved while planning. Refresh only affected tasks through runner.context and include the returned reviewToken on each action. Reuse completed work and passed checks; do not repeat the whole investigation."
+	}
 	return r.saveTask(ctx, t, "plan_repair_scheduled")
 }
 
@@ -2204,14 +2233,25 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 		}
 	}
 	acted := map[string]bool{}
+	skipped := []string{}
+	partialBatch := nativeAcceptanceBatch(plan)
 	for _, a := range plan.Actions {
 		t := byID[a.TaskID]
 		if t == nil || t.Kind == "planner" || acted[a.TaskID] {
 			return errors.New("action must identify one business block once")
 		}
 		acted[a.TaskID] = true
-		if a.Round != t.Round || strings.TrimSuffix(planner.Basis[t.ID], "-due") != nativeBasis(*t) {
-			return errors.New("block evidence changed since planning; refresh the plan")
+		currentBasis := nativeBasis(*t)
+		expectedBasis := strings.TrimSuffix(planner.Basis[t.ID], "-due")
+		if a.ReviewToken != "" {
+			expectedBasis = a.ReviewToken
+		}
+		if a.Round != t.Round || expectedBasis != currentBasis {
+			if !partialBatch {
+				return errNativePlanEvidenceChanged
+			}
+			skipped = append(skipped, t.ID)
+			continue
 		}
 		if strings.TrimSpace(a.Reason) == "" {
 			return errors.New("action requires a concrete reason")
@@ -2499,6 +2539,9 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 		}
 		p.CompleteVersion = p.GoalVersion
 	}
+	if len(skipped) > 0 {
+		plan.UserQuestions = nil
+	}
 	planner.State = "accepted"
 	p.Questions = plan.UserQuestions
 	postBasis := map[string]string{}
@@ -2518,10 +2561,21 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 		}
 	}
 	p.PlannedRevision = plan.Revision
-	p.PendingChanges = nil
+	if len(skipped) == 0 {
+		p.PendingChanges = nil
+	}
 	p.PlanBasis = nativeHash([]any{p.GoalVersion, p.Revision, postBasis, p.PendingChanges})
 	if len(plan.UserQuestions) == 0 && ((allAccepted && !plan.GoalComplete) || unhandled) {
 		p.PlanBasis = ""
+	}
+	if len(skipped) > 0 {
+		p.PlanBasis = ""
+		p.NextPlanAt = 0
+		p.Questions = nil
+		p.Notice = nil
+		if err = r.event(tx, p.ID, "plan_actions_deferred", map[string]any{"taskIds": skipped, "reason": "Only changed task snapshots need another review; independent actions were applied"}); err != nil {
+			return err
+		}
 	}
 	// An unproductive question gets one bounded Cloud self-review before a
 	// user notification. Repeating the same facts then waits, never spins.
@@ -2545,7 +2599,7 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 		p.QuestionReviewBasis = ""
 		p.QuestionReviewPending = false
 	}
-	if !p.QuestionReviewPending && (plan.GoalComplete || len(plan.UserQuestions) > 0) {
+	if len(skipped) == 0 && !p.QuestionReviewPending && (plan.GoalComplete || len(plan.UserQuestions) > 0) {
 		// A rephrased question about the same work state is not a new event.
 		noticeBasis := map[string]string{}
 		for id, task := range byID {

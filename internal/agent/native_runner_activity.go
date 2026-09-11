@@ -7,10 +7,15 @@ func nativeProjectActivity(p nativeRunnerProject, tasks []nativeRunnerTask) (str
 	running, checking, planning, queued := false, false, false, false
 	recovering, awaitingReview := false, false
 	integrating := false
+	reviewing, reviewApplying := false, false
 	for _, t := range tasks {
 		needsRecovery := (nativeHolds(t) && t.Recovery != nil && (t.Recovery.Phase == "uncertain" || t.Recovery.Phase == "continuing")) || (t.State == "returned" && t.Result != nil && (t.Result.Outcome == "blocked" || t.Result.ErrorCode != ""))
 		recovering = recovering || needsRecovery
 		if t.Kind == "planner" {
+			if len(t.ReviewTargets) > 0 {
+				reviewing = reviewing || (t.State == "active" && t.Receipt != nil && !t.Receipt.InDoubt)
+				reviewApplying = reviewApplying || t.State == "returned"
+			}
 			planning = planning || (!needsRecovery && (nativeHolds(t) || t.State == "queued" || t.State == "returned"))
 			continue
 		}
@@ -42,6 +47,12 @@ func nativeProjectActivity(p nativeRunnerProject, tasks []nativeRunnerTask) (str
 	case len(p.Questions) > 0 && !p.QuestionReviewPending:
 		return "waiting_input", businessComplete
 	case planning:
+		if reviewing {
+			return "reviewing", businessComplete
+		}
+		if reviewApplying {
+			return "review_applying", businessComplete
+		}
 		return "planning", businessComplete
 	case awaitingReview:
 		return "awaiting_review", businessComplete

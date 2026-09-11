@@ -108,8 +108,13 @@ func ReadNativeRunnerView(ctx context.Context, dataDir, projectID, taskID string
 	if err != nil {
 		return nil, err
 	}
+	reviewers, err := nativeViewReviewers(ctx, tx, p.ID)
+	if err != nil {
+		return nil, err
+	}
 	return map[string]any{"project": nativeViewProject(p, false), "events": events["events"], "task": map[string]any{
-		"workspace": task.Workspace, "requires": task.Requires, "outputs": task.Outputs, "queueReason": scheduling.QueueReasons[task.ID],
+		"presentation": nativeTaskPresentation(p, task, reviewers, scheduling.QueueReasons[task.ID], time.Now().Unix()),
+		"workspace":    task.Workspace, "requires": task.Requires, "outputs": task.Outputs, "queueReason": scheduling.QueueReasons[task.ID],
 		"id": task.ID, "title": task.Title, "parent": task.Parent, "kind": task.Kind, "state": task.State,
 		"objective": task.Objective, "acceptance": task.Acceptance, "after": task.After, "scope": task.Scope,
 		"context": task.Context, "round": task.Round, "checks": task.Checks, "validations": task.Validations,
@@ -148,6 +153,7 @@ func nativeViewProject(p nativeRunnerProject, detail bool) map[string]any {
 
 func nativeTaskBrief(t nativeRunnerTask) map[string]any {
 	item := map[string]any{"id": t.ID, "parent": t.Parent, "kind": t.Kind, "title": t.Title,
+		"reviewTargets": t.ReviewTargets, "reviewToken": nativeBasis(t),
 		"workspace": t.Workspace, "requires": t.Requires, "outputs": t.Outputs,
 		"state": t.State, "round": t.Round, "after": t.After, "scope": t.Scope, "nextAt": t.NextAt,
 		"reason": t.DeferredReason, "resumeAt": t.ResumeAt, "error": t.LastError, "checks": t.Validations, "waitFor": t.WaitFor, "waitReview": t.WaitReview}
@@ -176,6 +182,27 @@ func nativeRecoveryView(t nativeRunnerTask) any {
 	}
 	s := t.Recovery
 	return map[string]any{"phase": s.Phase, "lastProgressAt": s.LastProgressAt, "nextProbeAt": s.NextProbeAt, "attempts": s.Attempts, "lastError": s.LastError, "checkpoint": s.Checkpoint, "sessionGeneration": t.Round}
+}
+
+func nativeViewReviewers(ctx context.Context, tx *sql.Tx, projectID string) ([]nativeRunnerTask, error) {
+	rows, err := tx.QueryContext(ctx, "SELECT json_remove(value,'$.history','$.request.prompt') FROM runner_tasks WHERE project_id=? AND json_extract(value,'$.kind')='planner' AND json_extract(value,'$.state') IN ('queued','prepared','active','returned')", projectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []nativeRunnerTask{}
+	for rows.Next() {
+		var raw string
+		var task nativeRunnerTask
+		if err = rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal([]byte(raw), &task); err != nil {
+			return nil, err
+		}
+		out = append(out, task)
+	}
+	return out, rows.Err()
 }
 
 func nativeProjectView(ctx context.Context, tx *sql.Tx, p nativeRunnerProject, detail bool) (map[string]any, error) {
@@ -295,6 +322,7 @@ func nativeProjectView(ctx context.Context, tx *sql.Tx, p nativeRunnerProject, d
 	groups := map[string]map[string]int{}
 	for _, t := range tasks {
 		item := nativeTaskBrief(t)
+		item["presentation"] = nativeTaskPresentation(p, t, tasks, scheduling.QueueReasons[t.ID], time.Now().Unix())
 		if at := times[t.ID]; at != "" {
 			item["updatedAt"] = at
 		}
