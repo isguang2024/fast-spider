@@ -3,6 +3,17 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.106 - 2026-09-11
+
+- Automatically archive online CHAT sessions after accepted terminal results and
+  callback acknowledgement, including finished historical generations.
+- Persist independent session closeout state; asynchronous, paced retries honor
+  Retry-After without changing acceptance, review evidence, or execution slots.
+- Preserve ongoing jobs and sessions selected for reuse; unarchive a retained
+  conversation before reusing it. No automatic online conversation deletion.
+- Display online archive progress, errors, and next retry time separately from
+  task execution and acceptance.
+
 ## 0.4.105 - 2026-09-11
 
 - Release a create reservation when Sentinel preparation fails before any

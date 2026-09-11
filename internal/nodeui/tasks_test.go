@@ -180,6 +180,30 @@ func TestTaskCenterPageRendersBackendPresentationStages(t *testing.T) {
 	}
 }
 
+func TestTaskCenterPageRendersSessionCloseout(t *testing.T) {
+	a := &App{opts: Options{Version: "test"}, uiToken: "task-token"}
+	w := httptest.NewRecorder()
+	a.handleTaskCenter(w, httptest.NewRequest(http.MethodGet, "/tasks", nil))
+	body := w.Body.String()
+	for _, want := range []string{
+		"sessionCloseout",
+		"sessionCloseoutItems",
+		"在线会话收尾",
+		"会话待收尾",
+		"会话归档中",
+		"会话收尾重试",
+		"会话已归档",
+		"会话收尾暂缓",
+		"下次处理：",
+		"归档时间：",
+		"item.round",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("task page missing %q", want)
+		}
+	}
+}
+
 func TestTaskCenterActionsAllowlistAuthAndForwarding(t *testing.T) {
 	agent := &taskActionTestAgent{}
 	a := &App{opts: Options{DataDir: t.TempDir()}, uiToken: "task-token", agentController: agent}

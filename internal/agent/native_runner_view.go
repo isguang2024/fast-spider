@@ -113,8 +113,9 @@ func ReadNativeRunnerView(ctx context.Context, dataDir, projectID, taskID string
 		return nil, err
 	}
 	return map[string]any{"project": nativeViewProject(p, false), "events": events["events"], "task": map[string]any{
-		"presentation": nativeTaskPresentation(p, task, reviewers, scheduling.QueueReasons[task.ID], time.Now().Unix()),
-		"workspace":    task.Workspace, "requires": task.Requires, "outputs": task.Outputs, "queueReason": scheduling.QueueReasons[task.ID],
+		"sessionCloseout": task.SessionCloseout,
+		"presentation":    nativeTaskPresentation(p, task, reviewers, scheduling.QueueReasons[task.ID], time.Now().Unix()),
+		"workspace":       task.Workspace, "requires": task.Requires, "outputs": task.Outputs, "queueReason": scheduling.QueueReasons[task.ID],
 		"id": task.ID, "title": task.Title, "parent": task.Parent, "kind": task.Kind, "state": task.State,
 		"objective": task.Objective, "acceptance": task.Acceptance, "after": task.After, "scope": task.Scope,
 		"context": task.Context, "round": task.Round, "checks": task.Checks, "validations": task.Validations,
@@ -153,7 +154,7 @@ func nativeViewProject(p nativeRunnerProject, detail bool) map[string]any {
 
 func nativeTaskBrief(t nativeRunnerTask) map[string]any {
 	item := map[string]any{"id": t.ID, "parent": t.Parent, "kind": t.Kind, "title": t.Title,
-		"reviewTargets": t.ReviewTargets, "reviewToken": nativeBasis(t),
+		"reviewTargets": t.ReviewTargets, "reviewToken": nativeBasis(t), "sessionCloseout": t.SessionCloseout,
 		"workspace": t.Workspace, "requires": t.Requires, "outputs": t.Outputs,
 		"state": t.State, "round": t.Round, "after": t.After, "scope": t.Scope, "nextAt": t.NextAt,
 		"reason": t.DeferredReason, "resumeAt": t.ResumeAt, "error": t.LastError, "checks": t.Validations, "waitFor": t.WaitFor, "waitReview": t.WaitReview}

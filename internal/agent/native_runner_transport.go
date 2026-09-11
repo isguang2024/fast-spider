@@ -118,6 +118,11 @@ func (t *nativeRunnerTransport) Dispatch(ctx context.Context, request nativeRunn
 	if generation < 1 {
 		return nativeRunnerReceipt{}, errors.New("runner round must be positive")
 	}
+	if request.RestoreArchived && request.TargetSessionID != "" {
+		if err := t.manager.chatgptCloud.Archive(ctx, request.TargetSessionID, false); err != nil {
+			return nativeRunnerReceipt{}, err
+		}
+	}
 	taskRef := nativeRunnerTaskRef(request)
 	responseContent, _ := json.Marshal(map[string]any{"taskRef": taskRef, "outcome": "completed", "path": request.ResultPath})
 	machineID := ""

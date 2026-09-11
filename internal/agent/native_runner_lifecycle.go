@@ -232,7 +232,7 @@ func (r *nativeRunner) applyLifecycle(ctx context.Context, p nativeRunnerProject
 	}
 	// Redirect is a new generation of the SAME logical block, retaining every
 	// old callback binding. Late old-generation results cannot complete this one.
-	t.History = append(t.History, nativeRunnerAttempt{Round: t.Round, GoalVersion: t.GoalVersion, Request: t.Request, Receipt: t.Receipt, Result: t.Result, Correction: t.Correction, Acked: t.ResultAcked, Superseded: true, InactiveProof: result.Proof})
+	t.History = append(t.History, nativeRunnerAttempt{CloseoutJobs: nativeCloseoutJobIDs(*t), Round: t.Round, GoalVersion: t.GoalVersion, Request: t.Request, Receipt: t.Receipt, Result: t.Result, Correction: t.Correction, Acked: t.ResultAcked, Superseded: true, InactiveProof: result.Proof})
 	target := cancel.Target
 	t.Round++
 	t.StartedAt = 0

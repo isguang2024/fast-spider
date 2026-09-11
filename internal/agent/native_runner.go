@@ -61,6 +61,7 @@ type nativeRunnerNotice struct {
 	Error               string `json:"error,omitempty"`
 }
 type nativeRunnerDispatch struct {
+	RestoreArchived     bool   `json:"restoreArchived,omitempty"`
 	ProjectID           string `json:"projectId"`
 	TaskID              string `json:"taskId"`
 	Round               int    `json:"round"`
@@ -112,6 +113,7 @@ type nativeRunnerValidation struct {
 	NextAt   int64  `json:"nextAt,omitempty"`
 }
 type nativeRunnerAttempt struct {
+	CloseoutJobs  []string                   `json:"closeoutJobs,omitempty"`
 	Superseded    bool                       `json:"superseded,omitempty"`
 	InactiveProof *nativeRunnerInactiveProof `json:"inactiveProof,omitempty"`
 	Round         int                        `json:"round"`
@@ -123,6 +125,7 @@ type nativeRunnerAttempt struct {
 	Request       *nativeRunnerDispatch      `json:"request,omitempty"`
 }
 type nativeRunnerTask struct {
+	SessionCloseout  []nativeSessionCloseout           `json:"sessionCloseout,omitempty"`
 	ReviewTargets    []string                          `json:"reviewTargets,omitempty"`
 	Workspace        *nativeRunnerWorkspace            `json:"workspace,omitempty"`
 	Requires         []nativeRunnerRequirement         `json:"requires,omitempty"`
@@ -179,6 +182,9 @@ type nativeRunnerBackend interface {
 	Notify(context.Context, nativeRunnerNotice) (string, error)
 }
 type nativeRunner struct {
+	closeoutTask      *nativeRunnerTask
+	closeoutPending   string
+	closeoutNextAt    int64
 	workspaceInFlight map[string]bool
 	workspaceDone     chan nativeWorkspaceCompletion
 	asyncBackend      *nativeRunnerAsyncBackend
@@ -1088,7 +1094,11 @@ func (r *nativeRunner) Tick(ctx context.Context) error {
 			r.logger.Error("native runner dispatch", "project", p.ID, "error", err)
 		}
 	}
-	return nil
+	allTasks, err = r.readAllTasks(ctx)
+	if err != nil {
+		return err
+	}
+	return r.tickSessionCloseout(ctx, allTasks)
 }
 
 func (r *nativeRunner) readAllTasks(ctx context.Context) ([]nativeRunnerTask, error) {
@@ -1704,6 +1714,9 @@ func (r *nativeRunner) dispatch(ctx context.Context, p nativeRunnerProject, task
 		if t.State == "workspace_preparing" || t.Result != nil || t.State == "accepted" || t.State == "deferred" || t.State == "pending_plan" || t.State == "cancelled" || t.Archived || t.GoalVersion != p.GoalVersion || (t.PlanRevision > 0 && t.PlanRevision < p.Revision) || t.NextAt > r.now().Unix() {
 			continue
 		}
+		if r.closeoutTask != nil && r.closeoutTask.ID == t.ID {
+			continue
+		}
 		if len(t.History) > 0 && !t.Rotate {
 			previous := t.History[len(t.History)-1]
 			if nativeHistoryBlocksDispatch(previous) {
@@ -1867,6 +1880,15 @@ func (r *nativeRunner) dispatch(ctx context.Context, p nativeRunnerProject, task
 		}
 		if t.State != "canceling" && t.State != "cancelled" {
 			t.State = "active"
+			for i := range t.SessionCloseout {
+				if t.SessionCloseout[i].SessionID == t.Receipt.SessionID {
+					t.SessionCloseout[i].State = "held"
+					t.SessionCloseout[i].ArchivedAt = 0
+					t.SessionCloseout[i].NextAt = 0
+					t.SessionCloseout[i].LastError = "会话已复用，等待本轮完成"
+					t.SessionCloseout[i].Round = t.Round
+				}
+			}
 		}
 		recovery := r.recoveryState(t)
 		recovery.Phase = "watching"
@@ -1960,6 +1982,11 @@ func (r *nativeRunner) compile(p nativeRunnerProject, t nativeRunnerTask, tasks 
 		previous := t.History[len(t.History)-1]
 		if previous.Receipt != nil && previous.GoalVersion == p.GoalVersion {
 			req.TargetSessionID = previous.Receipt.SessionID
+		}
+	}
+	for _, s := range t.SessionCloseout {
+		if s.SessionID == req.TargetSessionID && (s.State == "archived" || s.State == "archiving") {
+			req.RestoreArchived = true
 		}
 	}
 	packet := nativeCompilePacket(p, t, tasks, resultPath)
@@ -2166,7 +2193,7 @@ func (r *nativeRunner) applyPlanner(ctx context.Context, p nativeRunnerProject, 
 		}
 	}
 	t.ReviewTargets = nativePlannerReviewTargets(currentTasks)
-	t.History = append(t.History, nativeRunnerAttempt{Round: t.Round, GoalVersion: t.GoalVersion, Request: t.Request, Receipt: t.Receipt, Result: t.Result, Correction: previous, Acked: t.ResultAcked})
+	t.History = append(t.History, nativeRunnerAttempt{CloseoutJobs: nativeCloseoutJobIDs(t), Round: t.Round, GoalVersion: t.GoalVersion, Request: t.Request, Receipt: t.Receipt, Result: t.Result, Correction: previous, Acked: t.ResultAcked})
 	t.Round++
 	t.StartedAt = 0
 	t.Request = nil
@@ -2333,7 +2360,7 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 					return errors.New("previously attempted correction")
 				}
 			}
-			t.History = append(t.History, nativeRunnerAttempt{Round: t.Round, GoalVersion: t.GoalVersion, Request: t.Request, Receipt: t.Receipt, Result: t.Result, Correction: t.Correction, Acked: t.ResultAcked})
+			t.History = append(t.History, nativeRunnerAttempt{CloseoutJobs: nativeCloseoutJobIDs(*t), Round: t.Round, GoalVersion: t.GoalVersion, Request: t.Request, Receipt: t.Receipt, Result: t.Result, Correction: t.Correction, Acked: t.ResultAcked})
 			t.Round++
 			t.StartedAt = 0
 			t.Request = nil

@@ -1508,7 +1508,7 @@ func (a *ChatGPTCloudAdapter) Archive(ctx context.Context, conversationID string
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("archive conversation returned %s", resp.Status)
+		return &chatGPTCloudHTTPError{status: resp.StatusCode, retryAfter: resp.Header.Get("Retry-After")}
 	}
 	return nil
 }

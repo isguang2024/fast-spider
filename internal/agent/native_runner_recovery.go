@@ -357,7 +357,7 @@ func (r *nativeRunner) applyRecovery(ctx context.Context, t *nativeRunnerTask, o
 	}
 	if probe.Authoritative && probe.Terminal && (state.ContextExhausted || probe.ContextExhausted || (probe.ContextBytesKnown && probe.ContextBytes >= nativeContextHandoverBytes) || state.Attempts >= 2 || state.Checkpoint.Stage == "context_handover") {
 		state.Phase = "handover"
-		t.History = append(t.History, nativeRunnerAttempt{Round: t.Round, GoalVersion: t.GoalVersion, Request: t.Request, Receipt: t.Receipt, Result: t.Result, Correction: t.Correction, Acked: t.ResultAcked, Superseded: true, InactiveProof: &nativeRunnerInactiveProof{SessionID: t.Receipt.SessionID, Round: t.Round, ProgressKey: probe.ProgressKey, ObservedAt: probe.ObservedAt, Terminal: true}})
+		t.History = append(t.History, nativeRunnerAttempt{CloseoutJobs: nativeCloseoutJobIDs(*t), Round: t.Round, GoalVersion: t.GoalVersion, Request: t.Request, Receipt: t.Receipt, Result: t.Result, Correction: t.Correction, Acked: t.ResultAcked, Superseded: true, InactiveProof: &nativeRunnerInactiveProof{SessionID: t.Receipt.SessionID, Round: t.Round, ProgressKey: probe.ProgressKey, ObservedAt: probe.ObservedAt, Terminal: true}})
 		t.Round++
 		t.StartedAt = 0
 		t.State = "queued"
