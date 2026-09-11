@@ -6,6 +6,7 @@ func nativeProjectActivity(p nativeRunnerProject, tasks []nativeRunnerTask) (str
 	count, accepted := 0, 0
 	running, checking, planning, queued := false, false, false, false
 	recovering, awaitingReview := false, false
+	integrating := false
 	for _, t := range tasks {
 		needsRecovery := (nativeHolds(t) && t.Recovery != nil && (t.Recovery.Phase == "uncertain" || t.Recovery.Phase == "continuing")) || (t.State == "returned" && t.Result != nil && (t.Result.Outcome == "blocked" || t.Result.ErrorCode != ""))
 		recovering = recovering || needsRecovery
@@ -24,6 +25,7 @@ func nativeProjectActivity(p nativeRunnerProject, tasks []nativeRunnerTask) (str
 		checking = checking || nativeChecking(t)
 		awaitingReview = awaitingReview || (t.State == "returned" && !needsRecovery && !nativeChecking(t))
 		queued = queued || t.State == "queued" || t.State == "pending_plan"
+		integrating = integrating || t.State == "integrating" || t.State == "awaiting_integration"
 	}
 	businessComplete := count > 0 && count == accepted
 	switch {
@@ -33,6 +35,8 @@ func nativeProjectActivity(p nativeRunnerProject, tasks []nativeRunnerTask) (str
 		return "running", businessComplete
 	case checking:
 		return "checking", businessComplete
+	case integrating:
+		return "integrating", businessComplete
 	case recovering:
 		return "needs_recovery", businessComplete
 	case len(p.Questions) > 0 && !p.QuestionReviewPending:

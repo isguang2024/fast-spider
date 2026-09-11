@@ -104,7 +104,12 @@ func ReadNativeRunnerView(ctx context.Context, dataDir, projectID, taskID string
 		return nil, err
 	}
 	// Do not serialize request prompts, frozen dispatch credentials or old rounds.
+	scheduling, err := nativeLoadSchedulingSnapshot(ctx, tx, 0)
+	if err != nil {
+		return nil, err
+	}
 	return map[string]any{"project": nativeViewProject(p, false), "events": events["events"], "task": map[string]any{
+		"workspace": task.Workspace, "requires": task.Requires, "outputs": task.Outputs, "queueReason": scheduling.QueueReasons[task.ID],
 		"id": task.ID, "title": task.Title, "parent": task.Parent, "kind": task.Kind, "state": task.State,
 		"objective": task.Objective, "acceptance": task.Acceptance, "after": task.After, "scope": task.Scope,
 		"context": task.Context, "round": task.Round, "checks": task.Checks, "validations": task.Validations,
@@ -143,6 +148,7 @@ func nativeViewProject(p nativeRunnerProject, detail bool) map[string]any {
 
 func nativeTaskBrief(t nativeRunnerTask) map[string]any {
 	item := map[string]any{"id": t.ID, "parent": t.Parent, "kind": t.Kind, "title": t.Title,
+		"workspace": t.Workspace, "requires": t.Requires, "outputs": t.Outputs,
 		"state": t.State, "round": t.Round, "after": t.After, "scope": t.Scope, "nextAt": t.NextAt,
 		"reason": t.DeferredReason, "resumeAt": t.ResumeAt, "error": t.LastError, "checks": t.Validations, "waitFor": t.WaitFor, "waitReview": t.WaitReview}
 	if t.Result != nil {
@@ -324,7 +330,7 @@ func nativeProjectView(ctx context.Context, tx *sql.Tx, p nativeRunnerProject, d
 				reason = "等待已安排的重试时间"
 			default:
 				for _, other := range holds {
-					if other.ID != t.ID && (nativeHolds(other) || nativeChecking(other)) && nativeScopeOverlap(t.Scope, other.Scope) {
+					if other.ID != t.ID && (nativeHolds(other) || nativeChecking(other)) && nativeTaskScopeConflict(t, other) {
 						blocked = append(blocked, other.ID)
 					}
 				}
@@ -340,6 +346,13 @@ func nativeProjectView(ctx context.Context, tx *sql.Tx, p nativeRunnerProject, d
 		}
 		if t.State == "canceling" {
 			item["waitingReason"] = "正在确认云端会话和关联作业停止"
+		}
+		if reason := scheduling.QueueReasons[t.ID]; reason != nil {
+			item["queueReason"] = reason
+			if item["waitingReason"] == nil {
+				item["waitingReason"] = reason.Summary
+				item["blockedBy"] = reason.TaskIDs
+			}
 		}
 		brief = append(brief, item)
 		if t.Kind != "planner" {

@@ -3,6 +3,19 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.102 - 2026-09-11
+
+- Publish bounded immutable stage artifacts through checkpoints and let consumers
+  depend on exact artifact versions while retaining final acceptance dependencies.
+- Explain queue blockers from the scheduler's dependency, writer and capacity facts;
+  review idle blocked queues once per changed planning basis.
+- Allocate isolated worktrees only for planned parallel work at dispatch, reuse
+  them during repairs, and integrate through an asynchronous per-root Git queue.
+- Preserve unrelated edits, require scope-limited clean task commits, return
+  divergent integration to the same Cloud block, and remove only safely merged
+  clean task worktrees. Integration waiting does not occupy Cloud execution slots.
+- Show stage dependencies, workspace branches and integration status in task details.
+
 ## 0.4.101 - 2026-09-11
 
 - Keep assigned-task SSE streams open until provider EOF or lifecycle release;

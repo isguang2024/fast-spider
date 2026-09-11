@@ -123,6 +123,9 @@ type nativeRunnerAttempt struct {
 	Request       *nativeRunnerDispatch      `json:"request,omitempty"`
 }
 type nativeRunnerTask struct {
+	Workspace        *nativeRunnerWorkspace            `json:"workspace,omitempty"`
+	Requires         []nativeRunnerRequirement         `json:"requires,omitempty"`
+	Outputs          []nativeRunnerOutput              `json:"outputs,omitempty"`
 	WaitFor          *nativeRunnerWaitFor              `json:"waitFor,omitempty"`
 	WaitReview       *nativeRunnerWaitReview           `json:"waitReview,omitempty"`
 	Recovery         *nativeRunnerRecovery             `json:"recovery,omitempty"`
@@ -175,6 +178,8 @@ type nativeRunnerBackend interface {
 	Notify(context.Context, nativeRunnerNotice) (string, error)
 }
 type nativeRunner struct {
+	workspaceInFlight map[string]bool
+	workspaceDone     chan nativeWorkspaceCompletion
 	asyncBackend      *nativeRunnerAsyncBackend
 	recoveryInFlight  map[string]bool
 	recoveryDone      chan nativeRecoveryCompletion
@@ -431,6 +436,9 @@ func nativeScopeOverlap(a, b string) bool {
 	return a == b || strings.HasPrefix(a, b+string(os.PathSeparator)) || strings.HasPrefix(b, a+string(os.PathSeparator))
 }
 func nativeHolds(t nativeRunnerTask) bool {
+	if t.State == "workspace_preparing" {
+		return true
+	}
 	if t.State == "cancelled" {
 		return false
 	}
@@ -439,6 +447,19 @@ func nativeHolds(t nativeRunnerTask) bool {
 func nativeChecking(t nativeRunnerTask) bool {
 	if t.State == "cancelled" || t.Result == nil || t.Result.Outcome != "completed" {
 		return false
+	}
+	if nativeWorkspaceIsolated(t) {
+		if t.Workspace.State == "conflict" {
+			for _, v := range t.Validations {
+				if v.JobID != "" && v.State != "passed" && v.State != "failed" {
+					return true
+				}
+			}
+			return false
+		}
+		if t.Workspace.SealedCommit == "" {
+			return true
+		}
 	}
 	for _, name := range t.Checks {
 		v := t.Validations[name]
@@ -909,7 +930,13 @@ func nativeValidateTask(p nativeRunnerProject, t *nativeRunnerTask, existing []n
 			return fmt.Errorf("unknown dependency %s", dep)
 		}
 	}
-	*t = nativeRunnerTask{ID: t.ID, ProjectID: p.ID, Parent: t.Parent, Key: t.Key, Kind: "work", Title: t.Title, Objective: t.Objective, Acceptance: t.Acceptance, Scope: t.Scope, Context: t.Context, After: t.After, Checks: t.Checks, GoalVersion: p.GoalVersion, PlanRevision: t.PlanRevision, Priority: t.Priority, EstimatedMinutes: t.EstimatedMinutes, Round: 1, State: "queued", Validations: map[string]nativeRunnerValidation{}}
+	if err := nativeValidateWorkspaceRequest(t); err != nil {
+		return err
+	}
+	if err := nativeValidateRequirements(t.Requires); err != nil {
+		return err
+	}
+	*t = nativeRunnerTask{Workspace: t.Workspace, Requires: t.Requires, ID: t.ID, ProjectID: p.ID, Parent: t.Parent, Key: t.Key, Kind: "work", Title: t.Title, Objective: t.Objective, Acceptance: t.Acceptance, Scope: t.Scope, Context: t.Context, After: t.After, Checks: t.Checks, GoalVersion: p.GoalVersion, PlanRevision: t.PlanRevision, Priority: t.Priority, EstimatedMinutes: t.EstimatedMinutes, Round: 1, State: "queued", Validations: map[string]nativeRunnerValidation{}}
 	return nil
 }
 
@@ -974,6 +1001,9 @@ func deferCancellationForChecks(t *nativeRunnerTask, now int64) {
 func (r *nativeRunner) Tick(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if err := r.drainWorkspace(ctx); err != nil {
+		return err
+	}
 	if err := r.drainRecovery(ctx); err != nil {
 		return err
 	}
@@ -1267,14 +1297,20 @@ func (r *nativeRunner) tickProject(ctx context.Context, id string, global *[]nat
 	// Archived projects remain visible-only state: finish callback transport and
 	// ACKs above, then suppress planning and new execution below.
 	if p.Archived {
-		return nil
+		return r.tickWorkspaces(ctx, p, tasks, nil)
 	}
 	if err = r.scheduleRecovery(ctx, p, tasks); err != nil {
 		return err
 	}
 	for i := range tasks {
 		t := &tasks[i]
-		if (t.State != "returned" && t.State != "deferred" && t.State != "canceling") || t.Kind == "planner" || t.Result == nil || t.Result.Outcome != "completed" {
+		if (t.State != "returned" && t.State != "deferred" && t.State != "canceling" && t.State != "integrating") || t.Kind == "planner" || t.Result == nil || t.Result.Outcome != "completed" {
+			continue
+		}
+		if t.State == "integrating" && (t.Workspace == nil || t.Workspace.State != "integrated") {
+			continue
+		}
+		if nativeWorkspaceIsolated(*t) && (t.Workspace.SealedCommit == "" || t.Workspace.State == "conflict") {
 			continue
 		}
 		for _, name := range t.Checks {
@@ -1285,7 +1321,10 @@ func (r *nativeRunner) tickProject(ctx context.Context, id string, global *[]nat
 			}
 			if v.JobID == "" {
 				key := "nr-check-" + nativeHash([]any{t.ID, t.Round, name})[:48]
-				job, e := r.backend.StartCheck(ctx, nativeRunnerCheckRequest{ProjectID: p.ID, TaskID: t.ID, Round: t.Round, Name: name, WorkingDirectory: p.Root, Check: p.Checks[name], IdempotencyKey: key})
+				if t.Workspace != nil && t.Workspace.State == "integrated" {
+					key += "-integrated-" + nativeHash(t.Workspace.HeadCommit)[:12]
+				}
+				job, e := r.backend.StartCheck(ctx, nativeRunnerCheckRequest{ProjectID: p.ID, TaskID: t.ID, Round: t.Round, Name: name, WorkingDirectory: nativeTaskWorkingDirectory(p, *t), Check: nativeTaskCheck(p, *t, p.Checks[name]), IdempotencyKey: key})
 				if errors.Is(e, errNativeRunnerOperationPending) {
 					if t.State == "canceling" && t.Cancellation != nil {
 						deferCancellationForChecks(t, r.now().Unix())
@@ -1370,6 +1409,9 @@ func (r *nativeRunner) tickProject(ctx context.Context, id string, global *[]nat
 	var waitGlobal []nativeRunnerTask
 	if global != nil {
 		waitGlobal = *global
+	}
+	if err = r.tickWorkspaces(ctx, p, tasks, waitGlobal); err != nil {
+		return err
 	}
 	if err = r.reviewDeferredWaits(ctx, &p, tasks, waitGlobal); err != nil {
 		return err
@@ -1602,14 +1644,14 @@ func (r *nativeRunner) dispatch(ctx context.Context, p nativeRunnerProject, task
 			globalActive++
 			active++
 			held = append(held, t)
-		} else if nativeChecking(t) {
+		} else if nativeChecking(t) || t.State == "integrating" || t.State == "awaiting_integration" {
 			held = append(held, t)
 		}
 		accepted[t.ID] = t.State == "accepted"
 	}
 	if global != nil {
 		for _, t := range *global {
-			if t.ProjectID == p.ID || (!nativeHolds(t) && !nativeChecking(t)) {
+			if t.ProjectID == p.ID || (!nativeHolds(t) && !nativeChecking(t) && t.State != "integrating" && t.State != "awaiting_integration") {
 				continue
 			}
 			held = append(held, t)
@@ -1630,7 +1672,7 @@ func (r *nativeRunner) dispatch(ctx context.Context, p nativeRunnerProject, task
 			}
 			continue
 		}
-		if t.Result != nil || t.State == "accepted" || t.State == "deferred" || t.State == "pending_plan" || t.State == "cancelled" || t.Archived || t.GoalVersion != p.GoalVersion || (t.PlanRevision > 0 && t.PlanRevision < p.Revision) || t.NextAt > r.now().Unix() {
+		if t.State == "workspace_preparing" || t.Result != nil || t.State == "accepted" || t.State == "deferred" || t.State == "pending_plan" || t.State == "cancelled" || t.Archived || t.GoalVersion != p.GoalVersion || (t.PlanRevision > 0 && t.PlanRevision < p.Revision) || t.NextAt > r.now().Unix() {
 			continue
 		}
 		if len(t.History) > 0 && !t.Rotate {
@@ -1654,23 +1696,36 @@ func (r *nativeRunner) dispatch(ctx context.Context, p nativeRunnerProject, task
 		if p.MaxConcurrency > 0 && active >= p.MaxConcurrency {
 			continue
 		}
-		blocked := false
+		blocked := len(nativeRequirementsMissing(t, tasks)) > 0
 		for _, dep := range t.After {
 			if !accepted[dep] {
 				blocked = true
 			}
 		}
 		for _, h := range held {
-			if nativeScopeOverlap(t.Scope, h.Scope) {
+			if nativeTaskScopeConflict(t, h) {
 				blocked = true
 			}
 		}
 		if blocked {
 			continue
 		}
+		if nativeWorkspaceNeedsPrepare(t) {
+			t.State = "workspace_preparing"
+			if err := r.saveTask(ctx, t, "workspace_prepare_requested"); err != nil {
+				return err
+			}
+			r.startWorkspace(ctx, p, t, "prepare")
+			held = append(held, t)
+			active++
+			globalActive++
+			newBudget--
+			mergeNativeGlobalTask(global, t)
+			continue
+		}
 		missing := ""
 		for _, path := range t.Context {
-			full, e := nativePath(p.Root, path)
+			full, e := nativeTaskContextPath(p, t, path)
 			if e != nil {
 				missing = e.Error()
 				break
@@ -1859,7 +1914,7 @@ func nativeHistoryBlocksDispatch(previous nativeRunnerAttempt) bool {
 }
 func (r *nativeRunner) compile(p nativeRunnerProject, t nativeRunnerTask, tasks []nativeRunnerTask) (nativeRunnerDispatch, error) {
 	resultPath := filepath.Join(r.dir, nativeHash(t.ID)+fmt.Sprintf("-r%d.result", t.Round))
-	req := nativeRunnerDispatch{ProjectID: p.ID, TaskID: t.ID, Round: t.Round, ControllerSessionID: p.ControllerSessionID, WorkingDirectory: p.Root, WriteScope: t.Scope, IdempotencyKey: "nr-" + nativeHash([]any{p.ID, t.ID, t.Round})[:48], ResultPath: resultPath}
+	req := nativeRunnerDispatch{ProjectID: p.ID, TaskID: t.ID, Round: t.Round, ControllerSessionID: p.ControllerSessionID, WorkingDirectory: nativeTaskWorkingDirectory(p, t), WriteScope: nativeTaskWriteScope(p, t), IdempotencyKey: "nr-" + nativeHash([]any{p.ID, t.ID, t.Round})[:48], ResultPath: resultPath}
 	if len(t.History) > 0 && !t.Rotate {
 		previous := t.History[len(t.History)-1]
 		if previous.Receipt != nil && previous.GoalVersion == p.GoalVersion {
@@ -1867,6 +1922,33 @@ func (r *nativeRunner) compile(p nativeRunnerProject, t nativeRunnerTask, tasks 
 		}
 	}
 	packet := nativeCompilePacket(p, t, tasks, resultPath)
+	if nativeWorkspaceIsolated(t) {
+		packet["taskBlock"].(map[string]any)["scope"] = req.WriteScope
+		mappedContext := []string{}
+		for _, path := range t.Context {
+			full, e := nativeTaskContextPath(p, t, path)
+			if e != nil {
+				return req, e
+			}
+			mappedContext = append(mappedContext, full)
+		}
+		packet["taskBlock"].(map[string]any)["context"] = mappedContext
+		packet["rules"] = strings.Replace(nativePacketWorkRules, "Do not commit, push, deploy or change the user's goal.", "Commit only authorized changes on the assigned task branch; never commit main, push or deploy. The Node owns integration and cleanup.", 1)
+	}
+	packet["executionWorkspace"] = map[string]any{"workingDirectory": req.WorkingDirectory, "writeScope": req.WriteScope, "workspace": t.Workspace, "instructions": "Work only in this execution directory. A worktree contains committed base content, not uncommitted main edits. Do not edit the shared main checkout from an isolated task. Preserve unrelated changes. Commit only your authorized scope before final submit; the Node integrates and checks after acceptance. If integration diverges, repair/rebase only your assigned branch and rerun affected checks; never force-push or reset main."}
+	availableOutputs := []map[string]any{}
+	for _, requirement := range t.Requires {
+		for _, producer := range tasks {
+			if producer.ID == requirement.TaskID {
+				for _, output := range producer.Outputs {
+					if output.Key == requirement.Key && output.Version == requirement.Version && output.Round == producer.Round {
+						availableOutputs = append(availableOutputs, map[string]any{"taskId": producer.ID, "output": output})
+					}
+				}
+			}
+		}
+	}
+	packet["requiredArtifacts"] = availableOutputs
 	packet["contextQuery"].(map[string]any)["example"] = map[string]any{"action": "runner.context", "responseContent": map[string]any{"taskRef": nativeRunnerTaskRef(req), "section": "tasks", "limit": 10}}
 	if t.Kind == "planner" && p.QuestionReviewPending {
 		packet["selfReview"] = map[string]any{"required": true, "previousQuestions": p.Questions, "reason": "A previous plan did not advance work. This is the one bounded self-review, not another routine planning pass.", "instructions": "Diagnose why the previous plan could not progress. Query runner.context for relevant task history and categorized evidence; inspect the handoff and retained or moved artifacts before assuming records were deleted. Identify a concrete alternative to previously failed approaches. Do not repeat accepted business verification or merely rephrase the same question. Return an executable correction, a justified goal completion, or the specific truly external fact still missing after this investigation. Never fabricate evidence or broaden authority."}
@@ -1889,6 +1971,12 @@ func nativeBasis(t nativeRunnerTask) string {
 	basis := []any{t.Round, t.GoalVersion, t.PlanRevision, t.Priority, t.State, t.Objective, t.Acceptance, t.Scope, t.Context, t.After, t.AcceptedVersion, t.Result, t.Validations, t.Cancellation, t.DeferredReason, t.ResumeAt, t.Observation, t.LastError}
 	if t.WaitFor != nil {
 		basis = append(basis, t.WaitFor)
+	}
+	if t.Workspace != nil {
+		basis = append(basis, t.Workspace)
+	}
+	if len(t.Requires) > 0 || len(t.Outputs) > 0 {
+		basis = append(basis, t.Requires, t.Outputs)
 	}
 	if t.WaitReview != nil && t.WaitReview.Reviewed {
 		basis = append(basis, t.WaitReview.Fingerprint)
@@ -1936,7 +2024,7 @@ func (r *nativeRunner) ensurePlanner(ctx context.Context, p *nativeRunnerProject
 			basis[t.ID] += "-due"
 		}
 	}
-	needed = needed || p.Revision > p.PlannedRevision || len(p.PendingChanges) > 0
+	needed = needed || p.Revision > p.PlannedRevision || len(p.PendingChanges) > 0 || r.nativeIdlePlanningNeeded(ctx, *p, tasks)
 	signature := nativeHash([]any{p.GoalVersion, p.Revision, basis, p.PendingChanges})
 	if signature == p.PlanBasis || !(needed || count == 0 || allDone) {
 		return nil
@@ -1961,21 +2049,23 @@ func (r *nativeRunner) ensurePlanner(ctx context.Context, p *nativeRunnerProject
 }
 
 type nativeRunnerPlanAction struct {
-	WaitFor    *nativeRunnerWaitFor    `json:"waitFor,omitempty"`
-	TaskID     string                  `json:"taskId"`
-	Round      int                     `json:"round"`
-	Action     string                  `json:"action"`
-	Reason     string                  `json:"reason"`
-	Evidence   []string                `json:"evidence"`
-	Rotate     bool                    `json:"rotate"`
-	ResumeAt   int64                   `json:"resumeAt"`
-	Objective  string                  `json:"objective"`
-	Acceptance string                  `json:"acceptance"`
-	Scope      string                  `json:"scope"`
-	Priority   int                     `json:"priority"`
-	Target     *nativeRunnerTaskUpdate `json:"target,omitempty"`
-	Context    *[]string               `json:"context,omitempty"`
-	After      *[]string               `json:"after,omitempty"`
+	Workspace  *nativeRunnerWorkspace     `json:"workspace,omitempty"`
+	Requires   *[]nativeRunnerRequirement `json:"requires,omitempty"`
+	WaitFor    *nativeRunnerWaitFor       `json:"waitFor,omitempty"`
+	TaskID     string                     `json:"taskId"`
+	Round      int                        `json:"round"`
+	Action     string                     `json:"action"`
+	Reason     string                     `json:"reason"`
+	Evidence   []string                   `json:"evidence"`
+	Rotate     bool                       `json:"rotate"`
+	ResumeAt   int64                      `json:"resumeAt"`
+	Objective  string                     `json:"objective"`
+	Acceptance string                     `json:"acceptance"`
+	Scope      string                     `json:"scope"`
+	Priority   int                        `json:"priority"`
+	Target     *nativeRunnerTaskUpdate    `json:"target,omitempty"`
+	Context    *[]string                  `json:"context,omitempty"`
+	After      *[]string                  `json:"after,omitempty"`
 }
 type nativeRunnerPlan struct {
 	GoalVersion        string                   `json:"goalVersion"`
@@ -2129,8 +2219,14 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 		if t.Cancellation != nil && a.Action != "cancel" {
 			return errors.New("cancelled or canceling block cannot be revived by a plan")
 		}
+		if (t.State == "integrating" || t.State == "workspace_preparing") && a.Action != "keep" && a.Action != "cancel" && a.Action != "prioritize" {
+			return errors.New("workspace operation is in progress; keep it or cancel, independent blocks may proceed")
+		}
 		switch a.Action {
 		case "accept":
+			if nativeWorkspaceIsolated(*t) && t.Workspace.SealedCommit == "" {
+				return errors.New("worktree result has not been sealed against an exact clean commit")
+			}
 			if t.State == "cancelled" || t.Result == nil || t.Result.Outcome != "completed" || t.GoalVersion != p.GoalVersion || len(a.Evidence) == 0 {
 				return errors.New("accept requires current completed evidence")
 			}
@@ -2142,8 +2238,14 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 			if err = nativeVerifyReport(t.Result); err != nil {
 				return err
 			}
-			t.State = "accepted"
-			t.AcceptedVersion = p.GoalVersion
+			if nativeWorkspaceIsolated(*t) {
+				t.State = "awaiting_integration"
+				t.Workspace.State = "pending_integration"
+				t.Workspace.Error = ""
+			} else {
+				t.State = "accepted"
+				t.AcceptedVersion = p.GoalVersion
+			}
 		case "revalidate":
 			if t.State == "cancelled" || t.State != "accepted" || len(a.Evidence) == 0 {
 				return errors.New("revalidate requires accepted evidence for the current goal")
@@ -2183,6 +2285,11 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 			t.DeferredReason = ""
 			t.ResumeAt = 0
 			t.Validations = map[string]nativeRunnerValidation{}
+			if t.Workspace != nil && t.Workspace.Path != "" && t.Workspace.State != "cleaned" {
+				t.Workspace.State = "prepared"
+				t.Workspace.Error = ""
+				t.Workspace.SealedCommit = ""
+			}
 		case "keep":
 			if t.State == "cancelled" {
 				return errors.New("cancelled block cannot be kept")
@@ -2198,7 +2305,7 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 			} else if t.GoalVersion != p.GoalVersion {
 				t.GoalVersion = p.GoalVersion
 			}
-			if t.Result == nil && t.State != "active" && t.State != "prepared" {
+			if t.Result == nil && t.State != "active" && t.State != "prepared" && t.State != "workspace_preparing" {
 				t.State = "queued"
 			}
 			t.PlanRevision = p.Revision
@@ -2252,7 +2359,7 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 			t.DeferredReason = a.Reason
 			t.ResumeAt = a.ResumeAt
 		case "revise":
-			if t.Request != nil || t.State == "cancelled" || t.State == "accepted" || a.Objective == "" || a.Acceptance == "" {
+			if t.Request != nil || t.State == "workspace_preparing" || t.State == "cancelled" || t.State == "accepted" || a.Objective == "" || a.Acceptance == "" {
 				return errors.New("revise only an unsent block with current objective and acceptance")
 			}
 			t.Objective = a.Objective
@@ -2282,6 +2389,18 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 						dep = id
 					}
 					t.After = append(t.After, dep)
+				}
+			}
+			if a.Requires != nil {
+				t.Requires = append([]nativeRunnerRequirement(nil), (*a.Requires)...)
+			}
+			if a.Workspace != nil {
+				if t.Workspace != nil && t.Workspace.Path != "" {
+					return errors.New("cannot replace an allocated workspace; reuse its branch")
+				}
+				t.Workspace = a.Workspace
+				if err = nativeValidateWorkspaceRequest(t); err != nil {
+					return err
 				}
 			}
 			t.Priority = a.Priority
@@ -2316,6 +2435,21 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 	for i := range added {
 		byID[added[i].ID] = &added[i]
 	}
+	for _, task := range byID {
+		if err = nativeValidateRequirements(task.Requires); err != nil {
+			return err
+		}
+		for i := range task.Requires {
+			requirement := &task.Requires[i]
+			if resolved, ok := keys[requirement.TaskID]; ok {
+				requirement.TaskID = resolved
+			}
+			producer := byID[requirement.TaskID]
+			if producer == nil || producer.Kind == "planner" || producer.ID == task.ID {
+				return errors.New("stage dependency must name another business block in this project")
+			}
+		}
+	}
 	visiting, visited := map[string]bool{}, map[string]bool{}
 	var visit func(string) error
 	visit = func(id string) error {
@@ -2332,6 +2466,11 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 		visiting[id] = true
 		for _, dep := range t.After {
 			if err := visit(dep); err != nil {
+				return err
+			}
+		}
+		for _, requirement := range t.Requires {
+			if err := visit(requirement.TaskID); err != nil {
 				return err
 			}
 		}

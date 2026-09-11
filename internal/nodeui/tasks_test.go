@@ -34,7 +34,7 @@ func TestTaskCenterRoutesKeepEventsIDsAndAreaIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	_, err = db.Exec(`CREATE TABLE runner_projects(id TEXT PRIMARY KEY,value TEXT); CREATE TABLE runner_tasks(project_id TEXT,id TEXT,value TEXT); CREATE TABLE runner_events(id INTEGER PRIMARY KEY,project_id TEXT,kind TEXT,value TEXT,created INTEGER);
+	_, err = db.Exec(`CREATE TABLE runner_settings(id TEXT PRIMARY KEY,value TEXT); CREATE TABLE runner_projects(id TEXT PRIMARY KEY,value TEXT); CREATE TABLE runner_tasks(project_id TEXT,id TEXT,value TEXT); CREATE TABLE runner_events(id INTEGER PRIMARY KEY,project_id TEXT,kind TEXT,value TEXT,created INTEGER);
 	INSERT INTO runner_projects VALUES('events','{"id":"events","goalVersion":"v1"}'),('other','{"id":"other","goalVersion":"v1"}');
 	INSERT INTO runner_tasks VALUES('events','events','{"id":"events","title":"Route task","state":"queued"}');`)
 	if err != nil {
@@ -99,6 +99,32 @@ func TestTaskCenterPageRendersSchedulingAndOptionalEstimate(t *testing.T) {
 	a.handleTaskCenter(w, httptest.NewRequest(http.MethodGet, "/tasks", nil))
 	body := w.Body.String()
 	for _, want := range []string{"调度状态", "全局占用", "本区运行", "本区可新增", "任务区上限", "动态建议", "estimatedMinutes", "持续循环", "暂停任务区", "恢复任务区", "取消任务区", "归档任务区", "取消归档任务区", "只停止新派发", "activityState", "businessComplete", "business_complete_pending", "planning", "p.questions", "needs_recovery", "awaiting_review", "待恢复", "待验收", "业务已完成 · 待处理事项", "回调待确认", "待处理"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("task page missing %q", want)
+		}
+	}
+}
+
+func TestTaskCenterPageRendersQueueWorkspaceAndArtifactFields(t *testing.T) {
+	a := &App{opts: Options{Version: "test"}, uiToken: "task-token"}
+	w := httptest.NewRecorder()
+	a.handleTaskCenter(w, httptest.NewRequest(http.MethodGet, "/tasks", nil))
+	body := w.Body.String()
+	for _, want := range []string{
+		"queueReason",
+		"排队：",
+		"阻塞 / 排队原因",
+		"依赖任务 ",
+		"awaiting_integration",
+		"integrating",
+		"集成状态",
+		"pending_integration",
+		"共享工作区",
+		"阶段产出",
+		"所需产出",
+		"outputs",
+		"requires",
+	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("task page missing %q", want)
 		}

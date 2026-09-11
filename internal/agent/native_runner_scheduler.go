@@ -15,6 +15,7 @@ type nativeRunnerSettings struct {
 }
 
 type nativeRunnerSchedulingSnapshot struct {
+	QueueReasons map[string]*nativeRunnerQueueReason    `json:"queueReasons,omitempty"`
 	GlobalLimit  int                                    `json:"globalLimit"`
 	GlobalActive int                                    `json:"globalActive"`
 	Allocations  map[string]int                         `json:"allocations"`
@@ -178,7 +179,7 @@ func nativeBuildSchedulingSnapshot(tasks []nativeRunnerTask, projects []nativeRu
 	}
 	holds := make([]nativeRunnerTask, 0)
 	for _, task := range tasks {
-		if nativeHolds(task) || nativeChecking(task) {
+		if nativeHolds(task) || nativeChecking(task) || task.State == "integrating" || task.State == "awaiting_integration" {
 			holds = append(holds, task)
 		}
 	}
@@ -208,10 +209,10 @@ func nativeBuildSchedulingSnapshot(tasks []nativeRunnerTask, projects []nativeRu
 		}
 		items := []nativeRunnerTask{}
 		for _, task := range tasks {
-			if task.ProjectID != project.ID || task.Kind == "" || task.Archived || task.Result != nil || task.Request != nil || task.State == "accepted" || task.State == "deferred" || task.State == "pending_plan" || task.State == "cancelled" || task.State == "canceling" || task.GoalVersion != project.GoalVersion || (task.PlanRevision > 0 && task.PlanRevision < project.Revision) || task.NextAt > now {
+			if task.State == "workspace_preparing" || task.ProjectID != project.ID || task.Kind == "" || task.Archived || task.Result != nil || task.Request != nil || task.State == "accepted" || task.State == "deferred" || task.State == "pending_plan" || task.State == "cancelled" || task.State == "canceling" || task.GoalVersion != project.GoalVersion || (task.PlanRevision > 0 && task.PlanRevision < project.Revision) || task.NextAt > now {
 				continue
 			}
-			ready := true
+			ready := len(nativeRequirementsMissing(task, tasks)) == 0
 			for _, dependency := range task.After {
 				if !accepted[dependency] {
 					ready = false
@@ -228,7 +229,7 @@ func nativeBuildSchedulingSnapshot(tasks []nativeRunnerTask, projects []nativeRu
 				continue
 			}
 			for _, held := range holds {
-				if nativeScopeOverlap(task.Scope, held.Scope) {
+				if nativeTaskScopeConflict(task, held) {
 					ready = false
 					break
 				}
@@ -264,7 +265,7 @@ func nativeBuildSchedulingSnapshot(tasks []nativeRunnerTask, projects []nativeRu
 				candidate := demands[i].tasks[demands[i].cursor]
 				blocked := false
 				for _, prior := range selected {
-					if nativeScopeOverlap(candidate.Scope, prior.Scope) {
+					if nativeTaskScopeConflict(candidate, prior) {
 						blocked = true
 						break
 					}
@@ -313,6 +314,14 @@ func nativeBuildSchedulingSnapshot(tasks []nativeRunnerTask, projects []nativeRu
 		projectSchedule.Allocation++
 		snapshot.Projects[demands[best].project.ID] = projectSchedule
 		free--
+	}
+	snapshot.QueueReasons = map[string]*nativeRunnerQueueReason{}
+	for _, project := range projects {
+		for _, task := range tasks {
+			if task.ProjectID == project.ID {
+				snapshot.QueueReasons[task.ID] = nativeQueueReason(task, project, tasks, snapshot, now)
+			}
+		}
 	}
 	return snapshot
 }

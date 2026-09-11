@@ -14,11 +14,12 @@ const nativeJobPollInterval = 30 * time.Second
 const nativeContextHandoverBytes = 256 << 10 // bytes observed, not model token capacity
 
 type nativeRunnerCheckpoint struct {
-	Summary     string   `json:"summary"`
-	NextStep    string   `json:"nextStep"`
-	Stage       string   `json:"stage"`
-	Evidence    []string `json:"evidence,omitempty"`
-	WaitingJobs []string `json:"waitingJobs,omitempty"`
+	Outputs     []nativeRunnerOutput `json:"outputs,omitempty"`
+	Summary     string               `json:"summary"`
+	NextStep    string               `json:"nextStep"`
+	Stage       string               `json:"stage"`
+	Evidence    []string             `json:"evidence,omitempty"`
+	WaitingJobs []string             `json:"waitingJobs,omitempty"`
 }
 
 type nativeRunnerRecovery struct {
@@ -115,7 +116,7 @@ func (r *nativeRunner) checkpoint(ctx context.Context, projectID, taskID string,
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	_, tasks, err := r.read(ctx, projectID)
+	p, tasks, err := r.read(ctx, projectID)
 	if err != nil {
 		return err
 	}
@@ -130,6 +131,9 @@ func (r *nativeRunner) checkpoint(ctx context.Context, projectID, taskID string,
 		if nativeHash(recovery.Checkpoint) == nativeHash(checkpoint) {
 			return nil
 		}
+		if err := r.publishOutputs(p, &t, checkpoint.Outputs); err != nil {
+			return err
+		}
 		recovery.Checkpoint = checkpoint
 		recovery.LastProgressAt = r.now().Unix()
 		recovery.Attempts = 0
@@ -140,7 +144,11 @@ func (r *nativeRunner) checkpoint(ctx context.Context, projectID, taskID string,
 			recovery.NextProbeAt = r.now().Unix()
 		}
 		t.Recovery = &recovery
-		return r.saveTask(ctx, t, "checkpoint_saved")
+		if err := r.saveTask(ctx, t, "checkpoint_saved"); err != nil {
+			return err
+		}
+		r.Wake()
+		return nil
 	}
 	return errors.New("checkpoint task not found")
 }

@@ -11,14 +11,15 @@ import (
 // from which a caller can request older evidence.
 func nativeCompilePacket(p nativeRunnerProject, t nativeRunnerTask, tasks []nativeRunnerTask, resultPath string) map[string]any {
 	packet := map[string]any{
-		"goal":             p.Goal,
-		"goalVersion":      p.GoalVersion,
-		"revision":         p.Revision,
-		"pendingChanges":   p.PendingChanges,
-		"taskBlock":        nativePacketCurrentTask(t, resultPath),
-		"resultPath":       resultPath,
-		"rules":            nativePacketWorkRules,
-		"progressContract": nativePacketProgressContract,
+		"goal":                p.Goal,
+		"goalVersion":         p.GoalVersion,
+		"revision":            p.Revision,
+		"pendingChanges":      p.PendingChanges,
+		"taskBlock":           nativePacketCurrentTask(t, resultPath),
+		"resultPath":          resultPath,
+		"rules":               nativePacketWorkRules,
+		"progressContract":    nativePacketProgressContract,
+		"stageOutputContract": "After a stable interface or evidence milestone, runner.checkpoint may include outputs:[{key,version,summary,path,commit(optional)}]. Publish a focused project file (max 64 KiB); Node snapshots its exact bytes. Versions are immutable within the current task round. This is not final acceptance or proof code is integrated. Consumers must use requiredArtifacts snapshots and preserve their final integration checks.",
 	}
 
 	packet["contextQuery"] = map[string]any{
@@ -83,6 +84,7 @@ func nativeCompilePacket(p nativeRunnerProject, t nativeRunnerTask, tasks []nati
 	packet["blocks"] = blocks
 	packet["configuredChecks"] = p.Checks
 	packet["outputContract"] = nativePlanContract
+	packet["parallelPlanning"] = "When slots are idle but queued blocks are blocked, review the concrete dependency and writer bottlenecks once per changed evidence set. Plan cohesive blocks, not mechanical steps. Blocks and unsent revise actions may specify requires:[{taskId: existing ID or new block key,key: artifact key,version: exact version}] separately from after (full acceptance). A requirement only makes the published snapshot available, not uncommitted code. Preserve actual final integration dependencies. Use workspace:{mode:worktree} only when isolation brings real parallel value; default shared for read-only/nonconflicting work. Worktrees are allocated lazily at dispatch and reused through repair. Do not move active writers. Worktrees start from committed main; check that needed code is committed or plan a contract-based preparation block. Do not approve a worktree as fully accepted before system integration checks. Integrate divergence is repaired by retrying this same task/branch with a focused rebase and affected checks, not by changing main. Do not ask the user to perform routine conflict resolution. Exact queue reasons and full workspace/output metadata are available via runner.context."
 	packet["historyPlannerCount"] = historyPlannerCount
 	if latestAcceptedPlanner != nil {
 		packet["latestAcceptedPlanner"] = latestAcceptedPlanner
@@ -184,6 +186,7 @@ func nativePacketTaskFields(t nativeRunnerTask) map[string]any {
 	// particular, objective, acceptance, scope, context and checks are never
 	// clipped because they define what the worker is allowed to do.
 	return map[string]any{
+		"workspace": t.Workspace, "requires": t.Requires, "outputs": t.Outputs,
 		"id":              t.ID,
 		"projectId":       t.ProjectID,
 		"parent":          t.Parent,

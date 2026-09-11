@@ -227,7 +227,20 @@ func (r *nativeRunner) queryTaskIndex(ctx context.Context, projectID, taskID str
 	}
 	query += ` ORDER BY CASE json_extract(value,'$.state') WHEN 'active' THEN 0 WHEN 'prepared' THEN 0 WHEN 'returned' THEN 0 WHEN 'canceling' THEN 0 WHEN 'queued' THEN 1 WHEN 'pending_plan' THEN 1 WHEN 'deferred' THEN 1 WHEN 'accepted' THEN 2 ELSE 3 END, rowid DESC LIMIT ? OFFSET ?`
 	args = append(args, limit, offset)
-	return r.scanTaskIndex(ctx, query, args...)
+	items, err := r.scanTaskIndex(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	reasons, err := r.contextQueueReasons(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		if id, ok := item["id"].(string); ok {
+			item["queueReason"] = reasons[id]
+		}
+	}
+	return items, nil
 }
 
 func (r *nativeRunner) queryTask(ctx context.Context, projectID, taskID string) (map[string]any, error) {
@@ -242,12 +255,21 @@ func (r *nativeRunner) queryTask(ctx context.Context, projectID, taskID string) 
 	if err := json.Unmarshal([]byte(raw), &task); err != nil {
 		return nil, err
 	}
-	return nativePacketUnfinishedTask(task), nil
+	item := nativePacketUnfinishedTask(task)
+	reasons, err := r.contextQueueReasons(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	item["queueReason"] = reasons[task.ID]
+	return item, nil
 }
 
 func selectTaskFields(item map[string]any, fields []string) (map[string]any, error) {
 	allowed := map[string]bool{"waitFor": true, "waitReview": true, "objective": true, "acceptance": true, "after": true, "parent": true, "priority": true, "observation": true, "correction": true, "recovery": true, "id": true, "projectId": true, "kind": true, "title": true, "state": true, "round": true, "scope": true, "context": true, "checks": true, "validations": true, "goalVersion": true, "result": true, "lastError": true}
 	out := map[string]any{}
+	for _, field := range []string{"workspace", "requires", "outputs", "queueReason"} {
+		allowed[field] = true
+	}
 	for _, field := range fields {
 		field = strings.TrimSpace(field)
 		if !allowed[field] {

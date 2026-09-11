@@ -284,16 +284,17 @@ func (t *nativeRunnerTransport) Checkpoint(ctx context.Context, params map[strin
 		return nil, nodeRunnerUnavailableError()
 	}
 	var input struct {
-		ProjectID   string   `json:"projectId,omitempty"`
-		TaskID      string   `json:"taskId,omitempty"`
-		Round       int      `json:"round,omitempty"`
-		SessionID   string   `json:"sessionId,omitempty"`
-		TaskRef     string   `json:"taskRef"`
-		Summary     string   `json:"summary"`
-		NextStep    string   `json:"nextStep"`
-		Stage       string   `json:"stage"`
-		Evidence    []string `json:"evidence,omitempty"`
-		WaitingJobs []string `json:"waitingJobs,omitempty"`
+		ProjectID   string               `json:"projectId,omitempty"`
+		TaskID      string               `json:"taskId,omitempty"`
+		Round       int                  `json:"round,omitempty"`
+		SessionID   string               `json:"sessionId,omitempty"`
+		TaskRef     string               `json:"taskRef"`
+		Summary     string               `json:"summary"`
+		NextStep    string               `json:"nextStep"`
+		Stage       string               `json:"stage"`
+		Evidence    []string             `json:"evidence,omitempty"`
+		WaitingJobs []string             `json:"waitingJobs,omitempty"`
+		Outputs     []nativeRunnerOutput `json:"outputs,omitempty"`
 	}
 	if err := decodeParams(params, &input); err != nil {
 		return nil, err
@@ -330,7 +331,7 @@ func (t *nativeRunnerTransport) Checkpoint(ctx context.Context, params map[strin
 		return nil, errors.New("runner.checkpoint callback binding does not match the assigned task")
 	}
 	input.ProjectID, input.TaskID, input.Round, input.SessionID = registration.MissionID, registration.TaskID, int(registration.Generation), registration.SourceSessionID
-	checkpoint := nativeRunnerCheckpoint{Summary: input.Summary, NextStep: input.NextStep, Stage: input.Stage, Evidence: input.Evidence, WaitingJobs: input.WaitingJobs}
+	checkpoint := nativeRunnerCheckpoint{Summary: input.Summary, NextStep: input.NextStep, Stage: input.Stage, Evidence: input.Evidence, WaitingJobs: input.WaitingJobs, Outputs: input.Outputs}
 	if err := t.manager.nativeRunner.checkpoint(ctx, input.ProjectID, input.TaskID, input.Round, input.SessionID, checkpoint); err != nil {
 		return nil, err
 	}
