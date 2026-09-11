@@ -3,6 +3,11 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.103 - 2026-09-11
+
+- Preserve queue explanations when all global dispatch slots are occupied;
+  dependency and writer blockers remain visible even at full capacity.
+
 ## 0.4.102 - 2026-09-11
 
 - Publish bounded immutable stage artifacts through checkpoints and let consumers

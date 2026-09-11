@@ -67,6 +67,21 @@ func TestNativeIsolatedTaskCanRunBesideSharedWriter(t *testing.T) {
 	}
 }
 
+func TestNativeFullCapacityStillExplainsQueueReasons(t *testing.T) {
+	p := nativeRunnerProject{ID: "p", GoalVersion: "v"}
+	active := nativeRunnerTask{ID: "active", ProjectID: "p", Kind: "work", State: "active", GoalVersion: "v", Scope: "/repo/backend", Request: &nativeRunnerDispatch{}}
+	queued := nativeRunnerTask{ID: "queued", ProjectID: "p", Kind: "work", State: "queued", GoalVersion: "v", Scope: "/repo/frontend"}
+	s := nativeBuildSchedulingSnapshot([]nativeRunnerTask{active, queued}, []nativeRunnerProject{p}, 1)
+	if s.QueueReasons[queued.ID] == nil || s.QueueReasons[queued.ID].Code != "global_capacity" {
+		t.Fatalf("full scheduler lost queue explanation: %+v", s)
+	}
+	queued.After = []string{active.ID}
+	s = nativeBuildSchedulingSnapshot([]nativeRunnerTask{active, queued}, []nativeRunnerProject{p}, 1)
+	if s.QueueReasons[queued.ID] == nil || s.QueueReasons[queued.ID].Code != "dependency" {
+		t.Fatal("capacity masked the actual prerequisite")
+	}
+}
+
 func TestNativeIdleQueueReviewDoesNotRepeatUnchangedPlan(t *testing.T) {
 	r, _, p := newNativeRunnerForTest(t, "parallel review", nil)
 	addNativeTask(t, r, p.ID, "upstream", "backend")

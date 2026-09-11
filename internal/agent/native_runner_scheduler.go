@@ -251,9 +251,6 @@ func nativeBuildSchedulingSnapshot(tasks []nativeRunnerTask, projects []nativeRu
 		snapshot.Demands[item.project.ID] = len(item.tasks)
 	}
 	free := limit - snapshot.GlobalActive
-	if free <= 0 {
-		return snapshot
-	}
 	selected := []nativeRunnerTask{}
 	for free > 0 {
 		best := -1
