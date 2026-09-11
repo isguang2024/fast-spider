@@ -147,11 +147,19 @@ func (c *Client) handleCapabilityRequestFrom(ctx context.Context, req protocolv1
 		response.Error = capabilityError(err)
 		return response
 	}
-	if req.Capability == "agent.control" && strings.HasPrefix(req.Action, "runner.") && req.Action != "runner.submit" && req.Action != "runner.checkpoint" && !local {
-		response.Error = protocolError("UNSUPPORTED_CAPABILITY", "native runner control actions are local-only; Cloud CHAT may only submit its bound result or checkpoint", false)
+	if req.Capability == "agent.control" && strings.HasPrefix(req.Action, "runner.") && req.Action != "runner.submit" && req.Action != "runner.checkpoint" && req.Action != "runner.context" && !local {
+		response.Error = protocolError("UNSUPPORTED_CAPABILITY", "native runner control actions are local-only; Cloud CHAT may submit its bound result or checkpoint and read its assigned context", false)
 		return response
 	}
 
+	if req.Capability == "agent.control" && req.Action == "runner.context" && !local {
+		content, ok := req.Params["responseContent"].(map[string]any)
+		ref, _ := content["taskRef"].(string)
+		if !ok || strings.TrimSpace(ref) == "" {
+			response.Error = protocolError("INVALID_REQUEST", "Cloud runner.context requires responseContent.taskRef", false)
+			return response
+		}
+	}
 	var result any
 	var err error
 	switch req.Capability + "/" + req.Action {
@@ -190,7 +198,7 @@ func (c *Client) handleCapabilityRequestFrom(ctx context.Context, req protocolv1
 		result, err = c.browserControl(ctx, req.Action, req.Params)
 	case "screenshot.capture/listDisplays", "screenshot.capture/desktop", "screenshot.capture/display", "screenshot.capture/listWindows", "screenshot.capture/window":
 		result, err = c.screenshotCapture(ctx, req.Action, req.Params)
-	case "agent.control/routing.status", "agent.control/providers.list", "agent.control/provider.readiness", "agent.control/models.list", "agent.control/provider.capabilities", "agent.control/projects.list", "agent.control/skills.list", "agent.control/hooks.list", "agent.control/permissions.list", "agent.control/plugins.list", "agent.control/plugins.installed", "agent.control/plugins.get", "agent.control/plugin.skill.read", "agent.control/mcp.status.list", "agent.control/session.list", "agent.control/session.get", "agent.control/session.create", "agent.control/session.send", "agent.control/session.steer", "agent.control/session.respond", "agent.control/session.watch", "agent.control/session.callback.prepare", "agent.control/session.callback.recover", "agent.control/session.callback.continue", "agent.control/session.callback.register", "agent.control/session.callback.arm", "agent.control/session.callback.enqueue", "agent.control/session.callback.unregister", "agent.control/session.callback.list", "agent.control/session.callback.claim", "agent.control/session.callback.ack", "agent.control/session.cancel", "agent.control/session.result", "agent.control/session.rename", "agent.control/session.archive", "agent.control/session.unarchive", "agent.control/session.delete", "agent.control/session.fork", "agent.control/session.compact", "agent.control/session.rollback", "agent.control/session.goal.get", "agent.control/session.goal.set", "agent.control/session.goal.clear", "agent.control/session.settings.update", "agent.control/session.review", "agent.control/runner.init", "agent.control/runner.status", "agent.control/runner.pause", "agent.control/runner.resume", "agent.control/runner.goal", "agent.control/runner.signal", "agent.control/runner.add", "agent.control/runner.wake", "agent.control/runner.submit", "agent.control/runner.checkpoint", "agent.control/runner.change", "agent.control/runner.cancel", "agent.control/runner.archive", "agent.control/runner.unarchive", "agent.control/runner.configure":
+	case "agent.control/routing.status", "agent.control/providers.list", "agent.control/provider.readiness", "agent.control/models.list", "agent.control/provider.capabilities", "agent.control/projects.list", "agent.control/skills.list", "agent.control/hooks.list", "agent.control/permissions.list", "agent.control/plugins.list", "agent.control/plugins.installed", "agent.control/plugins.get", "agent.control/plugin.skill.read", "agent.control/mcp.status.list", "agent.control/session.list", "agent.control/session.get", "agent.control/session.create", "agent.control/session.send", "agent.control/session.steer", "agent.control/session.respond", "agent.control/session.watch", "agent.control/session.callback.prepare", "agent.control/session.callback.recover", "agent.control/session.callback.continue", "agent.control/session.callback.register", "agent.control/session.callback.arm", "agent.control/session.callback.enqueue", "agent.control/session.callback.unregister", "agent.control/session.callback.list", "agent.control/session.callback.claim", "agent.control/session.callback.ack", "agent.control/session.cancel", "agent.control/session.result", "agent.control/session.rename", "agent.control/session.archive", "agent.control/session.unarchive", "agent.control/session.delete", "agent.control/session.fork", "agent.control/session.compact", "agent.control/session.rollback", "agent.control/session.goal.get", "agent.control/session.goal.set", "agent.control/session.goal.clear", "agent.control/session.settings.update", "agent.control/session.review", "agent.control/runner.init", "agent.control/runner.status", "agent.control/runner.pause", "agent.control/runner.resume", "agent.control/runner.goal", "agent.control/runner.signal", "agent.control/runner.add", "agent.control/runner.wake", "agent.control/runner.submit", "agent.control/runner.checkpoint", "agent.control/runner.context", "agent.control/runner.change", "agent.control/runner.cancel", "agent.control/runner.archive", "agent.control/runner.unarchive", "agent.control/runner.configure":
 		if !local && req.Params["callbackInboxRoute"] != nil {
 			response.Error = protocolError("UNSUPPORTED_CAPABILITY", "task-local callback routes are only available locally", false)
 			return response

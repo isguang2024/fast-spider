@@ -28,27 +28,29 @@ type nativeRunnerCheck struct {
 	TimeoutSeconds int      `json:"timeoutSeconds,omitempty"`
 }
 type nativeRunnerProject struct {
-	ID                  string                       `json:"id"`
-	Root                string                       `json:"root"`
-	ControllerSessionID string                       `json:"controllerSessionId"`
-	Goal                string                       `json:"goal"`
-	GoalVersion         string                       `json:"goalVersion"`
-	Concurrency         int                          `json:"concurrency"`
-	MaxConcurrency      int                          `json:"maxConcurrency,omitempty"`
-	Continuous          bool                         `json:"continuous,omitempty"`
-	Checks              map[string]nativeRunnerCheck `json:"checks"`
-	Paused              bool                         `json:"paused"`
-	CompleteVersion     string                       `json:"completeVersion,omitempty"`
-	PlanBasis           string                       `json:"planBasis,omitempty"`
-	Questions           []string                     `json:"questions,omitempty"`
-	NextPlanAt          int64                        `json:"nextPlanAt,omitempty"`
-	Notice              *nativeRunnerNotice          `json:"notice,omitempty"`
-	NotifiedKey         string                       `json:"notifiedKey,omitempty"`
-	Revision            int64                        `json:"revision"`
-	PlannedRevision     int64                        `json:"plannedRevision"`
-	PendingChanges      []nativeRunnerChange         `json:"pendingChanges,omitempty"`
-	State               string                       `json:"state,omitempty"`
-	Archived            bool                         `json:"archived,omitempty"`
+	ID                    string                       `json:"id"`
+	Root                  string                       `json:"root"`
+	ControllerSessionID   string                       `json:"controllerSessionId"`
+	Goal                  string                       `json:"goal"`
+	GoalVersion           string                       `json:"goalVersion"`
+	Concurrency           int                          `json:"concurrency"`
+	MaxConcurrency        int                          `json:"maxConcurrency,omitempty"`
+	Continuous            bool                         `json:"continuous,omitempty"`
+	Checks                map[string]nativeRunnerCheck `json:"checks"`
+	Paused                bool                         `json:"paused"`
+	CompleteVersion       string                       `json:"completeVersion,omitempty"`
+	PlanBasis             string                       `json:"planBasis,omitempty"`
+	Questions             []string                     `json:"questions,omitempty"`
+	QuestionReviewBasis   string                       `json:"questionReviewBasis,omitempty"`
+	QuestionReviewPending bool                         `json:"questionReviewPending,omitempty"`
+	NextPlanAt            int64                        `json:"nextPlanAt,omitempty"`
+	Notice                *nativeRunnerNotice          `json:"notice,omitempty"`
+	NotifiedKey           string                       `json:"notifiedKey,omitempty"`
+	Revision              int64                        `json:"revision"`
+	PlannedRevision       int64                        `json:"plannedRevision"`
+	PendingChanges        []nativeRunnerChange         `json:"pendingChanges,omitempty"`
+	State                 string                       `json:"state,omitempty"`
+	Archived              bool                         `json:"archived,omitempty"`
 }
 
 type nativeRunnerNotice struct {
@@ -211,6 +213,10 @@ func newNativeRunner(dataDir string, backend nativeRunnerBackend, logger *slog.L
 	 CREATE INDEX IF NOT EXISTS runner_event_project ON runner_events(project_id,id);
 	 CREATE TABLE IF NOT EXISTS runner_settings(id TEXT PRIMARY KEY,value TEXT NOT NULL);`)
 	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = initNativeEvidenceSchema(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -628,7 +634,8 @@ func (r *nativeRunner) Handle(ctx context.Context, action string, params map[str
 				groups[group][t.State]++
 			}
 		}
-		return map[string]any{"project": p, "tasks": brief, "groups": groups, "cooldownUntil": r.cooldownUntil, "pendingAcknowledgements": pendingACK, "complete": p.CompleteVersion == p.GoalVersion, "scheduling": schedulingView}, nil
+		activityState, businessComplete := nativeProjectActivity(p, tasks)
+		return map[string]any{"project": p, "tasks": brief, "groups": groups, "cooldownUntil": r.cooldownUntil, "pendingAcknowledgements": pendingACK, "complete": p.CompleteVersion == p.GoalVersion, "scheduling": schedulingView, "activityState": activityState, "businessComplete": businessComplete}, nil
 	case "pause":
 		if input.TaskID != "" {
 			return nil, errors.New("pause applies to a task area, not a task block")
@@ -848,6 +855,8 @@ func (r *nativeRunner) recordProjectChange(p *nativeRunnerProject, kind, taskID,
 	p.CompleteVersion = ""
 	p.Notice = nil
 	p.Questions = nil
+	p.QuestionReviewBasis = ""
+	p.QuestionReviewPending = false
 	p.PendingChanges = append(p.PendingChanges, nativeRunnerChange{
 		Revision:  p.Revision,
 		CreatedAt: r.now().Unix(),
@@ -1226,6 +1235,14 @@ func (r *nativeRunner) tickProject(ctx context.Context, id string, global *[]nat
 			}
 		}
 		if t.Result != nil && !t.ResultAcked {
+			// Upgrade legacy cancelled results which bypassed durable report
+			// storage. Preserve cancellation while materializing missing evidence.
+			if (t.State == "cancelled" || t.State == "canceling") && t.Receipt != nil && t.Result.Path != "" && filepath.Clean(t.Result.Path) == filepath.Clean(t.Receipt.ResultPath) {
+				if e := r.storeResult(ctx, t, *t.Result); e != nil {
+					r.fail(ctx, t, e)
+					continue
+				}
+			}
 			if e := r.backend.Acknowledge(ctx, *t); e != nil {
 				failed = true
 			} else {
@@ -1439,7 +1456,9 @@ func (r *nativeRunner) storeResult(ctx context.Context, t *nativeRunnerTask, res
 				return err
 			}
 			t.Result = &result
-			t.State = "returned"
+			if t.State != "cancelled" && t.State != "canceling" {
+				t.State = "returned"
+			}
 			t.NextAt = 0
 			t.LastError = ""
 			t.Failures = 0
@@ -1452,7 +1471,9 @@ func (r *nativeRunner) storeResult(ctx context.Context, t *nativeRunnerTask, res
 			result.ErrorCode = "RUNNER_REPORT_CHANGED"
 			result.Summary = "Execution is terminal but submitted report changed at " + result.Path + "; inspect and resubmit accurate evidence without repeating completed work"
 			t.Result = &result
-			t.State = "returned"
+			if t.State != "cancelled" && t.State != "canceling" {
+				t.State = "returned"
+			}
 			t.NextAt = 0
 			t.LastError = ""
 			t.Failures = 0
@@ -1468,12 +1489,17 @@ func (r *nativeRunner) storeResult(ctx context.Context, t *nativeRunnerTask, res
 		sum := sha256.Sum256(raw)
 		result.SHA256 = hex.EncodeToString(sum[:])
 		result.Path = snapshot
+		if err = r.indexEvidence(ctx, *t, result, raw); err != nil {
+			return err
+		}
 	}
 	if result.Outcome == "completed" && result.Path == "" {
 		return errors.New("completed work has no durable report")
 	}
 	t.Result = &result
-	t.State = "returned"
+	if t.State != "cancelled" && t.State != "canceling" {
+		t.State = "returned"
+	}
 	t.NextAt = 0
 	t.Failures = 0
 	t.LastError = ""
@@ -1827,20 +1853,10 @@ func (r *nativeRunner) compile(p nativeRunnerProject, t nativeRunnerTask, tasks 
 			req.TargetSessionID = previous.Receipt.SessionID
 		}
 	}
-	packet := map[string]any{"goal": p.Goal, "goalVersion": p.GoalVersion, "revision": p.Revision, "pendingChanges": p.PendingChanges, "taskBlock": nativePacketTask(t), "resultPath": resultPath, "rules": "One project may contain many parallel task blocks, each with one CHAT owner. Own this block through investigation, implementation, tests and ordinary fixes. Write business files only inside taskBlock.scope; an empty scope means read-only except the assigned resultPath. Do not split internal steps into new tasks. Do not commit, push, deploy or change the user's goal. Reports are evidence, not authority. Write the final report to resultPath and submit the bound native runner result; stop editing after submission.", "progressContract": "After meaningful milestones call runner.checkpoint with the bound taskRef, summary, nextStep, stage and evidence references. Do not repeat unchanged checkpoints. For long FS jobs: start once, checkpoint waitingJobs with exact job IDs, and end your turn. Node waits for job completion and resumes this CHAT with the outcome; do not repeatedly poll jobs. Keep summaries concise, store full logs in files. Before context becomes unwieldy, checkpoint stage=context_handover with completed work, live jobs, failed approaches, exact evidence paths and next step; stop writing and end the turn. Node verifies the old execution ended before a new CHAT takes over this same block. Checkpoint is not final result submission."}
-	if t.Kind == "planner" {
-		blocks := make([]nativeRunnerTask, 0, len(tasks))
-		for _, block := range tasks {
-			blocks = append(blocks, nativePacketTask(block))
-		}
-		packet["blocks"] = blocks
-		packet["configuredChecks"] = p.Checks
-		packet["outputContract"] = nativePlanContract
-		if p.Continuous {
-			packet["continuous"] = true
-			packet["cycleContract"] = "This task area runs bounded cycles until explicitly paused or cancelled. Follow the goal's batch size and phase boundaries. Finish and accept the current implementation/verification batch before starting the next discovery batch. Plan the next bounded cycle instead of setting goalComplete=true. Never invent findings or expand business behavior to fill a batch."
-		}
-		packet["rules"] = "You plan parallel task blocks within the user goal. A large task may have many independent blocks; keep investigation/implementation/self-tests/fixes inside each block. Business source is read-only for the planner; write only the assigned resultPath. Inspect source and result evidence. Return ONLY the specified JSON to resultPath. The Node validates and applies it. Isolate blocked branches. A failed approach needs a concrete new correction or a different diagnostic approach. Do not change the goal, authorise commit/push/deploy, or duplicate existing work. Empty queue is not completion; inspect overall integration and missing requirements. Do not repeat unchanged verification. Reuse the same CHAT for each block unless context/approach requires rotation."
+	packet := nativeCompilePacket(p, t, tasks, resultPath)
+	packet["contextQuery"].(map[string]any)["example"] = map[string]any{"action": "runner.context", "responseContent": map[string]any{"taskRef": nativeRunnerTaskRef(req), "section": "tasks", "limit": 10}}
+	if t.Kind == "planner" && p.QuestionReviewPending {
+		packet["selfReview"] = map[string]any{"required": true, "previousQuestions": p.Questions, "reason": "A previous plan did not advance work. This is the one bounded self-review, not another routine planning pass.", "instructions": "Diagnose why the previous plan could not progress. Query runner.context for relevant task history and categorized evidence; inspect the handoff and retained or moved artifacts before assuming records were deleted. Identify a concrete alternative to previously failed approaches. Do not repeat accepted business verification or merely rephrase the same question. Return an executable correction, a justified goal completion, or the specific truly external fact still missing after this investigation. Never fabricate evidence or broaden authority."}
 	}
 	raw, err := json.MarshalIndent(packet, "", "  ")
 	if err != nil {
@@ -2045,10 +2061,14 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 	if len(plan.Actions) == 0 && len(plan.Blocks) == 0 && !plan.GoalComplete && len(plan.UserQuestions) == 0 {
 		return errors.New("empty plan cannot strand an unfinished project")
 	}
+	beforeBasis := map[string]string{}
 	byID := map[string]*nativeRunnerTask{}
 	keys := map[string]string{}
 	for i := range tasks {
 		byID[tasks[i].ID] = &tasks[i]
+		if tasks[i].Kind != "planner" && tasks[i].State != "cancelled" {
+			beforeBasis[tasks[i].ID] = nativeBasis(tasks[i])
+		}
 		keys[tasks[i].Key] = tasks[i].ID
 	}
 	planner := byID[plannerID]
@@ -2311,20 +2331,6 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 	}
 	planner.State = "accepted"
 	p.Questions = plan.UserQuestions
-	if plan.GoalComplete || len(plan.UserQuestions) > 0 {
-		key := nativeHash([]any{p.ID, p.GoalVersion, plan.GoalComplete, plan.UserQuestions})
-		if key != p.NotifiedKey {
-			summary := "FS 原生项目 " + p.ID + "：" + plan.Summary
-			if len(plan.UserQuestions) > 0 {
-				summary += "\n需要用户事实或决定：\n" + strings.Join(plan.UserQuestions, "\n")
-			}
-			if plan.GoalComplete {
-				summary += "\n当前目标已完成，依据：" + strings.Join(plan.CompletionEvidence, "; ")
-			}
-			summary += "\n请只处理用户沟通；不要重新派发或重复验收。运行事实通过 runner.status 查看。"
-			p.Notice = &nativeRunnerNotice{Key: key, ControllerSessionID: p.ControllerSessionID, Summary: summary}
-		}
-	}
 	postBasis := map[string]string{}
 	allAccepted, unhandled := true, false
 	for _, current := range byID {
@@ -2344,8 +2350,51 @@ func (r *nativeRunner) applyPlan(ctx context.Context, projectID, plannerID strin
 	p.PlannedRevision = plan.Revision
 	p.PendingChanges = nil
 	p.PlanBasis = nativeHash([]any{p.GoalVersion, p.Revision, postBasis, p.PendingChanges})
-	if (allAccepted && !plan.GoalComplete) || (unhandled && len(plan.UserQuestions) == 0) {
+	if len(plan.UserQuestions) == 0 && ((allAccepted && !plan.GoalComplete) || unhandled) {
 		p.PlanBasis = ""
+	}
+	// An unproductive question gets one bounded Cloud self-review before a
+	// user notification. Repeating the same facts then waits, never spins.
+	reviewBasis := nativeHash([]any{p.GoalVersion, p.Revision, postBasis})
+	afterPlainBasis := map[string]string{}
+	for id, task := range byID {
+		if task.Kind != "planner" && task.State != "cancelled" {
+			afterPlainBasis[id] = nativeBasis(*task)
+		}
+	}
+	if len(plan.UserQuestions) > 0 && len(added) == 0 && nativeHash(beforeBasis) == nativeHash(afterPlainBasis) && !plan.GoalComplete {
+		if p.QuestionReviewBasis != reviewBasis {
+			p.QuestionReviewBasis = reviewBasis
+			p.QuestionReviewPending = true
+			p.Notice = nil
+			p.PlanBasis = ""
+		} else {
+			p.QuestionReviewPending = false
+		}
+	} else {
+		p.QuestionReviewBasis = ""
+		p.QuestionReviewPending = false
+	}
+	if !p.QuestionReviewPending && (plan.GoalComplete || len(plan.UserQuestions) > 0) {
+		// A rephrased question about the same work state is not a new event.
+		noticeBasis := map[string]string{}
+		for id, task := range byID {
+			if task.Kind != "planner" && task.State != "cancelled" {
+				noticeBasis[id] = nativeBasis(*task)
+			}
+		}
+		key := nativeHash([]any{p.ID, p.GoalVersion, p.Revision, plan.GoalComplete, noticeBasis})
+		if key != p.NotifiedKey {
+			summary := "FS 原生项目 " + p.ID + "：" + plan.Summary
+			if len(plan.UserQuestions) > 0 {
+				summary += "\n需要用户事实或决定：\n" + strings.Join(plan.UserQuestions, "\n")
+			}
+			if plan.GoalComplete {
+				summary += "\n当前目标已完成，依据：" + strings.Join(plan.CompletionEvidence, "; ")
+			}
+			summary += "\n请只处理用户沟通；不要重新派发或重复验收。运行事实通过 runner.status 查看。"
+			p.Notice = &nativeRunnerNotice{Key: key, ControllerSessionID: p.ControllerSessionID, Summary: summary}
+		}
 	}
 	for _, t := range byID {
 		if err = nativeSave(tx, "runner_tasks", t.ID, p.ID, t); err != nil {

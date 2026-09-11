@@ -3,6 +3,19 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.100 - 2026-09-11
+
+- Replace growing planner histories in task packets with compact current work
+  and task-bound, paginated SQLite context/evidence queries (`runner.context`).
+- Index report snapshots by project, task, generation and event; return large
+  evidence bodies only through explicit bounded pages and preserve source hashes.
+- Give unchanged external questions one Cloud self-review, then wait for new
+  facts instead of repeatedly planning and notifying the controller.
+- Preserve cancelled state while saving late reports and recovering missing
+  report evidence so historical acknowledgements can finish.
+- Distinguish accepted business work, planning, waiting and callback retirement
+  in the task center instead of showing every unfinished goal as running.
+
 ## 0.4.99 - 2026-09-11
 
 - Default Cloud progress watches to shared resume SSE connections and a local,

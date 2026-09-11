@@ -98,7 +98,7 @@ func TestTaskCenterPageRendersSchedulingAndOptionalEstimate(t *testing.T) {
 	w := httptest.NewRecorder()
 	a.handleTaskCenter(w, httptest.NewRequest(http.MethodGet, "/tasks", nil))
 	body := w.Body.String()
-	for _, want := range []string{"调度状态", "全局占用", "本区运行", "本区可新增", "任务区上限", "动态建议", "estimatedMinutes", "持续循环", "暂停任务区", "恢复任务区", "取消任务区", "归档任务区", "取消归档任务区", "只停止新派发"} {
+	for _, want := range []string{"调度状态", "全局占用", "本区运行", "本区可新增", "任务区上限", "动态建议", "estimatedMinutes", "持续循环", "暂停任务区", "恢复任务区", "取消任务区", "归档任务区", "取消归档任务区", "只停止新派发", "activityState", "businessComplete", "business_complete_pending", "planning", "p.questions", "业务已完成 · 待处理事项", "回调待确认", "待处理"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("task page missing %q", want)
 		}

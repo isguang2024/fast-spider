@@ -131,9 +131,8 @@ drained:
 				continue
 			}
 			if late != nil && late.Terminal && !late.RecoveryOnly {
-				t.Result = late
 				t.ResultAcked = false
-				if err = r.saveTask(ctx, t, "cancelled_result_received"); err != nil {
+				if err = r.storeResult(ctx, &t, *late); err != nil {
 					return err
 				}
 			}

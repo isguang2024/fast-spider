@@ -106,8 +106,14 @@ type agentControlParams struct {
 	Task                nativeRunnerTask             `json:"task,omitempty"`
 	TaskID              string                       `json:"taskId,omitempty"`
 	Evidence            string                       `json:"evidence,omitempty"`
-	modelProvided       bool
-	thinkingProvided    bool
+	Section             string                       `json:"section,omitempty"`
+	Offset              int                          `json:"offset,omitempty"`
+	EvidenceID          int64                        `json:"evidenceId,omitempty"`
+	Round               int                          `json:"round,omitempty"`
+	Fields              []string                     `json:"fields,omitempty"`
+
+	modelProvided    bool
+	thinkingProvided bool
 }
 
 type agentSkillInput struct {
@@ -382,6 +388,12 @@ func (m *AgentManager) Control(ctx context.Context, action string, params map[st
 				return nil, errors.New("runner.submit requires responseContent")
 			}
 			return m.nativeRunnerTransport.Submit(ctx, input.ResponseContent)
+		}
+		if action == "runner.context" {
+			if input.ResponseContent != nil {
+				return m.nativeRunnerTransport.Context(ctx, input.ResponseContent)
+			}
+			return m.nativeRunner.QueryContext(ctx, params)
 		}
 		if action == "runner.checkpoint" {
 			if input.ResponseContent == nil {

@@ -345,7 +345,8 @@ func nativeProjectView(ctx context.Context, tx *sql.Tx, p nativeRunnerProject, d
 			groups[group][t.State]++
 		}
 	}
-	view := map[string]any{"project": nativeViewProject(p, detail), "tasks": brief, "groups": groups,
+	activityState, businessComplete := nativeProjectActivity(p, tasks)
+	view := map[string]any{"activityState": activityState, "businessComplete": businessComplete, "project": nativeViewProject(p, detail), "tasks": brief, "groups": groups,
 		"pendingAcknowledgements": pendingACK, "cooldownUntil": cooldown, "complete": p.CompleteVersion == p.GoalVersion,
 		"refreshedAt": time.Now().UTC().Format(time.RFC3339)}
 	view["scheduling"] = map[string]any{"globalLimit": scheduling.GlobalLimit, "globalActive": scheduling.GlobalActive, "projectLimit": allocation.ProjectLimit, "projectActive": allocation.ProjectActive, "allocation": allocation.Allocation}

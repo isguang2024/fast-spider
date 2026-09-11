@@ -58,6 +58,26 @@
 
 `runner.status` 参数为 `{"projectId":"..."}`，返回按父任务分组的数量、任务块简报、恢复条件和待 ACK 数；增加 `taskId` 只读取一个块的详细绑定和历史。
 
+### 按需上下文和证据（0.4.100）
+
+任务包保留当前目标、写域与执行约束；历史规划只给计数和最近结果索引，已验收业务块只给简短索引。起始任务索引最多 24 条，优先当前活动和未完成块，其余通过 `runner.context` 分页读取；`blockCounts` 和 `omittedBusinessBlocks` 明确说明完整数量与省略量，不把省略当成不存在。完整历史仍在原 SQLite，不再在每次规划中重复复制，也不另生成整份历史 sidecar。
+
+CHAT 通过 FS 的 `ai_control` 调用 `runner.context`，使用派发提示中已分配的 `taskRef`：
+
+```json
+{"action":"runner.context","responseContent":{"taskRef":"已分配的绑定","section":"tasks","limit":10,"offset":0}}
+```
+
+- `section=tasks`：分页业务任务索引，不返回报告正文。
+- `section=task`：同任务区的当前任务契约；传 `taskId`，可用 `fields` 选择 `objective`、`acceptance`、`scope`、`checks`、`result` 等字段。
+- `section=history`：指定任务的历史尝试，摘要分页，不返回旧 prompt。
+- `section=evidence`：按 `taskId` 列出结果证据；可选 `round` 读取旧轮次。证据按 project/task/round/event 分类存入 `runner_evidence`，含状态、来源路径、SHA-256、体积与正文。
+- 只有 `section=evidence` 明确传 `evidenceId` 才返回正文页；`offset` 按 Unicode 字符计数，正文 `limit` 默认 4096、最大 16384。列表默认 10 条、最大 50 条。跟随返回的分页位置读取，勿默认遍历全部历史。
+
+云端查询必须经过当前任务绑定校验，仅可读所属任务区，不能提供任意文件路径或 SQL。本机可复用 CLI：`fast-spider-node.exe local-call -capability agent.control -action runner.context -params-json '{"projectId":"准确任务区","section":"tasks","limit":10}'`。管理动作继续保持本机边界；无需为读取数据库启动 CMD Job 或新的 AI 会话。
+
+无业务状态进展且只返回问题时，Node 先安排一次云端自查，任务包明确要求核对已有交接、归档位置和替代证据，不重复已接受的业务验收。自查后仍缺少真实外部事实，则保留规划依据并只通知一次；`runner.signal/change` 或相关任务状态变化才再次触发。任务中心分别显示业务完成、实际活动与回调待确认；缺失的迟到取消报告保存为明确恢复证据，不冒充业务成功。
+
 - `runner.goal`：传入 `projectId` 和新的完整 `goal`，更新目标版本。旧结果不会直接完成新目标；可复用的旧成果由规划器给出当前证据后 `revalidate`，无需机械重复测试。
 - `runner.pause`：禁止新业务派发，仍保存已发生的结果并处理运输确认。
 - `runner.resume`：恢复当前项目。

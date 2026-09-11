@@ -73,7 +73,7 @@ func TestSessionCreateSurvivesTransportCancellationWithinOperationDeadline(t *te
 	}
 }
 
-func TestCloudRunnerCapabilityAllowsSubmitAndCheckpointOnly(t *testing.T) {
+func TestCloudRunnerCapabilityAllowsBoundContextButNotAdministration(t *testing.T) {
 	agent := &runnerCapabilityTestAgent{}
 	client, err := New(Config{DataDir: t.TempDir(), Version: "runner-capability-test", Agent: agent, AgentCallerOwned: true})
 	if err != nil {
@@ -85,11 +85,11 @@ func TestCloudRunnerCapabilityAllowsSubmitAndCheckpointOnly(t *testing.T) {
 			RequestId:   "runner_capability_123456",
 			Capability:  "agent.control",
 			Action:      action,
-			Params:      map[string]any{},
+			Params:      map[string]any{"responseContent": map[string]any{"taskRef": "assigned-task"}},
 			Deadline:    protocolv1.Timestamp(time.Now().Add(time.Second)),
 		})
 	}
-	for _, action := range []string{"runner.submit", "runner.checkpoint"} {
+	for _, action := range []string{"runner.submit", "runner.checkpoint", "runner.context"} {
 		response := call(action)
 		if response.Error != nil {
 			t.Fatalf("Cloud %s was rejected: %+v", action, response.Error)
@@ -99,9 +99,14 @@ func TestCloudRunnerCapabilityAllowsSubmitAndCheckpointOnly(t *testing.T) {
 	if denied.Error == nil || denied.Error.Code != "UNSUPPORTED_CAPABILITY" {
 		t.Fatalf("Cloud runner.status was not kept local-only: %+v", denied)
 	}
-	if len(agent.actions) != 2 || agent.actions[0] != "runner.submit" || agent.actions[1] != "runner.checkpoint" {
+	if len(agent.actions) != 3 || agent.actions[0] != "runner.submit" || agent.actions[1] != "runner.checkpoint" || agent.actions[2] != "runner.context" {
 		t.Fatalf("agent received actions=%v", agent.actions)
 	}
+	noBinding := client.handleCapabilityRequest(context.Background(), protocolv1.CapabilityRequest{MessageType: protocolv1.MessageCapabilityRequest, RequestId: "runner_context_123456", Capability: "agent.control", Action: "runner.context", Params: map[string]any{"projectId": "other-project"}, Deadline: protocolv1.Timestamp(time.Now().Add(time.Second))})
+	if noBinding.Error == nil || len(agent.actions) != 3 {
+		t.Fatal("unbound cloud context reached local project query")
+	}
+
 }
 
 func TestClientCapabilitiesAdvertiseOSSpecificScreenshot(t *testing.T) {

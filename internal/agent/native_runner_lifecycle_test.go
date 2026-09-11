@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 )
 
@@ -24,7 +25,7 @@ func lifecycleTaskFixture(t *testing.T) (*nativeRunner, *fakeNativeRunnerBackend
 	task := addNativeTask(t, runner, project.ID, "lifecycle-task", "src/lifecycle")
 	task.Request = &nativeRunnerDispatch{
 		ProjectID: project.ID, TaskID: task.ID, Round: task.Round,
-		ControllerSessionID: project.ControllerSessionID, ResultPath: "result",
+		ControllerSessionID: project.ControllerSessionID, ResultPath: filepath.Join(runner.dir, "lifecycle.result"),
 	}
 	task.Receipt = &nativeRunnerReceipt{
 		SessionID: "lifecycle-chat", TaskRef: nativeRunnerTaskRef(*task.Request),
