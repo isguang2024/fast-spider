@@ -67,6 +67,10 @@ func TestNativeArchivePreparedReuseAndInflightDrain(t *testing.T) {
 	if len(nativeArchiveCandidates(got)) != 0 {
 		t.Fatal("next round's reusable session selected")
 	}
+	got.History = append(got.History, got.History[0])
+	if len(nativeArchiveCandidates(got)) != 0 {
+		t.Fatal("older duplicate of reusable session selected")
+	}
 	b.err = nil
 	if err := r.tickSessionCloseout(context.Background(), []nativeRunnerTask{got}); err != nil {
 		t.Fatal(err)
@@ -75,7 +79,7 @@ func TestNativeArchivePreparedReuseAndInflightDrain(t *testing.T) {
 	if r.closeoutTask != nil || got.State != "queued" || got.SessionCloseout[0].State != "archived" {
 		t.Fatal("changed task stranded housekeeping or was overwritten")
 	}
-	got.History[0].GoalVersion = p.GoalVersion
+	got.History[len(got.History)-1].GoalVersion = p.GoalVersion
 	req, err := r.compile(p, got, []nativeRunnerTask{got})
 	if err != nil || !req.RestoreArchived || req.TargetSessionID != "cloud" {
 		t.Fatalf("archived reuse not restored: %+v %v", req, err)

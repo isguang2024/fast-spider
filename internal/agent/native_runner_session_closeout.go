@@ -112,15 +112,21 @@ func nativeArchiveCandidates(t nativeRunnerTask) []nativeRunnerTask {
 		out = append(out, candidate)
 	}
 	terminal := t.State == "accepted" || t.State == "cancelled"
+	reuseID := ""
+	if !terminal && t.Receipt == nil && !t.Rotate && len(t.History) > 0 {
+		if last := t.History[len(t.History)-1].Receipt; last != nil {
+			reuseID = last.SessionID
+		}
+	}
 	if terminal {
 		add(t)
 	}
-	for i, h := range t.History {
+	for _, h := range t.History {
 		// A session reused by the current generation must remain available.
 		if h.Receipt == nil || (t.Receipt != nil && h.Receipt.SessionID == t.Receipt.SessionID && !terminal) {
 			continue
 		}
-		if !terminal && ((t.Request != nil && t.Request.TargetSessionID == h.Receipt.SessionID) || (t.Receipt == nil && !t.Rotate && i == len(t.History)-1)) {
+		if !terminal && ((t.Request != nil && t.Request.TargetSessionID == h.Receipt.SessionID) || reuseID == h.Receipt.SessionID) {
 			continue
 		}
 		old := t
