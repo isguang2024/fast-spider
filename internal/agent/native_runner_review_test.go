@@ -145,6 +145,54 @@ func TestNativeReviewQueuedLegacySnapshotRetryResumesWithoutDelay(t *testing.T) 
 	}
 }
 
+func TestNativePreflightRetryPreservesProviderDeadlineAndDispatchKey(t *testing.T) {
+	r, _, p := newNativeRunnerForTest(t, "retry preparation", nil)
+	now := time.Now()
+	r.now = func() time.Time { return now }
+	task := addNativeTask(t, r, p.ID, "work", "")
+	task.State = "prepared"
+	task.Request = &nativeRunnerDispatch{IdempotencyKey: "same-frozen-request"}
+	task.Failures = 20
+	r.fail(context.Background(), &task, &chatgptCloudCapabilityError{code: "AGENT_CLOUD_SENTINEL_FAILED", message: "preflight", retryable: true, retryAfter: "600"})
+	if task.NextAt != r.now().Add(600*time.Second).Unix() {
+		t.Fatal("provider deadline was capped or multiplied")
+	}
+	r.fail(context.Background(), &task, &chatgptCloudCapabilityError{code: "AGENT_CLOUD_SENTINEL_FAILED", message: "preflight", retryable: true})
+	if task.NextAt > r.now().Add(2*time.Minute).Unix() || task.Request.IdempotencyKey != "same-frozen-request" {
+		t.Fatal("transient preflight inherited an excessive delay or changed request identity")
+	}
+}
+
+func TestNativeSignalResumesOnlyReconciledCreationDelay(t *testing.T) {
+	r, _, p := newNativeRunnerForTest(t, "reconcile create", nil)
+	task := addNativeTask(t, r, p.ID, "work", "")
+	task.State = "prepared"
+	task.Request = &nativeRunnerDispatch{IdempotencyKey: "same-key"}
+	task.NextAt = r.now().Add(time.Hour).Unix()
+	task.LastError = "a prior session.create may have created a session; retry with the same idempotencyKey after provider reconciliation becomes available"
+	if err := r.saveTask(context.Background(), task, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Handle(context.Background(), "runner.signal", map[string]any{"projectId": p.ID, "taskId": task.ID, "evidence": "confirmed original failure happened before conversation request"}); err != nil {
+		t.Fatal(err)
+	}
+	got := loadNativeTask(t, r, p.ID, task.ID)
+	if got.NextAt != 0 || got.Request.IdempotencyKey != "same-key" {
+		t.Fatal("reconciled dispatch did not resume with original key")
+	}
+	got.NextAt = r.now().Add(time.Hour).Unix()
+	got.LastError = "ChatGPT Cloud Sentinel preparation was rejected"
+	if err := r.saveTask(context.Background(), got, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Handle(context.Background(), "runner.signal", map[string]any{"projectId": p.ID, "taskId": task.ID, "evidence": "new note"}); err != nil {
+		t.Fatal(err)
+	}
+	if loadNativeTask(t, r, p.ID, task.ID).NextAt != got.NextAt {
+		t.Fatal("signal discarded a provider retry deadline")
+	}
+}
+
 func TestNativePresentationDistinguishesReviewOwnershipAndChecks(t *testing.T) {
 	now := time.Now().Unix()
 	p := nativeRunnerProject{ID: "p", GoalVersion: "g", Revision: 2}

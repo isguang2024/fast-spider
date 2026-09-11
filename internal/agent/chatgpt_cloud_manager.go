@@ -345,6 +345,16 @@ func (m *AgentManager) chatgptCloudCreate(ctx context.Context, input agentContro
 	}
 	if createErr != nil && strings.TrimSpace(result.ConversationID) == "" {
 		if idempotencyKey != "" {
+			var preflight *chatgptCloudCapabilityError
+			if errors.As(createErr, &preflight) && preflight.code == "AGENT_CLOUD_SENTINEL_FAILED" {
+				// Sentinel preparation runs before the conversation request in both
+				// creation modes. No conversation was attempted; keep the same key
+				// available for a later normal, fully validated retry.
+				if abortErr := m.createStore.abort(storeKey); abortErr != nil {
+					return nil, errors.Join(createErr, abortErr)
+				}
+				return nil, createErr
+			}
 			if persistenceErr := m.createStore.update(storeKey, "in_doubt", nil); persistenceErr != nil {
 				return nil, errors.Join(createErr, fmt.Errorf("persist ambiguous ChatGPT cloud conversation creation: %w", persistenceErr))
 			}

@@ -3,6 +3,14 @@
 This file records notable public changes to Fast Spider. The project follows
 semantic versioning for public releases.
 
+## 0.4.105 - 2026-09-11
+
+- Release a create reservation when Sentinel preparation fails before any
+  conversation request; ambiguous failures after sending remain protected.
+- Bound transient preflight retries, preserve provider Retry-After, and show
+  dispatch confirmation waits separately from active work or review.
+- Allow a local new-fact signal to resume the same frozen unconfirmed dispatch.
+
 ## 0.4.104 - 2026-09-11
 
 - Show evidence-based task phases: queued/running checks, assigned review,

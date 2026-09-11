@@ -697,6 +697,22 @@ func (r *nativeRunner) Handle(ctx context.Context, action string, params map[str
 				tasks[i].DeferredReason = ""
 				tasks[i].ResumeAt = 0
 				tasks[i].Observation = input.Evidence
+				if tasks[i].State == "prepared" && tasks[i].Receipt == nil && strings.Contains(tasks[i].LastError, "a prior session.create may have created a session") {
+					// A local signal supplies a new external fact. Retry the same
+					// frozen dispatch key; provider/account cooldowns remain enforced.
+					tasks[i].NextAt = 0
+					tasks[i].Failures = 0
+					tasks[i].LastError = ""
+					if tasks[i].Kind == "planner" && len(tasks[i].ReviewTargets) == 0 {
+						for _, target := range nativePlannerReviewTargets(tasks) {
+							for _, candidate := range tasks {
+								if candidate.ID == target && strings.TrimSuffix(tasks[i].Basis[target], "-due") == nativeBasis(candidate) {
+									tasks[i].ReviewTargets = append(tasks[i].ReviewTargets, target)
+								}
+							}
+						}
+					}
+				}
 				if nativeHolds(tasks[i]) && tasks[i].Receipt != nil && !tasks[i].Receipt.InDoubt {
 					state := r.recoveryState(tasks[i])
 					state.Manual = true
@@ -1128,6 +1144,14 @@ func (r *nativeRunner) fail(ctx context.Context, t *nativeRunnerTask, err error)
 	}
 	t.Failures++
 	delay := time.Duration(5*(1<<min(t.Failures, 9))) * time.Second
+	var preflight *chatgptCloudCapabilityError
+	if errors.As(err, &preflight) && preflight.code == "AGENT_CLOUD_SENTINEL_FAILED" && preflight.retryable {
+		if retry := chatGPTCloudRetryAfterDuration(preflight.retryAfter, r.now()); retry > 0 {
+			delay = retry
+		} else {
+			delay = min(max(delay, 30*time.Second), 2*time.Minute)
+		}
+	}
 	var limited *chatGPTCloudHTTPError
 	if errors.As(err, &limited) && limited.status == 429 {
 		retry := chatGPTCloudRetryAfterDuration(strings.TrimSuffix(limited.retryAfter, " seconds"), r.now())

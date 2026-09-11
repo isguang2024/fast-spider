@@ -239,6 +239,44 @@ func TestChatGPTCloudSessionCreateFailsClosedAfterAmbiguousError(t *testing.T) {
 	}
 }
 
+func TestChatGPTCloudPreflightRejectionDoesNotReserveUnknownConversation(t *testing.T) {
+	for _, mode := range []string{"quick_chat", "complete"} {
+		t.Run(mode, func(t *testing.T) {
+			manager := New(t.TempDir(), nil)
+			defer manager.Close(context.Background())
+			preparations, conversations := 0, 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == chatgptSentinelPreparePath {
+					preparations++
+					w.Header().Set("Retry-After", "600")
+					http.Error(w, "unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				conversations++
+				http.Error(w, "unexpected conversation request", 500)
+			}))
+			defer server.Close()
+			manager.chatgptCloud.baseURL = server.URL
+			manager.chatgptCloud.http = server.Client()
+			manager.chatgptCloud.tokenSource = func(context.Context) (string, error) { return "test-token", nil }
+			params := map[string]any{"providerId": "codex", "backend": sessionBackendChatGPTCloud, "mode": mode, "prompt": "preflight rejection", "model": "gpt-test", "idempotencyKey": "preflight-rejection-01", "workingDirectory": t.TempDir()}
+			for i := 0; i < 2; i++ {
+				_, err := manager.Control(context.Background(), "session.create", params)
+				var preflight *chatgptCloudCapabilityError
+				if !errors.As(err, &preflight) || preflight.code != "AGENT_CLOUD_SENTINEL_FAILED" || preflight.retryAfter != "600" {
+					t.Fatalf("wrong classification: %v", err)
+				}
+				if _, exists := manager.createStore.records["codex:preflight-rejection-01"]; exists {
+					t.Fatal("preflight rejection left a possibly-created reservation")
+				}
+			}
+			if preparations != 2 || conversations != 0 {
+				t.Fatalf("preparations=%d conversation requests=%d", preparations, conversations)
+			}
+		})
+	}
+}
+
 func TestChatGPTCloudSessionCreatePersistsProviderVisibleRequestIDBeforeSideEffect(t *testing.T) {
 	manager := New(t.TempDir(), nil)
 	defer manager.Close(context.Background())

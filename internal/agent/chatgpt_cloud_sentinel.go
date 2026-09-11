@@ -42,9 +42,10 @@ type chatgptSentinelChallenge struct {
 // response bodies, challenge values, or credentials in Error: capability
 // errors are also written to the local operation log.
 type chatgptCloudCapabilityError struct {
-	code      string
-	message   string
-	retryable bool
+	code       string
+	message    string
+	retryable  bool
+	retryAfter string
 }
 
 func (e *chatgptCloudCapabilityError) Error() string {
@@ -206,7 +207,7 @@ func chatgptSentinelHeaders(ctx context.Context, client *http.Client, baseURL, t
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, newChatGPTSentinelError("ChatGPT Cloud Sentinel preparation was rejected", resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests)
+		return nil, &chatgptCloudCapabilityError{code: "AGENT_CLOUD_SENTINEL_FAILED", message: "ChatGPT Cloud Sentinel preparation was rejected", retryable: resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests, retryAfter: resp.Header.Get("Retry-After")}
 	}
 	var challenge chatgptSentinelChallenge
 	if err := json.NewDecoder(resp.Body).Decode(&challenge); err != nil {

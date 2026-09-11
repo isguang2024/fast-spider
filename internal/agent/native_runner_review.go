@@ -99,6 +99,11 @@ func nativeTaskPresentation(p nativeRunnerProject, t nativeRunnerTask, tasks []n
 		}
 		return v("integrating", "集成中", "正在后台核对并合入准确提交")
 	case "prepared":
+		if t.LastError != "" && t.NextAt > now {
+			out := v("retry_wait", "派发确认等待", "上次派发未完成确认，系统将复用原请求继续核对")
+			out.NextAt = t.NextAt
+			return out
+		}
 		return v("dispatching", "派发中", "正在建立或确认本次云端任务绑定")
 	case "active":
 		if t.Recovery != nil {
